@@ -1,0 +1,18 @@
+{
+  "template_key": "rop_weekly_template_v1",
+  "version": "rop_weekly_template_v1",
+  "title": "rop_weekly_template_v1",
+  "source_of_truth": true,
+  "sections": [
+    {"id": "what_is_inside", "label": "ЧТО ВНУТРИ", "kind": "orientation_box"},
+    {"id": "dashboard_rows", "label": "1. ДАШБОРД НЕДЕЛИ", "kind": "table", "page_break_before": true},
+    {"id": "dashboard_note", "label": "Как читать dashboard", "kind": "text"},
+    {"id": "week_over_week_dynamics", "label": "2. ДИНАМИКА: НЕДЕЛЯ К НЕДЕЛЕ", "kind": "table"},
+    {"id": "dynamics_lists", "label": "Ключевые изменения", "kind": "paired_bullets"},
+    {"id": "risk_zone_cards", "label": "3. ЗОНЫ РИСКА — РЕАКЦИЯ ДО КОНЦА НЕДЕЛИ", "kind": "cards"},
+    {"id": "systemic_team_problems", "label": "4. СИСТЕМНЫЕ ПРОБЛЕМЫ КОМАНДЫ", "kind": "cards"},
+    {"id": "top_vs_anti_top", "label": "5. ТОП И АНТИТОП ПЕРИОДА", "kind": "paired_cards"},
+    {"id": "rop_tasks_next_week", "label": "6. ЗАДАЧИ РОПа НА СЛЕДУЮЩУЮ НЕДЕЛЮ", "kind": "table"},
+    {"id": "business_results_placeholder", "label": "7. БИЗНЕС-РЕЗУЛЬТАТЫ ПЕРИОДА", "kind": "placeholder", "crm_dependent": true}
+  ]
+}

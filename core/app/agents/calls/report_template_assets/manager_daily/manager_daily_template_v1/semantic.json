@@ -1,0 +1,19 @@
+{
+  "template_key": "manager_daily_template_v1",
+  "version": "manager_daily_template_v1",
+  "title": "manager_daily_template_v1",
+  "source_of_truth": true,
+  "sections": [
+    {"id": "day_summary", "label": "ИТОГ ДНЯ", "kind": "metric_cards"},
+    {"id": "executive_narrative", "label": "Краткий вывод", "kind": "text", "model_dependent": true},
+    {"id": "signal_of_day", "label": "Сигнал дня", "kind": "card"},
+    {"id": "main_focus_for_tomorrow", "label": "ГЛАВНЫЙ ФОКУС НА ЗАВТРА", "kind": "callout", "model_dependent": true},
+    {"id": "review_block", "label": "РАЗБОР", "kind": "paired_bullets"},
+    {"id": "key_problem_of_day", "label": "КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ", "kind": "card"},
+    {"id": "recommendations", "label": "РЕКОМЕНДАЦИИ", "kind": "cards", "model_dependent": true},
+    {"id": "call_outcomes_summary", "label": "ИТОГИ ЗВОНКОВ", "kind": "metric_cards"},
+    {"id": "call_list", "label": "Список звонков", "kind": "table"},
+    {"id": "focus_criterion_dynamics", "label": "ДИНАМИКА ПО ФОКУСНОМУ КРИТЕРИЮ", "kind": "key_values"},
+    {"id": "memo_legend", "label": "ПАМЯТКА", "kind": "bullet_groups", "page_break_before": true}
+  ]
+}

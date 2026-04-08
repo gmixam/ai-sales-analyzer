@@ -1,0 +1,132 @@
+:root {
+  --accent: #cd6f32;
+  --accent-soft: #f8eadf;
+  --ink: #1f2933;
+  --muted: #52606d;
+  --surface: #ffffff;
+  --surface-alt: #f7f4ef;
+  --border: #e6d4c8;
+  --success: #1f8f5f;
+  --warning: #b86a08;
+  --font-family: "DejaVu Sans", Arial, sans-serif;
+}
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #fcf4ee 0%, #f5efe8 100%);
+  color: var(--ink);
+  font-family: var(--font-family);
+}
+.page {
+  max-width: 1024px;
+  margin: 0 auto;
+  padding: 28px;
+}
+.hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: 0 14px 34px rgba(54, 34, 17, 0.08);
+}
+.hero h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+}
+.hero p {
+  margin: 4px 0;
+  color: var(--muted);
+}
+.summary-grid,
+.cards-grid {
+  display: grid;
+  gap: 12px;
+}
+.summary-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 20px;
+}
+.cards-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.metric,
+.card,
+.callout,
+.section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+}
+.metric {
+  padding: 14px;
+}
+.metric strong {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.metric span {
+  font-size: 24px;
+  font-weight: 700;
+}
+.callout {
+  background: var(--accent-soft);
+  padding: 16px 18px;
+}
+.section {
+  margin-top: 18px;
+  padding: 18px;
+}
+.section h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.muted {
+  color: var(--muted);
+}
+.card {
+  padding: 14px;
+}
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.pill {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--surface-alt);
+  color: var(--muted);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  vertical-align: top;
+  text-align: left;
+  font-size: 13px;
+}
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.footer-note {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 860px) {
+  .summary-grid,
+  .cards-grid {
+    grid-template-columns: 1fr;
+  }
+}

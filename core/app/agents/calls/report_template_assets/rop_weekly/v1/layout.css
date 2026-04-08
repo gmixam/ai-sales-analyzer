@@ -1,0 +1,133 @@
+:root {
+  --accent: #1d6fa3;
+  --accent-soft: #e9f4fb;
+  --ink: #17232d;
+  --muted: #52606d;
+  --surface: #ffffff;
+  --surface-alt: #f4f8fb;
+  --border: #cad9e4;
+  --success: #1f8f5f;
+  --warning: #b86a08;
+  --danger: #c23d3d;
+  --font-family: "DejaVu Sans", Arial, sans-serif;
+}
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(29, 111, 163, 0.12), transparent 40%),
+    linear-gradient(180deg, #f1f8fc 0%, #eef3f8 100%);
+  color: var(--ink);
+  font-family: var(--font-family);
+}
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 28px;
+}
+.hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: 0 16px 36px rgba(18, 47, 66, 0.08);
+}
+.hero h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+}
+.hero p {
+  margin: 4px 0;
+  color: var(--muted);
+}
+.summary-grid,
+.cards-grid {
+  display: grid;
+  gap: 12px;
+}
+.summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 20px;
+}
+.cards-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.metric,
+.card,
+.section,
+.placeholder {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+}
+.metric,
+.card,
+.section,
+.placeholder {
+  padding: 16px;
+}
+.metric strong {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.metric span {
+  font-size: 24px;
+  font-weight: 700;
+}
+.section {
+  margin-top: 18px;
+}
+.section h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.muted {
+  color: var(--muted);
+}
+.placeholder {
+  background: var(--surface-alt);
+}
+.pill {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  vertical-align: top;
+  text-align: left;
+  font-size: 13px;
+}
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.footer-note {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 900px) {
+  .summary-grid,
+  .cards-grid {
+    grid-template-columns: 1fr;
+  }
+}

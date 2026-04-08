@@ -1,0 +1,1005 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manual Reporting Operator</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: #fffaf0;
+      --ink: #1f2430;
+      --muted: #6c7280;
+      --line: #d9cfbf;
+      --accent: #9c4f2d;
+      --accent-soft: #f4d8ca;
+      --good: #1f7a4d;
+      --warn: #9a5c00;
+      --bad: #a12626;
+      --shadow: 0 18px 40px rgba(43, 32, 18, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(156, 79, 45, 0.12), transparent 28%),
+        linear-gradient(180deg, #f9f2e5 0%, var(--bg) 100%);
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 18px 64px;
+    }
+
+    .hero {
+      margin-bottom: 24px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: linear-gradient(140deg, rgba(255, 250, 240, 0.96), rgba(250, 237, 223, 0.92));
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 5vw, 44px);
+      line-height: 1.05;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    .layout {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+    }
+
+    .card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .card h2 {
+      margin: 0 0 16px;
+      font-size: 21px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .field.full {
+      grid-column: 1 / -1;
+    }
+
+    label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    input,
+    select,
+    button,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 48px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      cursor: pointer;
+      transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 18px rgba(43, 32, 18, 0.12);
+    }
+
+    .primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff8f2;
+    }
+
+    .secondary {
+      background: var(--accent-soft);
+      border-color: rgba(156, 79, 45, 0.25);
+      color: var(--accent);
+    }
+
+    .note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      background: #f6efe2;
+      color: var(--muted);
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+
+    .pill.good { background: rgba(31, 122, 77, 0.12); color: var(--good); }
+    .pill.warn { background: rgba(154, 92, 0, 0.12); color: var(--warn); }
+    .pill.bad { background: rgba(161, 38, 38, 0.12); color: var(--bad); }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .group {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .group h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .observability-grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .section-line {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .stage-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .stage-card h3,
+    .cost-card h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .summary-list {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .summary-item {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .summary-item strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .cost-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .diagnostics-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #2d3340;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    @media (max-width: 900px) {
+      .layout,
+      .grid,
+      .observability-grid,
+      .summary-list,
+      .diagnostics-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Internal Operator UI</p>
+      <h1>Manual Report Run</h1>
+      <p>
+        Минимальный операторский интерфейс для ручного запуска <code>manager_daily</code> и
+        <code>rop_weekly</code> поверх текущего bounded reporting API path.
+      </p>
+    </section>
+
+    <section class="layout">
+      <article class="card">
+        <h2>Параметры запуска</h2>
+        <form id="report-form">
+          <div class="grid">
+            <div class="field">
+              <label for="preset">Preset</label>
+              <select id="preset" name="preset"></select>
+            </div>
+
+            <div class="field">
+              <label for="mode">Mode</label>
+              <select id="mode" name="mode"></select>
+            </div>
+
+            <div class="field">
+              <label for="department">Отдел</label>
+              <select id="department" name="department_id"></select>
+            </div>
+
+            <div class="field">
+              <label for="manager">Менеджеры из локального справочника</label>
+              <select id="manager" name="manager_id" multiple size="8"></select>
+            </div>
+
+            <div class="field">
+              <label for="extension">Extensions</label>
+              <select id="extension" name="manager_extension" multiple size="8"></select>
+            </div>
+
+            <div class="field">
+              <label for="date-from">Дата от</label>
+              <input id="date-from" name="date_from" type="date" required>
+            </div>
+
+            <div class="field">
+              <label for="date-to">Дата до</label>
+              <input id="date-to" name="date_to" type="date" required>
+            </div>
+
+            <div class="field">
+              <label for="min-duration">Min duration sec</label>
+              <input id="min-duration" name="min_duration_sec" type="number" min="0" step="1">
+            </div>
+
+            <div class="field">
+              <label for="max-duration">Max duration sec</label>
+              <input id="max-duration" name="max_duration_sec" type="number" min="0" step="1">
+            </div>
+
+            <div class="field full">
+              <label>Email Delivery</label>
+              <div class="checkbox">
+                <input id="send-email" name="send_email" type="checkbox">
+                <label for="send-email">Send business email to manager / ROP</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="secondary" type="button" id="sync-managers-button">Refresh Local Managers</button>
+            <button class="secondary" type="button" id="preview-button">Preview Recipients</button>
+            <button class="primary" type="submit" id="run-button">Run Report</button>
+          </div>
+
+          <p class="note">
+            Список менеджеров берётся из локального Bitrix-synced справочника. Для актуализации списка нажмите
+            <code>Refresh Local Managers</code>. Telegram test delivery для manual runs выполняется всегда в operator chat.
+            Checkbox управляет только business email delivery для менеджера / РОП. Resolved email recipients показываются как reference.
+          </p>
+        </form>
+      </article>
+
+      <aside class="stack">
+        <section class="card">
+          <h2>Resolved Recipients</h2>
+          <div id="preview-summary" class="empty">Нажмите Preview Recipients, чтобы увидеть resolved targets.</div>
+          <div id="preview-groups" class="stack"></div>
+        </section>
+
+        <section class="card">
+          <h2>Run Result</h2>
+          <div id="run-summary" class="empty">После запуска здесь появятся общий статус, report statuses и blocking reasons.</div>
+          <div id="run-groups" class="stack"></div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="card" style="margin-top: 18px;">
+      <h2>Run Observability</h2>
+      <p class="section-line">Операторский мониторинг текущего manual run: состояние, этапы, итог и cost только по реально использованным AI-узлам.</p>
+      <div id="run-state" class="empty">Run-state появится после запуска.</div>
+
+      <div style="margin-top: 16px;">
+        <h3>Stages</h3>
+        <div id="observability-stages" class="observability-grid">
+          <p class="empty">После запуска здесь появятся source-discovery, persistence-check, ingest-missing, audio-fetch, STT, analysis, report-build/render и delivery.</p>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <h3>Run Summary</h3>
+        <div id="observability-summary" class="summary-list">
+          <p class="empty">Итоговая summary появится после запуска.</p>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <h3>AI Cost</h3>
+        <div id="observability-costs" class="stack">
+          <p class="empty">Если в run использовались AI-узлы, здесь появится cost block. Если metadata нет, будет показан safe fallback.</p>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <h3>Diagnostics</h3>
+        <div id="diagnostics-summary" class="diagnostics-grid">
+          <p class="empty">После запуска здесь появятся effective filters, reason codes и selection transparency.</p>
+        </div>
+        <div id="diagnostics-notes" class="stack" style="margin-top: 12px;"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const contextUrl = "/pipeline/calls/report-ui/context";
+    const syncManagersUrl = "/pipeline/calls/report-ui/sync-managers";
+    const previewUrl = "/pipeline/calls/report-preview";
+    const runUrl = "/pipeline/calls/report-run";
+
+    const presetEl = document.getElementById("preset");
+    const modeEl = document.getElementById("mode");
+    const departmentEl = document.getElementById("department");
+    const managerEl = document.getElementById("manager");
+    const extensionEl = document.getElementById("extension");
+    const dateFromEl = document.getElementById("date-from");
+    const dateToEl = document.getElementById("date-to");
+    const sendEmailEl = document.getElementById("send-email");
+    const previewSummaryEl = document.getElementById("preview-summary");
+    const previewGroupsEl = document.getElementById("preview-groups");
+    const runSummaryEl = document.getElementById("run-summary");
+    const runGroupsEl = document.getElementById("run-groups");
+    const syncManagersButtonEl = document.getElementById("sync-managers-button");
+    const runStateEl = document.getElementById("run-state");
+    const observabilityStagesEl = document.getElementById("observability-stages");
+    const observabilitySummaryEl = document.getElementById("observability-summary");
+    const observabilityCostsEl = document.getElementById("observability-costs");
+    const diagnosticsSummaryEl = document.getElementById("diagnostics-summary");
+    const diagnosticsNotesEl = document.getElementById("diagnostics-notes");
+
+    let uiContext = { departments: [], managers: [], presets: [], modes: [], operator_delivery: {} };
+
+    function pillClass(status) {
+      if (status === "delivered" || status === "completed" || status === "ready") return "pill good";
+      if (status === "starting" || status === "running" || status === "partial" || status === "warn") return "pill warn";
+      if (status === "idle" || status === "skipped") return "pill";
+      return "pill bad";
+    }
+
+    function clearNode(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function appendOption(select, value, label) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+
+    function currentDepartmentManagers() {
+      return uiContext.managers.filter((item) => item.department_id === departmentEl.value && item.active);
+    }
+
+    function syncManagerOptions() {
+      const managers = currentDepartmentManagers();
+      const currentManagers = Array.from(managerEl.selectedOptions).map((item) => item.value);
+      const currentExtensions = Array.from(extensionEl.selectedOptions).map((item) => item.value);
+
+      clearNode(managerEl);
+      clearNode(extensionEl);
+
+      managers.forEach((manager) => {
+        appendOption(
+          managerEl,
+          manager.id,
+          manager.extension ? `${manager.name} (${manager.extension})` : manager.name,
+        );
+        if (manager.extension) {
+          appendOption(extensionEl, manager.extension, `${manager.extension} — ${manager.name}`);
+        }
+      });
+
+      Array.from(managerEl.options).forEach((item) => {
+        item.selected = currentManagers.includes(item.value);
+      });
+      Array.from(extensionEl.options).forEach((item) => {
+        item.selected = currentExtensions.includes(item.value);
+      });
+    }
+
+    function syncPresetBehavior() {
+      const isManagerDaily = presetEl.value === "manager_daily";
+      managerEl.disabled = !isManagerDaily;
+      extensionEl.disabled = !isManagerDaily;
+      if (!isManagerDaily) {
+        Array.from(managerEl.options).forEach((item) => { item.selected = false; });
+        Array.from(extensionEl.options).forEach((item) => { item.selected = false; });
+      }
+      if (isManagerDaily) {
+        dateToEl.value = dateFromEl.value;
+        dateToEl.disabled = true;
+      } else {
+        dateToEl.disabled = false;
+      }
+    }
+
+    function buildPayload() {
+      const payload = {
+        department_id: departmentEl.value,
+        preset: presetEl.value,
+        mode: modeEl.value,
+        date_from: dateFromEl.value,
+        date_to: presetEl.value === "manager_daily" ? dateFromEl.value : dateToEl.value,
+        manager_ids: Array.from(managerEl.selectedOptions).map((item) => item.value).filter(Boolean),
+        manager_extensions: Array.from(extensionEl.selectedOptions).map((item) => item.value).filter(Boolean),
+        min_duration_sec: document.getElementById("min-duration").value || null,
+        max_duration_sec: document.getElementById("max-duration").value || null,
+        send_email: sendEmailEl.checked,
+      };
+      return payload;
+    }
+
+    function renderGroupCard(group, type) {
+      const card = document.createElement("section");
+      card.className = "group";
+
+      const title = document.createElement("h3");
+      title.textContent = group.group_key || `${type} group`;
+      card.appendChild(title);
+
+      const status = document.createElement("p");
+      status.innerHTML = `<span class="${pillClass(group.status)}">${group.status}</span>`;
+      card.appendChild(status);
+
+      if (group.delivery) {
+        const delivery = document.createElement("pre");
+        delivery.textContent = JSON.stringify(group.delivery, null, 2);
+        card.appendChild(delivery);
+      }
+
+      if (group.artifact) {
+        const artifact = document.createElement("pre");
+        artifact.textContent = JSON.stringify(group.artifact, null, 2);
+        card.appendChild(artifact);
+      }
+
+      if (group.errors && group.errors.length) {
+        const errors = document.createElement("pre");
+        errors.textContent = group.errors.join("\n");
+        card.appendChild(errors);
+      }
+
+      if (!group.delivery && (!group.errors || !group.errors.length)) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "Без blocking reasons.";
+        card.appendChild(empty);
+      }
+      return card;
+    }
+
+    function renderSummary(target, summaryEl, groupsEl, result, mode) {
+      summaryEl.className = "";
+      summaryEl.innerHTML = `
+        <span class="${pillClass(result.status)}">${result.status}</span>
+        <span class="pill">${result.preset || "report"}</span>
+        <span class="pill">${mode}</span>
+        <span class="pill">${result.selected_interactions ?? 0} interactions</span>
+      `;
+      clearNode(groupsEl);
+      const groups = result.groups || result.reports || [];
+      if (!groups.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "Нет групп для отображения.";
+        groupsEl.appendChild(empty);
+        return;
+      }
+      groups.forEach((group) => groupsEl.appendChild(renderGroupCard(group, target)));
+    }
+
+    function setRunState(state, detail = "") {
+      runStateEl.className = "";
+      runStateEl.innerHTML = `
+        <span class="${pillClass(state)}">${state}</span>
+        ${detail ? `<span class="pill">${detail}</span>` : ""}
+      `;
+    }
+
+    function renderObservabilityStage(stage) {
+      const card = document.createElement("section");
+      card.className = "stage-card";
+
+      const title = document.createElement("h3");
+      title.textContent = stage.label || stage.code;
+      card.appendChild(title);
+
+      const status = document.createElement("p");
+      status.innerHTML = `<span class="${pillClass(stage.status)}">${stage.status}</span>`;
+      card.appendChild(status);
+
+      const summary = document.createElement("p");
+      summary.className = "muted";
+      summary.textContent = stage.summary || "No summary";
+      card.appendChild(summary);
+
+      if (stage.error) {
+        const error = document.createElement("pre");
+        error.textContent = stage.error;
+        card.appendChild(error);
+      }
+
+      return card;
+    }
+
+    function renderObservabilitySummary(summary, runState) {
+      clearNode(observabilitySummaryEl);
+      const items = [
+        ["Execution model", summary.execution_model || "unknown"],
+        ["Template version", summary.template_version || "unknown"],
+        ["Source matched calls", summary.source?.targeted_source_records_total ?? "unknown"],
+        ["New interactions ingested", summary.source?.ingest_created_total ?? "unknown"],
+        ["Selected interactions", summary.selected_interactions_count ?? 0],
+        ["Reused analyses", summary.reused_analyses_count ?? 0],
+        ["Rebuilt analyses", summary.rebuilt_analyses_count ?? 0],
+        ["Final report status", summary.final_report_status || runState || "unknown"],
+        ["Telegram test delivery", summary.delivery?.telegram_test_delivery?.status || "unknown"],
+        ["Telegram targets", (summary.delivery?.telegram_test_delivery?.targets || []).join(", ") || "not available"],
+        ["Email delivery", summary.delivery?.email_delivery?.status || "unknown"],
+        ["Email targets", (summary.delivery?.email_delivery?.targets || []).join(", ") || "not available"],
+        ["Overall delivery result", summary.delivery?.result || "unknown"],
+      ];
+      items.forEach(([label, value]) => {
+        const item = document.createElement("section");
+        item.className = "summary-item";
+        item.innerHTML = `<strong>${label}</strong><span>${value}</span>`;
+        observabilitySummaryEl.appendChild(item);
+      });
+    }
+
+    function renderObservabilityCosts(costs) {
+      clearNode(observabilityCostsEl);
+      if (!costs || !costs.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "В этом run AI-узлы не выполнялись повторно, поэтому cost block пуст.";
+        observabilityCostsEl.appendChild(empty);
+        return;
+      }
+      costs.forEach((cost) => {
+        const card = document.createElement("section");
+        card.className = "cost-card";
+        card.innerHTML = `
+          <h3>${cost.node}</h3>
+          <p><span class="${pillClass(cost.cost_status === "available" ? "completed" : "warn")}">${cost.cost_status}</span></p>
+          <p class="muted">${cost.summary || "No cost summary"}</p>
+          <pre>${JSON.stringify({
+            used_count: cost.used_count,
+            cost_usd: cost.cost_usd ?? "not available",
+            tokens: cost.tokens ?? "not available",
+          }, null, 2)}</pre>
+        `;
+        observabilityCostsEl.appendChild(card);
+      });
+    }
+
+    function renderObservability(result) {
+      const observability = result.observability || {};
+      const runState = observability.run_state || "completed";
+      setRunState(runState, `${result.preset || "report"} / ${result.mode || "run"}`);
+
+      clearNode(observabilityStagesEl);
+      const stages = observability.stages || [];
+      if (!stages.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "Observability stages are not available.";
+        observabilityStagesEl.appendChild(empty);
+      } else {
+        stages.forEach((stage) => observabilityStagesEl.appendChild(renderObservabilityStage(stage)));
+      }
+
+      renderObservabilitySummary(observability.summary || {}, runState);
+      renderObservabilityCosts(observability.ai_costs || []);
+    }
+
+    function renderDiagnostics(result) {
+      const diagnostics = result.diagnostics || {};
+      clearNode(diagnosticsSummaryEl);
+      clearNode(diagnosticsNotesEl);
+
+      const items = [
+        ["Effective preset", diagnostics.effective_preset || result.preset || "unknown"],
+        ["Effective mode", diagnostics.effective_mode || result.mode || "unknown"],
+        ["Execution model", diagnostics.execution_model || "unknown"],
+        ["Effective department", diagnostics.effective_department?.name || diagnostics.effective_department?.id || "unknown"],
+        ["Effective period", diagnostics.effective_period ? `${diagnostics.effective_period.date_from}..${diagnostics.effective_period.date_to}` : "unknown"],
+        ["Selected manager_ids", (diagnostics.selected_manager_ids || []).join(", ") || "none"],
+        ["Selected manager_extensions", (diagnostics.selected_manager_extensions || []).join(", ") || "none"],
+        ["Filter logic", diagnostics.manager_filter_logic || "department_scope"],
+        ["Interactions before reuse/build", diagnostics.interactions_found_before_reuse_build ?? "unknown"],
+        ["Ready transcripts", diagnostics.ready_transcripts_count ?? "unknown"],
+        ["Ready analyses", diagnostics.ready_analyses_count ?? "unknown"],
+        ["Final selected interactions", diagnostics.final_selected_interactions_count ?? "unknown"],
+        ["Reason codes", (diagnostics.reason_codes || []).join(", ") || "none"],
+      ];
+
+      items.forEach(([label, value]) => {
+        const item = document.createElement("section");
+        item.className = "summary-item";
+        item.innerHTML = `<strong>${label}</strong><span>${value}</span>`;
+        diagnosticsSummaryEl.appendChild(item);
+      });
+
+      if (diagnostics.uses_filters_intersection) {
+        const note = document.createElement("section");
+        note.className = "group";
+        note.innerHTML = `<pre>manager_ids + manager_extensions currently use intersection in this bounded reporting slice.</pre>`;
+        diagnosticsNotesEl.appendChild(note);
+      }
+
+      const localMissing = diagnostics.local_directory?.missing_manager_ids || [];
+      if (localMissing.length) {
+        const note = document.createElement("section");
+        note.className = "group";
+        note.innerHTML = `<pre>Selected manager_ids are not present in the local mirrored directory for this department: ${localMissing.join(", ")}</pre>`;
+        diagnosticsNotesEl.appendChild(note);
+      }
+
+      (diagnostics.notes || []).forEach((text) => {
+        const note = document.createElement("section");
+        note.className = "group";
+        note.innerHTML = `<pre>${text}</pre>`;
+        diagnosticsNotesEl.appendChild(note);
+      });
+
+      if (!diagnostics.reason_codes?.length && !(diagnostics.notes || []).length && !localMissing.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "Diagnostics did not surface additional restrictions for this run.";
+        diagnosticsNotesEl.appendChild(empty);
+      }
+    }
+
+    function toRawSnippet(text) {
+      const normalized = String(text || "").replace(/\s+/g, " ").trim();
+      if (!normalized) return "(empty response body)";
+      return normalized.slice(0, 400);
+    }
+
+    function tryParseJsonBody(rawBody, contentType) {
+      const trimmed = String(rawBody || "").trim();
+      if (!trimmed) return null;
+      const looksJson = (contentType || "").includes("application/json") || trimmed.startsWith("{") || trimmed.startsWith("[");
+      if (!looksJson) return null;
+      try {
+        return JSON.parse(trimmed);
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function buildRequestFailure({ response, rawBody, parsedBody, url }) {
+      const detail = parsedBody?.error?.detail || parsedBody?.detail || `${response.status} ${response.statusText}`;
+      return {
+        kind: "request_failure",
+        url,
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get("content-type") || "",
+        title: parsedBody?.error?.title || "Request failed",
+        detail,
+        rawSnippet: toRawSnippet(rawBody),
+        nonJsonResponse: parsedBody == null,
+      };
+    }
+
+    function buildTransportFailure(error, url) {
+      return {
+        kind: "transport_failure",
+        url,
+        status: null,
+        statusText: "",
+        contentType: "",
+        title: "Transport request failed",
+        detail: error?.message || "Network request failed before a server response was received.",
+        rawSnippet: "",
+        nonJsonResponse: false,
+      };
+    }
+
+    function formatFailureHeadline(error) {
+      if (error.kind === "request_failure" && error.status) {
+        return `run_failed: ${error.status} ${error.title}`;
+      }
+      return `run_failed: ${error.title || error.message || "Request failed"}`;
+    }
+
+    function renderRequestFailureBlock(error) {
+      const failedStage = document.createElement("section");
+      failedStage.className = "stage-card";
+
+      const parts = [];
+      if (error.status) {
+        parts.push(`http_status: ${error.status} ${error.statusText || ""}`.trim());
+      } else {
+        parts.push("http_status: not available");
+      }
+      parts.push(`error_title: ${error.title || "Request failed"}`);
+      parts.push(`detail: ${error.detail || "No additional detail"}`);
+      if (error.contentType) {
+        parts.push(`content_type: ${error.contentType}`);
+      }
+      if (error.rawSnippet) {
+        parts.push(`raw_server_snippet: ${error.rawSnippet}`);
+      }
+      if (error.nonJsonResponse) {
+        parts.push("note: server returned non-JSON response; operator UI shows the raw snippet instead of assuming JSON.");
+      }
+
+      failedStage.innerHTML = `
+        <h3>request</h3>
+        <p><span class="${pillClass("failed")}">failed</span></p>
+        <p class="muted">Transport/request failure is shown separately from business-stage failures returned inside a successful JSON run response.</p>
+        <pre>${parts.join("\n")}</pre>
+      `;
+      return failedStage;
+    }
+
+    async function fetchJson(url, payload) {
+      let response;
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        throw buildTransportFailure(error, url);
+      }
+
+      const rawBody = await response.text();
+      const parsedBody = tryParseJsonBody(rawBody, response.headers.get("content-type") || "");
+
+      if (!response.ok) {
+        throw buildRequestFailure({ response, rawBody, parsedBody, url });
+      }
+      if (parsedBody == null) {
+        throw buildRequestFailure({
+          response,
+          rawBody,
+          parsedBody: {
+            error: {
+              title: "Expected JSON response",
+              detail: "Server returned a success status, but the body is not valid JSON.",
+            },
+          },
+          url,
+        });
+      }
+      return parsedBody;
+    }
+
+    async function loadContext(preferredDepartmentId = "") {
+      const currentDepartment = preferredDepartmentId || departmentEl.value;
+      const response = await fetch(contextUrl);
+      uiContext = await response.json();
+
+      clearNode(presetEl);
+      clearNode(modeEl);
+      clearNode(departmentEl);
+
+      uiContext.presets.forEach((item) => appendOption(presetEl, item.code, item.label));
+      uiContext.modes.forEach((item) => appendOption(modeEl, item.code, item.label));
+      uiContext.departments.forEach((item) => appendOption(departmentEl, item.id, item.name));
+      if ([...departmentEl.options].some((item) => item.value === currentDepartment)) {
+        departmentEl.value = currentDepartment;
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      if (!dateFromEl.value) dateFromEl.value = today;
+      if (!dateToEl.value) dateToEl.value = today;
+
+      syncManagerOptions();
+      syncPresetBehavior();
+      renderDeliveryMode();
+    }
+
+    function renderDeliveryMode() {
+      const delivery = uiContext.operator_delivery || {};
+      const transport = delivery.mode === "telegram_test"
+        ? `Telegram test delivery always-on -> chat ${delivery.telegram_chat_id}`
+        : "Telegram test delivery should be always-on, but runtime chat is not configured";
+      document.querySelector(".note").innerHTML = `
+        Список менеджеров берётся из локального Bitrix-synced справочника. Для актуализации списка нажмите
+        <code>Refresh Local Managers</code>. В текущем режиме manual run: <strong>${transport}</strong>.
+        Business email delivery управляется только checkbox выше и по умолчанию выключена.
+        Resolved email recipients показываются как reference. Если выбрать и менеджеров, и extensions,
+        backend применит пересечение этих фильтров.
+      `;
+    }
+
+    departmentEl.addEventListener("change", syncManagerOptions);
+    presetEl.addEventListener("change", syncPresetBehavior);
+    dateFromEl.addEventListener("change", () => {
+      if (presetEl.value === "manager_daily") {
+        dateToEl.value = dateFromEl.value;
+      }
+    });
+
+    document.getElementById("preview-button").addEventListener("click", async () => {
+      previewSummaryEl.textContent = "Загрузка preview...";
+      clearNode(previewGroupsEl);
+      try {
+        const result = await fetchJson(previewUrl, buildPayload());
+        renderSummary("preview", previewSummaryEl, previewGroupsEl, result, "preview");
+      } catch (error) {
+        previewSummaryEl.className = "pill bad";
+        previewSummaryEl.textContent = formatFailureHeadline(error);
+      }
+    });
+
+    syncManagersButtonEl.addEventListener("click", async () => {
+      runSummaryEl.textContent = "Обновляю локальный справочник менеджеров...";
+      clearNode(runGroupsEl);
+      try {
+        const response = await fetch(syncManagersUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ department_id: departmentEl.value }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || JSON.stringify(data));
+        }
+        await loadContext(departmentEl.value);
+        runSummaryEl.className = "";
+        runSummaryEl.innerHTML = `
+          <span class="pill good">${data.status}</span>
+          <span class="pill">${data.summary.synced_total} synced</span>
+          <span class="pill">${data.summary.deactivated_total} deactivated</span>
+          <span class="pill">${data.summary.active_total} active visible</span>
+        `;
+      } catch (error) {
+        runSummaryEl.className = "pill bad";
+        runSummaryEl.textContent = `sync_failed: ${error.message}`;
+      }
+    });
+
+    document.getElementById("report-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      runSummaryEl.textContent = "Запуск report run...";
+      clearNode(runGroupsEl);
+      setRunState("starting", "Run request prepared");
+      clearNode(observabilityStagesEl);
+      clearNode(observabilitySummaryEl);
+      clearNode(observabilityCostsEl);
+      clearNode(diagnosticsSummaryEl);
+      clearNode(diagnosticsNotesEl);
+      try {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        setRunState("running", "Execution in progress");
+        const result = await fetchJson(runUrl, buildPayload());
+        renderSummary("run", runSummaryEl, runGroupsEl, result, "run");
+        renderObservability(result);
+        renderDiagnostics(result);
+      } catch (error) {
+        runSummaryEl.className = "pill bad";
+        runSummaryEl.textContent = formatFailureHeadline(error);
+        setRunState("failed", error.kind === "transport_failure" ? "Transport failure" : "Request failed");
+        clearNode(observabilityStagesEl);
+        clearNode(observabilitySummaryEl);
+        clearNode(observabilityCostsEl);
+        clearNode(diagnosticsSummaryEl);
+        clearNode(diagnosticsNotesEl);
+        observabilityStagesEl.appendChild(renderRequestFailureBlock(error));
+      }
+    });
+
+    loadContext();
+  </script>
+</body>
+</html>

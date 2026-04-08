@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_postgres
+    restart: unless-stopped
+    ports:
+    - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - asa_pg_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - asa_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    restart: unless-stopped
+    volumes:
+      - asa_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - asa_network
+
+  api:
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_api
+    command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./core:/app
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      asa_network:
+        aliases:
+          - asa_api
+
+  worker:
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_worker
+    command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=4 -Q calls,default
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./core:/app
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - asa_network
+
+  beat:
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_beat
+    command: celery -A app.core_shared.workers.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./core:/app
+      - asa_beat_data:/var/run/celery
+    depends_on:
+      worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - asa_network
+
+  flower:
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_flower
+    command: celery -A app.core_shared.workers.celery_app flower --port=5555 --basic_auth=${FLOWER_USER}:${FLOWER_PASSWORD}
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "${FLOWER_PORT}:5555"
+    depends_on:
+      worker:
+        condition: service_started
+    networks:
+      - asa_network
+
+  nginx:
+    image: nginx:alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT}:80"
+      - "${NGINX_HTTPS_PORT}:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - asa_network
+
+networks:
+  asa_network:
+    name: ${COMPOSE_PROJECT_NAME}_network
+    driver: bridge
+
+volumes:
+  asa_pg_data:
+    name: ${COMPOSE_PROJECT_NAME}_pg_data
+  asa_redis_data:
+    name: ${COMPOSE_PROJECT_NAME}_redis_data
+  asa_audio_tmp:
+    name: ${COMPOSE_PROJECT_NAME}_audio_tmp
+  asa_beat_data:
+    name: ${COMPOSE_PROJECT_NAME}_beat_data

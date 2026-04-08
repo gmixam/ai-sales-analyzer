@@ -1,0 +1,21 @@
+{
+  "font_family": "\"DejaVu Sans\", Arial, sans-serif",
+  "page": {"size": "A4", "margin_mm": 12},
+  "theme": {
+    "accent": "#1d6fa3",
+    "accent_soft": "#e9f4fb",
+    "ink": "#17232d",
+    "muted": "#52606d",
+    "surface": "#ffffff",
+    "surface_alt": "#f4f8fb",
+    "border": "#cad9e4",
+    "success": "#1f8f5f",
+    "warning": "#b86a08",
+    "danger": "#c23d3d"
+  },
+  "layout": {
+    "summary_columns": 4,
+    "card_columns": 2,
+    "table_density": "compact"
+  }
+}

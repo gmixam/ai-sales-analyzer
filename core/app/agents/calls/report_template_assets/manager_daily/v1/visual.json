@@ -1,0 +1,20 @@
+{
+  "font_family": "\"DejaVu Sans\", Arial, sans-serif",
+  "page": {"size": "A4", "margin_mm": 12},
+  "theme": {
+    "accent": "#cd6f32",
+    "accent_soft": "#f8eadf",
+    "ink": "#1f2933",
+    "muted": "#52606d",
+    "surface": "#ffffff",
+    "surface_alt": "#f7f4ef",
+    "border": "#e6d4c8",
+    "success": "#1f8f5f",
+    "warning": "#b86a08"
+  },
+  "layout": {
+    "summary_columns": 5,
+    "card_columns": 2,
+    "table_density": "compact"
+  }
+}

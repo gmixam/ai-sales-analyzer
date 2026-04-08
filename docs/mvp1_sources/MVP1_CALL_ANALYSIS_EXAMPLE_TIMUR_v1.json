@@ -1,0 +1,440 @@
+{
+  "schema_version": "call_analysis.v1",
+  "instruction_version": "edo_sales_mvp1_call_analysis_v1",
+  "checklist_version": "edo_sales_mvp1_checklist_v1",
+  "analysis_timestamp": "2026-03-17T00:00:00+05:00",
+  "call": {
+    "call_id": "547bfad9-d006-45aa-bcaf-b527a82a46f2",
+    "external_call_code": "26.02.24-07",
+    "source_system": "onlinepbx",
+    "department_id": "edo",
+    "manager_id": null,
+    "manager_name": "Тимур",
+    "call_started_at": "2026-02-24T07:41:37+05:00",
+    "duration_sec": 181,
+    "direction": "inbound",
+    "contact_name": "Арая",
+    "contact_phone": "+77781339947",
+    "contact_company": "Центр поддержки детей с аутизмом",
+    "language": "ru"
+  },
+  "classification": {
+    "call_type": "sales_primary",
+    "scenario_type": "hot_incoming_contact",
+    "channel_context": "горячий / входящий контакт",
+    "analysis_eligibility": "eligible",
+    "eligibility_reason": "duration_ge_180_sec_and_sales_relevant",
+    "analysis_confidence": 0.87
+  },
+  "summary": {
+    "short_summary": "Первичный разговор по ЭДО. Клиент подтвердила, что сейчас потребности в автоматизации документооборота не видит из-за небольшого масштаба и организационных изменений.",
+    "context": "Менеджер пытался обсудить текущую работу с документами и предложить перевод процессов в электронный формат.",
+    "call_goal": "Понять релевантность ЭДО для компании и продвинуть клиента к следующему шагу.",
+    "outcome_code": "postponed",
+    "outcome_text": "Клиент попросила поговорить позже, конкретная договорённость не зафиксирована.",
+    "next_step_text": null
+  },
+  "score": {
+    "legacy_card_score": 3.08,
+    "legacy_card_level": "basic",
+    "checklist_score": {
+      "total_points": 14,
+      "max_points": 32,
+      "score_percent": 43.75,
+      "level": "problematic"
+    },
+    "critical_failure": false,
+    "critical_errors": []
+  },
+  "score_by_stage": [
+    {
+      "stage_code": "contact_start",
+      "stage_name": "Первичный контакт",
+      "stage_score": 7,
+      "max_stage_score": 8,
+      "criteria_results": [
+        {
+          "criterion_code": "cs_intro_and_company",
+          "criterion_name": "Представился и обозначил компанию",
+          "score": 2,
+          "max_score": 2,
+          "comment": "Менеджер представился и назвал компанию сразу.",
+          "evidence": "Меня зовут Тимур, я с компанией Договор24..."
+        },
+        {
+          "criterion_code": "cs_permission_and_relevance",
+          "criterion_name": "Проверил уместность разговора / возможность говорить",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Вопрос об удобстве был, но переход к сути получился быстрым.",
+          "evidence": "С вами можно переговорить, удобно?"
+        },
+        {
+          "criterion_code": "cs_reason_for_call",
+          "criterion_name": "Понятно обозначил причину звонка",
+          "score": 2,
+          "max_score": 2,
+          "comment": "Тема разговора была обозначена.",
+          "evidence": "Хотел с вами переговорить по поводу документов..."
+        },
+        {
+          "criterion_code": "cs_tone_and_clarity",
+          "criterion_name": "Сохранил нейтральный, вежливый и понятный тон",
+          "score": 2,
+          "max_score": 2,
+          "comment": "Начало разговора звучало нейтрально.",
+          "evidence": "Тон на старте разговора был спокойным."
+        }
+      ]
+    },
+    {
+      "stage_code": "qualification_primary",
+      "stage_name": "Квалификация и первичная потребность",
+      "stage_score": 5,
+      "max_stage_score": 8,
+      "criteria_results": [
+        {
+          "criterion_code": "qp_current_process",
+          "criterion_name": "Выяснил, как сейчас устроен процесс / документооборот",
+          "score": 2,
+          "max_score": 2,
+          "comment": "Менеджер задал вопрос о текущей работе с документами.",
+          "evidence": "Как у вас ведется работа с документами, как процесс подписания документов проходит?"
+        },
+        {
+          "criterion_code": "qp_role_and_scope",
+          "criterion_name": "Уточнил роль собеседника и/или масштаб задачи",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Масштаб частично выявлен через численность, но роль собеседника не раскрыта.",
+          "evidence": "Сейчас пока вообще 20 человек..."
+        },
+        {
+          "criterion_code": "qp_need_or_trigger",
+          "criterion_name": "Проверил, есть ли реальная задача / триггер / интерес",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Релевантность проверялась, но без глубины.",
+          "evidence": "Пока нету такой никакой надобности."
+        },
+        {
+          "criterion_code": "qp_no_early_pitch",
+          "criterion_name": "Не ушёл в презентацию слишком рано",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Презентация началась довольно рано.",
+          "evidence": "Менеджер рано перевёл разговор к общему описанию решения."
+        }
+      ]
+    },
+    {
+      "stage_code": "needs_discovery",
+      "stage_name": "Выявление детальных потребностей",
+      "stage_score": 2,
+      "max_stage_score": 8,
+      "criteria_results": [
+        {
+          "criterion_code": "nd_use_cases",
+          "criterion_name": "Выявил конкретные сценарии использования / типы документов / процессы",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Удалось узнать только базовые процессы.",
+          "evidence": "Приказы, прием и увольнение, входящая корреспонденция."
+        },
+        {
+          "criterion_code": "nd_pain_and_constraints",
+          "criterion_name": "Выявил боль, ограничение, неудобство или риск текущего процесса",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Менеджер не раскрыл реальную боль процесса.",
+          "evidence": null
+        },
+        {
+          "criterion_code": "nd_priority_and_timing",
+          "criterion_name": "Понял приоритет и срок возможного движения",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Понял, что тема не приоритетна сейчас, но без ясных условий возврата.",
+          "evidence": "Можно я попозже потом поговорю..."
+        },
+        {
+          "criterion_code": "nd_decision_context",
+          "criterion_name": "Понял, кто влияет на решение и как оно принимается",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Контекст принятия решения не был раскрыт.",
+          "evidence": null
+        }
+      ]
+    },
+    {
+      "stage_code": "presentation",
+      "stage_name": "Формирование предложения (презентация/КП)",
+      "stage_score": 4,
+      "max_stage_score": 8,
+      "criteria_results": [
+        {
+          "criterion_code": "pr_value_linked_to_context",
+          "criterion_name": "Связал ценность продукта с контекстом клиента",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Связка с контекстом была, но без глубины.",
+          "evidence": "Если бы этот процесс можно было оптимизировать, сократить время согласования..."
+        },
+        {
+          "criterion_code": "pr_adapted_pitch",
+          "criterion_name": "Адаптировал подачу под тип клиента / сценарий",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Подача частично адаптирована, но всё ещё общая.",
+          "evidence": "Менеджер подстраивался под малый масштаб, но не до конца."
+        },
+        {
+          "criterion_code": "pr_clarity_and_examples",
+          "criterion_name": "Объяснил решение ясно, без путаницы",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Объяснение было понятным, но не очень точным.",
+          "evidence": "Общая логика решения прозвучала."
+        },
+        {
+          "criterion_code": "pr_no_feature_dump",
+          "criterion_name": "Не ушёл в бессвязный список функций",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Перегруза функциями не было, но логика осталась слишком общей.",
+          "evidence": "Список функций не звучал, но ценность не была раскрыта полноценно."
+        }
+      ]
+    },
+    {
+      "stage_code": "objection_handling",
+      "stage_name": "Работа с возражениями",
+      "stage_score": 2,
+      "max_stage_score": 8,
+      "criteria_results": [
+        {
+          "criterion_code": "oh_clarify_reason",
+          "criterion_name": "Уточнил реальную причину сомнения / отказа",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Менеджер попытался уточнить, почему клиент считает решение усложнением.",
+          "evidence": "Почему вы думаете, что наоборот усложняете жизнь?"
+        },
+        {
+          "criterion_code": "oh_reframe_with_value",
+          "criterion_name": "Ответил на возражение через пользу / логику клиента",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Была попытка перевести возражение в пользу, но недостаточно аккуратно.",
+          "evidence": "Менеджер пытался объяснить потенциальную выгоду."
+        },
+        {
+          "criterion_code": "oh_safe_tone",
+          "criterion_name": "Отработал возражение экологично, без давления",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Есть риск по тону: менеджер перешёл к оборонительной формулировке.",
+          "evidence": "Мы просто с вами как будто бы на разных языках говорим..."
+        },
+        {
+          "criterion_code": "oh_check_remaining_concern",
+          "criterion_name": "Проверил, снято ли основное сомнение",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Менеджер не проверил, осталось ли возражение после ответа.",
+          "evidence": null
+        }
+      ]
+    },
+    {
+      "stage_code": "completion_next_step",
+      "stage_name": "Завершение и договорённости",
+      "stage_score": 1,
+      "max_stage_score": 8,
+      "criteria_results": [
+        {
+          "criterion_code": "cn_fixed_next_step",
+          "criterion_name": "Зафиксировал конкретный следующий шаг",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Конкретный следующий шаг не согласован.",
+          "evidence": "Можно я попозже потом поговорю..."
+        },
+        {
+          "criterion_code": "cn_owner_and_deadline",
+          "criterion_name": "Определил кто делает и когда",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Нет даты и ответственного.",
+          "evidence": null
+        },
+        {
+          "criterion_code": "cn_recap_and_confirmation",
+          "criterion_name": "Подытожил договорённость и убедился, что обе стороны одинаково поняли",
+          "score": 0,
+          "max_score": 2,
+          "comment": "Фиксации договорённости не было.",
+          "evidence": null
+        },
+        {
+          "criterion_code": "cn_polite_close",
+          "criterion_name": "Завершил разговор аккуратно и профессионально",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Разговор завершён без конфликта, но слишком резко.",
+          "evidence": "Все хорошо. Да, до свидания."
+        }
+      ]
+    },
+    {
+      "stage_code": "cross_stage_transition",
+      "stage_name": "Сквозной критерий. Переход между этапами",
+      "stage_score": 3,
+      "max_stage_score": 4,
+      "criteria_results": [
+        {
+          "criterion_code": "ct_flow_consistency",
+          "criterion_name": "Переходы между этапами логичны",
+          "score": 2,
+          "max_score": 2,
+          "comment": "Основная логика разговора в целом читалась.",
+          "evidence": "От квалификации к предложению и возражению разговор развивался последовательно."
+        },
+        {
+          "criterion_code": "ct_dialog_safety",
+          "criterion_name": "Сохранял конструктивность и управляемость разговора",
+          "score": 1,
+          "max_score": 2,
+          "comment": "Управляемость была, но появился риск напряжения.",
+          "evidence": "Есть риск по тону в финальной части разговора."
+        }
+      ]
+    }
+  ],
+  "strengths": [
+    {
+      "title": "Быстро обозначил тему разговора",
+      "evidence": "Менеджер сразу представился и назвал компанию.",
+      "impact": "Разговор начался без лишней путаницы."
+    },
+    {
+      "title": "Собрал базовый контекст по документообороту",
+      "evidence": "Удалось выяснить, что в компании есть кадровые документы и входящая корреспонденция.",
+      "impact": "Появилась база для возможного повторного возврата к теме."
+    }
+  ],
+  "gaps": [
+    {
+      "title": "Не выявил реальную боль клиента",
+      "evidence": "Клиент несколько раз говорила об отсутствии надобности, но менеджер не раскрыл причины глубже.",
+      "impact": "Предложение осталось слишком абстрактным."
+    },
+    {
+      "title": "Рискованный тон при отработке возражения",
+      "evidence": "Фраза про «разные языки» могла быть воспринята как давление.",
+      "impact": "Снижает доверие и шанс на follow-up."
+    },
+    {
+      "title": "Не зафиксирован следующий шаг",
+      "evidence": "Клиент попросила вернуться позже, но дата и формат не согласованы.",
+      "impact": "Высокий риск потери контакта."
+    }
+  ],
+  "recommendations": [
+    {
+      "priority": "high",
+      "problem": "Недостаточно раскрыта реальная потребность",
+      "why_it_matters": "Без выявления конкретной боли предложение звучит как общая реклама.",
+      "better_phrase": "Подскажите, пожалуйста, в каких именно процессах у вас сейчас больше всего ручной работы или задержек по документам?"
+    },
+    {
+      "priority": "high",
+      "problem": "Неэкологичная реакция на возражение",
+      "why_it_matters": "Оборонительный тон может закрыть клиента.",
+      "better_phrase": "Понял вас. А что именно кажется усложнением: обучение сотрудников, подписание с телефона или сам переход с бумаги?"
+    },
+    {
+      "priority": "high",
+      "problem": "Не зафиксирован следующий шаг",
+      "why_it_matters": "Без даты и формата follow-up звонок теряет продолжение.",
+      "better_phrase": "Хорошо, давайте тогда не сейчас. Когда вам будет удобно вернуться к разговору: сегодня после 16:00 или завтра до обеда?"
+    }
+  ],
+  "agreements": [],
+  "follow_up": {
+    "next_step_fixed": false,
+    "next_step_type": null,
+    "next_step_text": null,
+    "owner": null,
+    "due_date_text": null,
+    "due_date_iso": null,
+    "reason_not_fixed": "Клиент попросила поговорить позже, но конкретное время/формат не согласованы."
+  },
+  "product_signals": [
+    {
+      "signal_type": "usage_context",
+      "topic": "Небольшой масштаб документооборота",
+      "quote": "Сейчас пока вообще 20 человек.",
+      "importance": "medium"
+    },
+    {
+      "signal_type": "objection",
+      "topic": "Нет актуальной потребности",
+      "quote": "Пока нету такой никакой надобности.",
+      "importance": "high"
+    },
+    {
+      "signal_type": "objection",
+      "topic": "Страх усложнения процесса",
+      "quote": "Не хотим пока усложнять жизнь, нормально так.",
+      "importance": "high"
+    }
+  ],
+  "evidence_fragments": [
+    {
+      "fragment_type": "good_example",
+      "client_text": "Да.",
+      "manager_text": "Меня зовут Тимур, я с компанией Договор24...",
+      "why": "Корректное открытие разговора: представился и задал контекст.",
+      "better_variant": null
+    },
+    {
+      "fragment_type": "missed_opportunity",
+      "client_text": "Пока нету такой никакой надобности.",
+      "manager_text": "Нет надобности, потому что людей 20 человек?",
+      "why": "Причина отказа была упрощена до размера компании и не раскрыта глубже.",
+      "better_variant": "Подскажите, пожалуйста, из-за чего именно сейчас не видите необходимости: маленький объём документов, нет запроса от руководства или процессы и так устраивают?"
+    },
+    {
+      "fragment_type": "tone_risk",
+      "client_text": "Не хотим пока усложнять жизнь, нормально так.",
+      "manager_text": "Мы просто с вами как будто бы на разных языках говорим...",
+      "why": "Фраза создаёт напряжение и звучит как спор с клиентом.",
+      "better_variant": "Понял вас. Давайте тогда коротко уточню: что именно кажется сложным в переходе?"
+    },
+    {
+      "fragment_type": "missed_opportunity",
+      "client_text": "Можно я попозже потом поговорю, сейчас просто я это не могу разговаривать.",
+      "manager_text": "Все хорошо. Да, до свидания.",
+      "why": "Клиент ушёл без фиксации времени возврата.",
+      "better_variant": "Конечно. Когда лучше вернуться: сегодня после 17:00 или завтра в первой половине дня?"
+    }
+  ],
+  "analytics_tags": [
+    "edo",
+    "sales_primary",
+    "hot_incoming_contact",
+    "no_current_need",
+    "fear_of_complexity",
+    "next_step_not_fixed",
+    "tone_risk"
+  ],
+  "data_quality": {
+    "transcript_quality": "ok",
+    "classification_quality": "high",
+    "analysis_quality": "approved_example_contract",
+    "needs_manual_review": false,
+    "manual_review_reason": null
+  }
+}

@@ -1,0 +1,1450 @@
+"""Mirrored unit tests for the bounded Manual Reporting Pilot slice."""
+
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+from uuid import uuid4
+
+
+os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test_db")
+os.environ.setdefault("POSTGRES_DB", "test_db")
+os.environ.setdefault("POSTGRES_USER", "user")
+os.environ.setdefault("POSTGRES_PASSWORD", "pass")
+os.environ.setdefault("REDIS_URL", "redis://:pass@localhost:6379/0")
+os.environ.setdefault("REDIS_PASSWORD", "pass")
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("ASSEMBLYAI_API_KEY", "test-key")
+os.environ.setdefault("ONLINEPBX_DOMAIN", "example.onpbx.ru")
+os.environ.setdefault("ONLINEPBX_API_KEY", "test-key")
+
+
+CORE_ROOT = Path(__file__).resolve().parents[1]
+if str(CORE_ROOT) not in sys.path:
+    sys.path.insert(0, str(CORE_ROOT))
+
+from app.agents.calls.reporting import (  # noqa: E402
+    CallsManualReportingOrchestrator,
+    ReportArtifact,
+    ReportRunFilters,
+    build_manager_daily_payload,
+    build_rop_weekly_payload,
+    render_report_email,
+    resolve_report_preset,
+)
+from app.agents.calls.intake import OnlinePBXIntake  # noqa: E402
+from app.agents.calls.delivery import CallsDelivery  # noqa: E402
+from app.core_shared.api.main import app  # noqa: E402
+from app.core_shared.exceptions import ASAError, DeliveryError  # noqa: E402
+
+try:
+    from fastapi.testclient import TestClient  # noqa: E402
+except ImportError:  # pragma: no cover
+    TestClient = None
+
+
+def _analysis(
+    score_percent: float,
+    level: str,
+    *,
+    next_step_fixed: bool = True,
+    strengths: list[dict[str, str]] | None = None,
+    gaps: list[dict[str, str]] | None = None,
+    recommendations: list[dict[str, str]] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid4(),
+        interaction_id=uuid4(),
+        instruction_version="analysis_v1",
+        score_total=score_percent,
+        scores_detail={
+            "call": {
+                "contact_phone": "+77070000000",
+            },
+            "score": {
+                "checklist_score": {
+                    "score_percent": score_percent,
+                    "level": level,
+                }
+            },
+            "score_by_stage": [
+                {
+                    "stage_code": "completion_next_step",
+                    "stage_name": "Завершение и следующий шаг",
+                    "criteria_results": [
+                        {
+                            "criterion_code": "next_step_fixed",
+                            "criterion_name": "Фиксация следующего шага",
+                            "score": 1 if next_step_fixed else 0,
+                            "max_score": 1,
+                        }
+                    ],
+                }
+            ],
+            "strengths": strengths
+            if strengths is not None
+            else [
+                {
+                    "title": "Сильный контакт",
+                    "comment": "Хорошо держит структуру звонка.",
+                }
+            ],
+            "gaps": gaps
+            if gaps is not None
+            else [
+                {
+                    "title": "Фиксация следующего шага",
+                    "comment": "Не всегда закрепляет итог разговора.",
+                }
+            ],
+            "recommendations": recommendations
+            if recommendations is not None
+            else [
+                {
+                    "criterion_name": "Фиксация следующего шага",
+                    "recommendation": "В конце звонка проговаривать следующий шаг и дедлайн.",
+                    "problem": "Следующий шаг звучит неуверенно.",
+                }
+            ],
+            "follow_up": {
+                "next_step_fixed": next_step_fixed,
+                "next_step_text": "Созвон завтра в 11:00",
+            },
+            "product_signals": [],
+            "evidence_fragments": [],
+        },
+    )
+
+
+def _interaction(*, manager_id=None, text: str = "Текст звонка", call_date: str = "2026-03-25 10:00:00") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid4(),
+        department_id=uuid4(),
+        manager_id=manager_id,
+        text=text,
+        duration_sec=420,
+        metadata_={
+            "call_date": call_date,
+            "manager_name": "Эльмира Кешубаева",
+            "contact_phone": "+77070000000",
+            "department_name": "Отдел продаж",
+        },
+    )
+
+
+def _manager() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid4(),
+        name="Эльмира Кешубаева",
+        email="elmira@example.com",
+    )
+
+
+def _artifact(
+    score_percent: float = 82.0,
+    level: str = "strong",
+    *,
+    call_date: str = "2026-03-25 10:00:00",
+    strengths: list[dict[str, str]] | None = None,
+    gaps: list[dict[str, str]] | None = None,
+    recommendations: list[dict[str, str]] | None = None,
+) -> ReportArtifact:
+    manager = _manager()
+    interaction = _interaction(manager_id=manager.id, call_date=call_date)
+    return ReportArtifact(
+        interaction=interaction,
+        analysis=_analysis(
+            score_percent,
+            level,
+            strengths=strengths,
+            gaps=gaps,
+            recommendations=recommendations,
+        ),
+        manager=manager,
+        call_started_at=datetime.fromisoformat(call_date.replace(" ", "T")).replace(tzinfo=UTC),
+    )
+
+
+def _artifact_for_manager(
+    manager: SimpleNamespace,
+    *,
+    score_percent: float = 82.0,
+    level: str = "strong",
+    call_date: str = "2026-03-25 10:00:00",
+    strengths: list[dict[str, str]] | None = None,
+    gaps: list[dict[str, str]] | None = None,
+    recommendations: list[dict[str, str]] | None = None,
+) -> ReportArtifact:
+    interaction = _interaction(manager_id=manager.id, call_date=call_date)
+    return ReportArtifact(
+        interaction=interaction,
+        analysis=_analysis(
+            score_percent,
+            level,
+            strengths=strengths,
+            gaps=gaps,
+            recommendations=recommendations,
+        ),
+        manager=manager,
+        call_started_at=datetime.fromisoformat(call_date.replace(" ", "T")).replace(tzinfo=UTC),
+    )
+
+
+class ManualReportingPayloadTests(unittest.TestCase):
+    def test_resolve_report_preset_supports_bounded_presets(self) -> None:
+        self.assertEqual(resolve_report_preset("manager_daily").code, "manager_daily")
+        self.assertEqual(resolve_report_preset("rop_weekly").code, "rop_weekly")
+
+    def test_build_manager_daily_payload_contains_required_sections(self) -> None:
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[_artifact(86.0, "strong"), _artifact(61.0, "basic")],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(payload["meta"]["preset"], "manager_daily")
+        self.assertEqual(payload["header"]["manager_name"], "Эльмира Кешубаева")
+        self.assertEqual(payload["kpi_overview"]["calls_count"], 2)
+        self.assertIn("recommendations", payload)
+        self.assertIn("call_list", payload)
+        self.assertIn("delivery_meta", payload)
+        self.assertEqual(payload["meta"]["reuse_policy_version"], "manual_reporting_reuse_v3")
+        self.assertIn("effective_versions", payload["meta"])
+        self.assertIn("reuse", payload["meta"])
+
+    def test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics(self) -> None:
+        manager = _manager()
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[
+                _artifact_for_manager(
+                    manager,
+                    score_percent=88.0,
+                    level="strong",
+                    call_date="2026-03-24 10:00:00",
+                    gaps=[
+                        {
+                            "title": "Фиксация следующего шага",
+                            "comment": "На ранних звонках следующий шаг формулируется размыто.",
+                        }
+                    ],
+                ),
+                _artifact_for_manager(
+                    manager,
+                    score_percent=72.0,
+                    level="basic",
+                    call_date="2026-03-25 10:00:00",
+                    gaps=[
+                        {
+                            "title": "Фиксация следующего шага",
+                            "comment": "Паттерн повторяется и мешает закрывать разговор договоренностью.",
+                        }
+                    ],
+                ),
+            ],
+            period={"date_from": "2026-03-24", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertFalse(payload["focus_of_week"]["is_placeholder"])
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 2)
+        self.assertEqual(payload["focus_criterion_dynamics"]["focus_criterion_name"], "Фиксация следующего шага")
+        self.assertIsNotNone(payload["focus_criterion_dynamics"]["current_period_value"])
+        self.assertIn("Повторяемость", payload["key_problem_of_day"]["description"])
+
+    def test_build_rop_weekly_payload_keeps_crm_placeholder(self) -> None:
+        payload = build_rop_weekly_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[_artifact(88.0, "strong"), _artifact(52.0, "problematic")],
+            period={"date_from": "2026-03-20", "date_to": "2026-03-26"},
+            filters=ReportRunFilters(date_from="2026-03-20", date_to="2026-03-26"),
+            mode="report_from_ready_data_only",
+            model_override="gpt-4.1-mini",
+        )
+
+        self.assertEqual(payload["meta"]["preset"], "rop_weekly")
+        self.assertEqual(payload["business_results_placeholder"]["status"], "placeholder")
+        self.assertIn("dashboard_rows", payload)
+        self.assertIn("rop_tasks_next_week", payload)
+        self.assertIn(payload["week_over_week_dynamics"]["trend"], {"n/a", "up", "down", "flat"})
+
+    def test_render_report_email_uses_delivery_meta_subject(self) -> None:
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[_artifact()],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        rendered = render_report_email(payload)
+
+        self.assertIn("Ежедневный разбор звонков", rendered["subject"])
+        self.assertIn("ГЛАВНЫЙ ФОКУС НА ЗАВТРА", rendered["text"])
+        self.assertIn("<html>", rendered["html"])
+        self.assertIn("review-grid", rendered["html"])
+        self.assertIn("problem-card", rendered["html"])
+        self.assertIn("tiles", rendered["html"])
+        self.assertIn("status agreed", rendered["html"])
+        self.assertIn("recommendation-card", rendered["html"])
+        self.assertIn("memo-grid", rendered["html"])
+        self.assertNotIn("not available", rendered["html"])
+        self.assertNotIn("not available", rendered["text"])
+        self.assertNotIn("Note:", rendered["html"])
+        self.assertNotIn("Note:", rendered["text"])
+        self.assertNotIn("Generated at", rendered["html"])
+        self.assertNotIn("manager_daily_template_v1", rendered["html"])
+        self.assertEqual(rendered["artifact"]["media_type"], "application/pdf")
+        self.assertGreater(rendered["artifact"]["size_bytes"], 0)
+        self.assertGreaterEqual(rendered["artifact"]["page_count"], 4)
+        self.assertEqual(rendered["template"]["version"], "manager_daily_template_v1")
+        self.assertEqual(payload["meta"]["template_version"], "manager_daily_template_v1")
+
+
+class ManualReportingStatusTests(unittest.TestCase):
+    def test_execution_model_differs_between_presets(self) -> None:
+        self.assertEqual(
+            CallsManualReportingOrchestrator._resolve_execution_model(
+                preset=resolve_report_preset("manager_daily")
+            ),
+            "source_aware_full_manual",
+        )
+        self.assertEqual(
+            CallsManualReportingOrchestrator._resolve_execution_model(
+                preset=resolve_report_preset("rop_weekly")
+            ),
+            "persisted_only",
+        )
+
+    def test_resolve_rop_weekly_email_from_bitrix_head_returns_active_head_email(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        department = SimpleNamespace(settings={"bitrix_department_id": "7"})
+
+        fake_departments = [SimpleNamespace(bitrix_department_id="7", head_user_id="620")]
+        fake_head_user = SimpleNamespace(active=True, email="b.urkenay@dogovor24.kz")
+
+        with patch("app.agents.calls.reporting.Bitrix24ReadOnlyClient") as client_cls:
+            client = client_cls.return_value
+            client.list_departments.return_value = fake_departments
+            client.get_user_by_id.return_value = fake_head_user
+
+            result = CallsManualReportingOrchestrator._resolve_rop_weekly_email_from_bitrix_head(
+                orchestrator,
+                department=department,
+            )
+
+        self.assertEqual(result, "b.urkenay@dogovor24.kz")
+
+    def test_single_report_result_returns_missing_artifacts_status(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        artifact = ReportArtifact(
+            interaction=_interaction(manager_id=uuid4(), text=""),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=False,
+        )
+
+        self.assertEqual(result["status"], "missing_artifacts")
+        self.assertIn("analysis_missing", result["errors"][0])
+
+    def test_single_report_result_returns_recipient_blocked_when_resolution_fails(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: (_ for _ in ()).throw(
+                DeliveryError("manager_daily recipient is not resolvable")
+            ),
+        )
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=lambda **kwargs: {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": True, "status": "blocked", "error": kwargs["email_resolution_error"]},
+                "resolved_email": {"primary_email": None, "cc_emails": []},
+            },
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": True, "status": "blocked", "error": kwargs["email_resolution_error"]},
+                    "resolved_email": {"primary_email": None, "cc_emails": []},
+                },
+            },
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[_artifact()],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=True,
+        )
+
+        self.assertEqual(result["status"], "delivered")
+        self.assertIn("recipient is not resolvable", result["errors"][-1])
+        self.assertEqual(result["delivery"]["transport"]["telegram_test_delivery"]["status"], "delivered")
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "blocked")
+
+    def test_single_report_result_delivers_ready_payload(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=lambda **kwargs: {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": True, "status": "planned", "primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            },
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [
+                    {"channel": "telegram", "target": "74665909", "status": "sent"},
+                    {"channel": "email", "target": "elmira@example.com", "status": "sent"},
+                ],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": True, "status": "delivered", "primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            },
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[_artifact()],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=True,
+        )
+
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["delivery"]["targets"][0]["channel"], "telegram")
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "delivered")
+
+    def test_single_report_result_returns_blocked_when_delivery_fails(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=lambda **kwargs: {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": True, "status": "planned", "primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            },
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": True, "status": "failed", "error": "Email delivery failed: SMTP auth error 535"},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            },
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[_artifact()],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=True,
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertIn("SMTP auth error 535", result["errors"][-1])
+
+    def test_single_report_result_keeps_ready_preview_when_delivery_disabled(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=lambda **kwargs: {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": False, "status": "skipped", "primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            },
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            },
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[_artifact()],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=False,
+        )
+
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "skipped")
+
+    def test_manager_daily_group_result_returns_full_report_when_day_is_ready(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        manager = _manager()
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=lambda **kwargs: {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": False, "status": "skipped"},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            },
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            },
+        )
+        artifacts = [
+            _artifact_for_manager(manager, score_percent=92.0, level="strong", call_date=f"2026-03-25 0{i}:00:00")
+            for i in range(1, 7)
+        ]
+
+        result = CallsManualReportingOrchestrator._build_manager_daily_group_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=artifacts,
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=False,
+            windows=CallsManualReportingOrchestrator._build_manager_daily_windows(anchor_day="2026-03-25"),
+        )
+
+        self.assertEqual(result["readiness_outcome"], "full_report")
+        self.assertEqual(result["window_days_used"], 1)
+        self.assertEqual(result["relevant_calls"], 6)
+        self.assertEqual(result["ready_analyses"], 6)
+        self.assertEqual(result["analysis_coverage"], 100.0)
+        self.assertEqual(result["status"], "delivered")
+
+    def test_manager_daily_group_result_expands_to_signal_report_on_second_workday_window(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        manager = _manager()
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=lambda **kwargs: {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": False, "status": "skipped"},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            },
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            },
+        )
+        artifacts = [
+            _artifact_for_manager(
+                manager,
+                score_percent=90.0,
+                level="strong",
+                call_date="2026-03-24 10:00:00",
+                gaps=[
+                    {
+                        "title": "Фиксация следующего шага",
+                        "comment": "Паттерн повторяется и требует коррекции.",
+                    }
+                ],
+                recommendations=[
+                    {
+                        "criterion_name": "Фиксация следующего шага",
+                        "recommendation": "В каждом звонке фиксировать дату и формат следующего контакта.",
+                        "problem": "Следующий шаг звучит слишком общо.",
+                    }
+                ],
+            ),
+            _artifact_for_manager(
+                manager,
+                score_percent=58.0,
+                level="problematic",
+                call_date="2026-03-25 10:00:00",
+                gaps=[
+                    {
+                        "title": "Фиксация следующего шага",
+                        "comment": "Паттерн повторяется и требует коррекции.",
+                    }
+                ],
+                recommendations=[
+                    {
+                        "criterion_name": "Фиксация следующего шага",
+                        "recommendation": "В конце звонка сразу фиксировать дедлайн следующего шага.",
+                        "problem": "Клиент уходит без ясной договоренности.",
+                    }
+                ],
+            ),
+        ]
+
+        result = CallsManualReportingOrchestrator._build_manager_daily_group_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=artifacts,
+            source_period={"date_from": "2026-03-24", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=False,
+            windows=CallsManualReportingOrchestrator._build_manager_daily_windows(anchor_day="2026-03-25"),
+        )
+
+        self.assertEqual(result["readiness_outcome"], "signal_report")
+        self.assertEqual(result["window_days_used"], 2)
+        self.assertEqual(result["relevant_calls"], 2)
+        self.assertIn("signal_report_ready", result["readiness_reason_codes"])
+        self.assertEqual(result["status"], "delivered")
+
+    def test_manager_daily_group_result_returns_skip_accumulate_when_readiness_is_not_met(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        manager = _manager()
+        orchestrator.delivery = SimpleNamespace()
+        artifacts = [
+            _artifact_for_manager(
+                manager,
+                score_percent=63.0,
+                level="basic",
+                call_date="2026-03-25 10:00:00",
+                strengths=[],
+                gaps=[],
+                recommendations=[],
+            )
+        ]
+
+        result = CallsManualReportingOrchestrator._build_manager_daily_group_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=artifacts,
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=False,
+            windows=CallsManualReportingOrchestrator._build_manager_daily_windows(anchor_day="2026-03-25"),
+        )
+
+        self.assertEqual(result["status"], "skip_accumulate")
+        self.assertEqual(result["readiness_outcome"], "skip_accumulate")
+        self.assertIn("skip_accumulate_readiness_not_met", result["readiness_reason_codes"])
+        self.assertEqual(result["delivery"], None)
+
+    def test_build_run_observability_reports_stage_summary_and_safe_cost_fallback(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+        observability = CallsManualReportingOrchestrator._build_run_observability(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            source_summary={
+                "execution_model": "source_aware_full_manual",
+                "days_scanned": 1,
+                "source_records_total": 2,
+                "eligible_source_records_total": 2,
+                "targeted_source_records_total": 2,
+                "already_persisted_source_records_total": 1,
+                "missing_source_records_total": 1,
+                "ingest_created_total": 1,
+                "ingest_skipped_total": 1,
+            },
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            mode="build_missing_and_report",
+            send_email=True,
+            selected_interactions_count=2,
+            build_summary={
+                "transcripts_built": 1,
+                "transcripts_reused": 1,
+                "analyses_built": 1,
+                "analyses_reused": 1,
+                "missing_transcripts_before_build": 1,
+                "missing_analyses_before_build": 1,
+            },
+            reports=[
+                {
+                    "status": "delivered",
+                    "errors": [],
+                    "payload": {"meta": {"group_key": "manager_daily:test"}},
+                    "preview": {"subject": "subject"},
+                    "delivery": {
+                        "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                        "transport": {
+                            "mode": "split_operator_delivery",
+                            "telegram_test_delivery": {
+                                "enabled": True,
+                                "status": "delivered",
+                                "target": "74665909",
+                            },
+                            "email_delivery": {
+                                "enabled": True,
+                                "status": "delivered",
+                                "primary_email": "elmira@example.com",
+                                "cc_emails": ["sales@dogovor24.kz"],
+                            },
+                            "resolved_email": {
+                                "primary_email": "elmira@example.com",
+                                "cc_emails": ["sales@dogovor24.kz"],
+                            },
+                        },
+                    },
+                }
+            ],
+            overall_status="completed",
+        )
+
+        self.assertEqual(observability["run_state"], "completed")
+        self.assertEqual(observability["summary"]["execution_model"], "source_aware_full_manual")
+        self.assertEqual(observability["summary"]["selected_interactions_count"], 2)
+        self.assertEqual(observability["summary"]["reused_analyses_count"], 1)
+        self.assertEqual(observability["summary"]["rebuilt_analyses_count"], 1)
+        self.assertEqual(observability["summary"]["source"]["ingest_created_total"], 1)
+        self.assertEqual(observability["summary"]["delivery"]["mode"], "split_operator_delivery")
+        self.assertEqual(observability["stages"][-1]["status"], "completed")
+        self.assertEqual(observability["stages"][0]["code"], "source-discovery")
+        self.assertEqual(observability["ai_costs"][0]["cost_status"], "not_available")
+
+    def test_build_run_observability_marks_no_data_as_blocked_selection(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+        observability = CallsManualReportingOrchestrator._build_run_observability(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            source_summary={
+                "execution_model": "source_aware_full_manual",
+                "days_scanned": 1,
+                "source_records_total": 0,
+                "eligible_source_records_total": 0,
+                "targeted_source_records_total": 0,
+                "already_persisted_source_records_total": 0,
+                "missing_source_records_total": 0,
+                "ingest_created_total": 0,
+                "ingest_skipped_total": 0,
+            },
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            mode="report_from_ready_data_only",
+            send_email=False,
+            selected_interactions_count=0,
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 0,
+                "analyses_built": 0,
+                "analyses_reused": 0,
+                "missing_transcripts_before_build": 0,
+                "missing_analyses_before_build": 0,
+            },
+            reports=[],
+            overall_status="no_data",
+            errors=["no_interactions_for_selected_filters"],
+        )
+
+        self.assertEqual(observability["run_state"], "blocked")
+        self.assertEqual(observability["stages"][0]["status"], "warn")
+        self.assertEqual(observability["summary"]["delivery"]["result"], "not_started")
+
+    def test_build_run_observability_marks_rop_weekly_as_persisted_only(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+        observability = CallsManualReportingOrchestrator._build_run_observability(
+            orchestrator,
+            preset=resolve_report_preset("rop_weekly"),
+            source_summary={
+                "execution_model": "persisted_only",
+                "days_scanned": 0,
+                "source_records_total": 0,
+                "eligible_source_records_total": 0,
+                "targeted_source_records_total": 0,
+                "already_persisted_source_records_total": 0,
+                "missing_source_records_total": 0,
+                "ingest_created_total": 0,
+                "ingest_skipped_total": 0,
+            },
+            period={"date_from": "2026-03-20", "date_to": "2026-03-26"},
+            source_period={"date_from": "2026-03-20", "date_to": "2026-03-26"},
+            mode="build_missing_and_report",
+            send_email=False,
+            selected_interactions_count=2,
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 2,
+                "analyses_built": 0,
+                "analyses_reused": 2,
+                "missing_transcripts_before_build": 0,
+                "missing_analyses_before_build": 0,
+                "transcript_build_failed": 0,
+                "analysis_build_failed": 0,
+            },
+            reports=[],
+            overall_status="completed",
+        )
+
+        self.assertEqual(observability["summary"]["execution_model"], "persisted_only")
+        self.assertEqual(observability["stages"][0]["status"], "skipped")
+        self.assertEqual(observability["stages"][5]["status"], "skipped")
+
+    def test_build_run_diagnostics_reports_empty_intersection_and_local_directory_issue(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+        diagnostics = CallsManualReportingOrchestrator._build_run_diagnostics(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            mode="report_from_ready_data_only",
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(
+                manager_ids={"missing-manager-id"},
+                manager_extensions={"322"},
+                date_from="2026-03-25",
+                date_to="2026-03-25",
+            ),
+            diagnostics_context={
+                "department_id": str(uuid4()),
+                "department_name": "Отдел продаж",
+                "preset": "manager_daily",
+                "execution_model": "source_aware_full_manual",
+                "mode": "report_from_ready_data_only",
+                "period": {"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                "selected_manager_ids": ["missing-manager-id"],
+                "selected_manager_extensions": ["322"],
+                "manager_filter_logic": "intersection",
+                "missing_local_manager_ids": ["missing-manager-id"],
+                "period_only_interactions_count": 3,
+                "manager_only_interactions_count": 1,
+                "extension_only_interactions_count": 2,
+            },
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 0,
+                "analyses_built": 0,
+                "analyses_reused": 0,
+                "missing_transcripts_before_build": 0,
+                "missing_analyses_before_build": 0,
+            },
+            reports=[],
+            selected_interactions_count=0,
+            final_selected_interactions_count=0,
+            overall_status="no_data",
+            source_summary={
+                "days_scanned": 1,
+                "source_records_total": 4,
+                "eligible_source_records_total": 3,
+                "targeted_source_records_total": 0,
+                "already_persisted_source_records_total": 0,
+                "missing_source_records_total": 0,
+                "ingest_created_total": 0,
+                "ingest_skipped_total": 0,
+            },
+            errors=[],
+        )
+
+        self.assertTrue(diagnostics["uses_filters_intersection"])
+        self.assertIn("filters_intersection_empty", diagnostics["reason_codes"])
+        self.assertIn("manager_not_in_local_directory", diagnostics["reason_codes"])
+        self.assertIn("no_persisted_interactions_for_filters", diagnostics["reason_codes"])
+
+    def test_build_run_diagnostics_reports_ready_only_reason_when_no_ready_artifacts_exist(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+        diagnostics = CallsManualReportingOrchestrator._build_run_diagnostics(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            mode="report_from_ready_data_only",
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            diagnostics_context={
+                "department_id": str(uuid4()),
+                "department_name": "Отдел продаж",
+                "preset": "manager_daily",
+                "execution_model": "source_aware_full_manual",
+                "mode": "report_from_ready_data_only",
+                "period": {"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                "selected_manager_ids": [],
+                "selected_manager_extensions": [],
+                "manager_filter_logic": "department_scope",
+                "missing_local_manager_ids": [],
+                "period_only_interactions_count": 2,
+                "manager_only_interactions_count": 0,
+                "extension_only_interactions_count": 0,
+            },
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 0,
+                "analyses_built": 0,
+                "analyses_reused": 0,
+                "missing_transcripts_before_build": 2,
+                "missing_analyses_before_build": 2,
+            },
+            reports=[{"status": "missing_artifacts", "errors": ["analysis_missing:test"]}],
+            selected_interactions_count=2,
+            final_selected_interactions_count=0,
+            overall_status="blocked",
+            source_summary={
+                "days_scanned": 1,
+                "source_records_total": 2,
+                "eligible_source_records_total": 2,
+                "targeted_source_records_total": 2,
+                "already_persisted_source_records_total": 2,
+                "missing_source_records_total": 0,
+                "ingest_created_total": 0,
+                "ingest_skipped_total": 2,
+            },
+            errors=[],
+        )
+
+        self.assertIn("no_ready_artifacts_for_ready_only_mode", diagnostics["reason_codes"])
+
+    def test_prepare_artifacts_keeps_rop_weekly_persisted_only_even_in_build_missing_mode(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="")
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(
+            process=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+        )
+        orchestrator.analyzer = SimpleNamespace(
+            analyze_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("analyzer should not run"))
+        )
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("persist_analysis should not run"))
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("rop_weekly"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(build_summary["transcripts_built"], 0)
+        self.assertEqual(build_summary["analyses_built"], 0)
+        self.assertEqual(build_summary["missing_transcripts_before_build"], 1)
+        self.assertEqual(build_summary["missing_analyses_before_build"], 1)
+        self.assertEqual(build_errors, [])
+
+    def test_prepare_artifacts_rejects_semantically_empty_analysis_for_reuse_and_rebuilds_it(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction()
+        stale_analysis = SimpleNamespace(
+            id=uuid4(),
+            interaction_id=interaction.id,
+            instruction_version="analysis_v1",
+            is_failed=False,
+            scores_detail={
+                "classification": {},
+                "score": {"checklist_score": {"score_percent": 72.0, "level": "basic"}},
+                "score_by_stage": [],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "follow_up": {},
+            },
+        )
+        rebuilt_analysis = _analysis(81.0, "strong")
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {interaction.id: stale_analysis})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(
+            process=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+        )
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: rebuilt_analysis)
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda *_args, **_kwargs: rebuilt_analysis
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(build_summary["analyses_reused"], 0)
+        self.assertEqual(build_summary["analyses_rejected_for_reuse"], 1)
+        self.assertEqual(build_summary["analyses_built"], 1)
+        self.assertEqual(build_errors, [])
+
+    def test_prepare_artifacts_reports_semantically_empty_reuse_rejection_in_ready_only_mode(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction()
+        stale_analysis = SimpleNamespace(
+            id=uuid4(),
+            interaction_id=interaction.id,
+            instruction_version="analysis_v1",
+            is_failed=False,
+            scores_detail={
+                "classification": {},
+                "score": {"checklist_score": {"score_percent": 0.0}},
+                "score_by_stage": [],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "follow_up": {},
+            },
+        )
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {interaction.id: stale_analysis})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(process=lambda *_args, **_kwargs: None)
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="report_from_ready_data_only",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(build_summary["analyses_reused"], 0)
+        self.assertEqual(build_summary["analyses_rejected_for_reuse"], 1)
+        self.assertEqual(build_summary["missing_analyses_before_build"], 1)
+        self.assertTrue(any(item.startswith("analysis_reuse_rejected:") for item in build_errors))
+        self.assertTrue(any(item.endswith(":semantically_empty_analysis") for item in build_errors))
+
+    def test_ai_layer_summary_marks_full_chain_execution_for_build_missing_mode(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction()
+        interaction.metadata_["ai_routing"] = {
+            "stt": {
+                "selected_provider": "openai",
+                "selected_account_alias": "stt_primary",
+                "selected_api_key_env": "OPENAI_API_KEY",
+                "selected_model": "whisper-1",
+                "selected_endpoint": "/audio/transcriptions",
+                "executed_endpoint_path": "/audio/transcriptions",
+                "selected_execution_mode": "openai_compatible",
+                "execution_status": "executed",
+                "executed": True,
+                "request_kind": "speech_to_text",
+                "provider_request_id": "req_stt_123",
+            },
+            "llm1": {
+                "selected_provider": "openai",
+                "selected_account_alias": "llm1_primary",
+                "selected_api_key_env": "OPENAI_API_KEY",
+                "selected_model": "gpt-4o-mini",
+                "selected_execution_mode": "openai_compatible",
+                "execution_status": "executed",
+                "executed": True,
+                "request_kind": "classification_first_pass",
+                "usage": {"total_tokens": 18},
+            },
+            "llm2": {
+                "selected_provider": "openai",
+                "selected_account_alias": "llm2_primary",
+                "selected_api_key_env": "OPENAI_API_KEY",
+                "selected_model": "gpt-4o",
+                "selected_execution_mode": "openai_compatible",
+                "execution_status": "executed",
+                "executed": True,
+                "request_kind": "approved_contract_generation",
+                "usage": {"total_tokens": 44},
+            },
+        }
+        summary = CallsManualReportingOrchestrator._build_ai_layer_summary(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            mode="build_missing_and_report",
+            build_summary={
+                "transcripts_built": 1,
+                "transcripts_reused": 0,
+                "analyses_built": 1,
+                "analyses_reused": 0,
+                "missing_transcripts_before_build": 1,
+                "missing_analyses_before_build": 1,
+            },
+            artifacts=[
+                ReportArtifact(
+                    interaction=interaction,
+                    analysis=_analysis(82.0, "strong"),
+                    manager=None,
+                    call_started_at=None,
+                )
+            ],
+        )
+
+        self.assertEqual(summary[0]["current_run_status"], "executed")
+        self.assertEqual(summary[1]["current_run_status"], "executed")
+        self.assertEqual(summary[2]["current_run_status"], "executed")
+        self.assertEqual(summary[0]["selected_routes"][0]["executed_endpoint_path"], "/audio/transcriptions")
+        self.assertEqual(summary[0]["selected_routes"][0]["provider_request_id"], "req_stt_123")
+        self.assertEqual(summary[1]["selected_routes"][0]["selected_account_alias"], "llm1_primary")
+        self.assertEqual(summary[2]["selected_routes"][0]["request_kind"], "approved_contract_generation")
+
+    def test_ai_layer_summary_marks_ready_only_skip_reason_with_reuse_audit(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction()
+        interaction.metadata_["ai_routing"] = {
+            "stt": {
+                "selected_provider": "openai",
+                "selected_account_alias": "stt_primary",
+                "selected_model": "whisper-1",
+                "execution_status": "executed",
+                "executed": True,
+                "request_kind": "speech_to_text",
+            },
+            "llm1": {
+                "selected_provider": "openai",
+                "selected_account_alias": "llm1_primary",
+                "selected_model": "gpt-4o-mini",
+                "execution_status": "executed",
+                "executed": True,
+                "request_kind": "classification_first_pass",
+            },
+            "llm2": {
+                "selected_provider": "openai",
+                "selected_account_alias": "llm2_primary",
+                "selected_model": "gpt-4o",
+                "execution_status": "executed",
+                "executed": True,
+                "request_kind": "approved_contract_generation",
+            },
+        }
+        summary = CallsManualReportingOrchestrator._build_ai_layer_summary(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            mode="report_from_ready_data_only",
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 1,
+                "analyses_built": 0,
+                "analyses_reused": 1,
+                "missing_transcripts_before_build": 1,
+                "missing_analyses_before_build": 1,
+            },
+            artifacts=[
+                ReportArtifact(
+                    interaction=interaction,
+                    analysis=_analysis(75.0, "basic"),
+                    manager=None,
+                    call_started_at=None,
+                )
+            ],
+        )
+
+        self.assertEqual(summary[0]["current_run_status"], "skipped")
+        self.assertEqual(summary[1]["current_run_status"], "skipped")
+        self.assertEqual(summary[2]["current_run_status"], "skipped")
+        self.assertEqual(summary[1]["skip_reason"], "mode_ready_only_no_new_builds")
+        self.assertEqual(summary[1]["reused_count"], 1)
+        self.assertTrue(summary[1]["provider_audit_available"])
+
+
+class ManualReportingDeliveryModeTests(unittest.TestCase):
+    def test_operator_report_delivery_always_sends_telegram_and_skips_email_when_disabled(self) -> None:
+        delivery = object.__new__(CallsDelivery)
+        delivery.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+        with patch(
+            "app.agents.calls.delivery.settings",
+            new=SimpleNamespace(
+                has_test_telegram_delivery=True,
+                test_delivery_telegram_chat_id="74665909",
+                telegram_bot_token="test-bot-token",
+            ),
+        ):
+            with patch.object(
+                CallsDelivery,
+                "send_telegram_document",
+                return_value={"channel": "telegram", "target": "74665909", "status": "sent"},
+            ) as send_telegram_document:
+                result = CallsDelivery.deliver_operator_report(
+                    delivery,
+                    primary_email="elmira@example.com",
+                    cc_emails=["sales@dogovor24.kz"],
+                    subject="Weekly report",
+                    text="Body",
+                    html="<p>Body</p>",
+                    pdf_bytes=b"%PDF-test",
+                    pdf_filename="weekly_report_v1.pdf",
+                    template_meta={"template_id": "rop_weekly_template_v1", "version": "rop_weekly_template_v1"},
+                    send_business_email=False,
+                )
+
+        send_telegram_document.assert_called_once()
+        self.assertEqual(result["targets"][0]["channel"], "telegram")
+        self.assertEqual(result["transport"]["mode"], "split_operator_delivery")
+        self.assertEqual(result["transport"]["telegram_test_delivery"]["status"], "delivered")
+        self.assertEqual(result["transport"]["email_delivery"]["status"], "skipped")
+        self.assertEqual(result["transport"]["resolved_email"]["primary_email"], "elmira@example.com")
+        self.assertEqual(result["artifact"]["filename"], "weekly_report_v1.pdf")
+
+
+class OnlinePBXIntakeUrlTests(unittest.TestCase):
+    def test_build_cdr_url_defaults_to_http_api_for_onlinepbx_hosts(self) -> None:
+        intake = object.__new__(OnlinePBXIntake)
+        intake.domain = "d24kz.onpbx.ru"
+        intake.api_key = "test-key"
+        intake.base_url = "https://d24kz.onpbx.ru/api"
+
+        with patch(
+            "app.agents.calls.intake.settings",
+            new=SimpleNamespace(
+                onlinepbx_cdr_url="",
+            ),
+        ):
+            cdr_url = OnlinePBXIntake._build_cdr_url(intake)
+            intake.cdr_url = cdr_url
+            auth_url = OnlinePBXIntake._build_auth_url(intake)
+
+        self.assertEqual(cdr_url, "https://api.onlinepbx.ru/d24kz.onpbx.ru/mongo_history/search.json")
+        self.assertEqual(auth_url, "https://api.onlinepbx.ru/d24kz.onpbx.ru/auth.json")
+
+
+@unittest.skipIf(TestClient is None, "FastAPI test client is not available")
+class ManualReportingApiErrorEnvelopeTests(unittest.TestCase):
+    def test_report_run_returns_json_error_envelope_for_asa_error(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def run_report(self, **kwargs):
+                raise ASAError("synthetic reporting failure")
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db):
+            with patch("app.core_shared.api.routes.pipeline.CallsManualReportingOrchestrator", FakeOrchestrator):
+                client = TestClient(app)
+                response = client.post(
+                    "/pipeline/calls/report-run",
+                    json={
+                        "department_id": str(uuid4()),
+                        "preset": "manager_daily",
+                        "mode": "build_missing_and_report",
+                        "date_from": "2026-03-25",
+                        "date_to": "2026-03-25",
+                        "send_email": False,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
+        payload = response.json()
+        self.assertEqual(payload["error"]["title"], "Manual report run failed")
+        self.assertEqual(payload["error"]["type"], "manual_report_run_error")
+        self.assertIn("synthetic reporting failure", payload["detail"])
+
+    def test_report_run_returns_json_error_envelope_for_unexpected_exception(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def run_report(self, **kwargs):
+                raise RuntimeError("unexpected synthetic failure")
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db):
+            with patch("app.core_shared.api.routes.pipeline.CallsManualReportingOrchestrator", FakeOrchestrator):
+                client = TestClient(app)
+                response = client.post(
+                    "/pipeline/calls/report-run",
+                    json={
+                        "department_id": str(uuid4()),
+                        "preset": "rop_weekly",
+                        "mode": "report_from_ready_data_only",
+                        "date_from": "2026-03-20",
+                        "date_to": "2026-03-26",
+                        "send_email": False,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
+        payload = response.json()
+        self.assertEqual(payload["error"]["title"], "Unexpected manual report run failure")
+        self.assertEqual(payload["error"]["type"], "unexpected_manual_report_run_failure")
+        self.assertIn("unexpected synthetic failure", payload["detail"])
+
+
+if __name__ == "__main__":
+    unittest.main()

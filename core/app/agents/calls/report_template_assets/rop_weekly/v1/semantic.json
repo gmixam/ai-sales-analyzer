@@ -1,0 +1,18 @@
+{
+  "template_key": "rop_weekly",
+  "version": "v1",
+  "title": "ROP Weekly Final Template",
+  "source_of_truth": true,
+  "sections": [
+    {"id": "what_is_inside", "label": "Что внутри", "kind": "bullet_list"},
+    {"id": "dashboard_rows", "label": "Дашборд недели", "kind": "table"},
+    {"id": "week_over_week_dynamics", "label": "Динамика недели", "kind": "key_values"},
+    {"id": "risk_zone_cards", "label": "Зоны риска", "kind": "cards"},
+    {"id": "systemic_team_problems", "label": "Системные командные проблемы", "kind": "cards"},
+    {"id": "top_block", "label": "Лучший результат периода", "kind": "card"},
+    {"id": "anti_top_block", "label": "Требует внимания", "kind": "card"},
+    {"id": "rop_tasks_next_week", "label": "Задачи РОПа на неделю", "kind": "table"},
+    {"id": "business_results_placeholder", "label": "Бизнес-результаты периода", "kind": "placeholder", "crm_dependent": true},
+    {"id": "leader_memo", "label": "Памятка руководителя", "kind": "bullet_groups"}
+  ]
+}
