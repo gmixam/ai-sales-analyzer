@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scripts/hooks/pre-push
+#
+# Thin wrapper — delegates to the versioned repo script.
+# Installed into .git/hooks/pre-push by scripts/install-git-hooks.sh.
+#
+# Do not add logic here. Logic lives in scripts/hooks/pre-push-check.sh.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VERSIONED_SCRIPT="$REPO_ROOT/scripts/hooks/pre-push-check.sh"
+
+if [ ! -f "$VERSIONED_SCRIPT" ]; then
+    echo "pre-push: versioned script not found at $VERSIONED_SCRIPT — skipping check" >&2
+    exit 0
+fi
+
+exec "$VERSIONED_SCRIPT" "$@"
