@@ -5,14 +5,11 @@
 ```md
 Работаем по проекту ai-sales-analyzer.
 
-Контекст:
-- использовать docs/CONTEXT_INDEX.md как стартовую точку;
-- соблюдать docs/CODER_WORKING_RULES.md;
-- текущий этап: <stage>;
-- stage-specific policy: <stage doc>;
+Веха roadmap:
+- <milestone>
 
-Текущий шаг:
-- <current step>
+Шаг roadmap:
+- <step>
 
 Что делаем:
 - <what we are doing now>
@@ -20,24 +17,33 @@
 Для чего:
 - <why this step exists>
 
-Конкретная задача:
+Используй как source of truth:
+- docs/CONTEXT_INDEX.md
+- docs/CODER_WORKING_RULES.md
+- <task-specific docs only>
+
+Сама задача:
 - <exact task for this run>
 
 Input / case ids:
 - <interaction_id / analysis_id / external_id / file / dataset / prompt asset>
 
 Scope boundaries этой задачи:
-- <allowed scope>
-- <out of scope>
-- <local restrictions>
+- in scope: <allowed scope>
+- out of scope: <explicitly excluded scope>
+- local restrictions: <local restrictions>
 
 Expected output:
 - <exact expected result for this task>
 
-Если будут изменения, обновить:
-- <docs to update if affected>
-```
+Какие документы обновить:
+- docs/PROGRESS.md
+- docs/DECISIONS.md
+- <other affected docs only>
 
-## Принцип шаблона
-Этот шаблон должен оставаться коротким.
-Постоянные project rules, stage policies, language expectations, output behavior и schema constraints не нужно каждый раз повторять в task-промпте, если они уже закреплены в docs и source assets.
+## Close-out (обязательно заполнить перед сдачей)
+- [ ] PROGRESS.md обновлён — да / нет / явно исключён (причина: ...)
+- [ ] DECISIONS.md обновлён — да / нет / явно исключён (причина: ...)
+- [ ] Другие docs обновлены — перечислить / нет / явно исключено
+- [ ] Commit сделан — да / нет
+- [ ] Push выполнен — да / нет

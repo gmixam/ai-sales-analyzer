@@ -372,3 +372,34 @@
 - **Reason:** Ready-only `manager_daily` on the current persisted dataset honestly resolves to `skip_accumulate`, but operators still need to see the report form, template layout, and diagnostics without masking weak data as a `signal_report` / `full_report`.
 - **Scope:** This is a bounded reporting-layer policy for Manual Reporting Pilot. It does not activate new AI build steps, does not change analyzer/runtime contracts outside reporting, and does not alter `rop_weekly`.
 - **Date:** 2026-04-09
+
+## ADR-041: Repo-first project governance and agent-independent task closure
+
+- **Decision:** Canonical project context lives in the GitHub repository, primarily in `docs/` and related repo assets. The current chat is a management delta over repo. Files in Sources and older chat context are reference-only unless explicitly promoted into repo docs.
+- **Decision:** Critical execution rules must not depend only on agent-specific memory or hidden prompt state. They must live in:
+  - the task prompt itself;
+  - repo documentation / infrastructure;
+  - human review before acceptance.
+- **Decision:** If an incoming task is not already structured in the project task format, the coder must first normalize it into that format before implementation.
+- **Decision:** A task is not complete without an explicit close-out that states:
+  - whether `PROGRESS.md` was updated;
+  - whether `DECISIONS.md` was updated;
+  - what other docs changed;
+  - whether commit/push were completed.
+- **Reason:** The project is now operated across multiple agents and sessions. Hidden agent memory or vendor-specific bootstrap alone is not reliable enough to preserve process discipline, documentation updates, and task closure.
+- **Scope:** This is a project operating-model decision. It does not change product runtime behavior, analyzer contracts, or reporting execution logic.
+- **Date:** 2026-04-09
+
+## ADR-042: Thin agent entry files plus versioned Git hook barrier
+
+- **Decision:** The repository keeps thin agent-specific entry files at repo root:
+  - `CLAUDE.md`
+  - `AGENTS.md`
+  - `GEMINI.md`
+  These files are not the canonical rules layer. They act as entry adapters that direct the agent to `docs/CODER_WORKING_RULES.md`, require repo-first behavior, require task normalization first, and require mandatory close-out.
+- **Decision:** `docs/TASK_PROMPT_TEMPLATE.md` must include an обязательный close-out checklist inside the task prompt itself.
+- **Decision:** Git hook enforcement must be versioned in the repository, not stored only in local `.git/hooks`.
+- **Decision:** The first bounded pre-push barrier blocks push when non-doc changes are present but `docs/PROGRESS.md` was not updated, unless the operator explicitly bypasses the check with `git push --no-verify`.
+- **Reason:** Different agents auto-load different root-level files, while some agents may ignore them completely. Thin entry adapters improve adoption for supported agents, but the cross-agent enforcement must still live in the task prompt and repo infrastructure.
+- **Constraints:** Local `.git/hooks` may only delegate to repo-versioned scripts. This decision does not replace human review and does not authorize masking blockers or incomplete verification.
+- **Date:** 2026-04-09
