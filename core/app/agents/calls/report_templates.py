@@ -109,16 +109,18 @@ def _build_render_model(*, payload: dict[str, Any], template: ReportTemplate) ->
 def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTemplate) -> dict[str, Any]:
     header = payload["header"]
     kpi = payload["kpi_overview"]
+    empty_state = dict(payload.get("empty_state") or {})
     total_calls = int(kpi.get("calls_count") or 0)
     narrative = _build_manager_daily_narrative_block(payload)
     focus_dynamics = payload["focus_criterion_dynamics"]
-    summary_cards = [
+    default_summary_cards = [
         {"label": "Всего звонков", "value": total_calls, "tone": "neutral"},
         {"label": "Средний балл", "value": _value(kpi.get("average_score")), "tone": "positive"},
         {"label": "% сильных", "value": _pct_label(kpi.get("strong_calls_pct")), "tone": "positive"},
         {"label": "% базовых", "value": _pct_label(kpi.get("baseline_calls_pct")), "tone": "focus"},
         {"label": "% проблемных", "value": _pct_label(kpi.get("problematic_calls_pct")), "tone": "problem"},
     ]
+    summary_cards = list(empty_state.get("summary_cards") or default_summary_cards)
     sections = [
         {
             **_section_meta(template, "day_summary"),
@@ -298,11 +300,13 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         ),
         "title": header["report_title"],
         "subtitle": f"{header['manager_name']} • {header['report_date']} • {header['department_name']}",
-        "hero_focus": payload["focus_of_week"].get("text") or "На этой неделе держим контроль над конкретным следующим шагом в каждом звонке.",
+        "hero_focus": empty_state.get("hero_focus")
+        or payload["focus_of_week"].get("text")
+        or "На этой неделе держим контроль над конкретным следующим шагом в каждом звонке.",
         "summary_cards": summary_cards,
         "sections": sections,
-        "footer": "Конфиденциально · Только для менеджера и РОПа",
-        "generation_note": "",
+        "footer": empty_state.get("footer") or "Конфиденциально · Только для менеджера и РОПа",
+        "generation_note": empty_state.get("generation_note") or "",
     }
 
 

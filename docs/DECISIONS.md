@@ -349,3 +349,26 @@
 - **Reason:** The project now has a baseline Git history and is onboarding additional developers. Consistent Git close-out reduces drift between "implemented locally" and "shared in remote history", while still preserving visibility of external blockers and open verification gaps.
 - **Scope:** This is a process/default workflow rule only. It does not authorize masking runtime issues, skipping verification, or changing product/runtime scope as part of a Git close-out.
 - **Date:** 2026-04-09
+
+## ADR-040: Non-deliverable `manager_daily` emits an operator-facing preview shell
+- **Decision:** When `manager_daily` ends in a bounded non-deliverable state:
+  - `skip_accumulate`
+  - `no_data`
+  - `missing_artifacts`
+  the reporting layer should render an operator-facing preview shell instead of returning an empty no-artifact result.
+- **Decision:** The preview shell must preserve the daily report layout and explicitly show:
+  - manager
+  - date / effective period
+  - preset / mode
+  - final status / readiness outcome
+  - readiness reason codes
+  - found calls / ready analyses / coverage
+  - placeholder versions of the main daily sections
+- **Decision:** The shell must be explicitly marked as:
+  - `preview`
+  - `insufficient data`
+  - `not a deliverable manager report`
+- **Decision:** This shell is operator-only. It must not be sent as an ordinary manager daily report and must keep business email delivery disabled; only the existing test-delivery path may be used for preview verification.
+- **Reason:** Ready-only `manager_daily` on the current persisted dataset honestly resolves to `skip_accumulate`, but operators still need to see the report form, template layout, and diagnostics without masking weak data as a `signal_report` / `full_report`.
+- **Scope:** This is a bounded reporting-layer policy for Manual Reporting Pilot. It does not activate new AI build steps, does not change analyzer/runtime contracts outside reporting, and does not alter `rop_weekly`.
+- **Date:** 2026-04-09

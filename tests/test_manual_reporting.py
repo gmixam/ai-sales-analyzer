@@ -353,6 +353,17 @@ class ManualReportingStatusTests(unittest.TestCase):
 
     def test_single_report_result_returns_missing_artifacts_status(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        orchestrator.delivery = SimpleNamespace(
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": None, "cc_emails": []},
+                },
+            },
+        )
         artifact = ReportArtifact(
             interaction=_interaction(manager_id=uuid4(), text=""),
             analysis=None,
@@ -373,6 +384,10 @@ class ManualReportingStatusTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "missing_artifacts")
         self.assertIn("analysis_missing", result["errors"][0])
+        self.assertTrue(result["preview_only"])
+        self.assertTrue(result["not_deliverable_manager_report"])
+        self.assertIn("PREVIEW", result["payload"]["header"]["report_title"])
+        self.assertEqual(result["delivery"]["transport"]["telegram_test_delivery"]["status"], "delivered")
 
     def test_single_report_result_returns_recipient_blocked_when_resolution_fails(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
@@ -767,7 +782,17 @@ class ManualReportingStatusTests(unittest.TestCase):
     def test_manager_daily_group_result_returns_skip_accumulate_when_readiness_is_not_met(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
         manager = _manager()
-        orchestrator.delivery = SimpleNamespace()
+        orchestrator.delivery = SimpleNamespace(
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": None, "cc_emails": []},
+                },
+            },
+        )
         artifacts = [
             _artifact_for_manager(
                 manager,
@@ -795,7 +820,51 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "skip_accumulate")
         self.assertEqual(result["readiness_outcome"], "skip_accumulate")
         self.assertIn("skip_accumulate_readiness_not_met", result["readiness_reason_codes"])
-        self.assertEqual(result["delivery"], None)
+        self.assertTrue(result["preview_only"])
+        self.assertTrue(result["not_deliverable_manager_report"])
+        self.assertIsNotNone(result["artifact"])
+        self.assertEqual(result["delivery"]["transport"]["telegram_test_delivery"]["status"], "delivered")
+
+    def test_manager_daily_empty_state_result_supports_no_data_shell(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        orchestrator.delivery = SimpleNamespace(
+            deliver_operator_report=lambda **kwargs: {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": None, "cc_emails": []},
+                },
+            },
+        )
+
+        result = CallsManualReportingOrchestrator._build_manager_daily_empty_state_result(
+            orchestrator,
+            status="no_data",
+            artifacts=[],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(
+                date_from="2026-03-25",
+                date_to="2026-03-25",
+                manager_extensions=["322"],
+            ),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=False,
+            reason_codes=["no_interactions_for_selected_filters"],
+            relevant_calls=0,
+            ready_analyses=0,
+            analysis_coverage=0.0,
+            missing=["no_interactions_for_selected_filters"],
+            readiness=None,
+        )
+
+        self.assertEqual(result["status"], "no_data")
+        self.assertEqual(result["readiness_outcome"], "no_data")
+        self.assertTrue(result["preview_only"])
+        self.assertIn("insufficient data", result["payload"]["empty_state"]["hero_focus"].lower())
+        self.assertEqual(result["delivery"]["transport"]["telegram_test_delivery"]["status"], "delivered")
 
     def test_build_run_observability_reports_stage_summary_and_safe_cost_fallback(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)

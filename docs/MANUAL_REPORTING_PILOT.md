@@ -107,7 +107,7 @@
 - повторный `manager_daily` run не создаёт дубли `interactions`, потому что source ingest идёт через existing `external_id` idempotency;
 - `manager_daily/report_from_ready_data_only` после ingest не строит new audio / `STT` / `LLM-1` / `LLM-2`;
 - `manager_daily/build_missing_and_report` после ingest запускает полный upstream chain для fresh/missing cases: audio fetch -> `STT` -> `LLM-1` -> `LLM-2` -> persistence;
-- после reuse/build `manager_daily` больше не обязан рендерить full daily PDF любой ценой: сначала оценивается readiness на текущем дне, затем при необходимости на последних `2`, потом `3` рабочих днях; если full readiness не достигнут, runtime может отправить `signal_report` или вернуть `skip_accumulate` без render/delivery;
+- после reuse/build `manager_daily` больше не обязан рендерить full daily PDF любой ценой: сначала оценивается readiness на текущем дне, затем при необходимости на последних `2`, потом `3` рабочих днях; если full readiness не достигнут, runtime может отправить `signal_report`, а при `skip_accumulate` / `no_data` / `missing_artifacts` собрать только operator-facing preview shell вместо обычного deliverable report;
 - `rop_weekly` остаётся persisted-only aggregation: weekly path не делает source discovery, не ingest-ит missing calls и не запускает новый audio / `STT` / `LLM-1` / `LLM-2` build;
 - это всё ещё bounded manual path: здесь нет scheduler, retries, beat, run-history subsystem или автоматического live intake loop вне явного operator trigger.
 
@@ -158,6 +158,12 @@
 - и не выполнены условия `signal_report`
 
 В этом случае `manager_daily` не должен рендерить weak PDF и не должен уходить в delivery только ради того, чтобы любой ценой завершить run.
+
+Вместо обычного deliverable artifact reporting layer теперь собирает только operator-facing preview shell:
+- сохраняется layout daily report и placeholders основных секций;
+- явно показываются counts / coverage / readiness reason codes;
+- artifact маркируется как `preview`, `insufficient data`, `not a deliverable manager report`;
+- business email delivery остаётся выключенным, preview уходит только в test delivery path.
 
 ### Rolling window
 

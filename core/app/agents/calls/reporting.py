@@ -188,6 +188,38 @@ class CallsManualReportingOrchestrator:
                 )
         interactions = self._select_interactions(filters=filters, period=source_period)
         if not interactions:
+            if preset.code == "manager_daily":
+                shell_report = self._build_manager_daily_empty_state_result(
+                    status="no_data",
+                    artifacts=[],
+                    period=period,
+                    filters=filters,
+                    mode=normalized_mode,
+                    model_override=model_override,
+                    send_email=send_email,
+                    reason_codes=["no_interactions_for_selected_filters"],
+                    relevant_calls=0,
+                    ready_analyses=0,
+                    analysis_coverage=0.0,
+                    missing=["no_interactions_for_selected_filters"],
+                    readiness=None,
+                )
+                return self._build_terminal_run_result(
+                    preset=preset,
+                    mode=normalized_mode,
+                    period=period,
+                    source_period=source_period,
+                    diagnostics_context=diagnostics_context,
+                    filters=filters,
+                    source_summary=source_summary,
+                    build_summary=self._empty_build_summary(),
+                    reports=[shell_report],
+                    selected_interactions_count=0,
+                    final_selected_interactions_count=0,
+                    overall_status="no_data",
+                    errors=["no_interactions_for_selected_filters"],
+                    artifacts=[],
+                )
             return self._build_terminal_run_result(
                 preset=preset,
                 mode=normalized_mode,
@@ -1382,6 +1414,23 @@ class CallsManualReportingOrchestrator:
                 "error": None,
             }
         if all(item.get("status") == "skip_accumulate" for item in reports):
+            if any((item.get("delivery") or {}).get("transport") for item in reports):
+                telegram_status = (delivery_summary.get("telegram_test_delivery") or {}).get("status", "unknown")
+                email_status = (delivery_summary.get("email_delivery") or {}).get("status", "unknown")
+                telegram_targets = ", ".join((delivery_summary.get("telegram_test_delivery") or {}).get("targets", [])) or "no telegram target"
+                email_targets = ", ".join((delivery_summary.get("email_delivery") or {}).get("targets", [])) or "no email targets"
+                status = "completed" if telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", "not_started"} else "warn"
+                return {
+                    "code": "delivery",
+                    "label": "delivery",
+                    "status": status,
+                    "summary": (
+                        "Preview shell delivery for non-deliverable manager_daily: "
+                        f"Telegram {telegram_status} to {telegram_targets}; "
+                        f"email {email_status} to {email_targets}."
+                    ),
+                    "error": errors[0] if status in {"blocked", "warn"} and errors else None,
+                }
             return {
                 "code": "delivery",
                 "label": "delivery",
@@ -1965,21 +2014,21 @@ class CallsManualReportingOrchestrator:
                     missing=missing,
                     readiness=readiness,
                 )
-        return {
-            "status": "skip_accumulate",
-            "preset": preset.code,
-            "group_key": f"{preset.code}:{artifacts[0].interaction.manager_id or 'unmapped'}:{source_period['date_to']}",
-            "errors": [],
-            "delivery": None,
-            "readiness_outcome": "skip_accumulate",
-            "readiness_reason_codes": list(last_readiness["readiness_reason_codes"]),
-            "window_days_used": last_readiness["window_days_used"],
-            "relevant_calls": last_readiness["relevant_calls"],
-            "ready_analyses": last_readiness["ready_analyses"],
-            "analysis_coverage": last_readiness["analysis_coverage"],
-            "content_blocks": dict(last_readiness["content_blocks"]),
-            "readiness": last_readiness,
-        }
+        return self._build_manager_daily_empty_state_result(
+            status="skip_accumulate",
+            artifacts=artifacts,
+            period=last_readiness["effective_period"],
+            filters=filters,
+            mode=mode,
+            model_override=model_override,
+            send_email=send_email,
+            reason_codes=list(last_readiness["readiness_reason_codes"]),
+            relevant_calls=last_readiness["relevant_calls"],
+            ready_analyses=last_readiness["ready_analyses"],
+            analysis_coverage=last_readiness["analysis_coverage"],
+            missing=[],
+            readiness=last_readiness,
+        )
 
     def _group_artifacts_by_preset(
         self,
@@ -2017,6 +2066,22 @@ class CallsManualReportingOrchestrator:
         missing, usable = self._split_usable_artifacts(artifacts)
 
         if not usable:
+            if preset.code == "manager_daily":
+                return self._build_manager_daily_empty_state_result(
+                    status="missing_artifacts",
+                    artifacts=artifacts,
+                    period=period,
+                    filters=filters,
+                    mode=mode,
+                    model_override=model_override,
+                    send_email=send_email,
+                    reason_codes=["missing_artifacts", "insufficient_ready_artifacts"],
+                    relevant_calls=len(artifacts),
+                    ready_analyses=0,
+                    analysis_coverage=0.0,
+                    missing=missing or ["no_usable_artifacts"],
+                    readiness=None,
+                )
             return {
                 "status": "missing_artifacts",
                 "preset": preset.code,
@@ -2150,6 +2215,309 @@ class CallsManualReportingOrchestrator:
         if delivery_errors:
             result["errors"] = [*missing, *delivery_errors]
         return result
+
+    def _build_manager_daily_empty_state_result(
+        self,
+        *,
+        status: str,
+        artifacts: list[ReportArtifact],
+        period: dict[str, str],
+        filters: ReportRunFilters,
+        mode: str,
+        model_override: str | None,
+        send_email: bool,
+        reason_codes: list[str],
+        relevant_calls: int,
+        ready_analyses: int,
+        analysis_coverage: float,
+        missing: list[str],
+        readiness: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Render an operator-only empty-state shell for non-deliverable manager_daily."""
+        payload = self._build_manager_daily_empty_state_payload(
+            artifacts=artifacts,
+            period=period,
+            filters=filters,
+            mode=mode,
+            model_override=model_override,
+            status=status,
+            reason_codes=reason_codes,
+            relevant_calls=relevant_calls,
+            ready_analyses=ready_analyses,
+            analysis_coverage=analysis_coverage,
+            readiness=readiness,
+            missing=missing,
+        )
+        rendered = render_report_email(payload)
+        preview = {key: value for key, value in rendered.items() if key != "pdf_bytes"}
+        delivery = self.delivery.deliver_operator_report(
+            primary_email=None,
+            cc_emails=[],
+            subject=rendered["subject"],
+            text=rendered["text"],
+            html=rendered["html"],
+            pdf_bytes=rendered["pdf_bytes"],
+            pdf_filename=rendered["artifact"]["filename"],
+            template_meta=rendered.get("template"),
+            send_business_email=False,
+            email_resolution_error=None,
+        )
+        result = {
+            "status": status,
+            "preset": "manager_daily",
+            "group_key": payload["meta"]["group_key"],
+            "errors": list(missing),
+            "payload": payload,
+            "preview": preview,
+            "artifact": rendered.get("artifact"),
+            "delivery": delivery,
+            "preview_only": True,
+            "not_deliverable_manager_report": True,
+            "readiness_outcome": status if status in {"skip_accumulate", "no_data", "missing_artifacts"} else "skip_accumulate",
+            "readiness_reason_codes": list(reason_codes),
+            "window_days_used": (readiness or {}).get("window_days_used"),
+            "relevant_calls": relevant_calls,
+            "ready_analyses": ready_analyses,
+            "analysis_coverage": analysis_coverage,
+            "content_blocks": dict((readiness or {}).get("content_blocks") or {}),
+            "readiness": readiness,
+        }
+        return result
+
+    def _build_manager_daily_empty_state_payload(
+        self,
+        *,
+        artifacts: list[ReportArtifact],
+        period: dict[str, str],
+        filters: ReportRunFilters,
+        mode: str,
+        model_override: str | None,
+        status: str,
+        reason_codes: list[str],
+        relevant_calls: int,
+        ready_analyses: int,
+        analysis_coverage: float,
+        readiness: dict[str, Any] | None,
+        missing: list[str],
+    ) -> dict[str, Any]:
+        """Build a preview-only shell payload for non-deliverable manager_daily."""
+        manager_name = self._resolve_manager_daily_empty_state_manager_name(
+            artifacts=artifacts,
+            filters=filters,
+        )
+        department_name = self._resolve_department_name()
+        status_label = {
+            "skip_accumulate": "Недостаточно данных для deliverable отчёта",
+            "missing_artifacts": "Недостаточно ready-артефактов",
+            "no_data": "Нет звонков по выбранным фильтрам",
+        }.get(status, "Недостаточно данных")
+        formatted_coverage = round(float(analysis_coverage or 0.0), 1)
+        reason_lines = [code.replace("_", " ") for code in reason_codes[:6]]
+        if not reason_lines:
+            reason_lines = ["Нужно больше готовых данных для полного daily report."]
+        explanation = (
+            f"Это preview shell для оператора. Полноценный manager_daily не собран: "
+            f"найдено {relevant_calls} звонков, ready analyses {ready_analyses}, coverage {formatted_coverage}%."
+        )
+        if status == "no_data":
+            explanation = (
+                "Это preview shell для оператора. По выбранным фильтрам не найдено persisted звонков, "
+                "которые можно включить в daily report без нового build."
+            )
+        elif status == "missing_artifacts":
+            explanation = (
+                "Это preview shell для оператора. Persisted звонки найдены, но ready transcript/analysis "
+                "недостаточны для сборки обычного daily report."
+            )
+
+        payload = {
+            "meta": _build_base_meta(
+                preset="manager_daily",
+                department_id=str(getattr(self, "department_id", "unknown-department")),
+                period=period,
+                filters=filters,
+                mode=mode,
+                model_override=model_override,
+                artifacts=artifacts,
+                group_key=f"manager_daily_preview:{manager_name}:{period['date_from']}",
+            ),
+            "empty_state": {
+                "enabled": True,
+                "status": status,
+                "reason_codes": list(reason_codes),
+                "summary_cards": [
+                    {"label": "Найдено звонков", "value": relevant_calls, "tone": "blue"},
+                    {"label": "Ready analyses", "value": ready_analyses, "tone": "yellow"},
+                    {"label": "Coverage", "value": f"{formatted_coverage}%", "tone": "problem"},
+                    {"label": "Окно", "value": f"{(readiness or {}).get('window_days_used', 1)} раб. дн.", "tone": "focus"},
+                    {"label": "Статус", "value": status, "tone": "problem"},
+                ],
+                "hero_focus": "PREVIEW • insufficient data • not a deliverable manager report",
+                "footer": "Preview shell · Недостаточно данных · Не отправлять менеджеру как обычный daily report",
+                "generation_note": (
+                    "Operator-facing preview shell only. "
+                    "Этот artifact показывает layout и diagnostics, но не считается deliverable manager report."
+                ),
+            },
+            "header": {
+                "report_title": "PREVIEW — Ежедневный разбор звонков",
+                "manager_id": str(artifacts[0].interaction.manager_id) if artifacts and artifacts[0].interaction.manager_id else None,
+                "manager_name": manager_name,
+                "report_date": _format_period_label(period),
+                "department_name": department_name,
+                "department_id": str(getattr(self, "department_id", "unknown-department")),
+                "product_or_business_context": None,
+            },
+            "focus_of_week": {
+                "text": "Preview shell: структура daily report показана, но данных для deliverable результата недостаточно.",
+                "is_placeholder": True,
+            },
+            "kpi_overview": {
+                "calls_count": relevant_calls,
+                "average_score": None,
+                "strong_calls_pct": None,
+                "baseline_calls_pct": None,
+                "problematic_calls_pct": None,
+                "score_vs_period_avg": None,
+                "delta_vs_period_avg": None,
+                "interpretation_label": status_label,
+            },
+            "narrative_day_conclusion": {
+                "text": explanation,
+                "source": "preview_shell",
+                "model_dependent": False,
+            },
+            "signal_of_day": {
+                "call_time": None,
+                "client_or_phone_mask": "Preview shell",
+                "short_evidence": "Сильный/критичный сигнал не выделен: итоговый deliverable report не собран.",
+                "reason_this_matters": "Показываем форму отчёта и диагностику, не маскируя слабую базу под рабочий daily report.",
+                "is_placeholder": True,
+            },
+            "main_focus_for_tomorrow": {
+                "text": "Следующий шаг — либо накопить больше ready persisted analyses, либо запускать build_missing_and_report отдельной задачей.",
+                "source": "preview_shell",
+                "model_dependent": False,
+            },
+            "analysis_worked": [
+                {
+                    "label": "Placeholder секции",
+                    "signal": 0,
+                    "interpretation": "Здесь будут сильные зоны, когда ready dataset станет достаточным для deliverable daily report.",
+                }
+            ],
+            "analysis_improve": [
+                {
+                    "label": "Почему отчёт не собран",
+                    "signal": len(reason_codes),
+                    "interpretation": "; ".join(reason_lines),
+                }
+            ],
+            "key_problem_of_day": {
+                "title": "Недостаточно данных для обычного daily report",
+                "description": (
+                    f"Readiness outcome: {status}. Coverage {formatted_coverage}%, ready analyses {ready_analyses} "
+                    f"из {relevant_calls} найденных звонков."
+                ),
+            },
+            "recommendations": [
+                {
+                    "priority_tag": "На неделе",
+                    "title": "Почему это preview, а не deliverable report",
+                    "reason": explanation,
+                    "how_it_sounded": "Reason codes: " + (", ".join(reason_codes[:5]) if reason_codes else "нет"),
+                    "better_phrasing": "Не отправлять менеджеру как обычный daily report. Использовать только для operator preview и диагностики.",
+                    "why_this_works": "Позволяет увидеть layout отчёта и причины недосбора без запуска новых AI шагов.",
+                }
+            ],
+            "call_outcomes_summary": {
+                "agreed_count": relevant_calls,
+                "rescheduled_count": ready_analyses,
+                "refusal_count": f"{formatted_coverage}%",
+                "open_count": len(reason_codes) or len(missing),
+            },
+            "call_list": [
+                {
+                    "time": period["date_from"],
+                    "client_or_phone": "Preview shell",
+                    "duration_sec": "—",
+                    "status": status,
+                    "score_percent": f"{formatted_coverage}%",
+                    "next_step": "Открыть diagnostics и reason codes вместо отправки обычного daily report.",
+                }
+            ],
+            "focus_criterion_dynamics": {
+                "focus_criterion_name": "Readiness / coverage",
+                "current_period_value": f"{formatted_coverage}%",
+                "previous_period_value": f"{ready_analyses} ready analyses",
+                "delta": f"{relevant_calls} найдено",
+            },
+            "memo_legend": {
+                "call_level_legend": [
+                    "Preview shell",
+                    "Insufficient data",
+                    "Not a deliverable manager report",
+                ],
+                "call_status_legend": [
+                    f"preset=manager_daily",
+                    f"mode={mode}",
+                    f"period={period['date_from']}..{period['date_to']}",
+                ],
+                "recommendation_priority_legend": [
+                    f"readiness_outcome={status}",
+                    f"reason_codes={', '.join(reason_codes[:4]) if reason_codes else 'n/a'}",
+                    "business email intentionally disabled for this shell",
+                ],
+            },
+            "delivery_meta": {
+                "email_subject": f"[PREVIEW][INSUFFICIENT DATA] manager_daily — {manager_name} — {_format_period_label(period)}",
+                "render_variant": f"template_pdf_{get_active_template_version('manager_daily')}",
+            },
+        }
+        payload["meta"]["empty_state"] = {
+            "status": status,
+            "reason_codes": list(reason_codes),
+            "not_deliverable_manager_report": True,
+        }
+        return payload
+
+    def _resolve_department_name(self) -> str:
+        """Return department name for shell/report payloads."""
+        db = getattr(self, "db", None)
+        if db is not None:
+            department = db.query(Department).filter(Department.id == self.department_id).first()
+            if department is not None and str(department.name or "").strip():
+                return str(department.name)
+        return "Отдел продаж"
+
+    def _resolve_manager_daily_empty_state_manager_name(
+        self,
+        *,
+        artifacts: list[ReportArtifact],
+        filters: ReportRunFilters,
+    ) -> str:
+        """Resolve the display manager name for a preview-only daily shell."""
+        if artifacts:
+            manager = artifacts[0].manager
+            if manager is not None and str(manager.name or "").strip():
+                return str(manager.name)
+            interaction_metadata = dict(artifacts[0].interaction.metadata_ or {})
+            if str(interaction_metadata.get("manager_name") or "").strip():
+                return str(interaction_metadata["manager_name"]).strip()
+        if len(filters.manager_ids) == 1:
+            db = getattr(self, "db", None)
+            if db is not None:
+                try:
+                    manager_id = UUID(filters.manager_ids[0])
+                except ValueError:
+                    manager_id = None
+                if manager_id is not None:
+                    manager = db.query(Manager).filter(Manager.id == manager_id).first()
+                    if manager is not None and str(manager.name or "").strip():
+                        return str(manager.name)
+        if len(filters.manager_extensions) == 1:
+            return f"Менеджер {filters.manager_extensions[0]}"
+        return "Менеджер не выбран"
 
     def _resolve_delivery_targets(
         self,
