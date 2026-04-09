@@ -37,7 +37,7 @@
     }
 
     .hero {
-      margin-bottom: 24px;
+      margin-bottom: 18px;
       padding: 24px;
       border: 1px solid var(--line);
       border-radius: 24px;
@@ -67,6 +67,87 @@
       line-height: 1.5;
     }
 
+    /* ── Operational Summary ── */
+    #op-summary {
+      margin-bottom: 18px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    #op-summary h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+
+    .summary-tiles {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .tile {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .tile strong {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .tile .tile-value {
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .tile .tile-sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.3;
+    }
+
+    .recommended-action {
+      margin-top: 14px;
+      padding: 12px 16px;
+      border-radius: 14px;
+      background: rgba(31, 122, 77, 0.07);
+      border: 1px solid rgba(31, 122, 77, 0.2);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--good);
+    }
+
+    .recommended-action.warn {
+      background: rgba(154, 92, 0, 0.07);
+      border-color: rgba(154, 92, 0, 0.2);
+      color: var(--warn);
+    }
+
+    .recommended-action.bad {
+      background: rgba(161, 38, 38, 0.07);
+      border-color: rgba(161, 38, 38, 0.2);
+      color: var(--bad);
+    }
+
+    .recommended-action.muted {
+      background: rgba(108, 114, 128, 0.07);
+      border-color: rgba(108, 114, 128, 0.2);
+      color: var(--muted);
+    }
+
+    /* ── Layout ── */
     .layout {
       display: grid;
       gap: 18px;
@@ -173,6 +254,38 @@
       line-height: 1.45;
     }
 
+    /* ── rop_weekly badge ── */
+    .preset-badge {
+      display: inline-block;
+      margin-left: 10px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(154, 92, 0, 0.12);
+      color: var(--warn);
+      vertical-align: middle;
+    }
+
+    /* ── Secondary controls collapsible ── */
+    .secondary-controls {
+      margin-top: 14px;
+    }
+
+    .secondary-controls summary {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+      padding: 6px 0;
+      user-select: none;
+    }
+
+    .secondary-controls .grid {
+      margin-top: 10px;
+    }
+
+    /* ── Pills ── */
     .pill {
       display: inline-flex;
       align-items: center;
@@ -191,6 +304,42 @@
     .pill.warn { background: rgba(154, 92, 0, 0.12); color: var(--warn); }
     .pill.bad { background: rgba(161, 38, 38, 0.12); color: var(--bad); }
 
+    /* ── Artifact panel ── */
+    .artifact-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.82);
+      margin-bottom: 12px;
+    }
+
+    .artifact-card h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+
+    .artifact-meta {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .artifact-meta strong {
+      color: var(--ink);
+    }
+
+    .delivery-compact {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.6);
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+
+    /* ── Stack / Group ── */
     .stack {
       display: flex;
       flex-direction: column;
@@ -209,16 +358,102 @@
       font-size: 16px;
     }
 
-    .observability-grid {
-      display: grid;
-      gap: 14px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* ── Manager Readiness Table ── */
+    #manager-readiness {
+      margin-top: 18px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    #manager-readiness h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+
+    .readiness-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .readiness-table th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .readiness-table td {
+      padding: 9px 10px;
+      border-bottom: 1px solid rgba(217, 207, 191, 0.5);
+      vertical-align: top;
+    }
+
+    .readiness-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .readiness-pill {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .readiness-pill.good { background: rgba(31, 122, 77, 0.12); color: var(--good); }
+    .readiness-pill.warn { background: rgba(154, 92, 0, 0.12); color: var(--warn); }
+    .readiness-pill.muted { background: #f6efe2; color: var(--muted); }
+
+    /* ── Observability / Diagnostics (collapsible) ── */
+    .collapsible-section {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .collapsible-section > details > summary {
+      cursor: pointer;
+      font-size: 17px;
+      font-weight: 700;
+      padding: 18px 20px;
+      user-select: none;
+      list-style: none;
+    }
+
+    .collapsible-section > details > summary::before {
+      content: "▸ ";
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .collapsible-section > details[open] > summary::before {
+      content: "▾ ";
+    }
+
+    .collapsible-inner {
+      padding: 0 20px 20px;
     }
 
     .section-line {
       margin: 0 0 10px;
       font-size: 13px;
       color: var(--muted);
+    }
+
+    .observability-grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .stage-card {
@@ -232,6 +467,10 @@
     .cost-card h3 {
       margin: 0 0 8px;
       font-size: 16px;
+    }
+
+    .stage-skipped-normal {
+      opacity: 0.6;
     }
 
     .summary-list {
@@ -269,9 +508,8 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
-    .muted {
-      color: var(--muted);
-    }
+    /* ── Utilities ── */
+    .muted { color: var(--muted); }
 
     pre {
       margin: 0;
@@ -292,7 +530,8 @@
       .grid,
       .observability-grid,
       .summary-list,
-      .diagnostics-grid {
+      .diagnostics-grid,
+      .summary-tiles {
         grid-template-columns: 1fr;
       }
     }
@@ -300,18 +539,53 @@
 </head>
 <body>
   <main>
+    <!-- ── Hero ── -->
     <section class="hero">
       <p class="eyebrow">Internal Operator UI</p>
       <h1>Manual Report Run</h1>
-      <p>
+      <p id="delivery-mode-note">
         Минимальный операторский интерфейс для ручного запуска <code>manager_daily</code> и
         <code>rop_weekly</code> поверх текущего bounded reporting API path.
       </p>
     </section>
 
+    <!-- ── Operational Summary ── -->
+    <section id="op-summary">
+      <h2>Итог запуска</h2>
+      <div id="op-summary-idle" class="empty">После запуска здесь появятся статус, артефакт, доставка и стоимость.</div>
+      <div id="op-summary-tiles" style="display:none;">
+        <div class="summary-tiles">
+          <div class="tile" id="tile-status">
+            <strong>Статус</strong>
+            <div class="tile-value" id="tile-status-value">—</div>
+          </div>
+          <div class="tile" id="tile-artifact">
+            <strong>Артефакт</strong>
+            <div class="tile-value" id="tile-artifact-value">—</div>
+            <div class="tile-sub" id="tile-artifact-sub"></div>
+          </div>
+          <div class="tile" id="tile-delivery">
+            <strong>Доставка</strong>
+            <div class="tile-value" id="tile-delivery-value">—</div>
+            <div class="tile-sub" id="tile-delivery-sub"></div>
+          </div>
+          <div class="tile" id="tile-cost">
+            <strong>AI Cost</strong>
+            <div class="tile-value" id="tile-cost-value">—</div>
+          </div>
+        </div>
+        <div id="recommended-action" class="recommended-action muted" style="display:none;"></div>
+      </div>
+    </section>
+
+    <!-- ── 2-column layout ── -->
     <section class="layout">
+      <!-- LEFT: Compact run form -->
       <article class="card">
-        <h2>Параметры запуска</h2>
+        <h2>
+          Параметры запуска
+          <span id="rop-badge" class="preset-badge" style="display:none;">persisted-only</span>
+        </h2>
         <form id="report-form">
           <div class="grid">
             <div class="field">
@@ -331,32 +605,12 @@
 
             <div class="field">
               <label for="manager">Менеджеры из локального справочника</label>
-              <select id="manager" name="manager_id" multiple size="8"></select>
-            </div>
-
-            <div class="field">
-              <label for="extension">Extensions</label>
-              <select id="extension" name="manager_extension" multiple size="8"></select>
+              <select id="manager" name="manager_id" multiple size="6"></select>
             </div>
 
             <div class="field">
               <label for="date-from">Дата от</label>
               <input id="date-from" name="date_from" type="date" required>
-            </div>
-
-            <div class="field">
-              <label for="date-to">Дата до</label>
-              <input id="date-to" name="date_to" type="date" required>
-            </div>
-
-            <div class="field">
-              <label for="min-duration">Min duration sec</label>
-              <input id="min-duration" name="min_duration_sec" type="number" min="0" step="1">
-            </div>
-
-            <div class="field">
-              <label for="max-duration">Max duration sec</label>
-              <input id="max-duration" name="max_duration_sec" type="number" min="0" step="1">
             </div>
 
             <div class="field full">
@@ -368,20 +622,45 @@
             </div>
           </div>
 
+          <!-- Secondary controls (collapsed) -->
+          <details class="secondary-controls">
+            <summary>Дополнительные параметры</summary>
+            <div class="grid">
+              <div class="field">
+                <label for="extension">Extensions</label>
+                <select id="extension" name="manager_extension" multiple size="5"></select>
+              </div>
+
+              <div class="field">
+                <label for="date-to">Дата до <span class="muted" style="font-size:11px;">(только для rop_weekly)</span></label>
+                <input id="date-to" name="date_to" type="date">
+              </div>
+
+              <div class="field">
+                <label for="min-duration">Min duration sec</label>
+                <input id="min-duration" name="min_duration_sec" type="number" min="0" step="1">
+              </div>
+
+              <div class="field">
+                <label for="max-duration">Max duration sec</label>
+                <input id="max-duration" name="max_duration_sec" type="number" min="0" step="1">
+              </div>
+            </div>
+          </details>
+
           <div class="actions">
             <button class="secondary" type="button" id="sync-managers-button">Refresh Local Managers</button>
             <button class="secondary" type="button" id="preview-button">Preview Recipients</button>
             <button class="primary" type="submit" id="run-button">Run Report</button>
           </div>
 
-          <p class="note">
-            Список менеджеров берётся из локального Bitrix-synced справочника. Для актуализации списка нажмите
-            <code>Refresh Local Managers</code>. Telegram test delivery для manual runs выполняется всегда в operator chat.
-            Checkbox управляет только business email delivery для менеджера / РОП. Resolved email recipients показываются как reference.
+          <p class="note" id="form-note">
+            Список менеджеров берётся из локального Bitrix-synced справочника. Telegram test delivery выполняется всегда.
           </p>
         </form>
       </article>
 
+      <!-- RIGHT: Artifact / Result panel -->
       <aside class="stack">
         <section class="card">
           <h2>Resolved Recipients</h2>
@@ -389,48 +668,79 @@
           <div id="preview-groups" class="stack"></div>
         </section>
 
-        <section class="card">
-          <h2>Run Result</h2>
-          <div id="run-summary" class="empty">После запуска здесь появятся общий статус, report statuses и blocking reasons.</div>
-          <div id="run-groups" class="stack"></div>
+        <section class="card" id="artifact-panel">
+          <h2>Артефакт / Результат</h2>
+          <div id="artifact-panel-content" class="empty">После запуска здесь появится артефакт или причина отсутствия отчёта.</div>
         </section>
       </aside>
     </section>
 
-    <section class="card" style="margin-top: 18px;">
-      <h2>Run Observability</h2>
-      <p class="section-line">Операторский мониторинг текущего manual run: состояние, этапы, итог и cost только по реально использованным AI-узлам.</p>
-      <div id="run-state" class="empty">Run-state появится после запуска.</div>
-
-      <div style="margin-top: 16px;">
-        <h3>Stages</h3>
-        <div id="observability-stages" class="observability-grid">
-          <p class="empty">После запуска здесь появятся source-discovery, persistence-check, ingest-missing, audio-fetch, STT, analysis, report-build/render и delivery.</p>
-        </div>
-      </div>
-
-      <div style="margin-top: 16px;">
-        <h3>Run Summary</h3>
-        <div id="observability-summary" class="summary-list">
-          <p class="empty">Итоговая summary появится после запуска.</p>
-        </div>
-      </div>
-
-      <div style="margin-top: 16px;">
-        <h3>AI Cost</h3>
-        <div id="observability-costs" class="stack">
-          <p class="empty">Если в run использовались AI-узлы, здесь появится cost block. Если metadata нет, будет показан safe fallback.</p>
-        </div>
-      </div>
-
-      <div style="margin-top: 16px;">
-        <h3>Diagnostics</h3>
-        <div id="diagnostics-summary" class="diagnostics-grid">
-          <p class="empty">После запуска здесь появятся effective filters, reason codes и selection transparency.</p>
-        </div>
-        <div id="diagnostics-notes" class="stack" style="margin-top: 12px;"></div>
+    <!-- ── Manager Readiness Table ── -->
+    <section id="manager-readiness" style="display:none;">
+      <h2>Готовность менеджеров</h2>
+      <div id="readiness-placeholder" class="empty">После запуска появится таблица готовности менеджеров.</div>
+      <div id="readiness-table-wrap" style="display:none; overflow-x:auto;">
+        <table class="readiness-table" id="readiness-table">
+          <thead>
+            <tr>
+              <th>Группа</th>
+              <th>Период (дней)</th>
+              <th>Звонков</th>
+              <th>Анализов</th>
+              <th>Покрытие</th>
+              <th>Исход</th>
+              <th>Пояснение</th>
+            </tr>
+          </thead>
+          <tbody id="readiness-tbody"></tbody>
+        </table>
       </div>
     </section>
+
+    <!-- ── Run Observability (collapsible) ── -->
+    <div class="collapsible-section">
+      <details id="observability-details">
+        <summary>Run Observability</summary>
+        <div class="collapsible-inner">
+          <p class="section-line">Операторский мониторинг текущего manual run: состояние, этапы, итог и cost только по реально использованным AI-узлам.</p>
+          <div id="run-state" class="empty">Run-state появится после запуска.</div>
+
+          <div style="margin-top: 16px;">
+            <h3>Stages</h3>
+            <div id="observability-stages" class="observability-grid">
+              <p class="empty">После запуска здесь появятся source-discovery, persistence-check, ingest-missing, audio-fetch, STT, analysis, report-build/render и delivery.</p>
+            </div>
+          </div>
+
+          <div style="margin-top: 16px;">
+            <h3>Run Summary</h3>
+            <div id="observability-summary" class="summary-list">
+              <p class="empty">Итоговая summary появится после запуска.</p>
+            </div>
+          </div>
+
+          <div style="margin-top: 16px;">
+            <h3>AI Cost</h3>
+            <div id="observability-costs" class="stack">
+              <p class="empty">Если в run использовались AI-узлы, здесь появится cost block.</p>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <!-- ── Diagnostics (collapsible) ── -->
+    <div class="collapsible-section">
+      <details id="diagnostics-details">
+        <summary>Diagnostics</summary>
+        <div class="collapsible-inner">
+          <div id="diagnostics-summary" class="diagnostics-grid">
+            <p class="empty">После запуска здесь появятся effective filters, reason codes и selection transparency.</p>
+          </div>
+          <div id="diagnostics-notes" class="stack" style="margin-top: 12px;"></div>
+        </div>
+      </details>
+    </div>
   </main>
 
   <script>
@@ -449,8 +759,6 @@
     const sendEmailEl = document.getElementById("send-email");
     const previewSummaryEl = document.getElementById("preview-summary");
     const previewGroupsEl = document.getElementById("preview-groups");
-    const runSummaryEl = document.getElementById("run-summary");
-    const runGroupsEl = document.getElementById("run-groups");
     const syncManagersButtonEl = document.getElementById("sync-managers-button");
     const runStateEl = document.getElementById("run-state");
     const observabilityStagesEl = document.getElementById("observability-stages");
@@ -461,6 +769,49 @@
 
     let uiContext = { departments: [], managers: [], presets: [], modes: [], operator_delivery: {} };
 
+    // ── Russian label tables ──
+    const STATUS_RU = {
+      "completed": "Выполнен",
+      "delivered": "Доставлен",
+      "partial": "Частично",
+      "blocked": "Заблокирован",
+      "no_data": "Нет данных",
+      "missing_artifacts": "Артефакты не готовы",
+      "skip_accumulate": "Данных недостаточно",
+      "ready": "Готов",
+      "failed": "Ошибка",
+    };
+
+    const READINESS_RU = {
+      "full_report": "Полный отчёт",
+      "signal_report": "Сигнальный отчёт",
+      "skip_accumulate": "Недостаточно данных",
+    };
+
+    const REASON_RU = {
+      "relevant_calls_below_full_threshold": "Мало звонков (нужно ≥6)",
+      "ready_analyses_below_full_threshold": "Мало готовых анализов (нужно ≥5)",
+      "analysis_coverage_below_full_threshold": "Низкое покрытие анализом (нужно ≥75%)",
+      "content_block_day_summary_missing": "Итог дня не сформирован",
+      "content_block_review_missing": "Разбор не сформирован",
+      "content_block_key_problem_missing": "Ключевая проблема не определена",
+      "content_block_recommendations_missing": "Рекомендации не сформированы",
+      "no_interactions_for_selected_filters": "Нет звонков по выбранным фильтрам",
+      "date_range_has_no_persisted_calls": "За период нет сохранённых звонков",
+      "no_ready_artifacts_for_ready_only_mode": "Нет готовых артефактов для быстрого запуска",
+      "transcript_build_failed": "Ошибка транскрипции",
+      "analysis_build_failed": "Ошибка анализа",
+      "source_discovery_failed": "Ошибка поиска звонков в источнике",
+      "manager_not_in_local_directory": "Менеджер не найден в локальном справочнике",
+      "filters_intersection_empty": "Пересечение фильтров пусто",
+      "analysis_reuse_rejected": "Анализ признан неподходящим для повторного использования",
+    };
+
+    function statusRu(code) { return STATUS_RU[code] || code; }
+    function readinessRu(code) { return READINESS_RU[code] || code; }
+    function reasonRu(code) { return REASON_RU[code] || code; }
+
+    // ── Shared helpers (unchanged) ──
     function pillClass(status) {
       if (status === "delivered" || status === "completed" || status === "ready") return "pill good";
       if (status === "starting" || status === "running" || status === "partial" || status === "warn") return "pill warn";
@@ -479,6 +830,7 @@
       select.appendChild(option);
     }
 
+    // ── Context / form helpers (unchanged) ──
     function currentDepartmentManagers() {
       return uiContext.managers.filter((item) => item.department_id === departmentEl.value && item.active);
     }
@@ -512,8 +864,13 @@
 
     function syncPresetBehavior() {
       const isManagerDaily = presetEl.value === "manager_daily";
+      const isRopWeekly = presetEl.value === "rop_weekly";
+      const ropBadge = document.getElementById("rop-badge");
+
       managerEl.disabled = !isManagerDaily;
       extensionEl.disabled = !isManagerDaily;
+      ropBadge.style.display = isRopWeekly ? "inline-block" : "none";
+
       if (!isManagerDaily) {
         Array.from(managerEl.options).forEach((item) => { item.selected = false; });
         Array.from(extensionEl.options).forEach((item) => { item.selected = false; });
@@ -542,65 +899,336 @@
       return payload;
     }
 
-    function renderGroupCard(group, type) {
-      const card = document.createElement("section");
-      card.className = "group";
-
-      const title = document.createElement("h3");
-      title.textContent = group.group_key || `${type} group`;
-      card.appendChild(title);
-
-      const status = document.createElement("p");
-      status.innerHTML = `<span class="${pillClass(group.status)}">${group.status}</span>`;
-      card.appendChild(status);
-
-      if (group.delivery) {
-        const delivery = document.createElement("pre");
-        delivery.textContent = JSON.stringify(group.delivery, null, 2);
-        card.appendChild(delivery);
-      }
-
-      if (group.artifact) {
-        const artifact = document.createElement("pre");
-        artifact.textContent = JSON.stringify(group.artifact, null, 2);
-        card.appendChild(artifact);
-      }
-
-      if (group.errors && group.errors.length) {
-        const errors = document.createElement("pre");
-        errors.textContent = group.errors.join("\n");
-        card.appendChild(errors);
-      }
-
-      if (!group.delivery && (!group.errors || !group.errors.length)) {
-        const empty = document.createElement("p");
-        empty.className = "muted";
-        empty.textContent = "Без blocking reasons.";
-        card.appendChild(empty);
-      }
-      return card;
+    // ── New: cost one-liner ──
+    function costOneLiner(ai_costs) {
+      if (!ai_costs || !ai_costs.length) return null;
+      const available = ai_costs.filter((c) => c.cost_status === "available" && c.cost_usd != null);
+      if (!available.length) return null;
+      const total = available.reduce((sum, c) => sum + (c.cost_usd || 0), 0);
+      return `~$${total.toFixed(3)}`;
     }
 
-    function renderSummary(target, summaryEl, groupsEl, result, mode) {
-      summaryEl.className = "";
-      summaryEl.innerHTML = `
-        <span class="${pillClass(result.status)}">${result.status}</span>
-        <span class="pill">${result.preset || "report"}</span>
-        <span class="pill">${mode}</span>
-        <span class="pill">${result.selected_interactions ?? 0} interactions</span>
-      `;
-      clearNode(groupsEl);
-      const groups = result.groups || result.reports || [];
-      if (!groups.length) {
-        const empty = document.createElement("p");
-        empty.className = "empty";
-        empty.textContent = "Нет групп для отображения.";
-        groupsEl.appendChild(empty);
+    // ── New: recommended action ──
+    function recommendedAction(result) {
+      const status = result.status;
+      const groups = result.diagnostics?.readiness?.groups || [];
+      const firstOutcome = groups[0]?.readiness_outcome;
+      const reports = result.reports || [];
+      const firstReport = reports[0];
+      const reportStatus = firstReport?.status;
+
+      if (status === "blocked") return { text: "Заблокировано — см. причину ниже", cls: "bad" };
+      if (reportStatus === "delivered" || reportStatus === "completed" || status === "delivered" || status === "completed") {
+        if (firstOutcome === "signal_report") return { text: "Сигнальный отчёт доставлен", cls: "warn" };
+        return { text: "Отчёт доставлен", cls: "" };
+      }
+      if (reportStatus === "skip_accumulate" || firstOutcome === "skip_accumulate") {
+        return { text: "Данных недостаточно — накапливаем звонки", cls: "warn" };
+      }
+      if (status === "no_data" || reportStatus === "no_data") {
+        return { text: "Нет звонков за период — проверьте фильтры", cls: "warn" };
+      }
+      if (status === "missing_artifacts" || reportStatus === "missing_artifacts") {
+        return { text: "Не хватает анализов — запустите build_missing_and_report", cls: "warn" };
+      }
+      if (status === "partial") return { text: "Частичный результат — часть отчётов заблокирована", cls: "warn" };
+      if (status === "ready") return { text: "Готов к доставке", cls: "" };
+      return null;
+    }
+
+    // ── New: Operational Summary ──
+    function renderOperationalSummary(result) {
+      document.getElementById("op-summary-idle").style.display = "none";
+      document.getElementById("op-summary-tiles").style.display = "";
+
+      // Status tile
+      const statusVal = document.getElementById("tile-status-value");
+      statusVal.textContent = statusRu(result.status) || result.status || "—";
+
+      // Artifact tile
+      const artifactVal = document.getElementById("tile-artifact-value");
+      const artifactSub = document.getElementById("tile-artifact-sub");
+      const reports = result.reports || [];
+      const firstReport = reports[0];
+      const artifact = firstReport?.artifact;
+      if (artifact && artifact.kind) {
+        artifactVal.textContent = artifact.kind;
+        const parts = [];
+        if (artifact.template_version) parts.push(artifact.template_version);
+        if (artifact.page_count != null) parts.push(`${artifact.page_count} стр.`);
+        artifactSub.textContent = parts.join(" · ");
+      } else {
+        const rs = firstReport?.status || result.status;
+        artifactVal.textContent = statusRu(rs) || rs || "нет артефакта";
+        artifactSub.textContent = "";
+      }
+
+      // Delivery tile
+      const deliveryVal = document.getElementById("tile-delivery-value");
+      const deliverySub = document.getElementById("tile-delivery-sub");
+      const summary = result.observability?.summary || {};
+      const tgStatus = summary.delivery?.telegram_test_delivery?.status;
+      const emailStatus = summary.delivery?.email_delivery?.status;
+      if (tgStatus) {
+        deliveryVal.textContent = tgStatus === "delivered" ? "Telegram ✓" : `Telegram: ${tgStatus}`;
+        deliverySub.textContent = emailStatus ? `Email: ${emailStatus}` : "";
+      } else {
+        deliveryVal.textContent = "—";
+        deliverySub.textContent = "";
+      }
+
+      // Cost tile
+      const costVal = document.getElementById("tile-cost-value");
+      const costLine = costOneLiner(result.observability?.ai_costs || []);
+      costVal.textContent = costLine || "нет данных";
+
+      // Recommended action
+      const actionEl = document.getElementById("recommended-action");
+      const action = recommendedAction(result);
+      if (action) {
+        actionEl.textContent = action.text;
+        actionEl.className = "recommended-action" + (action.cls ? ` ${action.cls}` : "");
+        actionEl.style.display = "";
+      } else {
+        actionEl.style.display = "none";
+      }
+    }
+
+    function clearOperationalSummary() {
+      document.getElementById("op-summary-idle").style.display = "";
+      document.getElementById("op-summary-tiles").style.display = "none";
+      document.getElementById("recommended-action").style.display = "none";
+    }
+
+    // ── New: Artifact / Result panel ──
+    function renderArtifactPanel(result) {
+      const contentEl = document.getElementById("artifact-panel-content");
+      clearNode(contentEl);
+      contentEl.className = "";
+
+      const reports = result.reports || [];
+      const preset = result.preset || presetEl.value;
+
+      if (!reports.length) {
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "Нет групп для отображения.";
+        contentEl.appendChild(p);
         return;
       }
-      groups.forEach((group) => groupsEl.appendChild(renderGroupCard(group, target)));
+
+      reports.forEach((report) => {
+        const status = report.status;
+        const artifact = report.artifact;
+        const delivery = report.delivery;
+        const readiness = report.readiness || {};
+        const groupKey = report.group_key || "";
+
+        const wrap = document.createElement("div");
+        wrap.style.marginBottom = "14px";
+
+        if (groupKey) {
+          const gLabel = document.createElement("p");
+          gLabel.style.cssText = "font-size:12px;color:var(--muted);margin:0 0 6px;";
+          gLabel.textContent = groupKey;
+          wrap.appendChild(gLabel);
+        }
+
+        if ((status === "delivered" || status === "completed" || status === "ready") && artifact?.kind) {
+          // Artifact card
+          const card = document.createElement("div");
+          card.className = "artifact-card";
+
+          const title = document.createElement("h3");
+          title.innerHTML = `<span class="${pillClass(status)}">${statusRu(status)}</span>`;
+          card.appendChild(title);
+
+          const meta = document.createElement("div");
+          meta.className = "artifact-meta";
+          const lines = [];
+          if (artifact.filename) lines.push(`<strong>Файл:</strong> ${artifact.filename}`);
+          if (artifact.template_version) lines.push(`<strong>Шаблон:</strong> ${artifact.template_version}`);
+          if (artifact.page_count != null) lines.push(`<strong>Страниц:</strong> ${artifact.page_count}`);
+          meta.innerHTML = lines.join("<br>");
+          card.appendChild(meta);
+
+          // Delivery compact
+          if (delivery) {
+            const tg = delivery.transport?.telegram_test_delivery || delivery.telegram_test_delivery;
+            const em = delivery.transport?.email_delivery || delivery.email_delivery;
+            const dLines = [];
+            if (tg) {
+              const tgTargets = (tg.targets || []).join(", ") || "нет";
+              dLines.push(`Telegram: ${tg.status || "—"} → ${tgTargets}`);
+            }
+            if (em) {
+              dLines.push(`Email: ${em.status || "пропущен"}`);
+            }
+            if (dLines.length) {
+              const dEl = document.createElement("div");
+              dEl.className = "delivery-compact";
+              dEl.innerHTML = dLines.join("<br>");
+              card.appendChild(dEl);
+            }
+          }
+
+          wrap.appendChild(card);
+
+        } else if (status === "skip_accumulate") {
+          const card = document.createElement("div");
+          card.className = "group";
+          card.innerHTML = `<h3><span class="pill warn">Данных недостаточно</span></h3>`;
+
+          const reasonCodes = readiness.readiness_reason_codes || report.errors || [];
+          if (reasonCodes.length) {
+            const ul = document.createElement("ul");
+            ul.style.cssText = "margin:8px 0 0;padding-left:18px;font-size:13px;";
+            reasonCodes.forEach((code) => {
+              const li = document.createElement("li");
+              li.textContent = reasonRu(code);
+              ul.appendChild(li);
+            });
+            card.appendChild(ul);
+
+            const hint = document.createElement("p");
+            hint.className = "muted";
+            hint.style.cssText = "font-size:12px;margin-top:8px;";
+            hint.textContent = "Дождитесь накопления звонков и запустите повторно.";
+            card.appendChild(hint);
+          }
+
+          // Show raw codes in details
+          if (reasonCodes.length) {
+            const det = document.createElement("details");
+            det.style.marginTop = "8px";
+            det.innerHTML = `<summary style="font-size:12px;color:var(--muted);cursor:pointer;">Raw reason codes</summary>`;
+            const pre = document.createElement("pre");
+            pre.style.marginTop = "6px";
+            pre.textContent = reasonCodes.join("\n");
+            det.appendChild(pre);
+            card.appendChild(det);
+          }
+
+          wrap.appendChild(card);
+
+        } else if (status === "no_data") {
+          const card = document.createElement("div");
+          card.className = "group";
+          card.innerHTML = `<h3><span class="pill">Нет данных</span></h3>
+            <p class="muted" style="font-size:13px;">Нет звонков за выбранный период. Проверьте фильтры и дату.</p>`;
+          const errors = report.errors || [];
+          if (errors.length) {
+            const pre = document.createElement("pre");
+            pre.style.marginTop = "8px";
+            pre.textContent = errors.join("\n");
+            card.appendChild(pre);
+          }
+          wrap.appendChild(card);
+
+        } else if (status === "missing_artifacts") {
+          const card = document.createElement("div");
+          card.className = "group";
+          card.innerHTML = `<h3><span class="pill warn">Артефакты не готовы</span></h3>
+            <p class="muted" style="font-size:13px;">Не хватает готовых анализов. Запустите build_missing_and_report.</p>`;
+          wrap.appendChild(card);
+
+        } else if (status === "blocked") {
+          const card = document.createElement("div");
+          card.className = "group";
+          card.innerHTML = `<h3><span class="pill bad">Заблокировано</span></h3>`;
+          const errors = report.errors || [];
+          if (errors.length) {
+            const det = document.createElement("details");
+            det.innerHTML = `<summary style="font-size:13px;cursor:pointer;color:var(--muted);">Причина (raw)</summary>`;
+            const pre = document.createElement("pre");
+            pre.style.marginTop = "6px";
+            pre.textContent = errors.join("\n");
+            det.appendChild(pre);
+            card.appendChild(det);
+          }
+          wrap.appendChild(card);
+
+        } else {
+          // Fallback: generic group card
+          const card = document.createElement("div");
+          card.className = "group";
+          const statusLabel = statusRu(status) || status;
+          card.innerHTML = `<p><span class="${pillClass(status)}">${statusLabel}</span></p>`;
+          const errors = report.errors || [];
+          if (errors.length) {
+            const pre = document.createElement("pre");
+            pre.textContent = errors.join("\n");
+            card.appendChild(pre);
+          }
+          wrap.appendChild(card);
+        }
+
+        contentEl.appendChild(wrap);
+      });
     }
 
+    function clearArtifactPanel() {
+      const contentEl = document.getElementById("artifact-panel-content");
+      contentEl.className = "empty";
+      contentEl.textContent = "После запуска здесь появится артефакт или причина отсутствия отчёта.";
+    }
+
+    // ── New: Manager Readiness Table ──
+    function renderManagerReadiness(result) {
+      const section = document.getElementById("manager-readiness");
+      const preset = result.preset || presetEl.value;
+
+      // Only for manager_daily
+      if (preset !== "manager_daily") {
+        section.style.display = "none";
+        return;
+      }
+
+      section.style.display = "";
+      const groups = result.diagnostics?.readiness?.groups || [];
+      const placeholder = document.getElementById("readiness-placeholder");
+      const tableWrap = document.getElementById("readiness-table-wrap");
+      const tbody = document.getElementById("readiness-tbody");
+
+      if (!groups.length) {
+        placeholder.style.display = "";
+        tableWrap.style.display = "none";
+        return;
+      }
+
+      placeholder.style.display = "none";
+      tableWrap.style.display = "";
+      clearNode(tbody);
+
+      groups.forEach((g) => {
+        const outcome = g.readiness_outcome || "";
+        const coverage = g.analysis_coverage != null ? `${Math.round(g.analysis_coverage)}%` : "—";
+        const firstReason = (g.readiness_reason_codes || [])[0];
+        const explanation = firstReason ? reasonRu(firstReason) : "—";
+
+        let pillCls = "muted";
+        if (outcome === "full_report") pillCls = "good";
+        else if (outcome === "signal_report") pillCls = "warn";
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${g.group_key || "—"}</td>
+          <td>${g.window_days_used ?? "—"}</td>
+          <td>${g.relevant_calls ?? "—"}</td>
+          <td>${g.ready_analyses ?? "—"}</td>
+          <td>${coverage}</td>
+          <td><span class="readiness-pill ${pillCls}">${readinessRu(outcome)}</span></td>
+          <td style="color:var(--muted);font-size:12px;">${explanation}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function clearManagerReadiness() {
+      document.getElementById("manager-readiness").style.display = "none";
+    }
+
+    // ── Observability / Diagnostics (unchanged logic, wrapped in details) ──
     function setRunState(state, detail = "") {
       runStateEl.className = "";
       runStateEl.innerHTML = `
@@ -609,16 +1237,20 @@
       `;
     }
 
-    function renderObservabilityStage(stage) {
+    function renderObservabilityStage(stage, preset) {
+      const isRopWeekly = preset === "rop_weekly";
+      const isSkipped = stage.status === "skipped";
+
       const card = document.createElement("section");
-      card.className = "stage-card";
+      card.className = "stage-card" + (isRopWeekly && isSkipped ? " stage-skipped-normal" : "");
 
       const title = document.createElement("h3");
       title.textContent = stage.label || stage.code;
       card.appendChild(title);
 
+      const statusLabel = (isRopWeekly && isSkipped) ? "норма (persisted-only)" : stage.status;
       const status = document.createElement("p");
-      status.innerHTML = `<span class="${pillClass(stage.status)}">${stage.status}</span>`;
+      status.innerHTML = `<span class="${pillClass(stage.status)}">${statusLabel}</span>`;
       card.appendChild(status);
 
       const summary = document.createElement("p");
@@ -693,13 +1325,14 @@
 
       clearNode(observabilityStagesEl);
       const stages = observability.stages || [];
+      const preset = result.preset || presetEl.value;
       if (!stages.length) {
         const empty = document.createElement("p");
         empty.className = "empty";
         empty.textContent = "Observability stages are not available.";
         observabilityStagesEl.appendChild(empty);
       } else {
-        stages.forEach((stage) => observabilityStagesEl.appendChild(renderObservabilityStage(stage)));
+        stages.forEach((stage) => observabilityStagesEl.appendChild(renderObservabilityStage(stage, preset)));
       }
 
       renderObservabilitySummary(observability.summary || {}, runState);
@@ -764,6 +1397,67 @@
       }
     }
 
+    // ── Preview: using existing renderGroupCard approach ──
+    function renderGroupCard(group, type) {
+      const card = document.createElement("section");
+      card.className = "group";
+
+      const title = document.createElement("h3");
+      title.textContent = group.group_key || `${type} group`;
+      card.appendChild(title);
+
+      const status = document.createElement("p");
+      status.innerHTML = `<span class="${pillClass(group.status)}">${group.status}</span>`;
+      card.appendChild(status);
+
+      if (group.delivery) {
+        const delivery = document.createElement("pre");
+        delivery.textContent = JSON.stringify(group.delivery, null, 2);
+        card.appendChild(delivery);
+      }
+
+      if (group.artifact) {
+        const artifact = document.createElement("pre");
+        artifact.textContent = JSON.stringify(group.artifact, null, 2);
+        card.appendChild(artifact);
+      }
+
+      if (group.errors && group.errors.length) {
+        const errors = document.createElement("pre");
+        errors.textContent = group.errors.join("\n");
+        card.appendChild(errors);
+      }
+
+      if (!group.delivery && (!group.errors || !group.errors.length)) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "Без blocking reasons.";
+        card.appendChild(empty);
+      }
+      return card;
+    }
+
+    function renderSummary(target, summaryEl, groupsEl, result, mode) {
+      summaryEl.className = "";
+      summaryEl.innerHTML = `
+        <span class="${pillClass(result.status)}">${result.status}</span>
+        <span class="pill">${result.preset || "report"}</span>
+        <span class="pill">${mode}</span>
+        <span class="pill">${result.selected_interactions ?? 0} interactions</span>
+      `;
+      clearNode(groupsEl);
+      const groups = result.groups || result.reports || [];
+      if (!groups.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "Нет групп для отображения.";
+        groupsEl.appendChild(empty);
+        return;
+      }
+      groups.forEach((group) => groupsEl.appendChild(renderGroupCard(group, target)));
+    }
+
+    // ── Transport / request failure helpers (unchanged) ──
     function toRawSnippet(text) {
       const normalized = String(text || "").replace(/\s+/g, " ").trim();
       if (!normalized) return "(empty response body)";
@@ -883,6 +1577,7 @@
       return parsedBody;
     }
 
+    // ── Context loading ──
     async function loadContext(preferredDepartmentId = "") {
       const currentDepartment = preferredDepartmentId || departmentEl.value;
       const response = await fetch(contextUrl);
@@ -911,17 +1606,19 @@
     function renderDeliveryMode() {
       const delivery = uiContext.operator_delivery || {};
       const transport = delivery.mode === "telegram_test"
-        ? `Telegram test delivery always-on -> chat ${delivery.telegram_chat_id}`
+        ? `Telegram test delivery always-on → chat ${delivery.telegram_chat_id}`
         : "Telegram test delivery should be always-on, but runtime chat is not configured";
-      document.querySelector(".note").innerHTML = `
-        Список менеджеров берётся из локального Bitrix-synced справочника. Для актуализации списка нажмите
-        <code>Refresh Local Managers</code>. В текущем режиме manual run: <strong>${transport}</strong>.
-        Business email delivery управляется только checkbox выше и по умолчанию выключена.
-        Resolved email recipients показываются как reference. Если выбрать и менеджеров, и extensions,
-        backend применит пересечение этих фильтров.
+      document.getElementById("delivery-mode-note").innerHTML = `
+        Минимальный операторский интерфейс для ручного запуска <code>manager_daily</code> и
+        <code>rop_weekly</code>. Режим доставки: <strong>${transport}</strong>.
+      `;
+      document.getElementById("form-note").innerHTML = `
+        Список менеджеров из локального Bitrix-synced справочника. Нажмите <code>Refresh Local Managers</code> для актуализации.
+        Email delivery управляется checkbox выше. Если выбрать и менеджеров, и extensions, backend применит пересечение фильтров.
       `;
     }
 
+    // ── Event listeners ──
     departmentEl.addEventListener("change", syncManagerOptions);
     presetEl.addEventListener("change", syncPresetBehavior);
     dateFromEl.addEventListener("change", () => {
@@ -943,8 +1640,10 @@
     });
 
     syncManagersButtonEl.addEventListener("click", async () => {
-      runSummaryEl.textContent = "Обновляю локальный справочник менеджеров...";
-      clearNode(runGroupsEl);
+      // Show sync result in op-summary area briefly via artifact panel
+      const contentEl = document.getElementById("artifact-panel-content");
+      contentEl.className = "empty";
+      contentEl.textContent = "Обновляю локальный справочник менеджеров...";
       try {
         const response = await fetch(syncManagersUrl, {
           method: "POST",
@@ -956,39 +1655,56 @@
           throw new Error(data.detail || JSON.stringify(data));
         }
         await loadContext(departmentEl.value);
-        runSummaryEl.className = "";
-        runSummaryEl.innerHTML = `
+        contentEl.className = "";
+        contentEl.innerHTML = `
           <span class="pill good">${data.status}</span>
           <span class="pill">${data.summary.synced_total} synced</span>
           <span class="pill">${data.summary.deactivated_total} deactivated</span>
           <span class="pill">${data.summary.active_total} active visible</span>
         `;
       } catch (error) {
-        runSummaryEl.className = "pill bad";
-        runSummaryEl.textContent = `sync_failed: ${error.message}`;
+        contentEl.className = "pill bad";
+        contentEl.textContent = `sync_failed: ${error.message}`;
       }
     });
 
     document.getElementById("report-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      runSummaryEl.textContent = "Запуск report run...";
-      clearNode(runGroupsEl);
+      clearOperationalSummary();
+      clearArtifactPanel();
+      clearManagerReadiness();
       setRunState("starting", "Run request prepared");
       clearNode(observabilityStagesEl);
       clearNode(observabilitySummaryEl);
       clearNode(observabilityCostsEl);
       clearNode(diagnosticsSummaryEl);
       clearNode(diagnosticsNotesEl);
+
+      // Show manager readiness placeholder for manager_daily
+      if (presetEl.value === "manager_daily") {
+        document.getElementById("manager-readiness").style.display = "";
+        document.getElementById("readiness-placeholder").style.display = "";
+        document.getElementById("readiness-placeholder").textContent = "Запуск...";
+        document.getElementById("readiness-table-wrap").style.display = "none";
+      }
+
       try {
         await new Promise((resolve) => requestAnimationFrame(resolve));
         setRunState("running", "Execution in progress");
         const result = await fetchJson(runUrl, buildPayload());
-        renderSummary("run", runSummaryEl, runGroupsEl, result, "run");
+        renderOperationalSummary(result);
+        renderArtifactPanel(result);
+        renderManagerReadiness(result);
         renderObservability(result);
         renderDiagnostics(result);
       } catch (error) {
-        runSummaryEl.className = "pill bad";
-        runSummaryEl.textContent = formatFailureHeadline(error);
+        // Show failure in op-summary area
+        const idleEl = document.getElementById("op-summary-idle");
+        idleEl.style.display = "";
+        idleEl.className = "pill bad";
+        idleEl.textContent = formatFailureHeadline(error);
+        document.getElementById("op-summary-tiles").style.display = "none";
+
         setRunState("failed", error.kind === "transport_failure" ? "Transport failure" : "Request failed");
         clearNode(observabilityStagesEl);
         clearNode(observabilitySummaryEl);
@@ -996,6 +1712,9 @@
         clearNode(diagnosticsSummaryEl);
         clearNode(diagnosticsNotesEl);
         observabilityStagesEl.appendChild(renderRequestFailureBlock(error));
+
+        // Open observability details so failure is visible
+        document.getElementById("observability-details").open = true;
       }
     });
 
