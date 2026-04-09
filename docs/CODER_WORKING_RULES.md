@@ -97,6 +97,18 @@ Prompt-asset policies должны жить в [docs/PROMPTS_GUIDE.md](docs/PROM
 - что осталось task-specific;
 - как изменилась будущая форма task-промптов.
 
+## 7.1 Git close-out по умолчанию
+
+Если пользователь явно не ограничил задачу только analysis/docs/review и на машине есть рабочий Git remote/auth path, кодер должен по умолчанию доводить change до Git close-out:
+- сделать осмысленный `commit`;
+- выполнить `push`;
+- при необходимости синхронизироваться с remote перед push.
+
+Ограничения:
+- не делать `force-push`, history rewrite, risky `rebase` или иное неоднозначное вмешательство без явного согласования;
+- если `push` / `sync` заблокированы remote auth, branch protection, divergence или иным внешним blocker, кодер должен явно назвать blocker, а не делать вид, что Git-этап завершён;
+- это process rule для обычного bounded close-out, а не разрешение скрывать незакрытые runtime/verification gaps.
+
 ## 8. Что считать stage-specific, а не universal
 
 Следующие типы правил не должны жить в universal coder rules:

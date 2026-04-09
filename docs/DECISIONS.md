@@ -258,6 +258,7 @@
   - `1` growth zone
   - `1` main problem
   - `1` normal recommendation
+
 - **Decision:** `signal_report` is allowed only when `full_report` is not ready, but:
   - `ready_analyses >= 2`
   - there is an explicit positive, critical, or coaching signal
@@ -336,3 +337,15 @@
 - **Reason:** Real operator runs showed that permissive template-merge normalization could let `LLM-2` outputs degrade into empty scored contracts (`0.0`, empty stages/findings/recommendations), which then looked like persisted analyses but were not materially usable for reporting. The fix belongs in the analyzer/reuse boundary, not as a reporting-only workaround.
 - **Scope:** No approved analyzer contract change, no broad prompt redesign, no automation expansion, and no change to `rop_weekly` execution model.
 - **Date:** 2026-04-07
+
+## ADR-039: Default task close-out includes Git commit/push/sync when safely available
+- **Decision:** For normal bounded implementation/documentation tasks, the default close-out expectation is no longer "files changed only". When the machine has a working Git repository and remote/auth path, the coder should finish the task with:
+  - `commit`
+  - `push`
+  - and sync with remote when needed before push
+- **Decision:** This is a default workflow rule for future coders in this repository, not a one-off local preference.
+- **Decision:** The coder must not perform risky Git actions such as `force-push`, history rewrite, or ambiguous conflict resolution without explicit approval.
+- **Decision:** If remote sync/push is blocked by auth, branch protection, divergence, or another external Git blocker, the coder must report that blocker explicitly instead of pretending Git close-out is complete.
+- **Reason:** The project now has a baseline Git history and is onboarding additional developers. Consistent Git close-out reduces drift between "implemented locally" and "shared in remote history", while still preserving visibility of external blockers and open verification gaps.
+- **Scope:** This is a process/default workflow rule only. It does not authorize masking runtime issues, skipping verification, or changing product/runtime scope as part of a Git close-out.
+- **Date:** 2026-04-09
