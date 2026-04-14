@@ -403,3 +403,20 @@
 - **Reason:** Different agents auto-load different root-level files, while some agents may ignore them completely. Thin entry adapters improve adoption for supported agents, but the cross-agent enforcement must still live in the task prompt and repo infrastructure.
 - **Constraints:** Local `.git/hooks` may only delegate to repo-versioned scripts. This decision does not replace human review and does not authorize masking blockers or incomplete verification.
 - **Date:** 2026-04-09
+
+## ADR-043: Business-ready report pack comes before Pilot Live; full report mechanism upgrade comes after pilot
+- **Decision:** Before `Pilot Live` we do a bounded business-facing report improvement block.
+- **Decision:** This block is limited to presentation/readability/renderer/report-structure improvements.
+- **Decision:** Full report mechanism upgrade is postponed until after pilot.
+- **Reason:** Business perception is highly report-visual and report-format dependent, but mixing pilot launch with full mechanism redesign would blend two different risks into one step.
+- **Scope:** Allowed before pilot:
+  - report structure/layout
+  - wording/readability
+  - visual hierarchy
+  - PDF/renderer polish
+  - complete call-list presentation
+- **Scope:** Not allowed before pilot:
+  - full extraction/aggregation/coaching redesign
+  - broad analyzer redesign
+  - full rich-report mechanism rollout
+- **Date:** 2026-04-14

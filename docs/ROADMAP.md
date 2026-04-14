@@ -166,9 +166,26 @@
 
 ---
 
+## Веха 6.5. Business-ready Report Pack
+### Смысл
+Довести daily/weekly отчёты до business-ready presentation layer перед пилотом, не запуская полный mechanism upgrade rich report.
+
+### Что должно быть на выходе
+- polished business-facing report structure
+- clearer top summary and visual hierarchy
+- readable wording for business users
+- consistent PDF artifact
+- consistent list-of-calls presentation
+- no full rich-report mechanism redesign
+
+### Критерий готовности
+Бизнес может воспринимать отчёт как рабочий продукт, при этом scoring baseline и pilot version остаются стабильными.
+
+---
+
 ## Веха 7. Pilot Live
 ### Смысл
-Проверить реальную ценность системы в живой работе.
+Проверить реальную ценность системы в живой работе на стабильной версии после `Business-ready Report Pack`.
 
 ### Что должно быть на выходе
 - 1–2 недели реального использования
@@ -247,13 +264,16 @@
 - Manual Reporting Pilot как отдельный промежуточный режим;
 - параметрический ручной запуск отчётов без scheduler/retries/beat;
 - reuse уже собранных артефактов и bounded model/version selection;
-- только после этого обсуждать automation settings и automated reporting.
+- после закрытия pilot blockers порядок такой: `Pilot Ready` -> `Business-ready Report Pack` -> `Pilot Live` -> post-pilot richer report mechanism.
 
 ## Что особенно важно не потерять по пути
 - Bitrix24 read-only нужен в следующем шаге для полного управленческого отбора и маппинга, но первый live manual validation допускает временный pilot mode без него.
 - После закрытия Вехи 3.5 Bitrix24 read-only становится основным путём manager/department mapping, а manual bootstrap остаётся резервным режимом.
 - После подтверждения Bitrix24 read-only mapping ближайший шаг больше не automation, а Manual Output Validation.
 - После закрытия Manual Output Validation ближайший согласованный шаг больше не automation readiness, а `Manual Reporting Pilot`.
+- После закрытия `Pilot Ready` следующим согласованным шагом является `Business-ready Report Pack`, а не полный mechanism upgrade rich report.
+- `Pilot Live` проводится на стабильной версии после `Business-ready Report Pack`.
+- Full Report Mechanism Upgrade относится к отдельному post-pilot этапу после `Pilot Live`.
 - Bitrix24 write-back относится уже к MVP-2 «Договорённости».
 - Checklist definition, analysis contract и manager card — это три разные сущности.
 - Delivery не равно reporting: после карточки звонка ещё нужен полноценный контур ежедневных и еженедельных отчётов.

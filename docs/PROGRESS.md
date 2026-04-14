@@ -126,14 +126,17 @@
 
 ## В работе сейчас
 - [ ] Следующие task-промпты нужно строить в коротком виде: только переменная часть шага, конкретный scope, expected output и список docs для обновления при затронутых изменениях
-- [ ] Дальше удерживать richer report content и stricter reuse/version checks в bounded режиме без перехода к automation scope
+- [ ] Сначала закрыть bounded pilot blockers для `Pilot Ready`
+- [ ] После этого выполнить `Business-ready Report Pack` как отдельный pre-pilot block для business-facing presentation layer
+- [ ] Full Report Mechanism Upgrade отложен на отдельный post-pilot step и не смешивается с запуском пилота
 - [ ] Для полного closure verification по fresh/missing full-chain кейсу остаётся только operational gap: пополнить/разблокировать OpenAI quota для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`, затем повторить bounded live run на том же case без изменения кода
 - [ ] После безопасного Git baseline и подключения remote вернуться к тому же live `manager_daily` rerun только после восстановления billable quota для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
 
 ## Следующие шаги
-1. Довести bounded report-composer activation policy и его effective-version rules без смены analyzer/reporting contracts
-2. Продолжить точечное улучшение daily/weekly content richness внутри уже существующих normalized sections
-3. Не переходить к automation settings, пока bounded manual reporting logic не будет считаться достаточно стабильной
+1. Закрыть bounded `Pilot Ready` blockers
+2. Выполнить `Business-ready Report Pack`
+3. Провести `Pilot Live` на стабильной версии
+4. По итогам пилота перейти к `Full Report Mechanism Upgrade`
 
 ## Открытые вопросы
 - Чек-лист оценки звонков от РОПа (нужен до Шага 5)

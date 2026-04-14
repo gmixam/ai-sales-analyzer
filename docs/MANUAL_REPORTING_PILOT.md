@@ -29,10 +29,37 @@
 - retries;
 - beat;
 - full automation loop;
+- full report mechanism upgrade before pilot;
 - broad redesign analyzer;
 - изменение approved analyzer contract;
 - новые provider adapters только ради этого шага;
 - monthly reports в первой версии.
+
+## Relation to Pilot Ready / Pilot Live
+
+После закрытия стартовых pilot blockers следующий согласованный шаг не `full mechanism upgrade rich report`.
+
+Следующим bounded step является `Business-ready Report Pack`.
+Этот шаг относится к business-facing presentation layer.
+Полный mechanism upgrade rich report относится уже к post-pilot track.
+
+## Pre-pilot report shaping boundary
+
+### Allowed before pilot
+
+- structure/layout polish
+- wording/readability polish
+- visual hierarchy
+- renderer/template polish
+- consistent PDF and short delivery wrapper
+- complete and honest list-of-calls presentation
+
+### Not allowed before pilot
+
+- new mandatory reporting schema redesign
+- new extraction/aggregation/coaching architecture
+- full rich daily mechanism upgrade
+- broad analyzer redesign
 
 ## Первая версия ручного запуска
 
