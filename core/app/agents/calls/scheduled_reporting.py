@@ -252,6 +252,7 @@ class ScheduledReviewableReportingService:
         """Return all schedules for the operator UI."""
         schedules = (
             self.db.query(ReportingSchedule)
+            .filter(ReportingSchedule.deleted_at.is_(None))
             .order_by(ReportingSchedule.created_at.desc())
             .all()
         )
@@ -358,6 +359,8 @@ class ScheduledReviewableReportingService:
     def set_schedule_enabled(self, *, schedule_id: str, enabled: bool) -> dict[str, Any]:
         """Pause or resume one schedule."""
         schedule = self._get_schedule(schedule_id)
+        if schedule.deleted_at is not None:
+            raise ASAError("Deleted schedules cannot be resumed or paused.")
         schedule.enabled = bool(enabled)
         if schedule.enabled:
             next_local = _next_local_occurrence(
@@ -376,6 +379,20 @@ class ScheduledReviewableReportingService:
                 open_batch.paused_at = datetime.now(UTC)
         self.db.flush()
         return self._serialize_schedule(schedule)
+
+    def delete_schedule(self, *, schedule_id: str) -> dict[str, Any]:
+        """Archive one schedule without deleting historical batches/drafts."""
+        schedule = self._get_schedule(schedule_id)
+        if schedule.deleted_at is None:
+            schedule.enabled = False
+            schedule.next_run_at = None
+            schedule.deleted_at = datetime.now(UTC)
+        self.db.flush()
+        return {
+            "id": str(schedule.id),
+            "deleted": True,
+            "deleted_at": schedule.deleted_at.isoformat() if schedule.deleted_at else None,
+        }
 
     def edit_draft(
         self,
@@ -764,12 +781,52 @@ class ScheduledReviewableReportingService:
 
     def _serialize_schedule(self, schedule: ReportingSchedule) -> dict[str, Any]:
         """Serialize one schedule for UI/API responses."""
+        department = (
+            self.db.query(Department)
+            .filter(Department.id == schedule.department_id)
+            .first()
+        )
+        department_name = department.name if department is not None else "Не найден департамент"
+        manager_ids = list(schedule.manager_ids or [])
+        manager_map = {
+            str(item.id): item
+            for item in self.db.query(Manager)
+            .filter(Manager.id.in_([UUID(item) for item in manager_ids]) if manager_ids else False)
+            .all()
+        } if manager_ids else {}
+        manager_labels = []
+        for manager_id in manager_ids:
+            manager = manager_map.get(manager_id)
+            if manager is None:
+                manager_labels.append(
+                    {
+                        "id": manager_id,
+                        "label": "Не найден менеджер",
+                        "secondary_label": manager_id,
+                    }
+                )
+                continue
+            primary = manager.name
+            if manager.extension:
+                primary = f"{manager.name} ({manager.extension})"
+            manager_labels.append(
+                {
+                    "id": manager_id,
+                    "label": primary,
+                    "secondary_label": manager_id,
+                }
+            )
         return {
             "id": str(schedule.id),
             "operating_mode": SCHEDULED_REVIEWABLE_OPERATING_MODE,
             "department_id": str(schedule.department_id),
+            "department_label": {
+                "label": department_name,
+                "secondary_label": str(schedule.department_id),
+            },
             "preset": schedule.preset,
-            "manager_ids": list(schedule.manager_ids or []),
+            "manager_ids": manager_ids,
+            "manager_labels": manager_labels,
             "enabled": bool(schedule.enabled),
             "start_date": schedule.start_date.isoformat(),
             "start_time": schedule.start_time,
@@ -781,6 +838,8 @@ class ScheduledReviewableReportingService:
             "review_required": True,
             "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
             "last_planned_at": schedule.last_planned_at.isoformat() if schedule.last_planned_at else None,
+            "deleted": schedule.deleted_at is not None,
+            "deleted_at": schedule.deleted_at.isoformat() if schedule.deleted_at else None,
         }
 
     def _serialize_batch(self, batch: ScheduledReportBatch) -> dict[str, Any]:

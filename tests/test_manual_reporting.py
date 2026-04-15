@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 
@@ -1723,6 +1723,78 @@ class ScheduledReviewableReportingServiceTests(unittest.TestCase):
         self.assertEqual(schedule.last_planned_at, planned_for)
         self.assertEqual(schedule.next_run_at, datetime(2026, 4, 16, 9, 0, tzinfo=UTC))
 
+    def test_delete_schedule_archives_without_touching_history(self) -> None:
+        service = self._make_service()
+        schedule = SimpleNamespace(
+            id=uuid4(),
+            enabled=True,
+            next_run_at=datetime(2026, 4, 15, 9, 0, tzinfo=UTC),
+            deleted_at=None,
+        )
+        service._get_schedule = lambda _schedule_id: schedule
+
+        result = service.delete_schedule(schedule_id=str(schedule.id))
+
+        self.assertTrue(result["deleted"])
+        self.assertFalse(schedule.enabled)
+        self.assertIsNone(schedule.next_run_at)
+        self.assertIsNotNone(schedule.deleted_at)
+
+    def test_serialize_schedule_resolves_human_labels_with_fallbacks(self) -> None:
+        department_id = uuid4()
+        manager_id = str(uuid4())
+        missing_manager_id = str(uuid4())
+        service = self._make_service()
+
+        class FakeResult:
+            def __init__(self, items):
+                self.items = items
+
+            def filter(self, *_args, **_kwargs):
+                return self
+
+            def first(self):
+                return self.items[0] if self.items else None
+
+            def all(self):
+                return self.items
+
+        department = SimpleNamespace(id=department_id, name="Отдел продаж")
+        manager = SimpleNamespace(id=UUID(manager_id), name="Эльмира", extension="322")
+
+        def fake_query(model):
+            if model.__name__ == "Department":
+                return FakeResult([department])
+            if model.__name__ == "Manager":
+                return FakeResult([manager])
+            raise AssertionError("unexpected model")
+
+        service.db = SimpleNamespace(query=fake_query)
+        schedule = SimpleNamespace(
+            id=uuid4(),
+            department_id=department_id,
+            preset="manager_daily",
+            manager_ids=[manager_id, missing_manager_id],
+            enabled=True,
+            start_date=date(2026, 4, 15),
+            start_time="09:00",
+            timezone="Etc/UTC",
+            recurrence_type="daily",
+            report_period_rule="previous_day",
+            mode="build_missing_and_report",
+            business_email_enabled=False,
+            review_required=True,
+            next_run_at=None,
+            last_planned_at=None,
+            deleted_at=None,
+        )
+
+        result = service._serialize_schedule(schedule)
+
+        self.assertEqual(result["department_label"]["label"], "Отдел продаж")
+        self.assertEqual(result["manager_labels"][0]["label"], "Эльмира (322)")
+        self.assertEqual(result["manager_labels"][1]["label"], "Не найден менеджер")
+
     def test_scheduled_run_stops_at_review_required_and_disables_business_email_in_run_call(self) -> None:
         service = self._make_service()
         added = []
@@ -2043,6 +2115,31 @@ class ScheduledReviewableReportingApiTests(unittest.TestCase):
         self.assertEqual(edit_response.json()["status"], "edited")
         self.assertEqual(approve_response.status_code, 200)
         self.assertEqual(approve_response.json()["batch"]["status"], "delivered")
+
+    def test_delete_schedule_endpoint_returns_deleted_status(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
+        class FakeScheduleService:
+            def __init__(self, db) -> None:
+                self.db = db
+
+            def delete_schedule(self, **kwargs):
+                return {"id": "schedule-1", "deleted": True, **kwargs}
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db):
+            with patch("app.core_shared.api.routes.pipeline.ScheduledReviewableReportingService", FakeScheduleService):
+                client = TestClient(app)
+                response = client.post(
+                    "/pipeline/calls/report-schedules/schedule-1/delete",
+                    json={"confirm": True},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "deleted")
+        self.assertTrue(payload["schedule"]["deleted"])
 
 
 if __name__ == "__main__":

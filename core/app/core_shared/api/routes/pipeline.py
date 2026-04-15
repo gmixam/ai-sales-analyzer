@@ -150,6 +150,12 @@ class ToggleReportScheduleRequest(BaseModel):
     enabled: bool
 
 
+class DeleteReportScheduleRequest(BaseModel):
+    """Payload for soft-deleting one schedule."""
+
+    confirm: bool = False
+
+
 class EditScheduledDraftRequest(BaseModel):
     """Payload for editing allowed business-facing draft blocks."""
 
@@ -566,6 +572,20 @@ async def toggle_calls_report_schedule(schedule_id: str, request: ToggleReportSc
             service = ScheduledReviewableReportingService(db=db)
             schedule = service.set_schedule_enabled(schedule_id=schedule_id, enabled=request.enabled)
             return {"status": "updated", "schedule": schedule}
+    except ASAError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc
+
+
+@router.post("/calls/report-schedules/{schedule_id}/delete")
+async def delete_calls_report_schedule(schedule_id: str, request: DeleteReportScheduleRequest) -> dict:
+    """Archive one bounded schedule without deleting historical batches/drafts."""
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="Delete confirmation is required.")
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            summary = service.delete_schedule(schedule_id=schedule_id)
+            return {"status": "deleted", "schedule": summary}
     except ASAError as exc:
         raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc
 

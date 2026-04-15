@@ -67,6 +67,36 @@
       line-height: 1.5;
     }
 
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin: 0 0 18px;
+    }
+
+    .tab-button {
+      width: auto;
+      padding: 10px 16px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .tab-button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff8f2;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
     /* ── Operational Summary ── */
     #op-summary {
       margin-bottom: 18px;
@@ -616,6 +646,12 @@
       </p>
     </section>
 
+    <nav class="tabs" aria-label="Operator UI sections">
+      <button type="button" class="tab-button active" data-tab-target="manual-tab-panel">Ручной запуск</button>
+      <button type="button" class="tab-button" data-tab-target="schedules-tab-panel">Расписание</button>
+    </nav>
+
+    <section id="manual-tab-panel" class="tab-panel active">
     <!-- ── Operational Summary ── -->
     <section id="op-summary">
       <h2>Итог запуска</h2>
@@ -809,6 +845,9 @@
       </details>
     </div>
 
+    </section>
+
+    <section id="schedules-tab-panel" class="tab-panel">
     <section class="layout" style="margin-top:18px;">
       <article class="card">
         <h2>Schedules</h2>
@@ -919,6 +958,7 @@
         </section>
       </aside>
     </section>
+    </section>
   </main>
 
   <script>
@@ -928,6 +968,7 @@
     const runUrl = "/pipeline/calls/report-run";
     const createScheduleUrl = "/pipeline/calls/report-schedules";
     const scanSchedulesUrl = "/pipeline/calls/report-schedules/scan";
+    const tabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
 
     const presetEl = document.getElementById("preset");
     const modeEl = document.getElementById("mode");
@@ -1695,6 +1736,20 @@
       }
     }
 
+    function boolLabel(value, enabled = "Вкл", disabled = "Выкл") {
+      return value ? enabled : disabled;
+    }
+
+    function activateTab(targetId) {
+      tabButtons.forEach((button) => {
+        const isActive = button.dataset.tabTarget === targetId;
+        button.classList.toggle("active", isActive);
+      });
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === targetId);
+      });
+    }
+
     function renderSchedules() {
       clearNode(schedulesListEl);
       const scheduled = uiContext.scheduled_reviewable_reporting || {};
@@ -1714,19 +1769,39 @@
         title.innerHTML = `${schedule.preset} <span class="${pillClass(schedule.enabled ? "completed" : "idle")}">${schedule.enabled ? "enabled" : "paused"}</span>`;
         card.appendChild(title);
 
+        const departmentLabel = schedule.department_label || {
+          label: "Не найден департамент",
+          secondary_label: schedule.department_id || "",
+        };
+        const managers = schedule.manager_labels || [];
+        const managersLabel = managers.length
+          ? managers.map((item) => item.label).join(", ")
+          : "Все активные менеджеры";
+        const managersSecondary = managers
+          .filter((item) => item.secondary_label)
+          .map((item) => item.secondary_label)
+          .join(", ");
+
         const meta = document.createElement("div");
         meta.className = "meta-list";
         meta.innerHTML = `
-          <div><strong>Department:</strong> ${schedule.department_id}</div>
-          <div><strong>Managers:</strong> ${(schedule.manager_ids || []).length ? schedule.manager_ids.join(", ") : "all active"}</div>
+          <div><strong>Department:</strong> ${departmentLabel.label}</div>
+          <div><strong>Managers:</strong> ${managersLabel}</div>
           <div><strong>Recurrence:</strong> ${schedule.recurrence_type}</div>
           <div><strong>Period rule:</strong> ${schedule.report_period_rule}</div>
           <div><strong>Mode:</strong> ${schedule.mode}</div>
-          <div><strong>Business email:</strong> ${schedule.business_email_enabled ? "on" : "off"}</div>
+          <div><strong>Business email:</strong> ${boolLabel(schedule.business_email_enabled)}</div>
           <div><strong>Next run:</strong> ${formatDateTime(schedule.next_run_at)}</div>
-          <div><strong>Review required:</strong> true</div>
+          <div><strong>Review required:</strong> ${boolLabel(schedule.review_required, "Да", "Нет")}</div>
         `;
         card.appendChild(meta);
+
+        const muted = document.createElement("p");
+        muted.className = "muted";
+        muted.style.fontSize = "12px";
+        muted.style.margin = "10px 0 0";
+        muted.textContent = `Dept ID: ${departmentLabel.secondary_label || "—"}${managersSecondary ? ` · Manager IDs: ${managersSecondary}` : ""}`;
+        card.appendChild(muted);
 
         const actions = document.createElement("div");
         actions.className = "actions";
@@ -1741,6 +1816,18 @@
           await loadContext(scheduleDepartmentEl.value || departmentEl.value);
         });
         actions.appendChild(toggle);
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary";
+        remove.textContent = "Удалить";
+        remove.addEventListener("click", async () => {
+          const confirmed = window.confirm("Удалить расписание? Оно исчезнет из active list, но history сохранится.");
+          if (!confirmed) return;
+          await fetchJson(`/pipeline/calls/report-schedules/${schedule.id}/delete`, { confirm: true });
+          await loadContext(scheduleDepartmentEl.value || departmentEl.value);
+        });
+        actions.appendChild(remove);
         card.appendChild(actions);
         schedulesListEl.appendChild(card);
       });
@@ -2061,6 +2148,9 @@
     }
 
     // ── Event listeners ──
+    tabButtons.forEach((button) => {
+      button.addEventListener("click", () => activateTab(button.dataset.tabTarget));
+    });
     departmentEl.addEventListener("change", syncManagerOptions);
     scheduleDepartmentEl.addEventListener("change", syncScheduleManagerOptions);
     presetEl.addEventListener("change", syncPresetBehavior);
