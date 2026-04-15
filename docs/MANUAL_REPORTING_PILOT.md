@@ -145,13 +145,25 @@
 ## Scheduled reviewable reporting boundary
 
 - operating mode = `scheduled_reviewable_reporting`;
+- due-scan idempotency is enforced server-side: repeated scan must not create duplicate batches for the same due occurrence;
+- disabled or future schedules must not create new batches;
 - schedule creates report run automatically and stops at `review_required`;
 - result appears in operator UI as draft / review-required artifact;
+- batch lifecycle is server-enforced and limited to:
+  - `planned`
+  - `queued`
+  - `running`
+  - `review_required`
+  - `approved_for_delivery`
+  - `delivered`
+  - `failed`
+  - `paused`;
 - operator may edit only business-facing report blocks:
   - `manager_daily`: top summary, focus wording, key problem wording, recommendations wording, final manager-facing note / challenge;
   - `rop_weekly`: executive summary, team risks wording, ROP tasks wording, final managerial commentary;
 - operator must not edit transcript, raw extracted facts, raw checklist answers, stage scores, criteria results, raw analyzer JSON, source call-list data or computed metrics;
 - before business delivery the system keeps original generated block, edited block, editor and `edited_at`;
+- forbidden edit attempts must fail server-side with an explicit structured error;
 - business delivery for scheduled runs happens only after explicit operator approve;
 - existing Telegram test inspection path may remain active.
 

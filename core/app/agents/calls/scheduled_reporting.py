@@ -44,6 +44,16 @@ SCHEDULED_REVIEWABLE_BATCH_STATUSES = (
     "failed",
     "paused",
 )
+SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    "planned": ("queued", "failed", "paused"),
+    "queued": ("running", "failed", "paused"),
+    "running": ("review_required", "failed", "paused"),
+    "review_required": ("approved_for_delivery", "failed", "paused"),
+    "approved_for_delivery": ("delivered", "failed"),
+    "delivered": (),
+    "failed": (),
+    "paused": ("queued", "failed"),
+}
 SCHEDULED_REVIEWABLE_DEFAULT_EDITOR = "operator_ui"
 MANAGER_DAILY_EDITABLE_BLOCKS = (
     "top_summary",
@@ -170,6 +180,17 @@ def _editable_block_keys(*, preset: str) -> tuple[str, ...]:
     raise ASAError(f"Unsupported preset '{preset}' for scheduled reviewable reporting.")
 
 
+def _ensure_allowed_blocks(*, preset: str, edited_blocks: dict[str, str]) -> None:
+    """Reject any attempt to edit non-whitelisted blocks."""
+    allowed = set(_editable_block_keys(preset=preset))
+    invalid = [key for key in edited_blocks if key not in allowed]
+    if invalid:
+        raise ASAError(
+            "scheduled_reviewable_reporting.edit_block_forbidden: "
+            + ", ".join(sorted(invalid))
+        )
+
+
 def extract_editable_blocks(*, preset: str, payload: dict[str, Any]) -> dict[str, str]:
     """Extract the operator-editable business-facing blocks from a generated payload."""
     if preset == "manager_daily":
@@ -194,10 +215,7 @@ def extract_editable_blocks(*, preset: str, payload: dict[str, Any]) -> dict[str
 
 def apply_editable_blocks(*, preset: str, payload: dict[str, Any], edited_blocks: dict[str, str]) -> dict[str, Any]:
     """Apply bounded editorial edits to the generated payload."""
-    allowed = set(_editable_block_keys(preset=preset))
-    invalid = [key for key in edited_blocks if key not in allowed]
-    if invalid:
-        raise ASAError(f"Unsupported editable blocks for {preset}: {', '.join(sorted(invalid))}.")
+    _ensure_allowed_blocks(preset=preset, edited_blocks=edited_blocks)
 
     updated = dict(payload)
     if preset == "manager_daily":
@@ -352,6 +370,10 @@ class ScheduledReviewableReportingService:
             schedule.next_run_at = next_local.astimezone(UTC)
         else:
             schedule.next_run_at = None
+            open_batch = self._get_latest_open_batch(schedule_id=schedule.id)
+            if open_batch is not None and open_batch.status in {"planned", "queued", "running", "review_required"}:
+                self._transition_batch_status(open_batch, "paused")
+                open_batch.paused_at = datetime.now(UTC)
         self.db.flush()
         return self._serialize_schedule(schedule)
 
@@ -366,6 +388,7 @@ class ScheduledReviewableReportingService:
         draft = self._get_draft(draft_id)
         if draft.status != "review_required":
             raise ASAError("Only drafts in review_required status can be edited.")
+        _ensure_allowed_blocks(preset=draft.preset, edited_blocks=edited_blocks)
         payload = dict(draft.generated_payload or {})
         current_edits = dict(draft.edited_blocks or {})
         for key, value in edited_blocks.items():
@@ -378,7 +401,13 @@ class ScheduledReviewableReportingService:
         audit = list(draft.edit_audit or [])
         audit.append(
             {
-                "edited_blocks": {key: str(value) for key, value in edited_blocks.items()},
+                "edited_blocks": {
+                    key: {
+                        "original_generated_block": str((draft.generated_blocks or {}).get(key) or ""),
+                        "edited_block": str(value),
+                    }
+                    for key, value in edited_blocks.items()
+                },
                 "editor": str(editor or SCHEDULED_REVIEWABLE_DEFAULT_EDITOR),
                 "edited_at": datetime.now(UTC).isoformat(),
             }
@@ -401,8 +430,10 @@ class ScheduledReviewableReportingService:
         drafts = self._load_batch_drafts(batch.id)
         if not drafts:
             raise ASAError("Scheduled batch has no drafts to approve.")
+        if any(draft.status != "review_required" for draft in drafts):
+            raise ASAError("All scheduled drafts must stay in review_required before approve.")
 
-        batch.status = "approved_for_delivery"
+        self._transition_batch_status(batch, "approved_for_delivery")
         batch.approved_at = datetime.now(UTC)
         batch.approved_by = str(editor or SCHEDULED_REVIEWABLE_DEFAULT_EDITOR)
         self.db.flush()
@@ -450,6 +481,11 @@ class ScheduledReviewableReportingService:
                 ((transport.get("telegram_test_delivery") or {}).get("status")) or ""
             ).strip()
             email_status = str(((transport.get("email_delivery") or {}).get("status")) or "").strip()
+            allowed_email_statuses = (
+                {"delivered"}
+                if batch.business_email_enabled
+                else {"", "skipped"}
+            )
             draft.errors = [
                 error
                 for error in [
@@ -458,25 +494,26 @@ class ScheduledReviewableReportingService:
                 ]
                 if error
             ]
-            draft.status = (
+            next_draft_status = (
                 "delivered"
                 if telegram_status == "delivered"
-                and email_status in {"", "delivered", "skipped", "blocked"}
+                and email_status in allowed_email_statuses
                 else "failed"
             )
+            draft.status = next_draft_status
             if draft.status == "delivered":
                 any_delivered = True
             else:
                 delivery_errors.extend(list(draft.errors or []))
         batch.errors = delivery_errors
         if any_delivered and not delivery_errors:
-            batch.status = "delivered"
+            self._transition_batch_status(batch, "delivered")
             batch.delivered_at = datetime.now(UTC)
         elif any_delivered:
-            batch.status = "failed"
+            self._transition_batch_status(batch, "failed")
             batch.failed_at = datetime.now(UTC)
         else:
-            batch.status = "failed"
+            self._transition_batch_status(batch, "failed")
             batch.failed_at = datetime.now(UTC)
         self.db.flush()
         return self._serialize_batch(batch)
@@ -502,12 +539,22 @@ class ScheduledReviewableReportingService:
 
     def _run_due_schedule(self, *, schedule: ReportingSchedule, now_utc: datetime) -> None:
         """Execute one due schedule into a review batch."""
+        if not schedule.enabled or schedule.next_run_at is None:
+            return
+        if schedule.next_run_at > now_utc:
+            return
         if self._has_open_batch(schedule_id=schedule.id):
             schedule.last_planned_at = schedule.next_run_at
             schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
             return
 
         planned_for = schedule.next_run_at or now_utc
+        existing = self._get_batch_for_occurrence(schedule_id=schedule.id, planned_for=planned_for)
+        if existing is not None:
+            schedule.last_planned_at = planned_for
+            schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+            self.db.flush()
+            return
         local_planned = planned_for.astimezone(ZoneInfo(schedule.timezone))
         period = _compute_report_period(rule=schedule.report_period_rule, local_run_at=local_planned)
         filters = ReportRunFilters(
@@ -535,11 +582,11 @@ class ScheduledReviewableReportingService:
         self.db.add(batch)
         self.db.flush()
 
-        batch.status = "queued"
+        self._transition_batch_status(batch, "queued")
         batch.queued_at = datetime.now(UTC)
         self.db.flush()
 
-        batch.status = "running"
+        self._transition_batch_status(batch, "running")
         batch.started_at = datetime.now(UTC)
         self.db.flush()
 
@@ -558,7 +605,7 @@ class ScheduledReviewableReportingService:
                 )
             )
         except Exception as exc:
-            batch.status = "failed"
+            self._transition_batch_status(batch, "failed")
             batch.failed_at = datetime.now(UTC)
             batch.errors = [f"{exc.__class__.__name__}: {exc}"]
             schedule.last_planned_at = planned_for
@@ -592,7 +639,8 @@ class ScheduledReviewableReportingService:
             self.db.add(draft)
             drafts_created += 1
 
-        batch.status = "review_required" if drafts_created > 0 else "failed"
+        next_batch_status = "review_required" if drafts_created > 0 else "failed"
+        self._transition_batch_status(batch, next_batch_status)
         if batch.status == "review_required":
             batch.review_required_at = datetime.now(UTC)
         else:
@@ -626,6 +674,51 @@ class ScheduledReviewableReportingService:
             .first()
             is not None
         )
+
+    def _get_batch_for_occurrence(
+        self,
+        *,
+        schedule_id: UUID,
+        planned_for: datetime,
+    ) -> ScheduledReportBatch | None:
+        """Return an already created batch for the exact due occurrence."""
+        return (
+            self.db.query(ScheduledReportBatch)
+            .filter(
+                ScheduledReportBatch.schedule_id == schedule_id,
+                ScheduledReportBatch.planned_for == planned_for,
+            )
+            .first()
+        )
+
+    def _get_latest_open_batch(self, *, schedule_id: UUID) -> ScheduledReportBatch | None:
+        """Return the newest unfinished batch for one schedule."""
+        return (
+            self.db.query(ScheduledReportBatch)
+            .filter(
+                ScheduledReportBatch.schedule_id == schedule_id,
+                ScheduledReportBatch.status.in_(
+                    ["planned", "queued", "running", "review_required", "approved_for_delivery"]
+                ),
+            )
+            .order_by(ScheduledReportBatch.created_at.desc())
+            .first()
+        )
+
+    def _transition_batch_status(
+        self,
+        batch: ScheduledReportBatch,
+        next_status: str,
+    ) -> None:
+        """Enforce the allowed scheduled batch lifecycle transitions."""
+        current_status = str(batch.status)
+        allowed = SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS.get(current_status, ())
+        if next_status not in allowed:
+            raise ASAError(
+                "scheduled_reviewable_reporting.invalid_batch_transition: "
+                f"{current_status} -> {next_status}"
+            )
+        batch.status = next_status
 
     def _get_schedule(self, schedule_id: str) -> ReportingSchedule:
         """Load one schedule or fail."""

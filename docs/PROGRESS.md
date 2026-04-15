@@ -7,6 +7,7 @@
 **Последнее обновление:** 2026-04-15
 
 ## Что сделано
+- [x] 2026-04-15 — Закрыт внутренний technical hardening для `scheduled_reviewable_reporting`: добавлены server-side lifecycle transitions, due-occurrence idempotency guard, disabled/future schedule guards, backend edit-whitelist enforcement с audit trail (`original_generated_block`, `edited_block`, `editor`, `edited_at`), deterministic period-rule tests и architecture sync в `ARCHITECTURE.md`
 - [x] 2026-04-15 — Реализован bounded pre-pilot block `scheduled_reviewable_reporting`: в existing backend/operator UI добавлены `Schedules`, automatic schedule -> draft lifecycle, review queue, bounded edit surface только для business-facing report blocks, manual approve before business delivery и docs sync под новый operating mode
 - [x] 2026-04-15 — `Pilot Ready` docs доведены до bounded closure state without billing dependency: в repo зафиксированы pilot baseline version, pilot scope in/out, pilot KPI list, fixed pilot group placeholder, baseline metrics package, manual AI validation rule, delivery success rule, call-type segmentation rule, explicit external blocker separation и exact closure rerun procedure after user-confirmed top-up
 - [x] 2026-04-14 — Repo docs синхронизированы под новый agreed порядок работ: `Pilot Ready -> Business-ready Report Pack -> Pilot Live -> Full Report Mechanism Upgrade`; убран статусный конфликт в `ROADMAP.md`, обновлены текущий фокус и next steps в `PROGRESS.md`, решение уже зафиксировано в `ADR-043`
@@ -132,16 +133,17 @@
 - [ ] Все `Pilot Ready` technical tasks без billing dependency, включая bounded `scheduled_reviewable_reporting`, закрыты; остаётся только внешний blocker по billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
 - [ ] До user confirmation about top-up full closure verification не считается завершённым
 - [ ] После user confirmation about top-up выполнить один bounded closure rerun по уже зафиксированному live case
+- [ ] Следующий внутренний шаг после этого hardening: live UX verification сценария `schedule -> draft -> edit -> approve`
 - [ ] До пилота допускается bounded `scheduled_reviewable_reporting`, но это не full automation loop и не снимает operator review/approve
 - [ ] Только после полного закрытия `Pilot Ready` выполнять `Business-ready Report Pack`
 - [ ] Full Report Mechanism Upgrade отложен на отдельный post-pilot step и не смешивается с запуском пилота
 
 ## Следующие шаги
 1. Дождаться user confirmation about top-up для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
-2. Повторить один bounded closure rerun `manager_daily/build_missing_and_report` на уже зафиксированном live case
-3. После полного closure `Pilot Ready` перейти к `Business-ready Report Pack`
-4. Провести `Pilot Live` на стабильной версии после `Business-ready Report Pack`
-5. По итогам пилота перейти к `Full Report Mechanism Upgrade`
+2. Выполнить live UX verification сценария `schedule -> draft -> edit -> approve`
+3. Повторить один bounded closure rerun `manager_daily/build_missing_and_report` на уже зафиксированном live case после user-confirmed top-up
+4. После полного closure `Pilot Ready` перейти к `Business-ready Report Pack`
+5. Провести `Pilot Live` на стабильной версии после `Business-ready Report Pack`
 
 ## Открытые вопросы
 - Чек-лист оценки звонков от РОПа (нужен до Шага 5)

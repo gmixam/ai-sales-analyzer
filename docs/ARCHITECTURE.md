@@ -49,7 +49,7 @@ The next agreed MVP-1 operating mode is `Manual Reporting Pilot`.
 This mode:
 - stays manual and parameter-driven;
 - reuses already-built artifacts whenever their effective versions have not changed;
-- does not imply scheduler/retry/beat/full automation loop;
+- allows bounded `scheduled_reviewable_reporting` before pilot, but does not imply scheduler/retry/beat/full automation loop;
 - does not change the approved analyzer contract;
 - does not redesign the core calls pipeline.
 
@@ -165,6 +165,38 @@ Current bounded implementation status:
 - operator result / diagnostics for `manager_daily` now also expose readiness metadata (`readiness_outcome`, reason codes, chosen window, readiness metrics, content-block presence) as part of the bounded reporting result rather than a separate subsystem;
 - payload richness for both presets now comes from deterministic assembly over already approved persisted analysis fields such as `score_by_stage`, `follow_up`, `product_signals`, and `evidence_fragments`, without changing the normalized report contract;
 - monitoring copy defaults to `sales@dogovor24.kz`, with optional override through `department.settings.reporting.monitoring_email`.
+
+### Scheduled Reviewable Reporting
+
+Before pilot the system also allows one bounded operational mode: `scheduled_reviewable_reporting`.
+
+This mode is intentionally narrow:
+- schedule creation lives inside the existing backend/operator UI surface;
+- schedule timing fields (`start_date`, `start_time`, `timezone`, `recurrence_type`) define only when a run starts;
+- `report_period_rule` defines only what data window the run reads;
+- automatic execution may create the report artifact, but it must stop at `review_required`;
+- business delivery remains a separate explicit operator approve action;
+- this is not a full automation loop.
+
+Persisted runtime objects for this mode:
+- `report_schedules` — future-dated schedule definitions
+- `scheduled_report_batches` — one scheduled occurrence / lifecycle instance
+- `scheduled_report_drafts` — reviewable draft artifacts for one batch
+
+Lifecycle for scheduled batches:
+- `planned`
+- `queued`
+- `running`
+- `review_required`
+- `approved_for_delivery`
+- `delivered`
+- `failed`
+- `paused`
+
+Separation of concerns in this mode:
+- raw analysis artifacts remain in the existing `interactions` / `analyses` pipeline and stay immutable;
+- only bounded business-facing draft blocks are editable before approve;
+- final approved delivery reuses the prepared draft/report path and does not redesign the run.
 
 ## AI Provider Routing
 The system supports layer-specific provider pools for:

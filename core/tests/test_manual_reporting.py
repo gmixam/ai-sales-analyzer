@@ -6,7 +6,7 @@ import os
 import sys
 import unittest
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -42,7 +42,11 @@ from app.agents.calls.intake import OnlinePBXIntake  # noqa: E402
 from app.agents.calls.delivery import CallsDelivery  # noqa: E402
 from app.agents.calls.scheduled_reporting import (  # noqa: E402
     SCHEDULED_REVIEWABLE_BATCH_STATUSES,
+    SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS,
     SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES,
+    ScheduledReviewableReportingService,
+    _compute_report_period,
+    _next_local_occurrence,
     apply_editable_blocks,
     extract_editable_blocks,
 )
@@ -1572,6 +1576,290 @@ class ScheduledReviewableReportingHelpersTests(unittest.TestCase):
             list(SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES),
             ["previous_day", "last_7_days", "previous_week"],
         )
+
+    def test_period_rule_resolution_is_deterministic(self) -> None:
+        local_run_at = datetime(2026, 4, 15, 9, 0, tzinfo=UTC)
+        previous_day = _compute_report_period(rule="previous_day", local_run_at=local_run_at)
+        last_7_days = _compute_report_period(rule="last_7_days", local_run_at=local_run_at)
+        previous_week = _compute_report_period(rule="previous_week", local_run_at=local_run_at)
+
+        self.assertEqual((previous_day.date_from, previous_day.date_to), ("2026-04-14", "2026-04-14"))
+        self.assertEqual((last_7_days.date_from, last_7_days.date_to), ("2026-04-08", "2026-04-14"))
+        self.assertEqual((previous_week.date_from, previous_week.date_to), ("2026-04-06", "2026-04-12"))
+
+    def test_next_local_occurrence_does_not_start_future_schedule_early(self) -> None:
+        now_utc = datetime(2026, 4, 15, 8, 0, tzinfo=UTC)
+        next_occurrence = _next_local_occurrence(
+            start_date=date(2026, 4, 20),
+            start_time="09:30",
+            timezone_name="Etc/UTC",
+            recurrence_type="daily",
+            now_utc=now_utc,
+        )
+        self.assertEqual(next_occurrence.isoformat(), "2026-04-20T09:30:00+00:00")
+
+    def test_apply_editable_blocks_rejects_forbidden_raw_fields_with_structured_error(self) -> None:
+        with self.assertRaises(ASAError) as error:
+            apply_editable_blocks(
+                preset="manager_daily",
+                payload={},
+                edited_blocks={"raw_analyzer_json": "forbidden"},
+            )
+        self.assertIn("scheduled_reviewable_reporting.edit_block_forbidden", str(error.exception))
+
+
+class ScheduledReviewableReportingServiceTests(unittest.TestCase):
+    def _make_service(self) -> ScheduledReviewableReportingService:
+        service = object.__new__(ScheduledReviewableReportingService)
+        service.db = SimpleNamespace(add=lambda *_args, **_kwargs: None, flush=lambda: None)
+        return service
+
+    def test_batch_transition_map_is_explicit(self) -> None:
+        self.assertEqual(SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS["planned"], ("queued", "failed", "paused"))
+        self.assertEqual(SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS["review_required"], ("approved_for_delivery", "failed", "paused"))
+
+    def test_invalid_batch_transition_is_rejected(self) -> None:
+        service = self._make_service()
+        batch = SimpleNamespace(status="planned")
+        with self.assertRaises(ASAError) as error:
+            service._transition_batch_status(batch, "delivered")
+        self.assertIn("scheduled_reviewable_reporting.invalid_batch_transition", str(error.exception))
+
+    def test_edit_draft_persists_audit_with_original_and_edited_blocks(self) -> None:
+        service = self._make_service()
+        draft = SimpleNamespace(
+            id=uuid4(),
+            status="review_required",
+            preset="manager_daily",
+            generated_payload={
+                "narrative_day_conclusion": {"text": "Generated summary"},
+                "main_focus_for_tomorrow": {"text": "Generated focus"},
+            },
+            generated_blocks={"top_summary": "Generated summary", "focus_wording": "Generated focus"},
+            edited_blocks={},
+            edit_audit=[],
+        )
+        service._get_draft = lambda _draft_id: draft
+        service._serialize_draft = lambda item: {"id": str(item.id), "edited_blocks": item.edited_blocks, "edit_audit": item.edit_audit}
+
+        result = service.edit_draft(
+            draft_id=str(draft.id),
+            edited_blocks={"top_summary": "Edited summary"},
+            editor="tester",
+        )
+
+        self.assertEqual(result["edited_blocks"]["top_summary"], "Edited summary")
+        audit_entry = result["edit_audit"][0]
+        self.assertEqual(audit_entry["edited_blocks"]["top_summary"]["original_generated_block"], "Generated summary")
+        self.assertEqual(audit_entry["edited_blocks"]["top_summary"]["edited_block"], "Edited summary")
+        self.assertEqual(audit_entry["editor"], "tester")
+        self.assertIn("edited_at", audit_entry)
+
+    def test_edit_draft_rejects_forbidden_block_server_side(self) -> None:
+        service = self._make_service()
+        draft = SimpleNamespace(
+            id=uuid4(),
+            status="review_required",
+            preset="manager_daily",
+            generated_payload={},
+            generated_blocks={},
+            edited_blocks={},
+            edit_audit=[],
+        )
+        service._get_draft = lambda _draft_id: draft
+        with self.assertRaises(ASAError) as error:
+            service.edit_draft(
+                draft_id=str(draft.id),
+                edited_blocks={"computed_metrics": "forbidden"},
+                editor="tester",
+            )
+        self.assertIn("scheduled_reviewable_reporting.edit_block_forbidden", str(error.exception))
+
+    def test_approve_before_review_required_is_forbidden(self) -> None:
+        service = self._make_service()
+        batch = SimpleNamespace(id=uuid4(), status="queued")
+        service._get_batch = lambda _batch_id: batch
+        with self.assertRaises(ASAError):
+            service.approve_batch(batch_id=str(batch.id), editor="tester")
+
+    def test_due_scan_skips_disabled_and_future_schedules(self) -> None:
+        service = self._make_service()
+        created = []
+        service._has_open_batch = lambda **_kwargs: False
+        service._get_batch_for_occurrence = lambda **_kwargs: None
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 4, 16, 9, 0, tzinfo=UTC)
+        service.db = SimpleNamespace(add=lambda item: created.append(item), flush=lambda: None)
+
+        disabled = SimpleNamespace(enabled=False, next_run_at=datetime(2026, 4, 15, 9, 0, tzinfo=UTC))
+        future = SimpleNamespace(enabled=True, next_run_at=datetime(2026, 4, 20, 9, 0, tzinfo=UTC))
+        service._run_due_schedule(schedule=disabled, now_utc=datetime(2026, 4, 15, 10, 0, tzinfo=UTC))
+        service._run_due_schedule(schedule=future, now_utc=datetime(2026, 4, 15, 10, 0, tzinfo=UTC))
+
+        self.assertEqual(created, [])
+
+    def test_due_scan_occurrence_idempotency_does_not_create_duplicate_batch(self) -> None:
+        service = self._make_service()
+        created = []
+        planned_for = datetime(2026, 4, 15, 9, 0, tzinfo=UTC)
+        schedule = SimpleNamespace(
+            id=uuid4(),
+            enabled=True,
+            next_run_at=planned_for,
+            timezone="Etc/UTC",
+            start_date=date(2026, 4, 15),
+            start_time="09:00",
+            recurrence_type="daily",
+            last_planned_at=None,
+        )
+        service._has_open_batch = lambda **_kwargs: False
+        service._get_batch_for_occurrence = lambda **_kwargs: SimpleNamespace(id=uuid4(), planned_for=planned_for)
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 4, 16, 9, 0, tzinfo=UTC)
+        service.db = SimpleNamespace(add=lambda item: created.append(item), flush=lambda: None)
+
+        service._run_due_schedule(schedule=schedule, now_utc=datetime(2026, 4, 15, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(created, [])
+        self.assertEqual(schedule.last_planned_at, planned_for)
+        self.assertEqual(schedule.next_run_at, datetime(2026, 4, 16, 9, 0, tzinfo=UTC))
+
+    def test_scheduled_run_stops_at_review_required_and_disables_business_email_in_run_call(self) -> None:
+        service = self._make_service()
+        added = []
+        schedule = SimpleNamespace(
+            id=uuid4(),
+            department_id=uuid4(),
+            preset="manager_daily",
+            mode="build_missing_and_report",
+            report_period_rule="previous_day",
+            enabled=True,
+            business_email_enabled=True,
+            manager_ids=[],
+            timezone="Etc/UTC",
+            start_date=date(2026, 4, 15),
+            start_time="09:00",
+            recurrence_type="daily",
+            next_run_at=datetime(2026, 4, 15, 9, 0, tzinfo=UTC),
+            last_planned_at=None,
+        )
+        service.db = SimpleNamespace(
+            add=lambda item: added.append(item),
+            flush=lambda: None,
+        )
+        service._has_open_batch = lambda **_kwargs: False
+        service._get_batch_for_occurrence = lambda **_kwargs: None
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 4, 16, 9, 0, tzinfo=UTC)
+
+        run_calls = []
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                self.delivery = SimpleNamespace()
+
+            async def run_report(self, **kwargs):
+                run_calls.append(kwargs)
+                return {
+                    "reports": [
+                        {
+                            "group_key": "manager_daily:test",
+                            "payload": {
+                                "narrative_day_conclusion": {"text": "Summary"},
+                                "main_focus_for_tomorrow": {"text": "Focus"},
+                                "key_problem_of_day": {"description": "Problem"},
+                                "editorial_recommendations": {"text": "Recommendations"},
+                                "focus_of_week": {"text": "Note"},
+                            },
+                            "preview": {"subject": "subject"},
+                            "artifact": {"filename": "report.pdf"},
+                            "delivery": {"transport": {"telegram_test_delivery": {"status": "delivered"}}},
+                            "errors": [],
+                        }
+                    ],
+                    "observability": {},
+                    "diagnostics": {},
+                    "errors": [],
+                }
+
+        with patch("app.agents.calls.scheduled_reporting.CallsManualReportingOrchestrator", FakeOrchestrator):
+            service._run_due_schedule(schedule=schedule, now_utc=datetime(2026, 4, 15, 9, 30, tzinfo=UTC))
+
+        self.assertEqual(run_calls[0]["send_email"], False)
+        batch = added[0]
+        draft = added[1]
+        self.assertEqual(batch.status, "review_required")
+        self.assertEqual(draft.status, "review_required")
+
+    def test_approve_uses_draft_path_and_returns_structured_failed_state(self) -> None:
+        service = self._make_service()
+        batch = SimpleNamespace(
+            id=uuid4(),
+            status="review_required",
+            department_id=uuid4(),
+            business_email_enabled=True,
+            approved_at=None,
+            approved_by=None,
+            delivered_at=None,
+            failed_at=None,
+            errors=[],
+        )
+        draft = SimpleNamespace(
+            id=uuid4(),
+            preset="manager_daily",
+            status="review_required",
+            generated_payload={
+                "narrative_day_conclusion": {"text": "Summary"},
+                "main_focus_for_tomorrow": {"text": "Focus"},
+                "key_problem_of_day": {"description": "Problem"},
+                "editorial_recommendations": {"text": "Recommendations"},
+                "focus_of_week": {"text": "Note"},
+                "meta": {"preset": "manager_daily"},
+                "delivery_meta": {"email_subject": "Subject"},
+                "header": {"report_title": "Title", "manager_name": "Manager", "report_date": "2026-04-15", "department_name": "Dept"},
+                "kpi_overview": {"calls_count": 1},
+                "signal_of_day": {},
+                "analysis_worked": [],
+                "analysis_improve": [],
+                "recommendations": [],
+                "call_outcomes_summary": {},
+                "call_list": [],
+                "focus_criterion_dynamics": {},
+                "memo_legend": {"call_level_legend": [], "call_status_legend": [], "recommendation_priority_legend": []},
+            },
+            edited_blocks={"top_summary": "Edited summary"},
+            delivery={"transport": {"resolved_email": {}}},
+            preview={},
+            artifact={},
+            errors=[],
+        )
+        service._get_batch = lambda _batch_id: batch
+        service._load_batch_drafts = lambda _batch_id: [draft]
+        service._serialize_batch = lambda item: {"id": str(item.id), "status": item.status, "errors": item.errors}
+
+        class FakeDelivery:
+            def deliver_operator_report(self, **kwargs):
+                return {
+                    "transport": {
+                        "telegram_test_delivery": {"status": "delivered"},
+                        "email_delivery": {"status": "blocked", "error": "missing business recipient"},
+                    }
+                }
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                self.delivery = FakeDelivery()
+
+        with patch("app.agents.calls.scheduled_reporting.CallsManualReportingOrchestrator", FakeOrchestrator):
+            with patch("app.agents.calls.scheduled_reporting.render_report_email", return_value={
+                "subject": "Subject",
+                "text": "Text",
+                "html": "<p>Html</p>",
+                "pdf_bytes": b"pdf",
+                "artifact": {"filename": "report.pdf"},
+                "template": {"version": "v1"},
+            }):
+                result = service.approve_batch(batch_id=str(batch.id), editor="tester")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("missing business recipient", result["errors"])
 
 
 @unittest.skipIf(TestClient is None, "FastAPI test client is not available")

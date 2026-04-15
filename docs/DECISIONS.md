@@ -447,3 +447,18 @@
   - auto-approval or auto-send to business without review
   - broad analyzer redesign or full rich-report mechanism upgrade
 - **Date:** 2026-04-15
+
+## ADR-046: Scheduled reviewable reporting uses server-enforced lifecycle, review gate, and edit whitelist
+- **Decision:** `scheduled_reviewable_reporting` must enforce its invariants on the backend, not only in the operator UI.
+- **Decision:** Due-scan must be idempotent for the same due occurrence: repeated scan must not create duplicate batches, disabled schedules must not emit new batches, and future schedules must not start early.
+- **Decision:** Batch lifecycle transitions are explicit and limited to:
+  - `planned -> queued|failed|paused`
+  - `queued -> running|failed|paused`
+  - `running -> review_required|failed|paused`
+  - `review_required -> approved_for_delivery|failed|paused`
+  - `approved_for_delivery -> delivered|failed`
+- **Decision:** Scheduled runs must stop at `review_required`; business delivery before explicit approve is impossible server-side.
+- **Decision:** Draft editing is whitelist-only on the backend. Every accepted edit stores `original_generated_block`, `edited_block`, `editor`, and `edited_at`; forbidden edit attempts must return a structured error.
+- **Reason:** Pilot Ready now includes a bounded scheduled reviewable flow, so operator control and raw-analysis immutability must survive repeated scans, direct API calls, and incorrect status sequencing without relying on UI discipline.
+- **Scope:** This hardening does not add retries, recovery engine, generic scheduler platform, analyzer-contract change, Business-ready Report Pack, or full report mechanism upgrade.
+- **Date:** 2026-04-15
