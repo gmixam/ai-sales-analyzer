@@ -158,11 +158,13 @@
 - финальный checklist
 - pilot group 3–5 менеджеров
 - baseline по этапам воронки
+- pilot baseline version, pilot scope in/out и pilot KPI list зафиксированы в repo docs
+- baseline metrics package, manual AI validation rule и delivery success rule зафиксированы в repo docs
 - рабочий pipeline source → transcript → analysis → delivery
 - ручная проверка качества на выборке
 
 ### Критерий готовности
-Система готова к запуску на пилотной группе и не требует дополнительных архитектурных решений перед стартом.
+Система готова к запуску на пилотной группе и не требует дополнительных архитектурных решений перед стартом; если billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN` временно недоступен, единственный оставшийся blocker — один bounded closure rerun после user confirmation about top-up.
 
 ---
 

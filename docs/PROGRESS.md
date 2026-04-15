@@ -4,9 +4,10 @@
 **Этап:** MVP-1 transition to Manual Reporting Pilot
 **Статус фазы:** source-aware manual operator full-run path implemented and live-validated on bounded scope
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-04-14
+**Последнее обновление:** 2026-04-15
 
 ## Что сделано
+- [x] 2026-04-15 — `Pilot Ready` docs доведены до bounded closure state without billing dependency: в repo зафиксированы pilot baseline version, pilot scope in/out, pilot KPI list, fixed pilot group placeholder, baseline metrics package, manual AI validation rule, delivery success rule, call-type segmentation rule, explicit external blocker separation и exact closure rerun procedure after user-confirmed top-up
 - [x] 2026-04-14 — Repo docs синхронизированы под новый agreed порядок работ: `Pilot Ready -> Business-ready Report Pack -> Pilot Live -> Full Report Mechanism Upgrade`; убран статусный конфликт в `ROADMAP.md`, обновлены текущий фокус и next steps в `PROGRESS.md`, решение уже зафиксировано в `ADR-043`
 - [x] Концепт продукта v2.0 (документ для руководства)
 - [x] Архитектурные решения зафиксированы (ADR 001-005)
@@ -127,17 +128,18 @@
 
 ## В работе сейчас
 - [ ] Следующие task-промпты нужно строить в коротком виде: только переменная часть шага, конкретный scope, expected output и список docs для обновления при затронутых изменениях
-- [ ] Сначала закрыть bounded pilot blockers для `Pilot Ready`
-- [ ] После этого выполнить `Business-ready Report Pack` как отдельный pre-pilot block для business-facing presentation layer
+- [ ] Все `Pilot Ready` задачи без billing dependency закрыты; остаётся только внешний blocker по billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
+- [ ] До user confirmation about top-up full closure verification не считается завершённым
+- [ ] После user confirmation about top-up выполнить один bounded closure rerun по уже зафиксированному live case
+- [ ] Только после полного закрытия `Pilot Ready` выполнять `Business-ready Report Pack`
 - [ ] Full Report Mechanism Upgrade отложен на отдельный post-pilot step и не смешивается с запуском пилота
-- [ ] Для полного closure verification по fresh/missing full-chain кейсу остаётся только operational gap: пополнить/разблокировать OpenAI quota для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`, затем повторить bounded live run на том же case без изменения кода
-- [ ] После безопасного Git baseline и подключения remote вернуться к тому же live `manager_daily` rerun только после восстановления billable quota для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
 
 ## Следующие шаги
-1. Закрыть bounded `Pilot Ready` blockers
-2. Выполнить `Business-ready Report Pack`
-3. Провести `Pilot Live` на стабильной версии
-4. По итогам пилота перейти к `Full Report Mechanism Upgrade`
+1. Дождаться user confirmation about top-up для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
+2. Повторить один bounded closure rerun `manager_daily/build_missing_and_report` на уже зафиксированном live case
+3. После полного closure `Pilot Ready` выполнить `Business-ready Report Pack`
+4. Провести `Pilot Live` на стабильной версии
+5. По итогам пилота перейти к `Full Report Mechanism Upgrade`
 
 ## Открытые вопросы
 - Чек-лист оценки звонков от РОПа (нужен до Шага 5)

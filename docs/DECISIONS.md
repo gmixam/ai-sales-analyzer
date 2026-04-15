@@ -420,3 +420,12 @@
   - broad analyzer redesign
   - full rich-report mechanism rollout
 - **Date:** 2026-04-14
+
+## ADR-044: Pilot Ready closes all non-billing tasks first; final closure waits for one bounded rerun after top-up
+- **Decision:** The current `Pilot Ready` task closes all technical and documentation work that does not depend on billable access for `OPENAI_API_KEY_STT_MAIN` and `OPENAI_API_KEY_LLM1_MAIN`.
+- **Decision:** The remaining blocker is explicitly external: billable quota / balance access for those two keys.
+- **Decision:** Until the user confirms the balance top-up, full closure verification is not complete and must not be misrepresented as closed.
+- **Decision:** After user confirmation about top-up, only one bounded rerun is allowed for final closure verification: `manager_daily/build_missing_and_report` on the already fixed live case `department=472cda28-ce71-494c-9068-25d3ffbf7399`, `manager=09cae83f-7ac1-4ee0-b1d5-3a76c8053c3f`, `extension=322`, `period=2026-04-06`, with always-on Telegram test delivery and business email off.
+- **Reason:** Repo docs must separate the last external billing dependency from code/runtime scope, so the team can close `Pilot Ready` immediately after one successful rerun instead of reopening architecture or broad reporting work.
+- **Scope:** No billing workaround in code, no `Business-ready Report Pack`, no full report mechanism upgrade, no scheduler/retries/beat/automation, and no broad analyzer redesign.
+- **Date:** 2026-04-15

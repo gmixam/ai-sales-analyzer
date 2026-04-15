@@ -43,6 +43,77 @@
 Этот шаг относится к business-facing presentation layer.
 Полный mechanism upgrade rich report относится уже к post-pilot track.
 
+## Pilot Ready package
+
+### Pilot baseline version
+
+- pilot baseline version = current stable `Manual Reporting Pilot` slice;
+- active template versions = `manager_daily_template_v1` and `rop_weekly_template_v1`;
+- approved analyzer contract и current scoring baseline остаются без изменений;
+- `Business-ready Report Pack` и full report mechanism upgrade в этот baseline не входят.
+
+### Pilot scope in
+
+- `manager_daily` manual source-aware run;
+- `rop_weekly` manual persisted-only aggregation;
+- existing readiness / reuse / PDF rendering rules;
+- always-on Telegram test delivery;
+- optional business email delivery через existing toggle.
+
+### Pilot scope out
+
+- balance top-up / quota change / billing action;
+- `Business-ready Report Pack`;
+- full report mechanism upgrade;
+- scheduler / retries / beat / automation;
+- broad analyzer redesign.
+
+### Pilot KPI list
+
+- report delivery success;
+- delivered PDF artifact availability;
+- report open/read feedback;
+- manager usefulness feedback;
+- ROP usefulness feedback;
+- turnaround time from run to final artifact.
+
+### Pilot group and baseline metrics
+
+- pilot group structure = fixed list of `3–5` managers from one agreed pilot department;
+- until names are confirmed, repo keeps this as a placeholder for the fixed pilot group;
+- before pilot start the baseline metrics package must be captured for that fixed group:
+  - calls selected
+  - ready analyses
+  - analysis coverage
+  - `full_report` / `signal_report` / `skip_accumulate` split
+  - Telegram test delivery result
+  - business email enabled/disabled state
+
+### Manual AI validation rule
+
+- manual AI validation is performed by the pilot operator with business review from the ROP;
+- validation sample = one bounded `manager_daily` manager-day run from the fixed pilot group before pilot start;
+- an error is any of:
+  - wrong manager or wrong call selection in the report
+  - unsupported or hallucinated business-facing claim
+  - semantically empty analysis treated as successful
+  - critical contradiction between transcript and business-facing summary/recommendation
+  - missing or misleading list-of-calls presentation
+
+### Delivery success rule
+
+- Telegram test delivery is always attempted for every manual run;
+- business email toggle controls only business email delivery and defaults to `off`;
+- pilot delivery is counted as successful when the final PDF artifact is built and `telegram_test_delivery=delivered`;
+- if `send_email=true`, business email delivery is tracked separately and does not replace Telegram test delivery;
+- if Telegram delivery is not delivered, pilot delivery is not successful even when business email is enabled.
+
+### Segmentation rule for call types
+
+- call-type segmentation in the current pilot baseline uses the existing persisted `classification` field only;
+- no new call-type segmentation subsystem is introduced before pilot;
+- calls without reusable `classification` stay outside the ready subset and must not be silently merged into a typed bucket.
+
 ## Pre-pilot report shaping boundary
 
 ### Allowed before pilot
@@ -60,6 +131,47 @@
 - new extraction/aggregation/coaching architecture
 - full rich daily mechanism upgrade
 - broad analyzer redesign
+
+## External billing blocker
+
+- the current external blocker is billable quota / balance access for `OPENAI_API_KEY_STT_MAIN` and `OPENAI_API_KEY_LLM1_MAIN`;
+- this blocker is not closed in the current task;
+- until the user confirms the balance top-up, full closure verification is not complete;
+- this blocker is external and operational, not a code defect.
+
+## Closure rerun after top-up
+
+After the user confirms the balance top-up, repeat exactly one bounded rerun:
+- preset = `manager_daily`
+- mode = `build_missing_and_report`
+- department = `472cda28-ce71-494c-9068-25d3ffbf7399`
+- manager = `09cae83f-7ac1-4ee0-b1d5-3a76c8053c3f`
+- extension = `322`
+- period = `2026-04-06`
+- delivery mode = always-on Telegram test delivery, business email `off`
+
+This single rerun must confirm in one pass:
+- source discovery
+- ingest/reuse decision
+- audio fetch
+- `STT`
+- `LLM-1`
+- `LLM-2`
+- persistence
+- report build
+- Telegram test delivery
+
+Closure success signs:
+- no `429 insufficient_quota` or other billable-access failure on `STT` or `LLM-1`;
+- the full chain reaches successful persistence and final report build;
+- Telegram test delivery returns `delivered` for the final PDF artifact;
+- the run finishes as a bounded runtime confirmation, not as a preview-only or quota-blocked path.
+
+Signs that the external blocker is still not removed:
+- `429 insufficient_quota`;
+- another billable-access refusal from `OPENAI_API_KEY_STT_MAIN` or `OPENAI_API_KEY_LLM1_MAIN`;
+- the run stops before `LLM-2` / persistence / final report build because billable execution cannot proceed;
+- Telegram test delivery cannot be reached because the billable stages never complete.
 
 ## Первая версия ручного запуска
 
