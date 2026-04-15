@@ -165,6 +165,7 @@ Current bounded implementation status:
 - operator result / diagnostics for `manager_daily` now also expose readiness metadata (`readiness_outcome`, reason codes, chosen window, readiness metrics, content-block presence) as part of the bounded reporting result rather than a separate subsystem;
 - payload richness for both presets now comes from deterministic assembly over already approved persisted analysis fields such as `score_by_stage`, `follow_up`, `product_signals`, and `evidence_fragments`, without changing the normalized report contract;
 - monitoring copy defaults to `sales@dogovor24.kz`, with optional override through `department.settings.reporting.monitoring_email`.
+- `/pipeline/calls/report-ui/context` now keeps static operator choices (`presets`, `modes`, bounded scheduled metadata) separate from DB-dependent lists (`departments`, `managers`, persisted schedules/review queue`), so missing local data or unavailable schedule storage must not zero-out the whole operator UI context.
 
 ### Scheduled Reviewable Reporting
 
@@ -174,6 +175,7 @@ This mode is intentionally narrow:
 - schedule creation lives inside the existing backend/operator UI surface;
 - schedule timing fields (`start_date`, `start_time`, `timezone`, `recurrence_type`) define only when a run starts;
 - `report_period_rule` defines only what data window the run reads;
+- static operator choices (`presets`, `modes`, recurrence/period-rule lists) must remain available even when schedule storage is temporarily unavailable; DB-dependent schedule lists may be empty/fallback without breaking the rest of `report-ui/context`;
 - automatic execution may create the report artifact, but it must stop at `review_required`;
 - business delivery remains a separate explicit operator approve action;
 - this is not a full automation loop.

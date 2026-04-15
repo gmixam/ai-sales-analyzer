@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
 from app.agents.calls.extractor import CallsExtractor
 from app.agents.calls.intake import OnlinePBXIntake
@@ -32,6 +33,17 @@ from app.core_shared.exceptions import ASAError, DeliveryError
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 UI_ASSET_PATH = Path(__file__).resolve().parents[1] / "assets" / "manual_reporting_operator.html"
 logger = logging.getLogger(__name__)
+
+
+STATIC_REPORT_PRESETS = [
+    {"code": "manager_daily", "label": "manager_daily"},
+    {"code": "rop_weekly", "label": "rop_weekly"},
+]
+
+STATIC_REPORT_MODES = [
+    {"code": "build_missing_and_report", "label": "build_missing_and_report"},
+    {"code": "report_from_ready_data_only", "label": "report_from_ready_data_only"},
+]
 
 
 def build_error_envelope(
@@ -189,6 +201,21 @@ def _serialize_manager(manager: Manager) -> dict:
     }
 
 
+def _build_scheduled_context_fallback(*, reason: str) -> dict:
+    """Return a stable scheduled context when runtime schedule tables are unavailable."""
+    return {
+        "operating_mode": SCHEDULED_REVIEWABLE_OPERATING_MODE,
+        "available": False,
+        "availability_reason": reason,
+        "recurrence_types": list(SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE),
+        "report_period_rules": list(SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES),
+        "review_required": True,
+        "lifecycle": list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
+        "schedules": [],
+        "review_queue": [],
+    }
+
+
 def _split_report_group(
     artifacts: list[ReportArtifact],
 ) -> tuple[list[ReportArtifact], list[str]]:
@@ -228,26 +255,28 @@ async def get_calls_report_operator_context() -> dict:
         )
         serialized_departments = [_serialize_department(item) for item in departments]
         serialized_managers = [_serialize_manager(item) for item in managers]
-        scheduled_service = ScheduledReviewableReportingService(db=db)
-        scheduled_context = {
-            "operating_mode": SCHEDULED_REVIEWABLE_OPERATING_MODE,
-            "recurrence_types": list(SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE),
-            "report_period_rules": list(SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES),
-            "review_required": True,
-            "lifecycle": list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
-            "schedules": scheduled_service.list_schedules(),
-            "review_queue": scheduled_service.list_review_batches(),
-        }
+        try:
+            scheduled_service = ScheduledReviewableReportingService(db=db)
+            scheduled_context = {
+                "operating_mode": SCHEDULED_REVIEWABLE_OPERATING_MODE,
+                "available": True,
+                "availability_reason": None,
+                "recurrence_types": list(SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE),
+                "report_period_rules": list(SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES),
+                "review_required": True,
+                "lifecycle": list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
+                "schedules": scheduled_service.list_schedules(),
+                "review_queue": scheduled_service.list_review_batches(),
+            }
+        except (ProgrammingError, SQLAlchemyError) as exc:
+            logger.warning("pipeline.report_ui_context.scheduled_context_unavailable", exc_info=exc)
+            scheduled_context = _build_scheduled_context_fallback(
+                reason="scheduled_reviewable_reporting_storage_unavailable",
+            )
 
     return {
-        "presets": [
-            {"code": "manager_daily", "label": "manager_daily"},
-            {"code": "rop_weekly", "label": "rop_weekly"},
-        ],
-        "modes": [
-            {"code": "build_missing_and_report", "label": "build_missing_and_report"},
-            {"code": "report_from_ready_data_only", "label": "report_from_ready_data_only"},
-        ],
+        "presets": STATIC_REPORT_PRESETS,
+        "modes": STATIC_REPORT_MODES,
         "departments": serialized_departments,
         "managers": serialized_managers,
         "operator_delivery": {

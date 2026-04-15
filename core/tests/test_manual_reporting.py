@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+import sqlalchemy as sa
 
 os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test_db")
 os.environ.setdefault("POSTGRES_DB", "test_db")
@@ -1919,6 +1920,54 @@ class ScheduledReviewableReportingApiTests(unittest.TestCase):
         self.assertEqual(
             payload["scheduled_reviewable_reporting"]["lifecycle"],
             list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
+        )
+
+    def test_report_ui_context_keeps_static_choices_when_scheduled_storage_is_unavailable(self) -> None:
+        fake_department = SimpleNamespace(id=uuid4(), name="Dept", settings={"reporting": {}})
+
+        class FakeQuery:
+            def __init__(self, items):
+                self.items = items
+
+            def order_by(self, *_args, **_kwargs):
+                return self
+
+            def all(self):
+                return self.items
+
+        fake_db_obj = SimpleNamespace(
+            query=lambda model: FakeQuery([fake_department] if model.__name__ == "Department" else []),
+        )
+
+        @contextmanager
+        def fake_db_context():
+            yield fake_db_obj
+
+        class FailingScheduleService:
+            def __init__(self, db) -> None:
+                self.db = db
+
+            def list_schedules(self):
+                raise sa.exc.ProgrammingError("select", {}, Exception("missing table"))
+
+            def list_review_batches(self):
+                raise AssertionError("should not be called after list_schedules failure")
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db_context):
+            with patch("app.core_shared.api.routes.pipeline.ScheduledReviewableReportingService", FailingScheduleService):
+                client = TestClient(app)
+                response = client.get("/pipeline/calls/report-ui/context")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["presets"][0]["code"], "manager_daily")
+        self.assertEqual(payload["modes"][0]["code"], "build_missing_and_report")
+        self.assertEqual(payload["departments"][0]["name"], "Dept")
+        self.assertEqual(payload["managers"], [])
+        self.assertFalse(payload["scheduled_reviewable_reporting"]["available"])
+        self.assertEqual(
+            payload["scheduled_reviewable_reporting"]["availability_reason"],
+            "scheduled_reviewable_reporting_storage_unavailable",
         )
 
     def test_create_schedule_endpoint_returns_created_schedule(self) -> None:

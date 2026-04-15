@@ -1997,6 +1997,9 @@
     async function loadContext(preferredDepartmentId = "") {
       const currentDepartment = preferredDepartmentId || departmentEl.value;
       const response = await fetch(contextUrl);
+      if (!response.ok) {
+        throw new Error(`context_load_failed: ${response.status} ${response.statusText}`);
+      }
       uiContext = await response.json();
 
       clearNode(presetEl);
@@ -2039,6 +2042,7 @@
 
     function renderDeliveryMode() {
       const delivery = uiContext.operator_delivery || {};
+      const scheduled = uiContext.scheduled_reviewable_reporting || {};
       const transport = delivery.mode === "telegram_test"
         ? `Telegram test delivery always-on → chat ${delivery.telegram_chat_id}`
         : "Telegram test delivery should be always-on, but runtime chat is not configured";
@@ -2050,6 +2054,10 @@
         Список менеджеров из локального Bitrix-synced справочника. Нажмите <code>Refresh Local Managers</code> для актуализации.
         Email delivery управляется checkbox выше. Если выбрать и менеджеров, и extensions, backend применит пересечение фильтров.
       `;
+      if (scheduled.available === false) {
+        document.getElementById("schedule-form-note").textContent =
+          "Scheduled reviewable reporting storage is currently unavailable in runtime; static choices stay available, but schedule lists are empty until storage is ready.";
+      }
     }
 
     // ── Event listeners ──
@@ -2176,7 +2184,13 @@
       }
     });
 
-    loadContext();
+    loadContext().catch((error) => {
+      previewSummaryEl.className = "pill bad";
+      previewSummaryEl.textContent = error.message || "context_load_failed";
+      document.getElementById("artifact-panel-content").className = "empty";
+      document.getElementById("artifact-panel-content").textContent =
+        "Context load failed. Check /pipeline/calls/report-ui/context.";
+    });
   </script>
 </body>
 </html>
