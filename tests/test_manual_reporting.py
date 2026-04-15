@@ -40,6 +40,12 @@ from app.agents.calls.reporting import (  # noqa: E402
 )
 from app.agents.calls.intake import OnlinePBXIntake  # noqa: E402
 from app.agents.calls.delivery import CallsDelivery  # noqa: E402
+from app.agents.calls.scheduled_reporting import (  # noqa: E402
+    SCHEDULED_REVIEWABLE_BATCH_STATUSES,
+    SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES,
+    apply_editable_blocks,
+    extract_editable_blocks,
+)
 from app.core_shared.api.main import app  # noqa: E402
 from app.core_shared.exceptions import ASAError, DeliveryError  # noqa: E402
 
@@ -1513,6 +1519,193 @@ class ManualReportingApiErrorEnvelopeTests(unittest.TestCase):
         self.assertEqual(payload["error"]["title"], "Unexpected manual report run failure")
         self.assertEqual(payload["error"]["type"], "unexpected_manual_report_run_failure")
         self.assertIn("unexpected synthetic failure", payload["detail"])
+
+
+class ScheduledReviewableReportingHelpersTests(unittest.TestCase):
+    def test_extract_and_apply_manager_daily_editable_blocks(self) -> None:
+        payload = {
+            "narrative_day_conclusion": {"text": "Initial summary"},
+            "main_focus_for_tomorrow": {"text": "Initial focus"},
+            "key_problem_of_day": {"description": "Initial problem"},
+            "editorial_recommendations": {"text": "Initial recommendation wording"},
+            "focus_of_week": {"text": "Initial note"},
+        }
+
+        blocks = extract_editable_blocks(preset="manager_daily", payload=payload)
+        self.assertEqual(blocks["top_summary"], "Initial summary")
+        updated = apply_editable_blocks(
+            preset="manager_daily",
+            payload=payload,
+            edited_blocks={
+                "top_summary": "Edited summary",
+                "recommendations_wording": "Edited recommendations",
+            },
+        )
+
+        self.assertEqual(updated["narrative_day_conclusion"]["text"], "Edited summary")
+        self.assertEqual(updated["editorial_recommendations"]["text"], "Edited recommendations")
+        self.assertEqual(updated["main_focus_for_tomorrow"]["text"], "Initial focus")
+
+    def test_apply_editable_blocks_rejects_unknown_keys(self) -> None:
+        with self.assertRaises(ASAError):
+            apply_editable_blocks(
+                preset="rop_weekly",
+                payload={"editorial_summary": {"executive_summary": "x"}},
+                edited_blocks={"raw_analyzer_json": "not allowed"},
+            )
+
+    def test_scheduled_lifecycle_and_period_rule_order_are_stable(self) -> None:
+        self.assertEqual(
+            list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
+            [
+                "planned",
+                "queued",
+                "running",
+                "review_required",
+                "approved_for_delivery",
+                "delivered",
+                "failed",
+                "paused",
+            ],
+        )
+        self.assertEqual(
+            list(SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES),
+            ["previous_day", "last_7_days", "previous_week"],
+        )
+
+
+@unittest.skipIf(TestClient is None, "FastAPI test client is not available")
+class ScheduledReviewableReportingApiTests(unittest.TestCase):
+    def test_report_ui_context_includes_scheduled_reviewable_reporting(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
+        class FakeScheduleService:
+            def __init__(self, db) -> None:
+                self.db = db
+
+            def list_schedules(self):
+                return [{"id": "schedule-1", "preset": "manager_daily", "enabled": True}]
+
+            def list_review_batches(self):
+                return [{"id": "batch-1", "status": "review_required", "drafts": []}]
+
+        fake_department = SimpleNamespace(id=uuid4(), name="Dept", settings={"reporting": {}})
+        fake_manager = SimpleNamespace(
+            id=uuid4(),
+            department_id=fake_department.id,
+            name="Manager",
+            extension="322",
+            email="m@example.com",
+            bitrix_id="1",
+            active=True,
+        )
+
+        class FakeQuery:
+            def __init__(self, items):
+                self.items = items
+
+            def order_by(self, *_args, **_kwargs):
+                return self
+
+            def all(self):
+                return self.items
+
+        fake_db_obj = SimpleNamespace(
+            query=lambda model: FakeQuery([fake_department] if model.__name__ == "Department" else [fake_manager]),
+        )
+
+        @contextmanager
+        def fake_db_context():
+            yield fake_db_obj
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db_context):
+            with patch("app.core_shared.api.routes.pipeline.ScheduledReviewableReportingService", FakeScheduleService):
+                client = TestClient(app)
+                response = client.get("/pipeline/calls/report-ui/context")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("scheduled_reviewable_reporting", payload)
+        self.assertEqual(
+            payload["scheduled_reviewable_reporting"]["report_period_rules"],
+            ["previous_day", "last_7_days", "previous_week"],
+        )
+        self.assertEqual(
+            payload["scheduled_reviewable_reporting"]["lifecycle"],
+            list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
+        )
+
+    def test_create_schedule_endpoint_returns_created_schedule(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
+        class FakeScheduleService:
+            def __init__(self, db) -> None:
+                self.db = db
+
+            def create_schedule(self, **kwargs):
+                return {"id": "schedule-1", **kwargs, "review_required": True}
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db):
+            with patch("app.core_shared.api.routes.pipeline.ScheduledReviewableReportingService", FakeScheduleService):
+                client = TestClient(app)
+                response = client.post(
+                    "/pipeline/calls/report-schedules",
+                    json={
+                        "department_id": str(uuid4()),
+                        "manager_ids": [str(uuid4())],
+                        "preset": "manager_daily",
+                        "enabled": True,
+                        "start_date": "2026-04-16",
+                        "start_time": "09:00",
+                        "timezone": "Etc/UTC",
+                        "recurrence_type": "daily",
+                        "report_period_rule": "previous_day",
+                        "mode": "build_missing_and_report",
+                        "business_email_enabled": False,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "created")
+        self.assertEqual(payload["schedule"]["report_period_rule"], "previous_day")
+        self.assertTrue(payload["schedule"]["review_required"])
+
+    def test_edit_and_approve_endpoints_return_review_objects(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
+        class FakeScheduleService:
+            def __init__(self, db) -> None:
+                self.db = db
+
+            def edit_draft(self, **kwargs):
+                return {"id": "draft-1", **kwargs}
+
+            def approve_batch(self, **kwargs):
+                return {"id": "batch-1", **kwargs, "status": "delivered"}
+
+        with patch("app.core_shared.api.routes.pipeline.get_db", fake_db):
+            with patch("app.core_shared.api.routes.pipeline.ScheduledReviewableReportingService", FakeScheduleService):
+                client = TestClient(app)
+                edit_response = client.post(
+                    "/pipeline/calls/report-review/drafts/draft-1/edit",
+                    json={"edited_blocks": {"top_summary": "Edited"}, "editor": "operator_ui"},
+                )
+                approve_response = client.post(
+                    "/pipeline/calls/report-review/batches/batch-1/approve",
+                    json={"editor": "operator_ui"},
+                )
+
+        self.assertEqual(edit_response.status_code, 200)
+        self.assertEqual(edit_response.json()["status"], "edited")
+        self.assertEqual(approve_response.status_code, 200)
+        self.assertEqual(approve_response.json()["batch"]["status"], "delivered")
 
 
 if __name__ == "__main__":

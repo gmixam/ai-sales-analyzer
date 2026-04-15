@@ -2987,6 +2987,11 @@ def build_manager_daily_payload(
             "email_subject": f"Ежедневный разбор звонков — {manager_name} — {_format_period_label(period)}",
             "render_variant": f"template_pdf_{get_active_template_version('manager_daily')}",
         },
+        "editorial_recommendations": {
+            "text": _build_manager_daily_editorial_recommendations(
+                recommendation_cards=recommendation_cards,
+            ),
+        },
     }
     return payload
 
@@ -3084,6 +3089,24 @@ def build_rop_weekly_payload(
             "email_subject": f"Еженедельный отчёт РОП — {period['date_from']}..{period['date_to']}",
             "render_variant": f"template_pdf_{get_active_template_version('rop_weekly')}",
         },
+    }
+    payload["editorial_summary"] = {
+        "executive_summary": _build_rop_weekly_executive_summary(
+            department_name=department_name,
+            dashboard_rows=dashboard_rows,
+            current_period_score=current_period_score,
+        ),
+        "team_risks_wording": _build_rop_weekly_team_risks(
+            systemic_team_problems=systemic_team_problems,
+            anti_top_block=anti_top_block,
+        ),
+        "rop_tasks_wording": _build_rop_weekly_tasks_commentary(
+            tasks=payload["rop_tasks_next_week"],
+        ),
+        "final_managerial_commentary": _build_rop_weekly_final_commentary(
+            top_block=top_block,
+            anti_top_block=anti_top_block,
+        ),
     }
     return payload
 
@@ -3306,6 +3329,24 @@ def _build_main_focus(
             f"и закрепить это через формулировку: {next_action}"
         )
     return f"Главный фокус на следующий день: усилить '{improve_items[0]['label']}' в каждом разговоре."
+
+
+def _build_manager_daily_editorial_recommendations(
+    *,
+    recommendation_cards: list[dict[str, Any]],
+) -> str:
+    """Build one short editable wording block for manager recommendations."""
+    if not recommendation_cards:
+        return (
+            "Пока в выборке недостаточно устойчивых coaching-паттернов; держим фокус на "
+            "конкретном следующем шаге и понятной договорённости."
+        )
+    lines = [
+        f"{item['title']}: {item['better_phrasing']}"
+        for item in recommendation_cards[:3]
+        if str(item.get("better_phrasing") or "").strip()
+    ]
+    return " ; ".join(lines) if lines else recommendation_cards[0]["title"]
 
 
 def _is_next_step_fixed(analysis: Analysis | None) -> bool:
@@ -3727,6 +3768,59 @@ def _build_weekly_alarm_commentary(
     return (
         f"Главная зона внимания недели: {anti_top_block.get('manager') or 'не определена'}. "
         "Нужен короткий персональный разбор и повторная проверка следующих звонков."
+    )
+
+
+def _build_rop_weekly_executive_summary(
+    *,
+    department_name: str,
+    dashboard_rows: list[dict[str, Any]],
+    current_period_score: float | None,
+) -> str:
+    """Build short executive summary for weekly report."""
+    return (
+        f"По команде {department_name} в отчёт вошло {len(dashboard_rows)} менеджеров; "
+        f"текущий средний уровень качества звонков — {_value(current_period_score, 'n/a')}."
+    )
+
+
+def _build_rop_weekly_team_risks(
+    *,
+    systemic_team_problems: list[dict[str, Any]],
+    anti_top_block: dict[str, Any],
+) -> str:
+    """Build short wording for team risks."""
+    if systemic_team_problems:
+        return str(
+            systemic_team_problems[0].get("explanation")
+            or "Есть повторяющийся командный риск, который требует отдельного внимания РОПа."
+        )
+    return str(
+        anti_top_block.get("interpretation")
+        or "Критичных командных рисков на этой неделе не выделилось."
+    )
+
+
+def _build_rop_weekly_tasks_commentary(*, tasks: list[dict[str, Any]]) -> str:
+    """Build one editorial wording block for ROP tasks."""
+    if not tasks:
+        return "На этой неделе нет новых обязательных задач сверх стандартного управленческого контроля."
+    first = tasks[0]
+    return (
+        f"Главный управленческий фокус недели: {_value(first.get('task_for_next_week'))}. "
+        f"Проверка: {_value(first.get('how_to_verify'))}."
+    )
+
+
+def _build_rop_weekly_final_commentary(
+    *,
+    top_block: dict[str, Any],
+    anti_top_block: dict[str, Any],
+) -> str:
+    """Build final managerial commentary for weekly report."""
+    return (
+        f"Сохранить сильный паттерн у {_value(top_block.get('manager'), 'команды')} и отдельно "
+        f"отработать зону риска у {_value(anti_top_block.get('manager'), 'ключевого менеджера')}."
     )
 
 

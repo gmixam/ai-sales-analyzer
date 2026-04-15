@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Float,
     Index,
@@ -237,3 +238,99 @@ class PromptSuggestion(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReportingSchedule(Base):
+    __tablename__ = "report_schedules"
+    __table_args__ = (
+        Index("ix_report_schedules_department_enabled", "department_id", "enabled"),
+        Index("ix_report_schedules_next_run_at", "next_run_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    preset: Mapped[str] = mapped_column(String(30), nullable=False)
+    manager_ids: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    start_time: Mapped[str] = mapped_column(String(8), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    recurrence_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    report_period_rule: Mapped[str] = mapped_column(String(30), nullable=False)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    business_email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_planned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ScheduledReportBatch(Base):
+    __tablename__ = "scheduled_report_batches"
+    __table_args__ = (
+        Index("ix_scheduled_report_batches_department_status", "department_id", "status"),
+        Index("ix_scheduled_report_batches_schedule_planned", "schedule_id", "planned_for"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schedule_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    preset: Mapped[str] = mapped_column(String(30), nullable=False)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    report_period_rule: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="planned", index=True)
+    planned_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period: Mapped[dict] = mapped_column(JSON, default=dict)
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    business_email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    observability: Mapped[dict | None] = mapped_column(JSON)
+    diagnostics: Mapped[dict | None] = mapped_column(JSON)
+    errors: Mapped[list | None] = mapped_column(JSON, default=list)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_required_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ScheduledReportDraft(Base):
+    __tablename__ = "scheduled_report_drafts"
+    __table_args__ = (
+        Index("ix_scheduled_report_drafts_batch_status", "batch_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    preset: Mapped[str] = mapped_column(String(30), nullable=False)
+    group_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="review_required")
+    generated_payload: Mapped[dict | None] = mapped_column(JSON)
+    generated_blocks: Mapped[dict | None] = mapped_column(JSON)
+    edited_blocks: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    edit_audit: Mapped[list | None] = mapped_column(JSON, default=list)
+    preview: Mapped[dict | None] = mapped_column(JSON)
+    artifact: Mapped[dict | None] = mapped_column(JSON)
+    delivery: Mapped[dict | None] = mapped_column(JSON)
+    errors: Mapped[list | None] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

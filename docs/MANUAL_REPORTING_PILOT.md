@@ -6,6 +6,7 @@
 
 Это не automation readiness и не full automated reporting loop.
 Это ручной параметрический запуск анализа и отчётности поверх уже подтверждённого core pipeline.
+До пилота теперь допускается bounded `scheduled_reviewable_reporting`, но не full automation loop.
 
 ## Позиция в roadmap
 
@@ -20,12 +21,13 @@
 - повторно использовать уже готовые артефакты там, где они уже есть и остаются актуальными;
 - собирать `manager_daily` и `rop_weekly`;
 - вручную отправлять отчёты по email;
-- тестировать разные AI модели и bounded report-composer behavior до любого scheduler/retry/beat rollout.
+- тестировать разные AI модели и bounded report-composer behavior до любого scheduler/retry/beat rollout;
+- допускать bounded `scheduled_reviewable_reporting`: automatic schedule -> review-required draft -> operator approve.
 
 ## Non-goals
 
 На этом шаге не делаем:
-- scheduler;
+- generic scheduler platform;
 - retries;
 - beat;
 - full automation loop;
@@ -40,6 +42,7 @@
 После закрытия стартовых pilot blockers следующий согласованный шаг не `full mechanism upgrade rich report`.
 
 Следующим bounded step является `Business-ready Report Pack`.
+До него допускается отдельный pre-pilot operational block `scheduled_reviewable_reporting`.
 Этот шаг относится к business-facing presentation layer.
 Полный mechanism upgrade rich report относится уже к post-pilot track.
 
@@ -56,6 +59,7 @@
 
 - `manager_daily` manual source-aware run;
 - `rop_weekly` manual persisted-only aggregation;
+- bounded `scheduled_reviewable_reporting` with review-required draft in operator UI;
 - existing readiness / reuse / PDF rendering rules;
 - always-on Telegram test delivery;
 - optional business email delivery через existing toggle.
@@ -65,7 +69,7 @@
 - balance top-up / quota change / billing action;
 - `Business-ready Report Pack`;
 - full report mechanism upgrade;
-- scheduler / retries / beat / automation;
+- retries / beat / full automation loop / generic scheduler platform;
 - broad analyzer redesign.
 
 ### Pilot KPI list
@@ -104,6 +108,8 @@
 
 - Telegram test delivery is always attempted for every manual run;
 - business email toggle controls only business email delivery and defaults to `off`;
+- for `scheduled_reviewable_reporting`, automatic generation stops at `review_required` and does not auto-send business email;
+- business delivery on scheduled runs is counted only after explicit operator approve;
 - pilot delivery is counted as successful when the final PDF artifact is built and `telegram_test_delivery=delivered`;
 - if `send_email=true`, business email delivery is tracked separately and does not replace Telegram test delivery;
 - if Telegram delivery is not delivered, pilot delivery is not successful even when business email is enabled.
@@ -124,6 +130,8 @@
 - renderer/template polish
 - consistent PDF and short delivery wrapper
 - complete and honest list-of-calls presentation
+- bounded scheduled reviewable generation with manual operator approve
+- manual editing only for allowed business-facing report blocks
 
 ### Not allowed before pilot
 
@@ -131,6 +139,21 @@
 - new extraction/aggregation/coaching architecture
 - full rich daily mechanism upgrade
 - broad analyzer redesign
+- auto-send to business without review
+- manual editing of transcript / raw analysis / scores / computed metrics
+
+## Scheduled reviewable reporting boundary
+
+- operating mode = `scheduled_reviewable_reporting`;
+- schedule creates report run automatically and stops at `review_required`;
+- result appears in operator UI as draft / review-required artifact;
+- operator may edit only business-facing report blocks:
+  - `manager_daily`: top summary, focus wording, key problem wording, recommendations wording, final manager-facing note / challenge;
+  - `rop_weekly`: executive summary, team risks wording, ROP tasks wording, final managerial commentary;
+- operator must not edit transcript, raw extracted facts, raw checklist answers, stage scores, criteria results, raw analyzer JSON, source call-list data or computed metrics;
+- before business delivery the system keeps original generated block, edited block, editor and `edited_at`;
+- business delivery for scheduled runs happens only after explicit operator approve;
+- existing Telegram test inspection path may remain active.
 
 ## External billing blocker
 
@@ -216,6 +239,7 @@ Signs that the external blocker is still not removed:
 - manual API route для bounded report run;
 - внутренняя web-страница оператора внутри текущего FastAPI app для ручного запуска report run без CLI;
 - lightweight UI-support endpoints для form context, local manager sync и recipient preview;
+- bounded `Schedules` block в existing operator UI для future-dated reviewable runs;
 - multi-select filters для одного, нескольких или нуля явно выбранных менеджеров/extensions;
 - отдельная observability section в operator UI для monitoring текущего run;
 - preset resolution для `manager_daily` и `rop_weekly`;
@@ -248,7 +272,7 @@ Signs that the external blocker is still not removed:
 - `manager_daily/build_missing_and_report` после ingest запускает полный upstream chain для fresh/missing cases: audio fetch -> `STT` -> `LLM-1` -> `LLM-2` -> persistence;
 - после reuse/build `manager_daily` больше не обязан рендерить full daily PDF любой ценой: сначала оценивается readiness на текущем дне, затем при необходимости на последних `2`, потом `3` рабочих днях; если full readiness не достигнут, runtime может отправить `signal_report`, а при `skip_accumulate` / `no_data` / `missing_artifacts` собрать только operator-facing preview shell вместо обычного deliverable report;
 - `rop_weekly` остаётся persisted-only aggregation: weekly path не делает source discovery, не ingest-ит missing calls и не запускает новый audio / `STT` / `LLM-1` / `LLM-2` build;
-- это всё ещё bounded manual path: здесь нет scheduler, retries, beat, run-history subsystem или автоматического live intake loop вне явного operator trigger.
+- это всё ещё bounded pre-pilot path: допускается only `scheduled_reviewable_reporting` with mandatory review/approve, но здесь нет retries, beat, generic workflow builder, auto-approval или auto-send to business outside operator control.
 
 ## `manager_daily` readiness policy
 

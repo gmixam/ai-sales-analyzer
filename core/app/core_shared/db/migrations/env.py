@@ -19,6 +19,9 @@ from app.core_shared.db.models import (
     ManagerProgress,
     Prompt,
     PromptSuggestion,
+    ReportingSchedule,
+    ScheduledReportBatch,
+    ScheduledReportDraft,
 )
 
 config = context.config

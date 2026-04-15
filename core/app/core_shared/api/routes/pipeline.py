@@ -16,6 +16,13 @@ from app.agents.calls.reporting import (
     ReportRunFilters,
     resolve_report_preset,
 )
+from app.agents.calls.scheduled_reporting import (
+    SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES,
+    SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE,
+    SCHEDULED_REVIEWABLE_BATCH_STATUSES,
+    SCHEDULED_REVIEWABLE_OPERATING_MODE,
+    ScheduledReviewableReportingService,
+)
 from app.agents.calls.bitrix_readonly import BitrixManagerMapper, BitrixReadOnlyError
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Department, Interaction, Manager
@@ -109,6 +116,41 @@ class SyncReportManagersRequest(BaseModel):
     department_id: str
 
 
+class CreateReportScheduleRequest(BaseModel):
+    """Payload for creating one bounded scheduled reviewable report."""
+
+    department_id: str
+    manager_ids: list[str] = Field(default_factory=list)
+    preset: str
+    enabled: bool = True
+    start_date: str
+    start_time: str
+    timezone: str
+    recurrence_type: str
+    report_period_rule: str
+    mode: str
+    business_email_enabled: bool = False
+
+
+class ToggleReportScheduleRequest(BaseModel):
+    """Payload for pause/resume of one schedule."""
+
+    enabled: bool
+
+
+class EditScheduledDraftRequest(BaseModel):
+    """Payload for editing allowed business-facing draft blocks."""
+
+    edited_blocks: dict[str, str] = Field(default_factory=dict)
+    editor: str = "operator_ui"
+
+
+class ApproveScheduledBatchRequest(BaseModel):
+    """Payload for approving one scheduled review batch."""
+
+    editor: str = "operator_ui"
+
+
 def _build_report_filters(request: RunManualReportRequest) -> ReportRunFilters:
     """Normalize UI/API request payload into report filters."""
     return ReportRunFilters(
@@ -186,6 +228,16 @@ async def get_calls_report_operator_context() -> dict:
         )
         serialized_departments = [_serialize_department(item) for item in departments]
         serialized_managers = [_serialize_manager(item) for item in managers]
+        scheduled_service = ScheduledReviewableReportingService(db=db)
+        scheduled_context = {
+            "operating_mode": SCHEDULED_REVIEWABLE_OPERATING_MODE,
+            "recurrence_types": list(SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE),
+            "report_period_rules": list(SCHEDULED_REVIEWABLE_ALLOWED_PERIOD_RULES),
+            "review_required": True,
+            "lifecycle": list(SCHEDULED_REVIEWABLE_BATCH_STATUSES),
+            "schedules": scheduled_service.list_schedules(),
+            "review_queue": scheduled_service.list_review_batches(),
+        }
 
     return {
         "presets": [
@@ -206,6 +258,7 @@ async def get_calls_report_operator_context() -> dict:
                 else None
             ),
         },
+        "scheduled_reviewable_reporting": scheduled_context,
     }
 
 
@@ -450,3 +503,79 @@ async def run_calls_report_manual(request: RunManualReportRequest) -> dict:
         )
 
     return result
+
+
+@router.post("/calls/report-schedules")
+async def create_calls_report_schedule(request: CreateReportScheduleRequest) -> dict:
+    """Create one bounded scheduled reviewable reporting schedule."""
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            schedule = service.create_schedule(
+                department_id=request.department_id,
+                manager_ids=request.manager_ids,
+                preset=request.preset,
+                enabled=request.enabled,
+                start_date=request.start_date,
+                start_time=request.start_time,
+                timezone_name=request.timezone,
+                recurrence_type=request.recurrence_type,
+                report_period_rule=request.report_period_rule,
+                mode=request.mode,
+                business_email_enabled=request.business_email_enabled,
+            )
+            return {"status": "created", "schedule": schedule}
+    except ASAError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc
+
+
+@router.post("/calls/report-schedules/{schedule_id}/enabled")
+async def toggle_calls_report_schedule(schedule_id: str, request: ToggleReportScheduleRequest) -> dict:
+    """Pause or resume one bounded schedule."""
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            schedule = service.set_schedule_enabled(schedule_id=schedule_id, enabled=request.enabled)
+            return {"status": "updated", "schedule": schedule}
+    except ASAError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc
+
+
+@router.post("/calls/report-review/drafts/{draft_id}/edit")
+async def edit_calls_scheduled_report_draft(draft_id: str, request: EditScheduledDraftRequest) -> dict:
+    """Edit allowed business-facing blocks for one scheduled draft."""
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            draft = service.edit_draft(
+                draft_id=draft_id,
+                edited_blocks=request.edited_blocks,
+                editor=request.editor,
+            )
+            return {"status": "edited", "draft": draft}
+    except ASAError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc
+
+
+@router.post("/calls/report-review/batches/{batch_id}/approve")
+async def approve_calls_scheduled_report_batch(batch_id: str, request: ApproveScheduledBatchRequest) -> dict:
+    """Approve one scheduled review batch for business delivery."""
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            batch = service.approve_batch(batch_id=batch_id, editor=request.editor)
+            return {"status": "approved", "batch": batch}
+    except ASAError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc
+
+
+@router.post("/calls/report-schedules/scan")
+async def scan_calls_report_schedules() -> dict:
+    """Run one bounded due-schedule scan for scheduled reviewable reporting."""
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            summary = service.scan_due_schedules()
+            return {"status": "completed", **summary}
+    except ASAError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.__class__.__name__}: {exc}") from exc

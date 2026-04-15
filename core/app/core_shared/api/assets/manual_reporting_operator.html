@@ -508,6 +508,73 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    /* ── Scheduled reviewable reporting ── */
+    .subsection-title {
+      margin: 18px 0 10px;
+      font-size: 16px;
+    }
+
+    .subsection-title:first-of-type {
+      margin-top: 0;
+    }
+
+    .inline-note {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .review-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .schedule-card,
+    .review-batch {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .schedule-card h3,
+    .review-batch h3,
+    .draft-card h4 {
+      margin: 0 0 8px;
+    }
+
+    .meta-list {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .meta-list strong {
+      color: var(--ink);
+    }
+
+    .draft-card {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid rgba(217, 207, 191, 0.8);
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .readonly-box {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      background: rgba(244, 239, 230, 0.5);
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
     /* ── Utilities ── */
     .muted { color: var(--muted); }
 
@@ -741,6 +808,117 @@
         </div>
       </details>
     </div>
+
+    <section class="layout" style="margin-top:18px;">
+      <article class="card">
+        <h2>Schedules</h2>
+        <form id="schedule-form">
+          <h3 class="subsection-title">Target</h3>
+          <div class="grid">
+            <div class="field">
+              <label for="schedule-department">Department</label>
+              <select id="schedule-department" name="department_id"></select>
+            </div>
+            <div class="field">
+              <label for="schedule-preset">Report preset</label>
+              <select id="schedule-preset" name="preset"></select>
+            </div>
+            <div class="field full">
+              <label for="schedule-managers">Managers</label>
+              <select id="schedule-managers" name="manager_ids" multiple size="6"></select>
+            </div>
+          </div>
+
+          <h3 class="subsection-title">Schedule</h3>
+          <div class="grid">
+            <div class="field">
+              <label for="schedule-enabled">Enabled</label>
+              <div class="checkbox">
+                <input id="schedule-enabled" name="enabled" type="checkbox" checked>
+                <label for="schedule-enabled">Schedule is active</label>
+              </div>
+            </div>
+            <div class="field">
+              <label for="schedule-start-date">Start date</label>
+              <input id="schedule-start-date" name="start_date" type="date" required>
+            </div>
+            <div class="field">
+              <label for="schedule-start-time">Start time</label>
+              <input id="schedule-start-time" name="start_time" type="time" required>
+            </div>
+            <div class="field">
+              <label for="schedule-timezone">Timezone</label>
+              <input id="schedule-timezone" name="timezone" type="text" value="Etc/UTC" required>
+            </div>
+            <div class="field">
+              <label for="schedule-recurrence">Recurrence type</label>
+              <select id="schedule-recurrence" name="recurrence_type"></select>
+            </div>
+          </div>
+
+          <h3 class="subsection-title">Report period rule</h3>
+          <div class="grid">
+            <div class="field full">
+              <label for="schedule-period-rule">Rule</label>
+              <select id="schedule-period-rule" name="report_period_rule"></select>
+            </div>
+          </div>
+
+          <h3 class="subsection-title">Execution</h3>
+          <div class="grid">
+            <div class="field">
+              <label for="schedule-mode">Mode</label>
+              <select id="schedule-mode" name="mode"></select>
+            </div>
+            <div class="field">
+              <label for="schedule-business-email-enabled">Business email</label>
+              <div class="checkbox">
+                <input id="schedule-business-email-enabled" name="business_email_enabled" type="checkbox">
+                <label for="schedule-business-email-enabled">business_email_enabled</label>
+              </div>
+            </div>
+            <div class="field">
+              <label>Review required</label>
+              <div class="checkbox">
+                <strong>true</strong>
+                <span class="inline-note">Manual approve is always required in this slice.</span>
+              </div>
+            </div>
+            <div class="field">
+              <label>Telegram test delivery</label>
+              <div class="checkbox">
+                <strong>always on</strong>
+                <span class="inline-note">Existing operator inspection path remains active.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="primary" type="submit">Create Schedule</button>
+            <button class="secondary" type="button" id="schedule-scan-button">Run Due Scan</button>
+          </div>
+          <p class="note" id="schedule-form-note">
+            `scheduled_reviewable_reporting` creates a draft only. Business delivery stays blocked until explicit operator approve.
+          </p>
+        </form>
+      </article>
+
+      <aside class="stack">
+        <section class="card">
+          <h2>Existing Schedules</h2>
+          <div id="schedules-list" class="review-list">
+            <p class="empty">После загрузки контекста здесь появятся schedules.</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Review Queue</h2>
+          <div id="review-queue" class="review-list">
+            <p class="empty">После scheduled run здесь появятся draft artifacts со статусом review_required.</p>
+          </div>
+        </section>
+      </aside>
+    </section>
   </main>
 
   <script>
@@ -748,6 +926,8 @@
     const syncManagersUrl = "/pipeline/calls/report-ui/sync-managers";
     const previewUrl = "/pipeline/calls/report-preview";
     const runUrl = "/pipeline/calls/report-run";
+    const createScheduleUrl = "/pipeline/calls/report-schedules";
+    const scanSchedulesUrl = "/pipeline/calls/report-schedules/scan";
 
     const presetEl = document.getElementById("preset");
     const modeEl = document.getElementById("mode");
@@ -766,6 +946,19 @@
     const observabilityCostsEl = document.getElementById("observability-costs");
     const diagnosticsSummaryEl = document.getElementById("diagnostics-summary");
     const diagnosticsNotesEl = document.getElementById("diagnostics-notes");
+    const scheduleDepartmentEl = document.getElementById("schedule-department");
+    const schedulePresetEl = document.getElementById("schedule-preset");
+    const scheduleManagersEl = document.getElementById("schedule-managers");
+    const scheduleEnabledEl = document.getElementById("schedule-enabled");
+    const scheduleStartDateEl = document.getElementById("schedule-start-date");
+    const scheduleStartTimeEl = document.getElementById("schedule-start-time");
+    const scheduleTimezoneEl = document.getElementById("schedule-timezone");
+    const scheduleRecurrenceEl = document.getElementById("schedule-recurrence");
+    const schedulePeriodRuleEl = document.getElementById("schedule-period-rule");
+    const scheduleModeEl = document.getElementById("schedule-mode");
+    const scheduleBusinessEmailEnabledEl = document.getElementById("schedule-business-email-enabled");
+    const schedulesListEl = document.getElementById("schedules-list");
+    const reviewQueueEl = document.getElementById("review-queue");
 
     let uiContext = { departments: [], managers: [], presets: [], modes: [], operator_delivery: {} };
 
@@ -862,6 +1055,26 @@
       });
     }
 
+    function currentScheduleManagers() {
+      return uiContext.managers.filter((item) => item.department_id === scheduleDepartmentEl.value && item.active);
+    }
+
+    function syncScheduleManagerOptions() {
+      const managers = currentScheduleManagers();
+      const selected = Array.from(scheduleManagersEl.selectedOptions).map((item) => item.value);
+      clearNode(scheduleManagersEl);
+      managers.forEach((manager) => {
+        appendOption(
+          scheduleManagersEl,
+          manager.id,
+          manager.extension ? `${manager.name} (${manager.extension})` : manager.name,
+        );
+      });
+      Array.from(scheduleManagersEl.options).forEach((item) => {
+        item.selected = selected.includes(item.value);
+      });
+    }
+
     function syncPresetBehavior() {
       const isManagerDaily = presetEl.value === "manager_daily";
       const isRopWeekly = presetEl.value === "rop_weekly";
@@ -897,6 +1110,22 @@
         send_email: sendEmailEl.checked,
       };
       return payload;
+    }
+
+    function buildSchedulePayload() {
+      return {
+        department_id: scheduleDepartmentEl.value,
+        manager_ids: Array.from(scheduleManagersEl.selectedOptions).map((item) => item.value).filter(Boolean),
+        preset: schedulePresetEl.value,
+        enabled: scheduleEnabledEl.checked,
+        start_date: scheduleStartDateEl.value,
+        start_time: scheduleStartTimeEl.value,
+        timezone: scheduleTimezoneEl.value,
+        recurrence_type: scheduleRecurrenceEl.value,
+        report_period_rule: schedulePeriodRuleEl.value,
+        mode: scheduleModeEl.value,
+        business_email_enabled: scheduleBusinessEmailEnabledEl.checked,
+      };
     }
 
     // ── New: cost one-liner ──
@@ -1457,6 +1686,193 @@
       groups.forEach((group) => groupsEl.appendChild(renderGroupCard(group, target)));
     }
 
+    function formatDateTime(value) {
+      if (!value) return "—";
+      try {
+        return new Date(value).toLocaleString();
+      } catch (_error) {
+        return value;
+      }
+    }
+
+    function renderSchedules() {
+      clearNode(schedulesListEl);
+      const scheduled = uiContext.scheduled_reviewable_reporting || {};
+      const items = scheduled.schedules || [];
+      if (!items.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "Schedules пока не созданы.";
+        schedulesListEl.appendChild(empty);
+        return;
+      }
+
+      items.forEach((schedule) => {
+        const card = document.createElement("section");
+        card.className = "schedule-card";
+        const title = document.createElement("h3");
+        title.innerHTML = `${schedule.preset} <span class="${pillClass(schedule.enabled ? "completed" : "idle")}">${schedule.enabled ? "enabled" : "paused"}</span>`;
+        card.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "meta-list";
+        meta.innerHTML = `
+          <div><strong>Department:</strong> ${schedule.department_id}</div>
+          <div><strong>Managers:</strong> ${(schedule.manager_ids || []).length ? schedule.manager_ids.join(", ") : "all active"}</div>
+          <div><strong>Recurrence:</strong> ${schedule.recurrence_type}</div>
+          <div><strong>Period rule:</strong> ${schedule.report_period_rule}</div>
+          <div><strong>Mode:</strong> ${schedule.mode}</div>
+          <div><strong>Business email:</strong> ${schedule.business_email_enabled ? "on" : "off"}</div>
+          <div><strong>Next run:</strong> ${formatDateTime(schedule.next_run_at)}</div>
+          <div><strong>Review required:</strong> true</div>
+        `;
+        card.appendChild(meta);
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "secondary";
+        toggle.textContent = schedule.enabled ? "Pause" : "Resume";
+        toggle.addEventListener("click", async () => {
+          await fetchJson(`/pipeline/calls/report-schedules/${schedule.id}/enabled`, {
+            enabled: !schedule.enabled,
+          });
+          await loadContext(scheduleDepartmentEl.value || departmentEl.value);
+        });
+        actions.appendChild(toggle);
+        card.appendChild(actions);
+        schedulesListEl.appendChild(card);
+      });
+    }
+
+    function editableLabelsForPreset(preset) {
+      if (preset === "manager_daily") {
+        return {
+          top_summary: "Top summary",
+          focus_wording: "Focus wording",
+          key_problem_wording: "Key problem wording",
+          recommendations_wording: "Recommendations wording",
+          final_manager_note: "Final manager-facing note / challenge",
+        };
+      }
+      return {
+        executive_summary: "Executive summary",
+        team_risks_wording: "Team risks wording",
+        rop_tasks_wording: "ROP tasks wording",
+        final_managerial_commentary: "Final managerial commentary",
+      };
+    }
+
+    function renderReviewQueue() {
+      clearNode(reviewQueueEl);
+      const scheduled = uiContext.scheduled_reviewable_reporting || {};
+      const batches = scheduled.review_queue || [];
+      if (!batches.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "Review queue пока пуста.";
+        reviewQueueEl.appendChild(empty);
+        return;
+      }
+
+      batches.forEach((batch) => {
+        const batchEl = document.createElement("section");
+        batchEl.className = "review-batch";
+        const title = document.createElement("h3");
+        title.innerHTML = `${batch.preset} <span class="${pillClass(batch.status)}">${batch.status}</span>`;
+        batchEl.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "meta-list";
+        meta.innerHTML = `
+          <div><strong>Lifecycle:</strong> ${(uiContext.scheduled_reviewable_reporting?.lifecycle || []).join(" -> ")}</div>
+          <div><strong>Planned for:</strong> ${formatDateTime(batch.planned_for)}</div>
+          <div><strong>Period:</strong> ${(batch.period || {}).date_from || "—"}..${(batch.period || {}).date_to || "—"}</div>
+          <div><strong>Mode:</strong> ${batch.mode}</div>
+          <div><strong>Business email:</strong> ${batch.business_email_enabled ? "on" : "off"}</div>
+          <div><strong>Review required:</strong> ${batch.review_required ? "true" : "false"}</div>
+        `;
+        batchEl.appendChild(meta);
+
+        (batch.drafts || []).forEach((draft) => {
+          const draftEl = document.createElement("article");
+          draftEl.className = "draft-card";
+          const header = document.createElement("h4");
+          header.innerHTML = `${draft.group_key} <span class="${pillClass(draft.status)}">${draft.status}</span>`;
+          draftEl.appendChild(header);
+
+          const editableLabels = editableLabelsForPreset(draft.preset);
+          const form = document.createElement("div");
+          form.className = "grid";
+          (draft.editable_block_keys || []).forEach((key) => {
+            const field = document.createElement("div");
+            field.className = "field full";
+            const label = document.createElement("label");
+            label.htmlFor = `draft-${draft.id}-${key}`;
+            label.textContent = editableLabels[key] || key;
+            const textarea = document.createElement("textarea");
+            textarea.id = `draft-${draft.id}-${key}`;
+            textarea.name = key;
+            textarea.rows = 3;
+            textarea.value = (draft.edited_blocks || {})[key] || (draft.generated_blocks || {})[key] || "";
+            field.appendChild(label);
+            field.appendChild(textarea);
+            form.appendChild(field);
+          });
+          draftEl.appendChild(form);
+
+          const readOnly = document.createElement("div");
+          readOnly.className = "readonly-box";
+          readOnly.innerHTML = `
+            <strong>Read-only by rule:</strong> transcript, raw extracted facts, raw checklist answers, stage scores,
+            criteria results, raw analyzer JSON, source call list data, computed metrics.
+          `;
+          draftEl.appendChild(readOnly);
+
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const saveButton = document.createElement("button");
+          saveButton.type = "button";
+          saveButton.className = "secondary";
+          saveButton.textContent = "Save Draft Edits";
+          saveButton.addEventListener("click", async () => {
+            const editedBlocks = {};
+            Array.from(form.querySelectorAll("textarea")).forEach((item) => {
+              editedBlocks[item.name] = item.value;
+            });
+            await fetchJson(`/pipeline/calls/report-review/drafts/${draft.id}/edit`, {
+              edited_blocks: editedBlocks,
+              editor: "operator_ui",
+            });
+            await loadContext(scheduleDepartmentEl.value || departmentEl.value);
+          });
+          actions.appendChild(saveButton);
+          draftEl.appendChild(actions);
+          batchEl.appendChild(draftEl);
+        });
+
+        if (batch.status === "review_required") {
+          const approveActions = document.createElement("div");
+          approveActions.className = "actions";
+          const approveButton = document.createElement("button");
+          approveButton.type = "button";
+          approveButton.className = "primary";
+          approveButton.textContent = "Approve For Delivery";
+          approveButton.addEventListener("click", async () => {
+            await fetchJson(`/pipeline/calls/report-review/batches/${batch.id}/approve`, {
+              editor: "operator_ui",
+            });
+            await loadContext(scheduleDepartmentEl.value || departmentEl.value);
+          });
+          approveActions.appendChild(approveButton);
+          batchEl.appendChild(approveActions);
+        }
+
+        reviewQueueEl.appendChild(batchEl);
+      });
+    }
+
     // ── Transport / request failure helpers (unchanged) ──
     function toRawSnippet(text) {
       const normalized = String(text || "").replace(/\s+/g, " ").trim();
@@ -1586,21 +2002,39 @@
       clearNode(presetEl);
       clearNode(modeEl);
       clearNode(departmentEl);
+      clearNode(scheduleDepartmentEl);
+      clearNode(schedulePresetEl);
+      clearNode(scheduleRecurrenceEl);
+      clearNode(schedulePeriodRuleEl);
+      clearNode(scheduleModeEl);
 
       uiContext.presets.forEach((item) => appendOption(presetEl, item.code, item.label));
+      uiContext.presets.forEach((item) => appendOption(schedulePresetEl, item.code, item.label));
       uiContext.modes.forEach((item) => appendOption(modeEl, item.code, item.label));
+      uiContext.modes.forEach((item) => appendOption(scheduleModeEl, item.code, item.label));
       uiContext.departments.forEach((item) => appendOption(departmentEl, item.id, item.name));
+      uiContext.departments.forEach((item) => appendOption(scheduleDepartmentEl, item.id, item.name));
+      (uiContext.scheduled_reviewable_reporting?.recurrence_types || []).forEach((item) => appendOption(scheduleRecurrenceEl, item, item));
+      (uiContext.scheduled_reviewable_reporting?.report_period_rules || []).forEach((item) => appendOption(schedulePeriodRuleEl, item, item));
       if ([...departmentEl.options].some((item) => item.value === currentDepartment)) {
         departmentEl.value = currentDepartment;
+      }
+      if ([...scheduleDepartmentEl.options].some((item) => item.value === currentDepartment)) {
+        scheduleDepartmentEl.value = currentDepartment;
       }
 
       const today = new Date().toISOString().slice(0, 10);
       if (!dateFromEl.value) dateFromEl.value = today;
       if (!dateToEl.value) dateToEl.value = today;
+      if (!scheduleStartDateEl.value) scheduleStartDateEl.value = today;
+      if (!scheduleStartTimeEl.value) scheduleStartTimeEl.value = "09:00";
 
       syncManagerOptions();
+      syncScheduleManagerOptions();
       syncPresetBehavior();
       renderDeliveryMode();
+      renderSchedules();
+      renderReviewQueue();
     }
 
     function renderDeliveryMode() {
@@ -1620,6 +2054,7 @@
 
     // ── Event listeners ──
     departmentEl.addEventListener("change", syncManagerOptions);
+    scheduleDepartmentEl.addEventListener("change", syncScheduleManagerOptions);
     presetEl.addEventListener("change", syncPresetBehavior);
     dateFromEl.addEventListener("change", () => {
       if (presetEl.value === "manager_daily") {
@@ -1715,6 +2150,29 @@
 
         // Open observability details so failure is visible
         document.getElementById("observability-details").open = true;
+      }
+    });
+
+    document.getElementById("schedule-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      document.getElementById("schedule-form-note").textContent = "Создаю schedule...";
+      try {
+        await fetchJson(createScheduleUrl, buildSchedulePayload());
+        document.getElementById("schedule-form-note").textContent = "Schedule created. Review-required semantics stay active.";
+        await loadContext(scheduleDepartmentEl.value || departmentEl.value);
+      } catch (error) {
+        document.getElementById("schedule-form-note").textContent = formatFailureHeadline(error);
+      }
+    });
+
+    document.getElementById("schedule-scan-button").addEventListener("click", async () => {
+      document.getElementById("schedule-form-note").textContent = "Running bounded due-schedule scan...";
+      try {
+        const result = await fetchJson(scanSchedulesUrl, {});
+        document.getElementById("schedule-form-note").textContent = `Scan completed: ${result.processed_count || 0} schedule(s) processed.`;
+        await loadContext(scheduleDepartmentEl.value || departmentEl.value);
+      } catch (error) {
+        document.getElementById("schedule-form-note").textContent = formatFailureHeadline(error);
       }
     });
 

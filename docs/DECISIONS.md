@@ -429,3 +429,21 @@
 - **Reason:** Repo docs must separate the last external billing dependency from code/runtime scope, so the team can close `Pilot Ready` immediately after one successful rerun instead of reopening architecture or broad reporting work.
 - **Scope:** No billing workaround in code, no `Business-ready Report Pack`, no full report mechanism upgrade, no scheduler/retries/beat/automation, and no broad analyzer redesign.
 - **Date:** 2026-04-15
+
+## ADR-045: Before pilot, scheduled reporting may run automatically but business delivery stays review-gated
+- **Decision:** Before pilot the project allows a bounded operating mode `scheduled_reviewable_reporting`.
+- **Decision:** In this mode the system may create report runs automatically by schedule and build the report artifact automatically, but it must stop in `review_required` before business delivery.
+- **Decision:** Business delivery remains manual: the operator must review the draft in the existing operator UI, may edit only allowed business-facing report blocks, and must explicitly approve delivery.
+- **Decision:** Raw analysis/scoring stays immutable. Manual editing is not allowed for transcript, raw extracted facts, raw checklist answers, stage scores, criteria results, raw analyzer JSON, source call-list data, or computed metrics.
+- **Reason:** The project needs to remove the daily manual trigger before pilot, while preserving operator control and avoiding a full automation loop or any mixing of report-shaping with raw-analysis edits.
+- **Scope:** Allowed in this block:
+  - bounded schedule creation in existing backend/operator UI
+  - fixed schedule fields and bounded report-period rules
+  - lifecycle `planned -> queued -> running -> review_required -> approved_for_delivery -> delivered|failed|paused`
+  - audit of original generated block, edited block, editor, and `edited_at`
+- **Scope:** Not allowed in this block:
+  - retries / beat platform redesign / failure recovery engine
+  - generic workflow builder or arbitrary cron editor
+  - auto-approval or auto-send to business without review
+  - broad analyzer redesign or full rich-report mechanism upgrade
+- **Date:** 2026-04-15

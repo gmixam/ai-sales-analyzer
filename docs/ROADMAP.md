@@ -160,11 +160,12 @@
 - baseline по этапам воронки
 - pilot baseline version, pilot scope in/out и pilot KPI list зафиксированы в repo docs
 - baseline metrics package, manual AI validation rule и delivery success rule зафиксированы в repo docs
+- bounded `scheduled_reviewable_reporting` в existing backend/operator UI: automatic schedule -> draft artifact -> operator review/approve
 - рабочий pipeline source → transcript → analysis → delivery
 - ручная проверка качества на выборке
 
 ### Критерий готовности
-Система готова к запуску на пилотной группе и не требует дополнительных архитектурных решений перед стартом; если billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN` временно недоступен, единственный оставшийся blocker — один bounded closure rerun после user confirmation about top-up.
+Система готова к запуску на пилотной группе и не требует дополнительных архитектурных решений перед стартом; bounded scheduled reviewable runs допускаются до пилота, но business delivery всё ещё требует explicit operator approve. Если billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN` временно недоступен, единственный оставшийся blocker — один bounded closure rerun после user confirmation about top-up.
 
 ---
 
@@ -264,9 +265,9 @@
 
 Что является следующим главным фокусом:
 - Manual Reporting Pilot как отдельный промежуточный режим;
-- параметрический ручной запуск отчётов без scheduler/retries/beat;
+- bounded `scheduled_reviewable_reporting` до пилота без auto-send бизнесу;
 - reuse уже собранных артефактов и bounded model/version selection;
-- после закрытия pilot blockers порядок такой: `Pilot Ready` -> `Business-ready Report Pack` -> `Pilot Live` -> post-pilot richer report mechanism.
+- после полного closure `Pilot Ready` порядок такой: `Pilot Ready` -> `Business-ready Report Pack` -> `Pilot Live` -> post-pilot richer report mechanism.
 
 ## Что особенно важно не потерять по пути
 - Bitrix24 read-only нужен в следующем шаге для полного управленческого отбора и маппинга, но первый live manual validation допускает временный pilot mode без него.

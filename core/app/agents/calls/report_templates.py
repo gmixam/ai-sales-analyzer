@@ -110,6 +110,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     header = payload["header"]
     kpi = payload["kpi_overview"]
     empty_state = dict(payload.get("empty_state") or {})
+    editorial_recommendations = dict(payload.get("editorial_recommendations") or {})
     total_calls = int(kpi.get("calls_count") or 0)
     narrative = _build_manager_daily_narrative_block(payload)
     focus_dynamics = payload["focus_criterion_dynamics"]
@@ -182,6 +183,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "recommendations"),
+            "editorial_note": _clean_reader_text(
+                editorial_recommendations.get("text")
+                or "Рекомендации сформированы автоматически и могут быть уточнены оператором перед отправкой."
+            ),
             "cards": [
                 {
                     "title": item["title"],
@@ -314,6 +319,7 @@ def _build_rop_weekly_model(*, payload: dict[str, Any], template: ReportTemplate
     header = payload["header"]
     dynamics = payload["week_over_week_dynamics"]
     rows = payload.get("dashboard_rows") or []
+    editorial = dict(payload.get("editorial_summary") or {})
     sections = [
         {
             **_section_meta(template, "what_is_inside"),
@@ -340,9 +346,12 @@ def _build_rop_weekly_model(*, payload: dict[str, Any], template: ReportTemplate
         },
         {
             **_section_meta(template, "dashboard_note"),
-            "body": (
-                "Dashboard signal combines average score, problematic share and stop-flags. "
-                "Use it as the 30-second control snapshot before diving into risk cards."
+            "body": _value(
+                editorial.get("executive_summary"),
+                (
+                    "Dashboard signal combines average score, problematic share and stop-flags. "
+                    "Use it as the 30-second control snapshot before diving into risk cards."
+                ),
             ),
         },
         {
@@ -372,7 +381,11 @@ def _build_rop_weekly_model(*, payload: dict[str, Any], template: ReportTemplate
             "left_title": "Лучшие изменения",
             "right_title": "Тревожные изменения",
             "left_items": [_value(dynamics.get("best_dynamics_commentary"))],
-            "right_items": [_value(dynamics.get("alarming_dynamics_commentary"))],
+            "right_items": [
+                _value(editorial.get("team_risks_wording"))
+                if editorial.get("team_risks_wording")
+                else _value(dynamics.get("alarming_dynamics_commentary"))
+            ],
         },
         {
             **_section_meta(template, "risk_zone_cards"),
@@ -445,13 +458,17 @@ def _build_rop_weekly_model(*, payload: dict[str, Any], template: ReportTemplate
                 ]
                 for item in payload.get("rop_tasks_next_week") or []
             ],
+            "note": _value(editorial.get("rop_tasks_wording"), None),
         },
         {
             **_section_meta(template, "business_results_placeholder"),
-            "body": (
-                "CRM/business-results block stays present even when data is absent. "
-                f"Status: {_value(payload['business_results_placeholder'].get('status'))}. "
-                f"Reason: {_value(payload['business_results_placeholder'].get('reason'))}."
+            "body": _value(
+                editorial.get("final_managerial_commentary"),
+                (
+                    "CRM/business-results block stays present even when data is absent. "
+                    f"Status: {_value(payload['business_results_placeholder'].get('status'))}. "
+                    f"Reason: {_value(payload['business_results_placeholder'].get('reason'))}."
+                ),
             ),
         },
     ]
@@ -523,6 +540,9 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         return lines or ["—"]
     if kind == "cards":
         lines = []
+        if section.get("editorial_note"):
+            lines.append(str(section["editorial_note"]))
+            lines.append("")
         for card in section.get("cards") or []:
             lines.append(str(card.get("title") or "Карточка"))
             if card.get("body"):
@@ -740,7 +760,12 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     page_two = (
         _manager_daily_page_header(report["metadata_line"]) +
         f"<div class=\"section-bar navy\">{html.escape(recommendations['label'])}</div>"
-        f"{recommendation_cards}"
+        + (
+            f"<section class=\"summary-box\"><p>{html.escape(str(recommendations.get('editorial_note') or ''))}</p></section>"
+            if recommendations.get("editorial_note")
+            else ""
+        )
+        + f"{recommendation_cards}"
         + _manager_daily_page_footer(report["footer"], 2)
     )
     page_three = (
