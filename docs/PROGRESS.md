@@ -4,9 +4,10 @@
 **Этап:** MVP-1 transition to Manual Reporting Pilot
 **Статус фазы:** source-aware manual operator full-run path implemented and live-validated on bounded scope
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-04-09
+**Последнее обновление:** 2026-04-14
 
 ## Что сделано
+- [x] 2026-04-14 — Repo docs синхронизированы под новый agreed порядок работ: `Pilot Ready -> Business-ready Report Pack -> Pilot Live -> Full Report Mechanism Upgrade`; убран статусный конфликт в `ROADMAP.md`, обновлены текущий фокус и next steps в `PROGRESS.md`, решение уже зафиксировано в `ADR-043`
 - [x] Концепт продукта v2.0 (документ для руководства)
 - [x] Архитектурные решения зафиксированы (ADR 001-005)
 - [x] Структура проекта определена
