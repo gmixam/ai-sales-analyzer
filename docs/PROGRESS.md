@@ -4,9 +4,10 @@
 **Этап:** MVP-1 transition to Manual Reporting Pilot
 **Статус фазы:** source-aware manual operator full-run path implemented and live-validated on bounded scope
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-04-15
+**Последнее обновление:** 2026-04-16
 
 ## Что сделано
+- [x] 2026-04-16 — Для report work зафиксирована canonical three-bucket prioritization: `Делать сейчас` / `Делать вторым этапом` / `Делать в последнюю очередь`; source of truth для этого правила теперь `docs/REPORT_BACKLOG_PRIORITIZATION.md`
 - [x] 2026-04-15 — Выполнен bounded UX-fix operator UI для pre-pilot работы: manual run и schedules разделены на две вкладки (`Ручной запуск` / `Расписание`), `Existing Schedules` теперь показывают department/manager labels вместо raw UUID как primary text, добавлено явное `Удалить` с bounded soft-delete semantics (schedule исчезает из active list и future due-scan, но historical batches/drafts сохраняются)
 - [x] 2026-04-15 — Исправлен operator UI regression для `/pipeline/calls/report-ui`: confirmed root cause был в том, что `report-ui/context` падал при runtime-migration mismatch (`report_schedules` table missing), из-за чего frontend оставался с пустыми select fields; context builder теперь сохраняет static choices (`presets`, `modes`, bounded scheduled metadata) отдельно от DB-dependent schedule storage, UI показывает isolated schedule-storage warning вместо глобального empty state, а runtime schema доведена до актуального состояния через migration `d8b0f4c8d412` + restart `api/worker/beat`
 - [x] 2026-04-15 — Закрыт внутренний technical hardening для `scheduled_reviewable_reporting`: добавлены server-side lifecycle transitions, due-occurrence idempotency guard, disabled/future schedule guards, backend edit-whitelist enforcement с audit trail (`original_generated_block`, `edited_block`, `editor`, `edited_at`), deterministic period-rule tests и architecture sync в `ARCHITECTURE.md`
