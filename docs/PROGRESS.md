@@ -1,12 +1,14 @@
 # Progress Log — AI Sales Analyzer
 
 ## Текущий статус
-**Этап:** MVP-1 transition to Manual Reporting Pilot
-**Статус фазы:** source-aware manual operator full-run path implemented and live-validated on bounded scope
+**Этап:** Веха 6.5 — Business-ready Report Pack
+**Статус фазы:** task breakdown зафиксирован, реализация не начата
 **Дата начала:** 2026-03-17
 **Последнее обновление:** 2026-04-16
 
 ## Что сделано
+- [x] 2026-04-16 — Зафиксирован prioritized task breakdown для Вехи 6.5 `Business-ready Report Pack`: выполнено сравнение current repo версии `manager_daily` с новой версией отчёта (`Ежедневный_отчет_v4_ФИНАЛ.pdf`), все изменения разложены по трём корзинам, определены первые 6 implementation tasks; source of truth — `docs/BUSINESS_READY_REPORT_PACK_TASKS.md`
+- [x] 2026-04-16 — Выполнен baseline review current report layer: зафиксированы active template versions (`manager_daily_template_v1`, `rop_weekly_template_v1`), key files, структура секций обоих отчётов и gaps относительно reference
 - [x] 2026-04-16 — Для report work зафиксирована canonical three-bucket prioritization: `Делать сейчас` / `Делать вторым этапом` / `Делать в последнюю очередь`; source of truth для этого правила теперь `docs/REPORT_BACKLOG_PRIORITIZATION.md`
 - [x] 2026-04-15 — Выполнен bounded UX-fix operator UI для pre-pilot работы: manual run и schedules разделены на две вкладки (`Ручной запуск` / `Расписание`), `Existing Schedules` теперь показывают department/manager labels вместо raw UUID как primary text, добавлено явное `Удалить` с bounded soft-delete semantics (schedule исчезает из active list и future due-scan, но historical batches/drafts сохраняются)
 - [x] 2026-04-15 — Исправлен operator UI regression для `/pipeline/calls/report-ui`: confirmed root cause был в том, что `report-ui/context` падал при runtime-migration mismatch (`report_schedules` table missing), из-за чего frontend оставался с пустыми select fields; context builder теперь сохраняет static choices (`presets`, `modes`, bounded scheduled metadata) отдельно от DB-dependent schedule storage, UI показывает isolated schedule-storage warning вместо глобального empty state, а runtime schema доведена до актуального состояния через migration `d8b0f4c8d412` + restart `api/worker/beat`
@@ -132,21 +134,16 @@
 - [x] 2026-03-27 — Regression tests расширены до `21 passed`: добавлены API-level проверки на `400 JSON envelope` и `500 JSON envelope` для `/pipeline/calls/report-run`
 
 ## В работе сейчас
-- [ ] Следующие task-промпты нужно строить в коротком виде: только переменная часть шага, конкретный scope, expected output и список docs для обновления при затронутых изменениях
-- [ ] Все `Pilot Ready` technical tasks без billing dependency, включая bounded `scheduled_reviewable_reporting`, закрыты; остаётся только внешний blocker по billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
-- [ ] До user confirmation about top-up full closure verification не считается завершённым
-- [ ] После user confirmation about top-up выполнить один bounded closure rerun по уже зафиксированному live case
-- [ ] Следующий внутренний шаг после этого hardening: live UX verification сценария `schedule -> draft -> edit -> approve`
-- [ ] До пилота допускается bounded `scheduled_reviewable_reporting`, но это не full automation loop и не снимает operator review/approve
-- [ ] Только после полного закрытия `Pilot Ready` выполнять `Business-ready Report Pack`
-- [ ] Full Report Mechanism Upgrade отложен на отдельный post-pilot step и не смешивается с запуском пилота
+- [ ] Веха 6.5 `Business-ready Report Pack` — реализация Task 1–6 из `docs/BUSINESS_READY_REPORT_PACK_TASKS.md`
+- [ ] Внешний blocker по billable access для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN` остаётся open; closure rerun выполнить после user-confirmed top-up
+- [ ] Full Report Mechanism Upgrade (WP1–WP7) отложен на отдельный post-pilot step; source of truth — `docs/RICH_DAILY_AND_PILOT_CHANGESET_PLAN.md`
 
 ## Следующие шаги
-1. Дождаться user confirmation about top-up для `OPENAI_API_KEY_STT_MAIN` и `OPENAI_API_KEY_LLM1_MAIN`
-2. Выполнить live UX verification сценария `schedule -> draft -> edit -> approve`
-3. Повторить один bounded closure rerun `manager_daily/build_missing_and_report` на уже зафиксированном live case после user-confirmed top-up
-4. После полного closure `Pilot Ready` перейти к `Business-ready Report Pack`
-5. Провести `Pilot Live` на стабильной версии после `Business-ready Report Pack`
+1. Реализовать Task 1–6 из `docs/BUSINESS_READY_REPORT_PACK_TASKS.md` (корзина «Делать сейчас»)
+2. Live verification финального PDF и Telegram delivery после реализации
+3. После верификации перейти к задачам второй корзины из того же документа
+4. Провести `Pilot Live` на стабильной версии после `Business-ready Report Pack`
+5. Выполнить bounded closure rerun `manager_daily/build_missing_and_report` после user-confirmed top-up (независимо от текущего шага)
 
 ## Открытые вопросы
 - Чек-лист оценки звонков от РОПа (нужен до Шага 5)
