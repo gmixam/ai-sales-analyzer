@@ -96,6 +96,7 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             "template_id": template.template_id,
         },
         "pdf_bytes": pdf_bytes,
+        "morning_card_text": report.get("morning_card_text"),
     }
 
 
@@ -115,6 +116,13 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     narrative = _build_manager_daily_narrative_block(payload)
     focus_dynamics = payload["focus_criterion_dynamics"]
     call_outcomes = dict(payload.get("call_outcomes_summary") or {})
+    morning_card = _build_morning_card_data(
+        header=header,
+        call_outcomes=call_outcomes,
+        total_calls=total_calls,
+        call_list_raw=list(payload.get("call_list") or []),
+        focus_of_week=dict(payload.get("focus_of_week") or {}),
+    )
     outcome_cols = [
         {"label": "ЗВОНКОВ", "value": total_calls, "tone": "neutral"},
         {"label": "ДОГОВОРЕННОСТЬ", "value": _value(call_outcomes.get("agreed_count")), "tone": "positive"},
@@ -260,6 +268,13 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             ),
         },
         {
+            **_section_meta(template, "morning_card"),
+            "greeting": morning_card["greeting"],
+            "summary_line": morning_card["summary_line"],
+            "open_calls": morning_card["open_calls"],
+            "challenge": morning_card["challenge"],
+        },
+        {
             **_section_meta(template, "memo_legend"),
             "groups": [
                 {
@@ -310,6 +325,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         or payload["focus_of_week"].get("text")
         or "На этой неделе держим контроль над конкретным следующим шагом в каждом звонке.",
         "summary_cards": outcome_cols,
+        "morning_card_text": morning_card["text"],
         "sections": sections,
         "footer": empty_state.get("footer") or "Конфиденциально · Только для менеджера и РОПа",
         "generation_note": empty_state.get("generation_note") or "",
@@ -654,6 +670,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
     memo = sections["memo_legend"]
+    morning_card = sections["morning_card"]
     outcome_summary_cells = "".join(
         f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
         f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
@@ -795,6 +812,25 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<section class=\"memo-grid\">{memo_cards}</section>"
         + _manager_daily_page_footer(report["footer"], 4)
     )
+    mc_open_items = "".join(
+        f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
+        for call in morning_card.get("open_calls") or []
+    ) or "<li>Открытых звонков нет — отличный результат!</li>"
+    page_five = (
+        _manager_daily_page_header(report["metadata_line"])
+        + f"<div class=\"section-bar\">{html.escape(morning_card['label'])}</div>"
+        "<section class=\"morning-card\">"
+        f"<div class=\"morning-greeting\">{html.escape(str(morning_card.get('greeting') or ''))}</div>"
+        f"<div class=\"morning-summary\">{html.escape(str(morning_card.get('summary_line') or ''))}</div>"
+        "<div class=\"morning-open-label\">Открытые звонки:</div>"
+        f"<ul class=\"morning-open-list\">{mc_open_items}</ul>"
+        "<div class=\"morning-challenge\">"
+        "<span class=\"morning-challenge-label\">Фокус: </span>"
+        f"{html.escape(str(morning_card.get('challenge') or ''))}"
+        "</div>"
+        "</section>"
+        + _manager_daily_page_footer(report["footer"], 5)
+    )
     return (
         "<html><head><meta charset=\"utf-8\">"
         f"<style>{template.css}</style>"
@@ -803,6 +839,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<section class=\"page\">{page_two}</section>"
         f"<section class=\"page\">{page_three}</section>"
         f"<section class=\"page\">{page_four}</section>"
+        f"<section class=\"page\">{page_five}</section>"
         "</div></body></html>"
     )
 
@@ -1155,6 +1192,7 @@ def _render_manager_daily_pdf_report(
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
     memo = sections["memo_legend"]
+    morning_card_section = sections["morning_card"]
 
     page1 = add_page()
     draw_rect(page1, left=margin, top=58, box_width=width - (margin * 2), box_height=72, fill=accent)
@@ -1331,6 +1369,32 @@ def _render_manager_daily_pdf_report(
         draw_text(page4, left=left + 14, top=top + 14, text=str(group.get("title") or "Памятка"), size=10.5, color=accent, max_width=memo_width - 28)
         draw_bullets(page4, left=left + 14, top=top + 34, items=[str(item) for item in group.get("items") or ["Нет пояснений"]], width_limit=memo_width - 24, size=8.8)
     footer(page4, 4)
+
+    page5 = add_page()
+    draw_section_bar(page5, top=58, title=morning_card_section["label"], color=(47, 97, 170))
+    mc_top = 96
+    draw_text(page5, left=margin, top=mc_top, text=str(morning_card_section.get("greeting") or ""), size=14.0, color=black, max_width=width - (margin * 2))
+    mc_top += 30
+    draw_text(page5, left=margin, top=mc_top, text=str(morning_card_section.get("summary_line") or ""), size=11.0, color=accent, max_width=width - (margin * 2))
+    mc_top += 32
+    _mc_open_calls = list(morning_card_section.get("open_calls") or [])
+    if _mc_open_calls:
+        draw_text(page5, left=margin, top=mc_top, text="Открытые звонки:", size=9.0, color=muted, max_width=width - (margin * 2))
+        mc_top += 18
+        for _mc_call in _mc_open_calls:
+            draw_rect(page5, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=22, fill=light_orange)
+            draw_text(page5, left=margin + 8, top=mc_top + 5, text=f"• {_mc_call.get('time', '—')}  ·  {_mc_call.get('client', '—')}  ·  {_mc_call.get('status', '—')}", size=9.2, color=black, max_width=width - (margin * 2) - 16)
+            mc_top += 26
+    else:
+        draw_text(page5, left=margin, top=mc_top, text="Открытых звонков нет — отличный результат!", size=10.0, color=green, max_width=width - (margin * 2))
+        mc_top += 26
+    mc_top += 16
+    draw_rect(page5, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=54, fill=light_blue)
+    draw_rect(page5, left=margin, top=mc_top, box_width=4, box_height=54, fill=accent)
+    draw_text(page5, left=margin + 12, top=mc_top + 8, text="Фокус дня:", size=9.0, color=accent, max_width=width - (margin * 2) - 24)
+    draw_text(page5, left=margin + 12, top=mc_top + 26, text=str(morning_card_section.get("challenge") or ""), size=10.0, color=black, max_width=width - (margin * 2) - 24)
+    footer(page5, 5)
+
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 
 
@@ -1713,6 +1777,50 @@ def _short_time(value: Any) -> str:
     if "T" in text and len(text) >= 16:
         return text[11:16]
     return text
+
+
+def _build_morning_card_data(
+    *,
+    header: dict[str, Any],
+    call_outcomes: dict[str, Any],
+    total_calls: int,
+    call_list_raw: list[dict[str, Any]],
+    focus_of_week: dict[str, Any],
+) -> dict[str, Any]:
+    """Build structured morning card data from existing payload fields. No LLM, no history."""
+    manager_name = str(header.get("manager_name") or "")
+    first_name = manager_name.split()[0] if manager_name.split() else "Коллега"
+    agreed = int(call_outcomes.get("agreed_count") or 0)
+    open_count = int(call_outcomes.get("open_count") or 0)
+    summary_line = f"{total_calls} звонков → {agreed} договорённостей, {open_count} открытых"
+    open_calls_raw = [row for row in call_list_raw if str(row.get("status") or "") == "open"][:3]
+    open_calls = [
+        {
+            "time": _short_time(row.get("time")),
+            "client": _manager_reader_value(row.get("client_or_phone"), "Клиент не определён"),
+            "status": "Открыт",
+        }
+        for row in open_calls_raw
+    ]
+    challenge = str(
+        focus_of_week.get("text")
+        or "Каждый звонок должен заканчиваться конкретным следующим шагом."
+    )
+    lines = [f"{first_name}, доброе утро!", summary_line, ""]
+    if open_calls:
+        lines.append("Открытые звонки (нет договорённости):")
+        for call in open_calls:
+            lines.append(f"• {call['time']} · {call['client']} · {call['status']}")
+    else:
+        lines.append("Открытых звонков нет — отличный результат!")
+    lines += ["", f"Фокус: {challenge}"]
+    return {
+        "greeting": f"{first_name}, доброе утро!",
+        "summary_line": summary_line,
+        "open_calls": open_calls,
+        "challenge": challenge,
+        "text": "\n".join(lines),
+    }
 
 
 def _build_manager_daily_narrative_block(payload: dict[str, Any]) -> dict[str, str]:

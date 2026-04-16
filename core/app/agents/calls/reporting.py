@@ -2190,6 +2190,7 @@ class CallsManualReportingOrchestrator:
             template_meta=rendered.get("template"),
             send_business_email=send_email,
             email_resolution_error=email_resolution_error,
+            morning_card_text=rendered.get("morning_card_text"),
         )
         result["delivery"] = delivery
 
@@ -2261,6 +2262,7 @@ class CallsManualReportingOrchestrator:
             template_meta=rendered.get("template"),
             send_business_email=False,
             email_resolution_error=None,
+            morning_card_text=rendered.get("morning_card_text"),
         )
         result = {
             "status": status,

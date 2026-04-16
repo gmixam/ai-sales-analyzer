@@ -268,6 +268,59 @@ body {
   letter-spacing: 0.4px;
 }
 
+.morning-card {
+  margin-top: 28px;
+}
+
+.morning-greeting {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--navy);
+  margin-bottom: 10px;
+}
+
+.morning-summary {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--navy-2);
+  margin-bottom: 24px;
+}
+
+.morning-open-label {
+  font-size: 15px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.morning-open-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 24px;
+}
+
+.morning-open-list li {
+  padding: 10px 14px;
+  background: #f6dfcf;
+  border-left: 4px solid var(--orange);
+  margin-bottom: 6px;
+  font-size: 17px;
+}
+
+.morning-challenge {
+  background: #d7e4ef;
+  border-left: 4px solid var(--navy-2);
+  padding: 14px 16px 14px;
+  font-size: 18px;
+}
+
+.morning-challenge-label {
+  font-weight: 800;
+  color: var(--navy-2);
+}
+
 .summary-box {
   margin-top: 28px;
   background: #f3f5f7;

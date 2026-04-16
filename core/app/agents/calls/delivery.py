@@ -646,6 +646,7 @@ class CallsDelivery:
         template_meta: dict[str, Any] | None,
         send_business_email: bool,
         email_resolution_error: str | None = None,
+        morning_card_text: str | None = None,
     ) -> dict[str, Any]:
         """Deliver one operator report via mandatory Telegram test channel plus optional business email."""
         preview = self.preview_report_delivery(
@@ -658,13 +659,16 @@ class CallsDelivery:
         telegram_state = dict(preview["telegram_test_delivery"])
         email_state = dict(preview["email_delivery"])
 
-        telegram_caption = "\n".join(
-            [
-                subject,
-                f"Template: {(template_meta or {}).get('template_id') or 'unknown'}",
-                f"Resolved email: {primary_email or 'not available'}",
-            ]
-        )
+        if morning_card_text:
+            telegram_caption = morning_card_text
+        else:
+            telegram_caption = "\n".join(
+                [
+                    subject,
+                    f"Template: {(template_meta or {}).get('template_id') or 'unknown'}",
+                    f"Resolved email: {primary_email or 'not available'}",
+                ]
+            )
         try:
             if not settings.has_test_telegram_delivery:
                 raise DeliveryError(

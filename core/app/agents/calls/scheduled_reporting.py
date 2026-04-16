@@ -488,6 +488,7 @@ class ScheduledReviewableReportingService:
                 template_meta=rendered.get("template"),
                 send_business_email=batch.business_email_enabled,
                 email_resolution_error=email_resolution_error,
+                morning_card_text=rendered.get("morning_card_text"),
             )
             preview = {key: value for key, value in rendered.items() if key != "pdf_bytes"}
             draft.preview = preview
