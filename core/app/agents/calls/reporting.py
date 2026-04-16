@@ -3688,13 +3688,18 @@ def _average_criterion_score(artifacts: list[ReportArtifact], criterion_name: st
 
 
 def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
-    """Build richer outcome counters from follow_up metadata."""
+    """Build richer outcome counters from follow_up metadata and call classification."""
     agreed = 0
     rescheduled = 0
     refusal = 0
     open_count = 0
+    tech_service = 0
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
+        if call_type in {"support", "internal"}:
+            tech_service += 1
+            continue
         follow_up = dict(detail.get("follow_up") or {})
         status, _deadline = _derive_call_status_and_deadline(follow_up=follow_up)
         if status == "agreed":
@@ -3710,7 +3715,8 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
         "rescheduled_count": rescheduled,
         "refusal_count": refusal,
         "open_count": open_count,
-        "source_note": "derived_from_follow_up_and_reason_not_fixed",
+        "tech_service_count": tech_service,
+        "source_note": "derived_from_follow_up_and_classification",
     }
 
 

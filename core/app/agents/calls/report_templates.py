@@ -114,18 +114,19 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     total_calls = int(kpi.get("calls_count") or 0)
     narrative = _build_manager_daily_narrative_block(payload)
     focus_dynamics = payload["focus_criterion_dynamics"]
-    default_summary_cards = [
-        {"label": "Всего звонков", "value": total_calls, "tone": "neutral"},
-        {"label": "Средний балл", "value": _value(kpi.get("average_score")), "tone": "positive"},
-        {"label": "% сильных", "value": _pct_label(kpi.get("strong_calls_pct")), "tone": "positive"},
-        {"label": "% базовых", "value": _pct_label(kpi.get("baseline_calls_pct")), "tone": "focus"},
-        {"label": "% проблемных", "value": _pct_label(kpi.get("problematic_calls_pct")), "tone": "problem"},
+    call_outcomes = dict(payload.get("call_outcomes_summary") or {})
+    outcome_cols = [
+        {"label": "ЗВОНКОВ", "value": total_calls, "tone": "neutral"},
+        {"label": "ДОГОВОРЕННОСТЬ", "value": _value(call_outcomes.get("agreed_count")), "tone": "positive"},
+        {"label": "ПЕРЕНОС", "value": _value(call_outcomes.get("rescheduled_count")), "tone": "focus"},
+        {"label": "ОТКАЗ", "value": _value(call_outcomes.get("refusal_count")), "tone": "problem"},
+        {"label": "ОТКРЫТ", "value": _value(call_outcomes.get("open_count")), "tone": "warning"},
+        {"label": "ТЕХ/СЕРВИС", "value": _value(call_outcomes.get("tech_service_count")), "tone": "neutral"},
     ]
-    summary_cards = list(empty_state.get("summary_cards") or default_summary_cards)
     sections = [
         {
             **_section_meta(template, "day_summary"),
-            "metrics": summary_cards,
+            "outcome_cols": outcome_cols,
         },
         {
             **_section_meta(template, "executive_narrative"),
@@ -308,7 +309,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         "hero_focus": empty_state.get("hero_focus")
         or payload["focus_of_week"].get("text")
         or "На этой неделе держим контроль над конкретным следующим шагом в каждом звонке.",
-        "summary_cards": summary_cards,
+        "summary_cards": outcome_cols,
         "sections": sections,
         "footer": empty_state.get("footer") or "Конфиденциально · Только для менеджера и РОПа",
         "generation_note": empty_state.get("generation_note") or "",
@@ -653,14 +654,16 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
     memo = sections["memo_legend"]
-    summary_tiles = "".join(
-        (
-            f"<article class=\"tile {_manager_tile_class(item)}\">"
-            f"<div class=\"tile-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
-            f"<div class=\"tile-label\">{html.escape(str(item['label']).lower())}</div>"
-            "</article>"
-        )
-        for item in day_summary.get("metrics") or []
+    outcome_summary_cells = "".join(
+        f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
+        f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
+        f"<div class=\"outcome-label\">{html.escape(str(item['label']))}</div>"
+        "</td>"
+        for item in day_summary.get("outcome_cols") or []
+    )
+    summary_table = (
+        f"<table class=\"outcome-table\"><tbody><tr>{outcome_summary_cells}</tr></tbody></table>"
+        if outcome_summary_cells else ""
     )
     review_left = "".join(
         f"<li>{_render_review_item_html(item, positive=True)}</li>"
@@ -730,8 +733,8 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<div class=\"focus-week\">{html.escape(report.get('hero_focus') or '')}</div>"
         "</section>"
         f"<div class=\"section-bar\">{html.escape(day_summary['label'])}</div>"
-        f"<section class=\"tiles\">{summary_tiles}</section>"
-        "<section class=\"summary-box\">"
+        + summary_table
+        + "<section class=\"summary-box\">"
         f"<p>{html.escape(str(executive.get('body') or 'Итог дня будет сформирован после следующего запуска.'))}</p>"
         f"<div class=\"progress\">{html.escape(str(executive.get('progress_line') or 'Сравнение с базой пока недоступно.'))}</div>"
         "</section>"
@@ -1160,29 +1163,35 @@ def _render_manager_daily_pdf_report(
     draw_text(page1, left=margin + 18, top=112, text=f"Фокус недели: {report.get('hero_focus') or ''}", size=10.4, color=white, max_width=460)
 
     draw_section_bar(page1, top=150, title=day_summary["label"], color=(47, 97, 170))
-    tile_gap = 10
-    tile_width = (width - (margin * 2) - (tile_gap * 4)) / 5
-    tile_left = margin
-    tile_top = 183
-    tile_fills = {
-        "blue": light_blue,
-        "green": light_green,
-        "yellow": light_yellow,
-        "red": light_green,
+    _outcome_col_gap = 6
+    _num_outcome_cols = 6
+    _outcome_col_width = (width - (margin * 2) - (_outcome_col_gap * (_num_outcome_cols - 1))) / _num_outcome_cols
+    _outcome_col_left = margin
+    _outcome_col_top = 183
+    _outcome_col_height = 64
+    _outcome_fills = {
+        "neutral": light_blue,
+        "positive": light_green,
+        "focus": light_yellow,
+        "problem": light_red,
+        "warning": light_orange,
     }
-    tile_value_colors = {
-        "blue": (47, 97, 170),
-        "green": green,
-        "yellow": (138, 107, 9),
-        "red": green,
+    _outcome_accent_colors = {
+        "neutral": (47, 97, 170),
+        "positive": green,
+        "focus": (138, 107, 9),
+        "problem": red,
+        "warning": (186, 88, 22),
     }
-    for item in day_summary.get("metrics") or []:
-        tile_class = _manager_tile_class(item)
-        draw_rect(page1, left=tile_left, top=tile_top, box_width=tile_width, box_height=74, fill=tile_fills.get(tile_class, light_blue))
-        draw_rect(page1, left=tile_left, top=tile_top, box_width=tile_width, box_height=4, fill=tile_value_colors.get(tile_class, accent))
-        draw_centered_text(page1, left=tile_left, top=tile_top + 26, box_width=tile_width, text=_manager_reader_value(item.get("value"), "—"), size=18.5, color=tile_value_colors.get(tile_class, accent))
-        draw_centered_text(page1, left=tile_left, top=tile_top + 50, box_width=tile_width, text=str(item["label"]).lower(), size=8.4, color=muted)
-        tile_left += tile_width + tile_gap
+    for item in day_summary.get("outcome_cols") or []:
+        _tone = str(item.get("tone") or "neutral")
+        _fill = _outcome_fills.get(_tone, light_blue)
+        _accent = _outcome_accent_colors.get(_tone, accent)
+        draw_rect(page1, left=_outcome_col_left, top=_outcome_col_top, box_width=_outcome_col_width, box_height=_outcome_col_height, fill=_fill)
+        draw_rect(page1, left=_outcome_col_left, top=_outcome_col_top, box_width=_outcome_col_width, box_height=4, fill=_accent)
+        draw_centered_text(page1, left=_outcome_col_left, top=_outcome_col_top + 20, box_width=_outcome_col_width, text=_manager_reader_value(item.get("value"), "—"), size=16.0, color=_accent)
+        draw_centered_text(page1, left=_outcome_col_left, top=_outcome_col_top + 44, box_width=_outcome_col_width, text=str(item["label"]), size=7.8, color=muted)
+        _outcome_col_left += _outcome_col_width + _outcome_col_gap
 
     draw_rect(page1, left=margin, top=273, box_width=width - (margin * 2), box_height=78, fill=(243, 245, 247))
     draw_rect(page1, left=margin, top=273, box_width=4, box_height=78, fill=(47, 97, 170))
@@ -1741,6 +1750,20 @@ def _manager_tile_class(item: dict[str, Any]) -> str:
         return "yellow"
     if tone == "problem":
         return "red"
+    return "blue"
+
+
+def _outcome_col_class(item: dict[str, Any]) -> str:
+    """Map outcome column tone to CSS class for the outcome-table."""
+    tone = str(item.get("tone") or "neutral")
+    if tone == "positive":
+        return "green"
+    if tone == "focus":
+        return "yellow"
+    if tone == "problem":
+        return "red-danger"
+    if tone == "warning":
+        return "orange"
     return "blue"
 
 

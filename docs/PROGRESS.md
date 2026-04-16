@@ -2,11 +2,12 @@
 
 ## Текущий статус
 **Этап:** Веха 6.5 — Business-ready Report Pack
-**Статус фазы:** task breakdown зафиксирован, реализация не начата
+**Статус фазы:** реализация, Task 1 закрыт
 **Дата начала:** 2026-03-17
 **Последнее обновление:** 2026-04-16
 
 ## Что сделано
+- [x] 2026-04-16 — Task 1 (Веха 6.5): заменён верхний summary block `manager_daily` — 5 тайлов (звонков/балл/% сильных/базовых/проблемных) заменены на горизонтальную outcome-таблицу с 6 колонками (ЗВОНКОВ / ДОГОВОРЕННОСТЬ / ПЕРЕНОС / ОТКАЗ / ОТКРЫТ / ТЕХ/СЕРВИС). Изменения: `reporting.py` (`_build_call_outcomes_summary` — добавлен `tech_service_count` через `call_type in {support, internal}`), `report_templates.py` (model builder, HTML renderer, PDF renderer, добавлен `_outcome_col_class`), `layout.css` (добавлены `.outcome-table`, `.outcome-cell`, `.outcome-value`, `.outcome-label`), `semantic.json` (kind `day_summary` → `outcome_table`). Все 48 passing tests прошли.
 - [x] 2026-04-16 — Зафиксирован prioritized task breakdown для Вехи 6.5 `Business-ready Report Pack`: выполнено сравнение current repo версии `manager_daily` с новой версией отчёта (`Ежедневный_отчет_v4_ФИНАЛ.pdf`), все изменения разложены по трём корзинам, определены первые 6 implementation tasks; source of truth — `docs/BUSINESS_READY_REPORT_PACK_TASKS.md`
 - [x] 2026-04-16 — Выполнен baseline review current report layer: зафиксированы active template versions (`manager_daily_template_v1`, `rop_weekly_template_v1`), key files, структура секций обоих отчётов и gaps относительно reference
 - [x] 2026-04-16 — Для report work зафиксирована canonical three-bucket prioritization: `Делать сейчас` / `Делать вторым этапом` / `Делать в последнюю очередь`; source of truth для этого правила теперь `docs/REPORT_BACKLOG_PRIORITIZATION.md`
