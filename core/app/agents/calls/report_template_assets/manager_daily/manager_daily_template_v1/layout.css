@@ -367,6 +367,139 @@ body {
   color: var(--navy);
 }
 
+.stage-scores-section {
+  margin-top: 28px;
+}
+
+.stage-scores-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 16px;
+  table-layout: fixed;
+}
+
+.stage-scores-table thead tr {
+  background: #e8edf5;
+}
+
+.stage-th-label {
+  width: 42%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.stage-th-score {
+  width: 10%;
+  padding: 8px 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.stage-th-bar {
+  width: 36%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.stage-th-priority {
+  width: 12%;
+  padding: 8px 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.stage-scores-table tbody tr {
+  border-bottom: 1px solid #e2e6ea;
+}
+
+.stage-priority-row {
+  background: #fff4ec;
+}
+
+.stage-label {
+  padding: 10px 10px;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.stage-funnel-label {
+  font-weight: 700;
+  color: var(--navy-2);
+  font-size: 14px;
+}
+
+.stage-priority-row .stage-label {
+  color: var(--red);
+}
+
+.stage-priority-row .stage-funnel-label {
+  color: var(--red);
+}
+
+.stage-score {
+  padding: 10px 6px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--navy-2);
+}
+
+.stage-priority-score {
+  color: var(--red);
+}
+
+.stage-bar-cell {
+  padding: 10px 10px;
+}
+
+.stage-bar-wrap {
+  background: #dce4ef;
+  height: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.stage-bar-fill {
+  height: 100%;
+  background: var(--navy-2);
+  border-radius: 3px;
+  transition: width 0.2s;
+}
+
+.stage-bar-priority {
+  background: var(--red);
+}
+
+.stage-priority-col {
+  padding: 10px 6px;
+  text-align: center;
+}
+
+.stage-priority-flag {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--red);
+}
+
+.stage-empty {
+  padding: 14px 10px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

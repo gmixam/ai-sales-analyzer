@@ -2438,6 +2438,7 @@ class CallsManualReportingOrchestrator:
                 "refusal_count": f"{formatted_coverage}%",
                 "open_count": len(reason_codes) or len(missing),
             },
+            "score_by_stage": [],
             "call_list": [
                 {
                     "time": period["date_from"],
@@ -2904,6 +2905,7 @@ def build_manager_daily_payload(
     key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts)
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
+    score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -2978,6 +2980,7 @@ def build_manager_daily_payload(
         "key_problem_of_day": key_problem,
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
+        "score_by_stage": score_by_stage,
         "call_list": [_build_daily_call_row(item) for item in artifacts],
         "focus_criterion_dynamics": focus_dynamics,
         "memo_legend": {
@@ -3187,6 +3190,52 @@ def _build_base_meta(
             "instruction_versions": instruction_versions,
         },
     }
+
+
+_STAGE_FUNNEL_ORDER: list[tuple[str, str, str]] = [
+    ("contact_start", "Э1", "Первичный контакт"),
+    ("qualification_primary", "Э2", "Квалификация и первичная потребность"),
+    ("needs_discovery", "Э3", "Выявление детальных потребностей"),
+    ("presentation", "Э4", "Формирование предложения"),
+    ("objection_handling", "Э5", "Работа с возражениями"),
+    ("completion_next_step", "Э6", "Завершение и договорённости"),
+    ("cross_stage_transition", "Сквозной", "Сквозной критерий"),
+]
+
+
+def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str, Any]]:
+    """Average per-call stage scores across all artifacts, ordered by funnel.
+
+    Score scale: 0–10 (stage_score / max_stage_score * 10).
+    Priority rule: first stage below 4.0 in funnel order is marked as priority.
+    """
+    stage_buckets: dict[str, list[float]] = {}
+    for artifact in artifacts:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        for stage in detail.get("score_by_stage") or []:
+            code = str(stage.get("stage_code") or "")
+            stage_score = int(stage.get("stage_score") or 0)
+            max_score = int(stage.get("max_stage_score") or 0)
+            if max_score > 0:
+                stage_buckets.setdefault(code, []).append(round(stage_score / max_score * 10, 1))
+    rows: list[dict[str, Any]] = []
+    priority_found = False
+    for stage_code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
+        scores = stage_buckets.get(stage_code)
+        if not scores:
+            continue
+        avg = round(sum(scores) / len(scores), 1)
+        is_priority = not priority_found and avg < 4.0
+        if is_priority:
+            priority_found = True
+        rows.append({
+            "stage_code": stage_code,
+            "funnel_label": funnel_label,
+            "stage_name": stage_name,
+            "score": avg,
+            "is_priority": is_priority,
+        })
+    return rows
 
 
 def _extract_score_percent(analysis: Analysis | None) -> float:

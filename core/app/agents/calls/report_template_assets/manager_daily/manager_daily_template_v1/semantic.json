@@ -8,7 +8,7 @@
     {"id": "executive_narrative", "label": "Краткий вывод", "kind": "text", "model_dependent": true},
     {"id": "signal_of_day", "label": "Сигнал дня", "kind": "card"},
     {"id": "main_focus_for_tomorrow", "label": "ГЛАВНЫЙ ФОКУС НА ЗАВТРА", "kind": "callout", "model_dependent": true},
-    {"id": "review_block", "label": "РАЗБОР", "kind": "paired_bullets"},
+    {"id": "review_block", "label": "БАЛЛЫ ПО ЭТАПАМ", "kind": "stage_scores_table"},
     {"id": "key_problem_of_day", "label": "КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ", "kind": "card"},
     {"id": "recommendations", "label": "РЕКОМЕНДАЦИИ", "kind": "cards", "model_dependent": true},
     {"id": "call_outcomes_summary", "label": "ИТОГИ ЗВОНКОВ", "kind": "metric_cards"},

@@ -162,24 +162,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "review_block"),
-            "left_title": "Что сработало",
-            "right_title": "Над чем работать",
-            "left_items": [
-                f"{item['label']} ({item['signal']}) — {item['interpretation']}"
-                for item in payload.get("analysis_worked") or []
-            ]
-            or [
-                "В выборке есть рабочие эпизоды, но для точного выделения сильных паттернов нужно ещё немного устойчивой базы по разбору.",
-                "Сейчас ориентируемся на сохранение спокойного темпа разговора и аккуратное ведение клиента к следующему шагу.",
-            ],
-            "right_items": [
-                f"{item['label']} ({item['signal']}) — {item['interpretation']}"
-                for item in payload.get("analysis_improve") or []
-            ]
-            or [
-                "Явной доминирующей просадки в этой выборке не выделилось, поэтому держим в фокусе завершение звонка и фиксацию договорённости.",
-                "Следующий полный запуск поможет точнее отделить повторяющиеся зоны роста от разовых эпизодов.",
-            ],
+            "stage_rows": _build_stage_score_rows(payload.get("score_by_stage") or []),
         },
         {
             **_section_meta(template, "key_problem_of_day"),
@@ -682,13 +665,33 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<table class=\"outcome-table\"><tbody><tr>{outcome_summary_cells}</tr></tbody></table>"
         if outcome_summary_cells else ""
     )
-    review_left = "".join(
-        f"<li>{_render_review_item_html(item, positive=True)}</li>"
-        for item in review.get("left_items") or ["Нет зафиксированных сильных паттернов."]
-    )
-    review_right = "".join(
-        f"<li>{_render_review_item_html(item, positive=False)}</li>"
-        for item in review.get("right_items") or ["Нет зафиксированных зон роста."]
+    stage_rows_html = "".join(
+        (
+            f"<tr class=\"{'stage-priority-row' if row.get('is_priority') else ''}\">"
+            f"<td class=\"stage-label\">"
+            f"<span class=\"stage-funnel-label\">{html.escape(str(row.get('funnel_label', '')))}</span>"
+            f" {html.escape(str(row.get('stage_name', '')))}"
+            f"</td>"
+            f"<td class=\"stage-score {'stage-priority-score' if row.get('is_priority') else ''}\">"
+            f"{html.escape(str(row.get('score', '—')))}"
+            f"</td>"
+            f"<td class=\"stage-bar-cell\">"
+            f"<div class=\"stage-bar-wrap\">"
+            f"<div class=\"stage-bar-fill {'stage-bar-priority' if row.get('is_priority') else ''}\" style=\"width:{row.get('bar_pct', 0)}%\"></div>"
+            f"</div>"
+            f"</td>"
+            f"<td class=\"stage-priority-col\">"
+            + (
+                "<span class=\"stage-priority-flag\">★ приоритет</span>"
+                if row.get("is_priority")
+                else ""
+            )
+            + "</td>"
+            "</tr>"
+        )
+        for row in review.get("stage_rows") or []
+    ) or (
+        "<tr><td colspan=\"4\" class=\"stage-empty\">Данные по этапам появятся после накопления базы.</td></tr>"
     )
     recommendation_cards = "".join(
         _render_manager_daily_recommendation_card(card, index + 1)
@@ -767,9 +770,16 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"{html.escape(str(focus.get('reinforcement') or ''))}"
         "</section>"
         f"<div class=\"section-bar navy\">{html.escape(review['label'])}</div>"
-        "<section class=\"review-grid\">"
-        f"<article class=\"review-col positive\"><h3>✓ {html.escape(str(review.get('left_title') or 'Что сработало'))}</h3><ul>{review_left}</ul></article>"
-        f"<article class=\"review-col negative\"><h3>✗ {html.escape(str(review.get('right_title') or 'Над чем работать'))}</h3><ul>{review_right}</ul></article>"
+        "<section class=\"stage-scores-section\">"
+        "<table class=\"stage-scores-table\">"
+        "<thead><tr>"
+        "<th class=\"stage-th-label\">Этап</th>"
+        "<th class=\"stage-th-score\">Сегодня</th>"
+        "<th class=\"stage-th-bar\">Шкала</th>"
+        "<th class=\"stage-th-priority\">Приоритет</th>"
+        "</tr></thead>"
+        f"<tbody>{stage_rows_html}</tbody>"
+        "</table>"
         "</section>"
         "<section class=\"problem-card\">"
         f"<h3>{html.escape(problem['label'])}: <span>{html.escape(str(problem.get('title') or 'Требует уточнения'))}</span></h3>"
@@ -1250,14 +1260,38 @@ def _render_manager_daily_pdf_report(
     draw_text(page1, left=margin + 12, top=442, text=focus_text, size=10.2, color=black, max_width=width - (margin * 2) - 24)
 
     draw_section_bar(page1, top=490, title=review["label"], color=accent)
-    column_gap = 18
-    col_width = (width - (margin * 2) - column_gap) / 2
-    draw_rect(page1, left=margin, top=523, box_width=col_width, box_height=128, fill=soft_green)
-    draw_rect(page1, left=margin + col_width + column_gap, top=523, box_width=col_width, box_height=128, fill=light_red)
-    draw_text(page1, left=margin + 14, top=537, text=f"✓ {review.get('left_title') or 'Что сработало'}", size=11.2, color=green, max_width=col_width - 20)
-    draw_text(page1, left=margin + col_width + column_gap + 14, top=537, text=f"✗ {review.get('right_title') or 'Над чем работать'}", size=11.2, color=red, max_width=col_width - 20)
-    draw_bullets(page1, left=margin + 14, top=557, items=review.get("left_items") or [], width_limit=col_width - 18, bullet_color=green, size=9.2)
-    draw_bullets(page1, left=margin + col_width + column_gap + 14, top=557, items=review.get("right_items") or [], width_limit=col_width - 18, bullet_color=red, size=9.2)
+    _st_top = 514
+    _st_name_w = 190
+    _st_score_w = 45
+    _st_bar_w = 208
+    _st_prio_w = 68
+    _st_row_h = 18
+    _st_header_fill = (232, 237, 245)
+    draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=16, fill=_st_header_fill)
+    draw_text(page1, left=margin + 4, top=_st_top + 3, text="ЭТАП", size=7.5, color=muted, max_width=_st_name_w)
+    draw_text(page1, left=margin + _st_name_w + 4, top=_st_top + 3, text="СЕГОДНЯ", size=7.5, color=muted, max_width=_st_score_w)
+    draw_text(page1, left=margin + _st_name_w + _st_score_w + 4, top=_st_top + 3, text="ШКАЛА", size=7.5, color=muted, max_width=_st_bar_w)
+    draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 3, text="ПРИОРИТЕТ", size=7.5, color=muted, max_width=_st_prio_w)
+    _st_top += 18
+    _stage_rows = review.get("stage_rows") or []
+    if not _stage_rows:
+        draw_text(page1, left=margin + 4, top=_st_top + 4, text="Данные по этапам появятся после накопления базы.", size=8.5, color=muted, max_width=width - (margin * 2))
+    for _sr in _stage_rows:
+        _is_prio = bool(_sr.get("is_priority"))
+        _row_fill = (255, 242, 230) if _is_prio else (248, 250, 252)
+        draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=_st_row_h, fill=_row_fill)
+        _label_text = f"{_sr.get('funnel_label', '')} {_sr.get('stage_name', '')}"
+        draw_text(page1, left=margin + 4, top=_st_top + 4, text=_label_text, size=8.0, color=red if _is_prio else black, max_width=_st_name_w - 8)
+        draw_text(page1, left=margin + _st_name_w + 4, top=_st_top + 4, text=str(_sr.get("score", "—")), size=8.5, color=red if _is_prio else accent, max_width=_st_score_w - 4)
+        _bar_track_left = margin + _st_name_w + _st_score_w + 4
+        _bar_track_w = _st_bar_w - 12
+        draw_rect(page1, left=_bar_track_left, top=_st_top + 5, box_width=_bar_track_w, box_height=8, fill=(220, 228, 238))
+        _bar_fill_w = round(_bar_track_w * ((_sr.get("bar_pct") or 0) / 100))
+        if _bar_fill_w > 0:
+            draw_rect(page1, left=_bar_track_left, top=_st_top + 5, box_width=_bar_fill_w, box_height=8, fill=red if _is_prio else accent)
+        if _is_prio:
+            draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 4, text="★ приоритет", size=7.5, color=red, max_width=_st_prio_w - 4)
+        _st_top += _st_row_h
 
     draw_rect(page1, left=margin, top=664, box_width=width - (margin * 2), box_height=90, fill=light_red)
     draw_rect(page1, left=margin, top=664, box_width=4, box_height=90, fill=red)
@@ -1777,6 +1811,25 @@ def _short_time(value: Any) -> str:
     if "T" in text and len(text) >= 16:
         return text[11:16]
     return text
+
+
+def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert aggregated score_by_stage payload into render-ready table rows with visual bars."""
+    rows = []
+    for item in score_by_stage:
+        score = item.get("score")
+        score_float = float(score) if score is not None else None
+        bar_pct = round((score_float / 10.0) * 100) if score_float is not None else 0
+        bar_pct = max(0, min(100, bar_pct))
+        rows.append({
+            "funnel_label": str(item.get("funnel_label") or ""),
+            "stage_name": str(item.get("stage_name") or ""),
+            "score": _value(score_float),
+            "score_float": score_float,
+            "bar_pct": bar_pct,
+            "is_priority": bool(item.get("is_priority")),
+        })
+    return rows
 
 
 def _build_morning_card_data(
