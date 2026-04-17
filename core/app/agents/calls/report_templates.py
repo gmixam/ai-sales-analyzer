@@ -656,7 +656,6 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     outcomes = sections["call_outcomes_summary"]
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
-    memo = sections["memo_legend"]
     morning_card = sections["morning_card"]
     outcome_summary_cells = "".join(
         f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
@@ -741,14 +740,6 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         )
         for item in dynamics.get("bars") or []
     )
-    memo_cards = "".join(
-        "<article class=\"memo-card\">"
-        f"<h4>{html.escape(str(group.get('title') or 'Памятка'))}</h4>"
-        "<ul>"
-        + "".join(f"<li>{html.escape(str(item))}</li>" for item in group.get("items") or ["Нет пояснений"])
-        + "</ul></article>"
-        for group in memo.get("groups") or []
-    )
     page_one = (
         _manager_daily_page_header(report["metadata_line"])
         + "<section class=\"hero\">"
@@ -820,12 +811,6 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<div class=\"stage-line\">{html.escape(str(dynamics.get('stage_line') or dynamics.get('interpretation') or ''))}</div>"
         + _manager_daily_page_footer(report["footer"], 3)
     )
-    page_four = (
-        _manager_daily_page_header(report["metadata_line"]) +
-        f"<div class=\"section-bar navy\">{html.escape(memo['label'])}</div>"
-        f"<section class=\"memo-grid\">{memo_cards}</section>"
-        + _manager_daily_page_footer(report["footer"], 4)
-    )
     mc_open_items = "".join(
         f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
         for call in morning_card.get("open_calls") or []
@@ -843,7 +828,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"{html.escape(str(morning_card.get('challenge') or ''))}"
         "</div>"
         "</section>"
-        + _manager_daily_page_footer(report["footer"], 5)
+        + _manager_daily_page_footer(report["footer"], 4)
     )
     return (
         "<html><head><meta charset=\"utf-8\">"
@@ -852,7 +837,6 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<section class=\"page\">{page_one}</section>"
         f"<section class=\"page\">{page_two}</section>"
         f"<section class=\"page\">{page_three}</section>"
-        f"<section class=\"page\">{page_four}</section>"
         f"<section class=\"page\">{page_five}</section>"
         "</div></body></html>"
     )
@@ -1205,7 +1189,6 @@ def _render_manager_daily_pdf_report(
     outcomes = sections["call_outcomes_summary"]
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
-    memo = sections["memo_legend"]
     morning_card_section = sections["morning_card"]
 
     page1 = add_page()
@@ -1405,20 +1388,6 @@ def _render_manager_daily_pdf_report(
     draw_text(page3, left=margin, top=bars_top + 62, text=str(dynamics.get("stage_line") or dynamics.get("interpretation") or ""), size=9.6, color=black, max_width=width - (margin * 2))
     footer(page3, 3)
 
-    page4 = add_page()
-    draw_section_bar(page4, top=58, title=memo["label"], color=accent)
-    memo_top = 96
-    memo_gap = 16
-    memo_width = (width - (margin * 2) - memo_gap) / 2
-    memo_height = 130
-    for index, group in enumerate(memo.get("groups") or []):
-        left = margin + ((memo_width + memo_gap) * (index % 2))
-        top = memo_top + ((memo_height + 16) * (index // 2))
-        draw_rect(page4, left=left, top=top, box_width=memo_width, box_height=memo_height, fill=(247, 247, 247))
-        draw_text(page4, left=left + 14, top=top + 14, text=str(group.get("title") or "Памятка"), size=10.5, color=accent, max_width=memo_width - 28)
-        draw_bullets(page4, left=left + 14, top=top + 34, items=[str(item) for item in group.get("items") or ["Нет пояснений"]], width_limit=memo_width - 24, size=8.8)
-    footer(page4, 4)
-
     page5 = add_page()
     draw_section_bar(page5, top=58, title=morning_card_section["label"], color=(47, 97, 170))
     mc_top = 96
@@ -1442,7 +1411,7 @@ def _render_manager_daily_pdf_report(
     draw_rect(page5, left=margin, top=mc_top, box_width=4, box_height=54, fill=accent)
     draw_text(page5, left=margin + 12, top=mc_top + 8, text="Фокус дня:", size=9.0, color=accent, max_width=width - (margin * 2) - 24)
     draw_text(page5, left=margin + 12, top=mc_top + 26, text=str(morning_card_section.get("challenge") or ""), size=10.0, color=black, max_width=width - (margin * 2) - 24)
-    footer(page5, 5)
+    footer(page5, 4)
 
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 
