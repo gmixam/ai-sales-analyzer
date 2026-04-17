@@ -364,6 +364,24 @@ body {
   color: var(--muted);
   font-style: italic;
 }
+.situation-example {
+  margin: 8px 0 4px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.situation-example-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.situation-example-contact {
+  font-weight: 600;
+  color: var(--navy);
+}
+.situation-example-reason {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
 .situation-scripts {
   margin: 8px 0 0 0;
   padding-left: 18px;

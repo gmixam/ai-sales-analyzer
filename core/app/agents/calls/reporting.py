@@ -3625,6 +3625,53 @@ def _latest_call_score(artifacts: list[ReportArtifact]) -> float | None:
     return _extract_score_percent(latest.analysis)
 
 
+def _build_problem_call_example(
+    *,
+    gap_label: str,
+    artifacts: list[ReportArtifact],
+) -> dict[str, Any] | None:
+    """Pick one representative call that illustrates the top gap.
+
+    Selection rule: among calls that contain the gap label, pick the one with the
+    lowest overall score (most problematic illustrator). Falls back to any artifact
+    with any gap if none match specifically.
+    """
+    candidates: list[tuple[float, ReportArtifact, str]] = []
+    for artifact in artifacts:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        for gap_item in detail.get("gaps") or []:
+            item_label = str(
+                gap_item.get("title") or gap_item.get("criterion_name") or gap_item.get("criterion_code") or ""
+            ).strip()
+            if item_label == gap_label:
+                reason = str(
+                    gap_item.get("comment") or gap_item.get("evidence") or gap_item.get("impact") or ""
+                ).strip()
+                score = _extract_score_percent(artifact.analysis)
+                candidates.append((score, artifact, reason))
+                break
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0])
+    _score, best, reason_text = candidates[0]
+    detail = dict((best.analysis.scores_detail or {}) if best.analysis is not None else {})
+    call_meta = dict(detail.get("call") or {})
+    client_label = str(
+        call_meta.get("contact_name") or call_meta.get("contact_phone")
+        or (best.interaction.metadata_ or {}).get("contact_phone")
+        or "Клиент"
+    ).strip()
+    time_label = (
+        best.call_started_at.strftime("%H:%M") if best.call_started_at else "—"
+    )
+    reason_short = reason_text[:80] + "…" if len(reason_text) > 80 else reason_text
+    return {
+        "client_label": client_label,
+        "time_label": time_label,
+        "reason_short": reason_short or None,
+    }
+
+
 def _build_manager_daily_key_problem(
     *,
     improve_items: list[dict[str, Any]],
@@ -3638,6 +3685,7 @@ def _build_manager_daily_key_problem(
             "description": MANAGER_DAILY_FALLBACK_KEY_PROBLEM_DESCRIPTION,
             "pattern_count": None,
             "total_calls": calls_count,
+            "call_example": None,
         }
     top_gap = improve_items[0]
     affected_calls = int(top_gap.get("signal") or 0)
@@ -3646,11 +3694,13 @@ def _build_manager_daily_key_problem(
         f"{top_gap['interpretation']} Повторяемость: {affected_calls} звонк(ов)."
         f"{' Пример: ' + example if example else ''}"
     )
+    call_example = _build_problem_call_example(gap_label=top_gap["label"], artifacts=artifacts)
     return {
         "title": top_gap["label"],
         "description": description,
         "pattern_count": affected_calls if affected_calls > 0 else None,
         "total_calls": calls_count,
+        "call_example": call_example,
     }
 
 

@@ -162,6 +162,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 "На этой выборке нет доминирующей проблемы по этапу воронки. Держим фокус на завершении звонков с конкретным следующим шагом.",
             ),
             "pattern_count_label": _build_pattern_count_label(dict(payload.get("key_problem_of_day") or {})),
+            "call_example": dict(payload["key_problem_of_day"].get("call_example") or {}),
             "scripts": _build_situation_scripts(
                 key_problem=dict(payload.get("key_problem_of_day") or {}),
                 recommendations=list(payload.get("recommendations") or []),
@@ -772,6 +773,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
             if focus.get("pattern_count_label")
             else ""
         )
+        + _render_situation_call_example_html(focus.get("call_example") or {})
         + (
             "<ol class=\"situation-scripts\">"
             + "".join(f"<li>{html.escape(str(s))}</li>" for s in (focus.get("scripts") or []))
@@ -1260,20 +1262,34 @@ def _render_manager_daily_pdf_report(
     situation_title_text = str(focus.get("situation_title") or "СИТУАЦИЯ ДНЯ")
     situation_body_text = str(focus.get("body") or "Описание ситуации будет сформировано после следующего запуска.")
     situation_count_label = str(focus.get("pattern_count_label") or "")
+    situation_call_ex = dict(focus.get("call_example") or {})
     situation_scripts = list(focus.get("scripts") or [])
-    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=80, fill=(232, 240, 254))
-    draw_rect(page1, left=margin, top=426, box_width=4, box_height=80, fill=(30, 80, 180))
+    _has_call_ex = bool(situation_call_ex.get("client_label") or situation_call_ex.get("time_label"))
+    _sit_h = 96 if _has_call_ex else 80
+    _stage_bar_top = 522 if _has_call_ex else 506
+    _st_top_init = 546 if _has_call_ex else 530
+    _problem_card_top = 696 if _has_call_ex else 680
+    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=_sit_h, fill=(232, 240, 254))
+    draw_rect(page1, left=margin, top=426, box_width=4, box_height=_sit_h, fill=(30, 80, 180))
     draw_text(page1, left=margin + 12, top=434, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
     draw_text(page1, left=margin + 12, top=450, text=situation_body_text, size=9.5, color=black, max_width=width - (margin * 2) - 24)
     if situation_count_label:
         draw_text(page1, left=margin + 12, top=462, text=situation_count_label, size=8.0, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
-    _script_top = 474 if situation_count_label else 467
-    _script_gap = 11 if situation_count_label else 13
+    if _has_call_ex:
+        _ex_client = str(situation_call_ex.get("client_label") or "Клиент")
+        _ex_time = str(situation_call_ex.get("time_label") or "")
+        _ex_reason = str(situation_call_ex.get("reason_short") or "")
+        _ex_contact_line = f"{_ex_client} · {_ex_time}" if _ex_time and _ex_time != "—" else _ex_client
+        draw_text(page1, left=margin + 12, top=474, text=f"Пример: {_ex_contact_line}", size=8.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
+        if _ex_reason:
+            draw_text(page1, left=margin + 12, top=485, text=_ex_reason, size=7.8, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
+    _script_top = 497 if _has_call_ex else (474 if situation_count_label else 467)
+    _script_gap = 11 if _has_call_ex else (11 if situation_count_label else 13)
     for _si, _script in enumerate(situation_scripts[:3]):
         draw_text(page1, left=margin + 12, top=_script_top + _si * _script_gap, text=f"{_si + 1}. {_script}", size=8.5, color=(70, 70, 130), max_width=width - (margin * 2) - 24)
 
-    draw_section_bar(page1, top=506, title=review["label"], color=accent)
-    _st_top = 530
+    draw_section_bar(page1, top=_stage_bar_top, title=review["label"], color=accent)
+    _st_top = _st_top_init
     _st_name_w = 190
     _st_score_w = 45
     _st_bar_w = 208
@@ -1306,10 +1322,10 @@ def _render_manager_daily_pdf_report(
             draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 4, text="★ приоритет", size=7.5, color=red, max_width=_st_prio_w - 4)
         _st_top += _st_row_h
 
-    draw_rect(page1, left=margin, top=680, box_width=width - (margin * 2), box_height=90, fill=light_red)
-    draw_rect(page1, left=margin, top=680, box_width=4, box_height=90, fill=red)
-    draw_text(page1, left=margin + 12, top=695, text=f"{problem['label']}: {str(problem.get('title') or 'Критичный провал дня не выделился')}", size=11.0, color=red, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=717, text=str(problem.get("body") or ""), size=9.8, color=black, max_width=width - (margin * 2) - 24)
+    draw_rect(page1, left=margin, top=_problem_card_top, box_width=width - (margin * 2), box_height=90, fill=light_red)
+    draw_rect(page1, left=margin, top=_problem_card_top, box_width=4, box_height=90, fill=red)
+    draw_text(page1, left=margin + 12, top=_problem_card_top + 15, text=f"{problem['label']}: {str(problem.get('title') or 'Критичный провал дня не выделился')}", size=11.0, color=red, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=_problem_card_top + 37, text=str(problem.get("body") or ""), size=9.8, color=black, max_width=width - (margin * 2) - 24)
     footer(page1, 1)
 
     page2 = add_page()
@@ -1836,6 +1852,29 @@ def _build_pattern_count_label(key_problem: dict[str, Any]) -> str | None:
     if count is None or not total:
         return None
     return f"Паттерн повторился в {count} из {total} звонков"
+
+
+def _render_situation_call_example_html(call_example: dict[str, Any]) -> str:
+    """Render one representative call example inside СИТУАЦИЯ ДНЯ block."""
+    client = str(call_example.get("client_label") or "").strip()
+    time_label = str(call_example.get("time_label") or "").strip()
+    reason = str(call_example.get("reason_short") or "").strip()
+    if not client and not time_label:
+        return ""
+    header_parts = []
+    if client:
+        header_parts.append(html.escape(client))
+    if time_label and time_label != "—":
+        header_parts.append(html.escape(time_label))
+    header_line = " · ".join(header_parts)
+    reason_html = f"<div class=\"situation-example-reason\">{html.escape(reason)}</div>" if reason else ""
+    return (
+        f"<div class=\"situation-example\">"
+        f"<span class=\"situation-example-label\">Пример: </span>"
+        f"<span class=\"situation-example-contact\">{header_line}</span>"
+        f"{reason_html}"
+        f"</div>"
+    )
 
 
 _STAGE_SCRIPT_FALLBACKS: dict[str, list[str]] = {
