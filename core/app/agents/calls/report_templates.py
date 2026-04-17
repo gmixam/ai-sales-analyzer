@@ -210,17 +210,17 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "call_list"),
-            "columns": ["Время", "Клиент", "Длит.", "Статус", "Балл", "Следующий шаг"],
+            "columns": ["#", "Время", "Клиент", "Тема", "Статус", "Следующий шаг"],
             "rows": [
                 [
+                    str(idx + 1),
                     _short_time(row.get("time")),
                     _manager_reader_value(row.get("client_or_phone"), "Клиент не определён"),
-                    _manager_reader_value(row.get("duration_sec"), "—"),
+                    _call_topic_label(row.get("call_type"), row.get("scenario_type")),
                     _call_status_label(row.get("status")),
-                    _manager_reader_value(row.get("score_percent"), "—"),
                     _manager_reader_value(row.get("next_step"), "—"),
                 ]
-                for row in payload.get("call_list") or []
+                for idx, row in enumerate(payload.get("call_list") or [])
             ],
             "note": (
                 f"Показаны первые {min(10, len(payload.get('call_list') or []))} из {len(payload.get('call_list') or [])} "
@@ -722,7 +722,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         + "".join(
             (
                 f"<td><span class=\"status {html.escape(_manager_status_class(cell))}\">{html.escape(_manager_reader_value(cell, '—'))}</span></td>"
-                if index == 3
+                if index == 4
                 else f"<td>{html.escape(_manager_reader_value(cell, '—'))}</td>"
             )
             for index, cell in enumerate(row)
@@ -1365,7 +1365,13 @@ def _render_manager_daily_pdf_report(
     table_top = 182
     columns = call_list.get("columns") or []
     rows = call_list.get("rows") or []
-    col_widths = [42, 84, 42, 70, 42, width - (margin * 2) - 42 - 84 - 42 - 70 - 42]
+    _cl_num = 22
+    _cl_time = 42
+    _cl_client = 78
+    _cl_topic = 80
+    _cl_status = 66
+    _cl_next = width - (margin * 2) - _cl_num - _cl_time - _cl_client - _cl_topic - _cl_status
+    col_widths = [_cl_num, _cl_time, _cl_client, _cl_topic, _cl_status, _cl_next]
     x = margin
     for column, col_width in zip(columns, col_widths, strict=False):
         draw_rect(page3, left=x, top=table_top, box_width=col_width, box_height=22, fill=accent)
@@ -1374,13 +1380,13 @@ def _render_manager_daily_pdf_report(
     row_top = table_top + 24
     for row in rows[:8]:
         x = margin
-        status_value = str(row[3]) if len(row) > 3 else ""
+        status_value = str(row[4]) if len(row) > 4 else ""
         for index, (cell, col_width) in enumerate(zip(row, col_widths, strict=False)):
             fill = (248, 248, 248)
-            if index == 3:
+            if index == 4:
                 fill = _manager_status_fill(status_value)
             draw_rect(page3, left=x, top=row_top, box_width=col_width, box_height=24, fill=fill)
-            draw_text(page3, left=x + 4, top=row_top + 7, text=str(cell), size=7.7, color=black if index != 3 else _manager_status_text_color(status_value, black, green, amber, red), max_width=col_width - 8)
+            draw_text(page3, left=x + 4, top=row_top + 7, text=str(cell), size=7.7, color=black if index != 4 else _manager_status_text_color(status_value, black, green, amber, red), max_width=col_width - 8)
             x += col_width
         row_top += 24
     draw_text(page3, left=margin, top=row_top + 8, text=str(call_list.get("note") or ""), size=8.8, color=muted, max_width=width - (margin * 2))
@@ -2037,6 +2043,36 @@ def _clean_reader_text(text: str) -> str:
         .replace("без полного rerun", "без повторного полного прогона")
         .replace("coaching takeaway", "ориентир")
     )
+
+
+_CALL_TYPE_SHORT: dict[str, str] = {
+    "sales_primary": "Продажи",
+    "sales_repeat": "Повторный",
+    "mixed": "Смешанный",
+    "support": "Поддержка",
+    "internal": "Внутренний",
+    "other": "Другое",
+}
+
+_SCENARIO_TYPE_SHORT: dict[str, str] = {
+    "cold_outbound": "Холодный",
+    "hot_incoming_contact": "Горячий",
+    "warm_webinar_or_lead": "Тёплый/заявка",
+    "repeat_contact": "Повторный",
+    "after_signed_document": "После подписания",
+    "post_sale_follow_up": "Постпродажный",
+    "mixed_scenario": "Смешанный",
+    "other": "Другое",
+}
+
+
+def _call_topic_label(call_type: str | None, scenario_type: str | None) -> str:
+    """Build short topic string for call list Тема column from classification fields."""
+    type_label = _CALL_TYPE_SHORT.get(str(call_type or ""), "")
+    scenario_label = _SCENARIO_TYPE_SHORT.get(str(scenario_type or ""), "")
+    if type_label and scenario_label:
+        return f"{type_label} · {scenario_label}"
+    return type_label or scenario_label or "—"
 
 
 def _call_status_label(value: Any) -> str:

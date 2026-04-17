@@ -3412,12 +3412,14 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
     call = dict(detail.get("call") or {})
     follow_up = dict(detail.get("follow_up") or {})
+    classification = dict(detail.get("classification") or {})
     status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
     return {
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
         "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
         "duration_sec": artifact.interaction.duration_sec,
-        "call_type": (detail.get("classification") or {}).get("call_type"),
+        "call_type": classification.get("call_type"),
+        "scenario_type": classification.get("scenario_type"),
         "status": status,
         "next_step": follow_up.get("next_step_text"),
         "deadline": deadline,
