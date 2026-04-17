@@ -358,6 +358,12 @@ body {
   font-size: 13px;
   color: var(--muted);
 }
+.situation-count {
+  margin: 6px 0 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
 .situation-scripts {
   margin: 8px 0 0 0;
   padding-left: 18px;

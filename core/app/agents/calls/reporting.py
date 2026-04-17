@@ -2902,7 +2902,7 @@ def build_manager_daily_payload(
     recommendation_cards = _aggregate_recommendation_cards(artifacts=artifacts)
     product_signal = _select_most_important_product_signal(artifacts)
     evidence_fragment = _select_evidence_fragment(artifacts)
-    key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts)
+    key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts, calls_count=calls_count)
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
@@ -3629,12 +3629,15 @@ def _build_manager_daily_key_problem(
     *,
     improve_items: list[dict[str, Any]],
     artifacts: list[ReportArtifact],
+    calls_count: int,
 ) -> dict[str, Any]:
     """Build a richer key problem card from the most repeated gap."""
     if not improve_items:
         return {
             "title": MANAGER_DAILY_FALLBACK_KEY_PROBLEM_TITLE,
             "description": MANAGER_DAILY_FALLBACK_KEY_PROBLEM_DESCRIPTION,
+            "pattern_count": None,
+            "total_calls": calls_count,
         }
     top_gap = improve_items[0]
     affected_calls = int(top_gap.get("signal") or 0)
@@ -3646,6 +3649,8 @@ def _build_manager_daily_key_problem(
     return {
         "title": top_gap["label"],
         "description": description,
+        "pattern_count": affected_calls if affected_calls > 0 else None,
+        "total_calls": calls_count,
     }
 
 
