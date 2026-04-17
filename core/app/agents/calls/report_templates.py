@@ -261,6 +261,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             ),
         },
         {
+            **_section_meta(template, "call_breakdown"),
+            **dict(payload.get("call_breakdown") or {"is_placeholder": True, "client_label": None, "time_label": None, "stage_steps": [], "worked": [], "to_fix": [], "recommendation": None}),
+        },
+        {
             **_section_meta(template, "morning_card"),
             "greeting": morning_card["greeting"],
             "summary_line": morning_card["summary_line"],
@@ -663,6 +667,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
     morning_card = sections["morning_card"]
+    call_breakdown = sections["call_breakdown"]
     outcome_summary_cells = "".join(
         f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
         f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
@@ -829,6 +834,56 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<div class=\"stage-line\">{html.escape(str(dynamics.get('stage_line') or dynamics.get('interpretation') or ''))}</div>"
         + _manager_daily_page_footer(report["footer"], 3)
     )
+    _bd_stage_rows = "".join(
+        (
+            f"<tr class=\"{'bd-stage-weak' if row.get('is_weak') else ''}\">"
+            f"<td class=\"bd-stage-label\">"
+            f"<span class=\"stage-funnel-label\">{html.escape(str(row.get('funnel_label', '')))}</span>"
+            f" {html.escape(str(row.get('stage_name', '')))}</td>"
+            f"<td class=\"bd-stage-score\">{html.escape(str(row.get('score', '—')))}</td>"
+            f"<td class=\"bd-stage-flag\">"
+            + ("<span class=\"bd-weak-flag\">слабо</span>" if row.get("is_weak") else "")
+            + "</td></tr>"
+        )
+        for row in call_breakdown.get("stage_steps") or []
+    ) or "<tr><td colspan=\"3\">Нет данных по этапам.</td></tr>"
+    _bd_worked = "".join(
+        f"<li><strong>{html.escape(str(item['label']))}</strong> — {html.escape(str(item['interpretation']))}</li>"
+        for item in (call_breakdown.get("worked") or [])
+    ) or "<li>Нет данных.</li>"
+    _bd_to_fix = "".join(
+        f"<li><strong>{html.escape(str(item['label']))}</strong> — {html.escape(str(item['interpretation']))}</li>"
+        for item in (call_breakdown.get("to_fix") or [])
+    ) or "<li>Нет данных.</li>"
+    _bd_rec = (
+        f"<div class=\"bd-rec\">"
+        f"<span class=\"bd-rec-label\">Попробуй так: </span>"
+        f"<span class=\"bd-rec-text\">{html.escape(str((call_breakdown.get('recommendation') or {}).get('better_phrasing') or ''))}</span>"
+        f"</div>"
+        if call_breakdown.get("recommendation") and (call_breakdown["recommendation"] or {}).get("better_phrasing")
+        else ""
+    )
+    _bd_header = (
+        f"{html.escape(str(call_breakdown.get('client_label') or 'Клиент'))} · {html.escape(str(call_breakdown.get('time_label') or '—'))}"
+        if not call_breakdown.get("is_placeholder")
+        else "Недостаточно данных для разбора"
+    )
+    page_four = (
+        _manager_daily_page_header(report["metadata_line"])
+        + f"<div class=\"section-bar navy\">{html.escape(call_breakdown['label'])}</div>"
+        f"<div class=\"bd-header\">{_bd_header}</div>"
+        "<section class=\"call-breakdown\">"
+        "<table class=\"bd-stage-table\"><thead><tr>"
+        "<th>Этап</th><th>Балл</th><th></th>"
+        f"</tr></thead><tbody>{_bd_stage_rows}</tbody></table>"
+        "<div class=\"bd-analysis-grid\">"
+        f"<div class=\"bd-col bd-worked\"><div class=\"bd-col-title\">✓ Что сработало</div><ul>{_bd_worked}</ul></div>"
+        f"<div class=\"bd-col bd-to-fix\"><div class=\"bd-col-title\">✗ Что исправить</div><ul>{_bd_to_fix}</ul></div>"
+        "</div>"
+        f"{_bd_rec}"
+        "</section>"
+        + _manager_daily_page_footer(report["footer"], 4)
+    )
     mc_open_items = "".join(
         f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
         for call in morning_card.get("open_calls") or []
@@ -846,7 +901,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"{html.escape(str(morning_card.get('challenge') or ''))}"
         "</div>"
         "</section>"
-        + _manager_daily_page_footer(report["footer"], 4)
+        + _manager_daily_page_footer(report["footer"], 5)
     )
     return (
         "<html><head><meta charset=\"utf-8\">"
@@ -855,6 +910,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<section class=\"page\">{page_one}</section>"
         f"<section class=\"page\">{page_two}</section>"
         f"<section class=\"page\">{page_three}</section>"
+        f"<section class=\"page\">{page_four}</section>"
         f"<section class=\"page\">{page_five}</section>"
         "</div></body></html>"
     )
@@ -1208,6 +1264,7 @@ def _render_manager_daily_pdf_report(
     call_list = sections["call_list"]
     dynamics = sections["focus_criterion_dynamics"]
     morning_card_section = sections["morning_card"]
+    call_breakdown_section = sections["call_breakdown"]
 
     page1 = add_page()
     draw_rect(page1, left=margin, top=58, box_width=width - (margin * 2), box_height=72, fill=accent)
@@ -1425,6 +1482,71 @@ def _render_manager_daily_pdf_report(
     draw_text(page3, left=margin, top=bars_top + 62, text=str(dynamics.get("stage_line") or dynamics.get("interpretation") or ""), size=9.6, color=black, max_width=width - (margin * 2))
     footer(page3, 3)
 
+    page4 = add_page()
+    _bd = call_breakdown_section
+    _bd_client = str(_bd.get("client_label") or "Клиент")
+    _bd_time = str(_bd.get("time_label") or "—")
+    _bd_header_text = (
+        f"{_bd_client} · {_bd_time}" if not _bd.get("is_placeholder") else "Недостаточно данных для разбора"
+    )
+    draw_section_bar(page4, top=58, title=_bd["label"], color=accent)
+    draw_text(page4, left=margin, top=82, text=_bd_header_text, size=10.5, color=black, max_width=width - (margin * 2))
+    # Stage breakdown table
+    _bd_st_top = 104
+    _bd_st_name_w = 210
+    _bd_st_score_w = 46
+    _bd_st_flag_w = 60
+    draw_rect(page4, left=margin, top=_bd_st_top, box_width=width - (margin * 2), box_height=15, fill=(232, 237, 245))
+    draw_text(page4, left=margin + 4, top=_bd_st_top + 3, text="ЭТАП", size=7.5, color=muted, max_width=_bd_st_name_w)
+    draw_text(page4, left=margin + _bd_st_name_w + 4, top=_bd_st_top + 3, text="БАЛЛ", size=7.5, color=muted, max_width=_bd_st_score_w)
+    draw_text(page4, left=margin + _bd_st_name_w + _bd_st_score_w + 4, top=_bd_st_top + 3, text="ОЦЕНКА", size=7.5, color=muted, max_width=_bd_st_flag_w)
+    _bd_st_top += 17
+    _bd_stage_steps = list(_bd.get("stage_steps") or [])
+    if not _bd_stage_steps:
+        draw_text(page4, left=margin + 4, top=_bd_st_top + 4, text="Нет данных по этапам.", size=8.5, color=muted, max_width=width - (margin * 2))
+        _bd_st_top += 20
+    for _bds in _bd_stage_steps:
+        _is_weak = bool(_bds.get("is_weak"))
+        _row_fill = (255, 242, 230) if _is_weak else (248, 250, 252)
+        draw_rect(page4, left=margin, top=_bd_st_top, box_width=width - (margin * 2), box_height=16, fill=_row_fill)
+        draw_text(page4, left=margin + 4, top=_bd_st_top + 3, text=f"{_bds.get('funnel_label', '')} {_bds.get('stage_name', '')}", size=7.8, color=red if _is_weak else black, max_width=_bd_st_name_w - 8)
+        draw_text(page4, left=margin + _bd_st_name_w + 4, top=_bd_st_top + 3, text=str(_bds.get("score", "—")), size=8.0, color=red if _is_weak else accent, max_width=_bd_st_score_w - 4)
+        if _is_weak:
+            draw_text(page4, left=margin + _bd_st_name_w + _bd_st_score_w + 4, top=_bd_st_top + 3, text="слабо", size=7.5, color=red, max_width=_bd_st_flag_w - 4)
+        _bd_st_top += 16
+    # Worked / To-fix two-column analysis
+    _analysis_top = _bd_st_top + 18
+    _col_w = (width - (margin * 2) - 12) // 2
+    draw_rect(page4, left=margin, top=_analysis_top, box_width=_col_w, box_height=14, fill=(220, 238, 220))
+    draw_text(page4, left=margin + 4, top=_analysis_top + 2, text="✓ Что сработало", size=8.5, color=green, max_width=_col_w - 8)
+    draw_rect(page4, left=margin + _col_w + 12, top=_analysis_top, box_width=_col_w, box_height=14, fill=(255, 232, 232))
+    draw_text(page4, left=margin + _col_w + 16, top=_analysis_top + 2, text="✗ Что исправить", size=8.5, color=red, max_width=_col_w - 8)
+    _item_top = _analysis_top + 18
+    _bd_worked = list(_bd.get("worked") or [])
+    _bd_to_fix = list(_bd.get("to_fix") or [])
+    _max_items = max(len(_bd_worked), len(_bd_to_fix), 1)
+    for _idx in range(_max_items):
+        if _idx < len(_bd_worked):
+            _w = _bd_worked[_idx]
+            draw_text(page4, left=margin + 4, top=_item_top, text=f"• {_w['label']}", size=8.5, color=black, max_width=_col_w - 8)
+            if _w.get("interpretation"):
+                draw_text(page4, left=margin + 4, top=_item_top + 11, text=_w["interpretation"], size=7.8, color=muted, max_width=_col_w - 8)
+        if _idx < len(_bd_to_fix):
+            _f = _bd_to_fix[_idx]
+            draw_text(page4, left=margin + _col_w + 16, top=_item_top, text=f"• {_f['label']}", size=8.5, color=black, max_width=_col_w - 8)
+            if _f.get("interpretation"):
+                draw_text(page4, left=margin + _col_w + 16, top=_item_top + 11, text=_f["interpretation"], size=7.8, color=muted, max_width=_col_w - 8)
+        _item_top += 30
+    # Recommendation card
+    _bd_rec = _bd.get("recommendation") or {}
+    if _bd_rec.get("better_phrasing"):
+        _rec_top = _item_top + 12
+        draw_rect(page4, left=margin, top=_rec_top, box_width=width - (margin * 2), box_height=52, fill=light_blue)
+        draw_rect(page4, left=margin, top=_rec_top, box_width=4, box_height=52, fill=accent)
+        draw_text(page4, left=margin + 12, top=_rec_top + 8, text="Попробуй так:", size=8.5, color=accent, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=_rec_top + 24, text=str(_bd_rec["better_phrasing"]), size=9.0, color=black, max_width=width - (margin * 2) - 24)
+    footer(page4, 4)
+
     page5 = add_page()
     draw_section_bar(page5, top=58, title=morning_card_section["label"], color=(47, 97, 170))
     mc_top = 96
@@ -1448,7 +1570,7 @@ def _render_manager_daily_pdf_report(
     draw_rect(page5, left=margin, top=mc_top, box_width=4, box_height=54, fill=accent)
     draw_text(page5, left=margin + 12, top=mc_top + 8, text="Фокус дня:", size=9.0, color=accent, max_width=width - (margin * 2) - 24)
     draw_text(page5, left=margin + 12, top=mc_top + 26, text=str(morning_card_section.get("challenge") or ""), size=10.0, color=black, max_width=width - (margin * 2) - 24)
-    footer(page5, 4)
+    footer(page5, 5)
 
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 

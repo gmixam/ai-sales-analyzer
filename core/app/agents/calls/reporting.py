@@ -2903,6 +2903,7 @@ def build_manager_daily_payload(
     product_signal = _select_most_important_product_signal(artifacts)
     evidence_fragment = _select_evidence_fragment(artifacts)
     key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts, calls_count=calls_count)
+    call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=artifacts)
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
@@ -2978,6 +2979,7 @@ def build_manager_daily_payload(
         "analysis_worked": worked_items,
         "analysis_improve": improve_items,
         "key_problem_of_day": key_problem,
+        "call_breakdown": call_breakdown,
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
@@ -3623,6 +3625,113 @@ def _latest_call_score(artifacts: list[ReportArtifact]) -> float | None:
     if latest is None:
         return None
     return _extract_score_percent(latest.analysis)
+
+
+def _build_call_breakdown(
+    *,
+    improve_items: list[dict[str, Any]],
+    artifacts: list[ReportArtifact],
+) -> dict[str, Any]:
+    """Build compact step-by-step breakdown of the most representative problem call.
+
+    Selection rule: among calls containing the top gap label, pick the one with the
+    lowest overall score (best illustrator of the problem).
+    """
+    _empty: dict[str, Any] = {
+        "is_placeholder": True,
+        "client_label": None,
+        "time_label": None,
+        "stage_steps": [],
+        "worked": [],
+        "to_fix": [],
+        "recommendation": None,
+    }
+    if not improve_items or not artifacts:
+        return _empty
+
+    gap_label = improve_items[0]["label"]
+    best_artifact: ReportArtifact | None = None
+    best_score = float("inf")
+    for artifact in artifacts:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        has_gap = any(
+            str(item.get("title") or item.get("criterion_name") or item.get("criterion_code") or "").strip() == gap_label
+            for item in (detail.get("gaps") or [])
+        )
+        if has_gap:
+            s = _extract_score_percent(artifact.analysis)
+            if s < best_score:
+                best_score = s
+                best_artifact = artifact
+
+    if best_artifact is None:
+        return _empty
+
+    detail = dict((best_artifact.analysis.scores_detail or {}) if best_artifact.analysis is not None else {})
+    call_meta = dict(detail.get("call") or {})
+    client_label = str(
+        call_meta.get("contact_name") or call_meta.get("contact_phone")
+        or (best_artifact.interaction.metadata_ or {}).get("contact_phone")
+        or "Клиент"
+    ).strip()
+    time_label = best_artifact.call_started_at.strftime("%H:%M") if best_artifact.call_started_at else "—"
+
+    # Build stage steps ordered by funnel
+    raw_stages = detail.get("score_by_stage") or []
+    stage_lookup = {str(s.get("stage_code") or ""): s for s in raw_stages}
+    stage_steps: list[dict[str, Any]] = []
+    for code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
+        if code not in stage_lookup:
+            continue
+        s = stage_lookup[code]
+        s_score = int(s.get("stage_score") or 0)
+        max_s = int(s.get("max_stage_score") or 0)
+        if max_s > 0:
+            normalized = round(s_score / max_s * 10, 1)
+            stage_steps.append({
+                "funnel_label": funnel_label,
+                "stage_name": stage_name,
+                "score": normalized,
+                "is_weak": normalized < 4.0,
+            })
+
+    worked = [
+        {
+            "label": str(i.get("title") or i.get("criterion_name") or ""),
+            "interpretation": str(i.get("impact") or i.get("comment") or i.get("evidence") or ""),
+        }
+        for i in (detail.get("strengths") or [])[:2]
+        if str(i.get("title") or i.get("criterion_name") or "").strip()
+    ]
+    to_fix = [
+        {
+            "label": str(i.get("title") or i.get("criterion_name") or ""),
+            "interpretation": str(i.get("impact") or i.get("comment") or i.get("evidence") or ""),
+        }
+        for i in (detail.get("gaps") or [])[:2]
+        if str(i.get("title") or i.get("criterion_name") or "").strip()
+    ]
+
+    recs = detail.get("recommendations") or []
+    recommendation = None
+    if recs:
+        r = recs[0]
+        better_phrase = str(r.get("better_phrase") or r.get("recommendation") or r.get("problem") or "").strip()
+        if better_phrase:
+            recommendation = {
+                "title": str(r.get("criterion_name") or r.get("criterion_code") or "Рекомендация"),
+                "better_phrasing": better_phrase,
+            }
+
+    return {
+        "is_placeholder": not stage_steps and not worked and not to_fix,
+        "client_label": client_label,
+        "time_label": time_label,
+        "stage_steps": stage_steps,
+        "worked": worked,
+        "to_fix": to_fix,
+        "recommendation": recommendation,
+    }
 
 
 def _build_problem_call_example(
