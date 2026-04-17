@@ -307,7 +307,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         rendered = render_report_email(payload)
 
         self.assertIn("Ежедневный разбор звонков", rendered["subject"])
-        self.assertIn("ГЛАВНЫЙ ФОКУС НА ЗАВТРА", rendered["text"])
+        self.assertIn("СИТУАЦИЯ ДНЯ", rendered["text"])
         self.assertIn("<html>", rendered["html"])
         self.assertIn("review-grid", rendered["html"])
         self.assertIn("problem-card", rendered["html"])

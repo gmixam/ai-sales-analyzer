@@ -156,8 +156,12 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "main_focus_for_tomorrow"),
-            "body": payload["main_focus_for_tomorrow"].get("text") or "Фокус не сформирован.",
-            "reinforcement": "Это главный ориентир на следующий рабочий день.",
+            "situation_title": _build_situation_title(payload.get("score_by_stage") or []),
+            "body": _value(
+                payload["key_problem_of_day"].get("description"),
+                "На этой выборке нет доминирующей проблемы по этапу воронки. Держим фокус на завершении звонков с конкретным следующим шагом.",
+            ),
+            "script_placeholder": "Подсказки для разговора появятся на следующем этапе разработки.",
             "tone": "focus",
         },
         {
@@ -764,10 +768,10 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<strong>{html.escape(str(signal.get('time_line') or ''))}</strong>. "
         f"{html.escape(_manager_signal_reason(signal))}"
         "</section>"
-        "<section class=\"banner yellow\">"
-        f"<span class=\"label\">{html.escape(focus['label'])}:</span> "
-        f"<strong>{html.escape(str(focus.get('body') or 'Фокус будет определён после следующего запуска.'))}</strong> "
-        f"{html.escape(str(focus.get('reinforcement') or ''))}"
+        "<section class=\"situation-day\">"
+        f"<div class=\"situation-title\">{html.escape(str(focus.get('situation_title') or 'СИТУАЦИЯ ДНЯ'))}</div>"
+        f"<div class=\"situation-body\">{html.escape(str(focus.get('body') or 'Описание ситуации будет сформировано после следующего запуска.'))}</div>"
+        f"<div class=\"situation-script\">{html.escape(str(focus.get('script_placeholder') or ''))}</div>"
         "</section>"
         f"<div class=\"section-bar navy\">{html.escape(review['label'])}</div>"
         "<section class=\"stage-scores-section\">"
@@ -1254,10 +1258,15 @@ def _render_manager_daily_pdf_report(
     )
     draw_text(page1, left=margin + 12, top=378, text=signal_text, size=10.2, color=black, max_width=width - (margin * 2) - 24)
 
-    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=54, fill=soft_yellow)
-    draw_rect(page1, left=margin, top=426, box_width=4, box_height=54, fill=(139, 109, 15))
-    focus_text = f"{focus['label']}: {str(focus.get('body') or 'Фокус будет определён после следующего запуска.')} {str(focus.get('reinforcement') or '')}"
-    draw_text(page1, left=margin + 12, top=442, text=focus_text, size=10.2, color=black, max_width=width - (margin * 2) - 24)
+    situation_title_text = str(focus.get("situation_title") or "СИТУАЦИЯ ДНЯ")
+    situation_body_text = str(focus.get("body") or "Описание ситуации будет сформировано после следующего запуска.")
+    situation_script_text = str(focus.get("script_placeholder") or "")
+    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=64, fill=(232, 240, 254))
+    draw_rect(page1, left=margin, top=426, box_width=4, box_height=64, fill=(30, 80, 180))
+    draw_text(page1, left=margin + 12, top=434, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=450, text=situation_body_text, size=9.5, color=black, max_width=width - (margin * 2) - 24)
+    if situation_script_text:
+        draw_text(page1, left=margin + 12, top=467, text=situation_script_text, size=8.5, color=(100, 100, 100), max_width=width - (margin * 2) - 24)
 
     draw_section_bar(page1, top=490, title=review["label"], color=accent)
     _st_top = 514
@@ -1811,6 +1820,17 @@ def _short_time(value: Any) -> str:
     if "T" in text and len(text) >= 16:
         return text[11:16]
     return text
+
+
+def _build_situation_title(score_by_stage: list[dict[str, Any]]) -> str:
+    """Build СИТУАЦИЯ ДНЯ heading from the priority stage (first below 4.0 in funnel order)."""
+    for item in score_by_stage:
+        if item.get("is_priority"):
+            name = str(item.get("stage_name") or "")
+            score = item.get("score")
+            score_str = f" ({score})" if score is not None else ""
+            return f"СИТУАЦИЯ ДНЯ · {name}{score_str} — первый этап ниже 4 по воронке"
+    return "СИТУАЦИЯ ДНЯ — приоритетный этап не определён"
 
 
 def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[str, Any]]:

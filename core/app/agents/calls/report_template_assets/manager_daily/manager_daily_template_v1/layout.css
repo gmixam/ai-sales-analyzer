@@ -337,6 +337,28 @@ body {
   font-size: 17px;
 }
 
+.situation-day {
+  margin-top: 28px;
+  padding: 14px 16px 14px 20px;
+  background: #e8f0fe;
+  box-shadow: inset 4px 0 0 #1e50b4;
+}
+.situation-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #14328c;
+  margin-bottom: 6px;
+}
+.situation-body {
+  font-size: 15px;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.situation-script {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .banner {
   margin-top: 28px;
   padding: 12px 16px;
