@@ -161,7 +161,11 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 payload["key_problem_of_day"].get("description"),
                 "На этой выборке нет доминирующей проблемы по этапу воронки. Держим фокус на завершении звонков с конкретным следующим шагом.",
             ),
-            "script_placeholder": "Подсказки для разговора появятся на следующем этапе разработки.",
+            "scripts": _build_situation_scripts(
+                key_problem=dict(payload.get("key_problem_of_day") or {}),
+                recommendations=list(payload.get("recommendations") or []),
+                score_by_stage=list(payload.get("score_by_stage") or []),
+            ),
             "tone": "focus",
         },
         {
@@ -762,8 +766,14 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         "<section class=\"situation-day\">"
         f"<div class=\"situation-title\">{html.escape(str(focus.get('situation_title') or 'СИТУАЦИЯ ДНЯ'))}</div>"
         f"<div class=\"situation-body\">{html.escape(str(focus.get('body') or 'Описание ситуации будет сформировано после следующего запуска.'))}</div>"
-        f"<div class=\"situation-script\">{html.escape(str(focus.get('script_placeholder') or ''))}</div>"
-        "</section>"
+        + (
+            "<ol class=\"situation-scripts\">"
+            + "".join(f"<li>{html.escape(str(s))}</li>" for s in (focus.get("scripts") or []))
+            + "</ol>"
+            if focus.get("scripts")
+            else ""
+        )
+        + "</section>"
         f"<div class=\"section-bar navy\">{html.escape(review['label'])}</div>"
         "<section class=\"stage-scores-section\">"
         "<table class=\"stage-scores-table\">"
@@ -1243,16 +1253,16 @@ def _render_manager_daily_pdf_report(
 
     situation_title_text = str(focus.get("situation_title") or "СИТУАЦИЯ ДНЯ")
     situation_body_text = str(focus.get("body") or "Описание ситуации будет сформировано после следующего запуска.")
-    situation_script_text = str(focus.get("script_placeholder") or "")
-    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=64, fill=(232, 240, 254))
-    draw_rect(page1, left=margin, top=426, box_width=4, box_height=64, fill=(30, 80, 180))
+    situation_scripts = list(focus.get("scripts") or [])
+    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=80, fill=(232, 240, 254))
+    draw_rect(page1, left=margin, top=426, box_width=4, box_height=80, fill=(30, 80, 180))
     draw_text(page1, left=margin + 12, top=434, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
     draw_text(page1, left=margin + 12, top=450, text=situation_body_text, size=9.5, color=black, max_width=width - (margin * 2) - 24)
-    if situation_script_text:
-        draw_text(page1, left=margin + 12, top=467, text=situation_script_text, size=8.5, color=(100, 100, 100), max_width=width - (margin * 2) - 24)
+    for _si, _script in enumerate(situation_scripts[:3]):
+        draw_text(page1, left=margin + 12, top=467 + _si * 13, text=f"{_si + 1}. {_script}", size=8.5, color=(70, 70, 130), max_width=width - (margin * 2) - 24)
 
-    draw_section_bar(page1, top=490, title=review["label"], color=accent)
-    _st_top = 514
+    draw_section_bar(page1, top=506, title=review["label"], color=accent)
+    _st_top = 530
     _st_name_w = 190
     _st_score_w = 45
     _st_bar_w = 208
@@ -1285,10 +1295,10 @@ def _render_manager_daily_pdf_report(
             draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 4, text="★ приоритет", size=7.5, color=red, max_width=_st_prio_w - 4)
         _st_top += _st_row_h
 
-    draw_rect(page1, left=margin, top=664, box_width=width - (margin * 2), box_height=90, fill=light_red)
-    draw_rect(page1, left=margin, top=664, box_width=4, box_height=90, fill=red)
-    draw_text(page1, left=margin + 12, top=679, text=f"{problem['label']}: {str(problem.get('title') or 'Критичный провал дня не выделился')}", size=11.0, color=red, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=701, text=str(problem.get("body") or ""), size=9.8, color=black, max_width=width - (margin * 2) - 24)
+    draw_rect(page1, left=margin, top=680, box_width=width - (margin * 2), box_height=90, fill=light_red)
+    draw_rect(page1, left=margin, top=680, box_width=4, box_height=90, fill=red)
+    draw_text(page1, left=margin + 12, top=695, text=f"{problem['label']}: {str(problem.get('title') or 'Критичный провал дня не выделился')}", size=11.0, color=red, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=717, text=str(problem.get("body") or ""), size=9.8, color=black, max_width=width - (margin * 2) - 24)
     footer(page1, 1)
 
     page2 = add_page()
@@ -1806,6 +1816,94 @@ def _build_situation_title(score_by_stage: list[dict[str, Any]]) -> str:
             score_str = f" ({score})" if score is not None else ""
             return f"СИТУАЦИЯ ДНЯ · {name}{score_str} — первый этап ниже 4 по воронке"
     return "СИТУАЦИЯ ДНЯ — приоритетный этап не определён"
+
+
+_STAGE_SCRIPT_FALLBACKS: dict[str, list[str]] = {
+    "contact_start": [
+        "Доброе утро! Удобно ли сейчас 2 минуты — я кратко.",
+        "Меня зовут [имя], компания Договор24. Вы оставляли заявку — хочу уточнить детали.",
+        "Подскажите, вы сейчас рассматриваете варианты или уже определились?",
+    ],
+    "qualification_primary": [
+        "Чем занимается ваша компания? Хочу понять, как лучше подобрать вариант.",
+        "Сколько сотрудников работает с документами — это поможет точнее рассчитать.",
+        "Вы уже пробовали электронный документооборот или пока всё на бумаге?",
+    ],
+    "needs_discovery": [
+        "Расскажите, какая задача сейчас самая болезненная — я запишу.",
+        "Если убрать одну проблему с документами — что было бы важнее всего?",
+        "Что сейчас занимает больше всего времени при работе с договорами?",
+    ],
+    "presentation": [
+        "Смотрите, под вашу задачу подходит вот это — объясняю за 1 минуту.",
+        "У нас есть два варианта; скажите, что важнее — скорость или цена?",
+        "Вот конкретный кейс схожей компании — покажу, как они сэкономили.",
+    ],
+    "objection_handling": [
+        "Понял вас. Это распространённое сомнение — давайте разберём по шагам.",
+        "Если убрать этот вопрос — в целом решение подходит?",
+        "Что именно смущает — цена, сроки или что-то другое?",
+    ],
+    "completion_next_step": [
+        "Итак, договорились: [дата/время] — я пришлю детали на почту. Верно?",
+        "Давайте зафиксируем следующий шаг: что именно вы сделаете до [дата]?",
+        "Хорошо, тогда я звоню в [время]. Вам удобно или лучше перенести?",
+    ],
+    "cross_stage_transition": [
+        "Прежде чем перейти к деталям — уточните, как вы в целом принимаете такие решения?",
+        "Хочу убедиться, что мы говорим об одном и том же — сформулируйте своими словами.",
+        "На каком этапе сейчас находится ваш вопрос — вы уже сравниваете варианты?",
+    ],
+}
+
+_STAGE_SCRIPT_GENERIC: list[str] = [
+    "Подведём итог: что конкретно мы договорились сделать к следующему разговору?",
+    "Что для вас сейчас важнее — скорость решения или детальный разбор вариантов?",
+    "Давайте зафиксируем следующий шаг — когда вам удобно созвониться ещё раз?",
+]
+
+
+def _build_situation_scripts(
+    key_problem: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    score_by_stage: list[dict[str, Any]],
+) -> list[str]:
+    """Build 3 situation scripts from existing payload: better_phrasing from recommendations
+    filtered/ranked by relevance to priority stage, with deterministic stage fallbacks."""
+    # Collect better_phrasing from non-trivial recommendation cards (already LLM-generated)
+    scripts: list[str] = []
+    problem_title = str(key_problem.get("title") or "").strip().lower()
+    for card in recommendations:
+        phrase = str(card.get("better_phrasing") or "").strip()
+        title = str(card.get("title") or "").strip()
+        if not phrase or phrase in {"Уточнить формулировку и закрепить следующий шаг.", "Проверить полноту анализов и повторить запуск при необходимости."}:
+            continue
+        if phrase not in scripts:
+            scripts.append(phrase)
+        if len(scripts) >= 3:
+            break
+
+    # Fill remaining slots with stage-specific fallback templates
+    if len(scripts) < 3:
+        priority_stage_code = next(
+            (item.get("stage_code") or item.get("funnel_label") or "" for item in score_by_stage if item.get("is_priority")),
+            "",
+        )
+        fallbacks = _STAGE_SCRIPT_FALLBACKS.get(str(priority_stage_code), _STAGE_SCRIPT_GENERIC)
+        for fb in fallbacks:
+            if fb not in scripts:
+                scripts.append(fb)
+            if len(scripts) >= 3:
+                break
+
+    if len(scripts) < 3:
+        for fb in _STAGE_SCRIPT_GENERIC:
+            if fb not in scripts:
+                scripts.append(fb)
+            if len(scripts) >= 3:
+                break
+
+    return scripts[:3]
 
 
 def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[str, Any]]:

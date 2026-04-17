@@ -358,6 +358,16 @@ body {
   font-size: 13px;
   color: var(--muted);
 }
+.situation-scripts {
+  margin: 8px 0 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #2e3f80;
+  line-height: 1.7;
+}
+.situation-scripts li {
+  margin-bottom: 2px;
+}
 
 .banner {
   margin-top: 28px;
