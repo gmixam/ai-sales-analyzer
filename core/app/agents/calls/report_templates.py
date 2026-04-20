@@ -216,7 +216,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "call_list"),
-            "columns": ["#", "Время", "Клиент", "Тема", "Статус", "Следующий шаг"],
+            "columns": ["#", "Время", "Клиент", "Тема", "Статус", "Контекст", "Следующий шаг"],
             "rows": [
                 [
                     str(idx + 1),
@@ -224,6 +224,11 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                     _manager_reader_value(row.get("client_or_phone"), "Клиент не определён"),
                     _call_topic_label(row.get("call_type"), row.get("scenario_type")),
                     _call_status_label(row.get("status")),
+                    _call_context_label(
+                        str(row.get("status") or ""),
+                        row.get("deadline"),
+                        row.get("reason"),
+                    ),
                     _manager_reader_value(row.get("next_step"), "—"),
                 ]
                 for idx, row in enumerate(payload.get("call_list") or [])
@@ -755,7 +760,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         + "</tr>"
         for row in call_list.get("rows") or []
     ) or (
-        "<tr><td colspan=\"6\">По выбранным фильтрам нет звонков, готовых к включению в таблицу.</td></tr>"
+        "<tr><td colspan=\"7\">По выбранным фильтрам нет звонков, готовых к включению в таблицу.</td></tr>"
     )
     dynamics_bars = "".join(
         (
@@ -1470,11 +1475,12 @@ def _render_manager_daily_pdf_report(
     rows = call_list.get("rows") or []
     _cl_num = 22
     _cl_time = 42
-    _cl_client = 78
-    _cl_topic = 80
-    _cl_status = 66
-    _cl_next = width - (margin * 2) - _cl_num - _cl_time - _cl_client - _cl_topic - _cl_status
-    col_widths = [_cl_num, _cl_time, _cl_client, _cl_topic, _cl_status, _cl_next]
+    _cl_client = 72
+    _cl_topic = 76
+    _cl_status = 62
+    _cl_context = 72
+    _cl_next = width - (margin * 2) - _cl_num - _cl_time - _cl_client - _cl_topic - _cl_status - _cl_context
+    col_widths = [_cl_num, _cl_time, _cl_client, _cl_topic, _cl_status, _cl_context, _cl_next]
     x = margin
     for column, col_width in zip(columns, col_widths, strict=False):
         draw_rect(page3, left=x, top=table_top, box_width=col_width, box_height=22, fill=accent)
@@ -2531,6 +2537,18 @@ def _call_topic_label(call_type: str | None, scenario_type: str | None) -> str:
     if type_label and scenario_label:
         return f"{type_label} · {scenario_label}"
     return type_label or scenario_label or "—"
+
+
+def _call_context_label(status: str, deadline: str | None, reason: str | None) -> str:
+    """Build short Контекст for a call list row from follow_up outcome data."""
+    if status == "agreed":
+        return f"до {deadline}" if deadline else "—"
+    if status == "rescheduled":
+        return f"→ {deadline}" if deadline else "перезвон"
+    if reason and status in ("open", "refusal"):
+        short = reason[:28].rstrip()
+        return short + "…" if len(reason) > 28 else short
+    return "—"
 
 
 def _call_status_label(value: Any) -> str:

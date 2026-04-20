@@ -3435,6 +3435,7 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         "status": status,
         "next_step": follow_up.get("next_step_text"),
         "deadline": deadline,
+        "reason": str(follow_up.get("reason_not_fixed") or "").strip() or None,
         "score_percent": _extract_score_percent(artifact.analysis),
     }
 
