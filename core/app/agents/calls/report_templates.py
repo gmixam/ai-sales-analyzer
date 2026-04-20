@@ -269,6 +269,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **dict(payload.get("voice_of_customer") or {"is_placeholder": True, "situations": []}),
         },
         {
+            **_section_meta(template, "additional_situations"),
+            **dict(payload.get("additional_situations") or {"is_placeholder": True, "situations": []}),
+        },
+        {
             **_section_meta(template, "morning_card"),
             "greeting": morning_card["greeting"],
             "summary_line": morning_card["summary_line"],
@@ -673,6 +677,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     morning_card = sections["morning_card"]
     call_breakdown = sections["call_breakdown"]
     voice_of_customer = sections["voice_of_customer"]
+    additional_situations = sections["additional_situations"]
     outcome_summary_cells = "".join(
         f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
         f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
@@ -890,11 +895,16 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         + _render_voice_of_customer_html(voice_of_customer)
         + _manager_daily_page_footer(report["footer"], 4)
     )
+    page_five = (
+        _manager_daily_page_header(report["metadata_line"])
+        + _render_additional_situations_html(additional_situations)
+        + _manager_daily_page_footer(report["footer"], 5)
+    )
     mc_open_items = "".join(
         f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
         for call in morning_card.get("open_calls") or []
     ) or "<li>Открытых звонков нет — отличный результат!</li>"
-    page_five = (
+    page_six = (
         _manager_daily_page_header(report["metadata_line"])
         + f"<div class=\"section-bar\">{html.escape(morning_card['label'])}</div>"
         "<section class=\"morning-card\">"
@@ -907,7 +917,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"{html.escape(str(morning_card.get('challenge') or ''))}"
         "</div>"
         "</section>"
-        + _manager_daily_page_footer(report["footer"], 5)
+        + _manager_daily_page_footer(report["footer"], 6)
     )
     return (
         "<html><head><meta charset=\"utf-8\">"
@@ -918,6 +928,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<section class=\"page\">{page_three}</section>"
         f"<section class=\"page\">{page_four}</section>"
         f"<section class=\"page\">{page_five}</section>"
+        f"<section class=\"page\">{page_six}</section>"
         "</div></body></html>"
     )
 
@@ -1272,6 +1283,7 @@ def _render_manager_daily_pdf_report(
     morning_card_section = sections["morning_card"]
     call_breakdown_section = sections["call_breakdown"]
     voice_section = sections["voice_of_customer"]
+    add_sit_section = sections["additional_situations"]
 
     page1 = add_page()
     draw_rect(page1, left=margin, top=58, box_width=width - (margin * 2), box_height=72, fill=accent)
@@ -1573,30 +1585,55 @@ def _render_manager_daily_pdf_report(
             _voice_card_top += 44
     footer(page4, 4)
 
+    # Page 5: Additional coaching situations
     page5 = add_page()
-    draw_section_bar(page5, top=58, title=morning_card_section["label"], color=(47, 97, 170))
+    draw_section_bar(page5, top=58, title=add_sit_section["label"], color=accent)
+    _as_top = 96
+    _as_sits = list(add_sit_section.get("situations") or [])
+    if add_sit_section.get("is_placeholder") or not _as_sits:
+        draw_text(page5, left=margin, top=_as_top, text="Дополнительные ситуации появятся после накопления данных по звонкам.", size=8.5, color=muted, max_width=width - (margin * 2))
+    else:
+        for _as in _as_sits[:3]:
+            _as_kind = str(_as.get("kind") or "gap")
+            _as_fill = (255, 245, 230) if _as_kind == "gap" else (230, 248, 230)
+            _as_bar_color = (200, 100, 40) if _as_kind == "gap" else green
+            _as_badge = "Зона роста" if _as_kind == "gap" else "Сильная сторона"
+            _as_signal = int(_as.get("signal") or 0)
+            _as_title = str(_as.get("title") or "")
+            _as_interp = str(_as.get("interpretation") or "")
+            draw_rect(page5, left=margin, top=_as_top, box_width=width - (margin * 2), box_height=52, fill=_as_fill)
+            draw_rect(page5, left=margin, top=_as_top, box_width=4, box_height=52, fill=_as_bar_color)
+            draw_text(page5, left=margin + 12, top=_as_top + 5, text=_as_badge + (f" · {_as_signal} зв." if _as_signal else ""), size=7.5, color=_as_bar_color, max_width=width - (margin * 2) - 24)
+            draw_text(page5, left=margin + 12, top=_as_top + 18, text=_as_title, size=9.5, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page5, left=margin + 12, top=_as_top + 34, text=_as_interp, size=8.0, color=muted, max_width=width - (margin * 2) - 24)
+            _as_top += 58
+    footer(page5, 5)
+
+    # Page 6: Morning card
+    page6 = add_page()
+    draw_section_bar(page6, top=58, title=morning_card_section["label"], color=(47, 97, 170))
     mc_top = 96
-    draw_text(page5, left=margin, top=mc_top, text=str(morning_card_section.get("greeting") or ""), size=14.0, color=black, max_width=width - (margin * 2))
+    draw_text(page6, left=margin, top=mc_top, text=str(morning_card_section.get("greeting") or ""), size=14.0, color=black, max_width=width - (margin * 2))
     mc_top += 30
-    draw_text(page5, left=margin, top=mc_top, text=str(morning_card_section.get("summary_line") or ""), size=11.0, color=accent, max_width=width - (margin * 2))
+    draw_text(page6, left=margin, top=mc_top, text=str(morning_card_section.get("summary_line") or ""), size=11.0, color=accent, max_width=width - (margin * 2))
     mc_top += 32
     _mc_open_calls = list(morning_card_section.get("open_calls") or [])
     if _mc_open_calls:
-        draw_text(page5, left=margin, top=mc_top, text="Открытые звонки:", size=9.0, color=muted, max_width=width - (margin * 2))
+        draw_text(page6, left=margin, top=mc_top, text="Открытые звонки:", size=9.0, color=muted, max_width=width - (margin * 2))
         mc_top += 18
         for _mc_call in _mc_open_calls:
-            draw_rect(page5, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=22, fill=light_orange)
-            draw_text(page5, left=margin + 8, top=mc_top + 5, text=f"• {_mc_call.get('time', '—')}  ·  {_mc_call.get('client', '—')}  ·  {_mc_call.get('status', '—')}", size=9.2, color=black, max_width=width - (margin * 2) - 16)
+            draw_rect(page6, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=22, fill=light_orange)
+            draw_text(page6, left=margin + 8, top=mc_top + 5, text=f"• {_mc_call.get('time', '—')}  ·  {_mc_call.get('client', '—')}  ·  {_mc_call.get('status', '—')}", size=9.2, color=black, max_width=width - (margin * 2) - 16)
             mc_top += 26
     else:
-        draw_text(page5, left=margin, top=mc_top, text="Открытых звонков нет — отличный результат!", size=10.0, color=green, max_width=width - (margin * 2))
+        draw_text(page6, left=margin, top=mc_top, text="Открытых звонков нет — отличный результат!", size=10.0, color=green, max_width=width - (margin * 2))
         mc_top += 26
     mc_top += 16
-    draw_rect(page5, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=54, fill=light_blue)
-    draw_rect(page5, left=margin, top=mc_top, box_width=4, box_height=54, fill=accent)
-    draw_text(page5, left=margin + 12, top=mc_top + 8, text="Фокус дня:", size=9.0, color=accent, max_width=width - (margin * 2) - 24)
-    draw_text(page5, left=margin + 12, top=mc_top + 26, text=str(morning_card_section.get("challenge") or ""), size=10.0, color=black, max_width=width - (margin * 2) - 24)
-    footer(page5, 5)
+    draw_rect(page6, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=54, fill=light_blue)
+    draw_rect(page6, left=margin, top=mc_top, box_width=4, box_height=54, fill=accent)
+    draw_text(page6, left=margin + 12, top=mc_top + 8, text="Фокус дня:", size=9.0, color=accent, max_width=width - (margin * 2) - 24)
+    draw_text(page6, left=margin + 12, top=mc_top + 26, text=str(morning_card_section.get("challenge") or ""), size=10.0, color=black, max_width=width - (margin * 2) - 24)
+    footer(page6, 6)
 
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 
@@ -2051,6 +2088,42 @@ def _render_situation_call_example_html(call_example: dict[str, Any]) -> str:
         f"<span class=\"situation-example-contact\">{header_line}</span>"
         f"{reason_html}"
         f"</div>"
+    )
+
+
+def _render_additional_situations_html(section: dict[str, Any]) -> str:
+    """Render ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ block with up to 3 gap/strength cards."""
+    label = html.escape(str(section.get("label") or "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ"))
+    situations = list(section.get("situations") or [])
+    if section.get("is_placeholder") or not situations:
+        return (
+            f"<div class=\"section-bar\">{label}</div>"
+            "<section class=\"add-situations\">"
+            "<div class=\"add-sit-placeholder\">Дополнительные ситуации появятся после накопления данных по звонкам.</div>"
+            "</section>"
+        )
+    cards = ""
+    for s in situations:
+        kind = str(s.get("kind") or "gap")
+        kind_class = "add-sit-gap" if kind == "gap" else "add-sit-strength"
+        kind_label = "Зона роста" if kind == "gap" else "Сильная сторона"
+        signal = int(s.get("signal") or 0)
+        signal_html = f"<span class=\"add-sit-signal\">{signal} зв.</span>" if signal else ""
+        interp = html.escape(str(s.get("interpretation") or ""))
+        title = html.escape(str(s.get("title") or ""))
+        cards += (
+            f"<article class=\"add-sit-card {kind_class}\">"
+            f"<div class=\"add-sit-header\">"
+            f"<span class=\"add-sit-kind-badge\">{kind_label}</span>"
+            f"{signal_html}"
+            f"</div>"
+            f"<div class=\"add-sit-title\">{title}</div>"
+            f"<div class=\"add-sit-interp\">{interp}</div>"
+            f"</article>"
+        )
+    return (
+        f"<div class=\"section-bar\">{label}</div>"
+        f"<section class=\"add-situations\">{cards}</section>"
     )
 
 

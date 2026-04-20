@@ -2905,6 +2905,11 @@ def build_manager_daily_payload(
     key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts, calls_count=calls_count)
     call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=artifacts)
     voice_of_customer = _build_voice_of_customer(artifacts=artifacts)
+    additional_situations = _build_additional_situations(
+        improve_items=improve_items,
+        worked_items=worked_items,
+        top_gap_title=(improve_items[0]["label"] if improve_items else None),
+    )
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
@@ -2982,6 +2987,7 @@ def build_manager_daily_payload(
         "key_problem_of_day": key_problem,
         "call_breakdown": call_breakdown,
         "voice_of_customer": voice_of_customer,
+        "additional_situations": additional_situations,
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
@@ -3692,6 +3698,54 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                     break
             if len(situations) >= 3:
                 break
+
+    return {
+        "is_placeholder": len(situations) == 0,
+        "situations": situations[:3],
+    }
+
+
+def _build_additional_situations(
+    *,
+    improve_items: list[dict[str, Any]],
+    worked_items: list[dict[str, Any]],
+    top_gap_title: str | None,
+) -> dict[str, Any]:
+    """Build up to 3 additional coaching situations, excluding the top gap already shown in СИТУАЦИЯ ДНЯ.
+
+    Priority: secondary gaps (improve_items[1:]) first, then strengths (worked_items) as reinforcement.
+    Each situation has: kind ("gap" or "strength"), title, signal (count), interpretation.
+    """
+    situations: list[dict[str, Any]] = []
+    seen_titles: set[str] = {str(top_gap_title or "").strip().lower()}
+
+    for item in improve_items:
+        if len(situations) >= 3:
+            break
+        label = str(item.get("label") or "").strip()
+        if not label or label.strip().lower() in seen_titles:
+            continue
+        seen_titles.add(label.strip().lower())
+        situations.append({
+            "kind": "gap",
+            "title": label,
+            "signal": int(item.get("signal") or 0),
+            "interpretation": str(item.get("interpretation") or "Выявлено в нескольких звонках."),
+        })
+
+    for item in worked_items:
+        if len(situations) >= 3:
+            break
+        label = str(item.get("label") or "").strip()
+        if not label or label.strip().lower() in seen_titles:
+            continue
+        seen_titles.add(label.strip().lower())
+        situations.append({
+            "kind": "strength",
+            "title": label,
+            "signal": int(item.get("signal") or 0),
+            "interpretation": str(item.get("interpretation") or "Хорошо отработано в нескольких звонках."),
+        })
 
     return {
         "is_placeholder": len(situations) == 0,
