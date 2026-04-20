@@ -17,6 +17,7 @@
     {"id": "call_breakdown", "label": "РАЗБОР ЗВОНКА", "kind": "call_breakdown", "page_break_before": true},
     {"id": "voice_of_customer", "label": "ГОЛОС КЛИЕНТА", "kind": "voice_of_customer"},
     {"id": "additional_situations", "label": "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ", "kind": "situation_cards", "page_break_before": true},
+    {"id": "call_tomorrow", "label": "ПОЗВОНИ ЗАВТРА", "kind": "call_tomorrow"},
     {"id": "morning_card", "label": "УТРЕННЯЯ КАРТОЧКА", "kind": "morning_card", "page_break_before": true},
     {"id": "memo_legend", "label": "ПАМЯТКА", "kind": "bullet_groups", "page_break_before": true}
   ]

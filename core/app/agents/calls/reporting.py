@@ -2910,6 +2910,7 @@ def build_manager_daily_payload(
         worked_items=worked_items,
         top_gap_title=(improve_items[0]["label"] if improve_items else None),
     )
+    call_tomorrow = _build_call_tomorrow(artifacts=artifacts)
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
@@ -2988,6 +2989,7 @@ def build_manager_daily_payload(
         "call_breakdown": call_breakdown,
         "voice_of_customer": voice_of_customer,
         "additional_situations": additional_situations,
+        "call_tomorrow": call_tomorrow,
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
@@ -3750,6 +3752,108 @@ def _build_additional_situations(
     return {
         "is_placeholder": len(situations) == 0,
         "situations": situations[:3],
+    }
+
+
+def _call_tomorrow_opening_script(
+    *,
+    status: str,
+    deadline: str | None,
+    next_step: str,
+    scenario_type: str,
+) -> str:
+    """Build a short manager-facing opening phrase for a follow-up call."""
+    if status == "rescheduled":
+        if deadline:
+            return f"Добрый день! Звоню, как и договорились ({deadline})."
+        return "Добрый день! Продолжаем наш разговор — готов ответить на вопросы."
+    if status == "agreed":
+        if next_step:
+            step_short = next_step[:60].rstrip() + ("…" if len(next_step) > 60 else "")
+            return f"Добрый день! Звоню уточнить детали: {step_short}"
+        return "Добрый день! Готов двигаться дальше по нашей договорённости."
+    if scenario_type in ("cold_outbound",):
+        return "Добрый день! Хотел(а) подвести итог нашего разговора и уточнить ваш интерес."
+    return "Добрый день! Звоню завершить нашу беседу — осталось уточнить пару деталей."
+
+
+def _build_call_tomorrow(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
+    """Build ПОЗВОНИ ЗАВТРА shortlist with opening scripts.
+
+    Selection rule (deterministic):
+    - Exclude refusal, support, internal calls
+    - Priority groups: rescheduled → agreed → open
+    - Within group: soonest deadline first, then call time
+    - Deduplicate by client_label
+    - Cap at 5 contacts total
+    """
+    _priority_order = ("rescheduled", "agreed", "open")
+    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in _priority_order}
+
+    for artifact in artifacts:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        call = dict(detail.get("call") or {})
+        follow_up = dict(detail.get("follow_up") or {})
+        classification = dict(detail.get("classification") or {})
+
+        call_type = str(classification.get("call_type") or "").lower()
+        if call_type in {"support", "internal"}:
+            continue
+
+        status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
+        if status not in _priority_order:
+            continue
+
+        client_raw = (
+            call.get("contact_name")
+            or call.get("contact_phone")
+            or (artifact.interaction.metadata_ or {}).get("contact_phone")
+        )
+        client_label = str(client_raw or "").strip()
+        if not client_label:
+            continue
+
+        next_step = str(follow_up.get("next_step_text") or "").strip()
+        scenario_type = str(classification.get("scenario_type") or "").lower()
+        time_label = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+
+        grouped[status].append({
+            "client_label": client_label,
+            "time_label": time_label,
+            "status": status,
+            "deadline": deadline,
+            "next_step": next_step,
+            "scenario_type": scenario_type,
+            "_sort_key": str(deadline or "z"),
+        })
+
+    seen: set[str] = set()
+    contacts: list[dict[str, Any]] = []
+    for status in _priority_order:
+        for item in sorted(grouped[status], key=lambda x: x["_sort_key"]):
+            if item["client_label"] in seen:
+                continue
+            seen.add(item["client_label"])
+            contacts.append({
+                "client_label": item["client_label"],
+                "time_label": item["time_label"],
+                "status": item["status"],
+                "deadline": item["deadline"],
+                "opening_script": _call_tomorrow_opening_script(
+                    status=item["status"],
+                    deadline=item["deadline"],
+                    next_step=item["next_step"],
+                    scenario_type=item["scenario_type"],
+                ),
+            })
+            if len(contacts) >= 5:
+                break
+        if len(contacts) >= 5:
+            break
+
+    return {
+        "is_placeholder": len(contacts) == 0,
+        "contacts": contacts,
     }
 
 

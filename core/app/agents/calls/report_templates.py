@@ -273,6 +273,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **dict(payload.get("additional_situations") or {"is_placeholder": True, "situations": []}),
         },
         {
+            **_section_meta(template, "call_tomorrow"),
+            **dict(payload.get("call_tomorrow") or {"is_placeholder": True, "contacts": []}),
+        },
+        {
             **_section_meta(template, "morning_card"),
             "greeting": morning_card["greeting"],
             "summary_line": morning_card["summary_line"],
@@ -678,6 +682,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     call_breakdown = sections["call_breakdown"]
     voice_of_customer = sections["voice_of_customer"]
     additional_situations = sections["additional_situations"]
+    call_tomorrow = sections["call_tomorrow"]
     outcome_summary_cells = "".join(
         f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
         f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
@@ -898,6 +903,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     page_five = (
         _manager_daily_page_header(report["metadata_line"])
         + _render_additional_situations_html(additional_situations)
+        + _render_call_tomorrow_html(call_tomorrow)
         + _manager_daily_page_footer(report["footer"], 5)
     )
     mc_open_items = "".join(
@@ -1284,6 +1290,7 @@ def _render_manager_daily_pdf_report(
     call_breakdown_section = sections["call_breakdown"]
     voice_section = sections["voice_of_customer"]
     add_sit_section = sections["additional_situations"]
+    call_tomorrow_section = sections["call_tomorrow"]
 
     page1 = add_page()
     draw_rect(page1, left=margin, top=58, box_width=width - (margin * 2), box_height=72, fill=accent)
@@ -1607,6 +1614,33 @@ def _render_manager_daily_pdf_report(
             draw_text(page5, left=margin + 12, top=_as_top + 18, text=_as_title, size=9.5, color=black, max_width=width - (margin * 2) - 24)
             draw_text(page5, left=margin + 12, top=_as_top + 34, text=_as_interp, size=8.0, color=muted, max_width=width - (margin * 2) - 24)
             _as_top += 58
+    # ПОЗВОНИ ЗАВТРА section on page 5
+    _ct_contacts = list(call_tomorrow_section.get("contacts") or [])
+    _ct_top = _as_top + 20
+    _ct_status_colors = {
+        "rescheduled": (200, 100, 40),
+        "agreed": accent,
+        "open": muted,
+    }
+    _ct_status_labels = {"rescheduled": "Перезвон", "agreed": "Договорённость", "open": "Открытый"}
+    draw_section_bar(page5, top=_ct_top, title=call_tomorrow_section["label"], color=accent)
+    _ct_top += 30
+    if call_tomorrow_section.get("is_placeholder") or not _ct_contacts:
+        draw_text(page5, left=margin, top=_ct_top, text="Нет открытых контактов для перезвона.", size=8.5, color=muted, max_width=width - (margin * 2))
+    else:
+        for _ct in _ct_contacts:
+            _ct_status = str(_ct.get("status") or "open")
+            _ct_bar_color = _ct_status_colors.get(_ct_status, muted)
+            _ct_client = str(_ct.get("client_label") or "Клиент")
+            _ct_time = str(_ct.get("time_label") or "—")
+            _ct_badge = _ct_status_labels.get(_ct_status, _ct_status)
+            _ct_script = str(_ct.get("opening_script") or "")
+            _ct_deadline = _ct.get("deadline")
+            draw_rect(page5, left=margin, top=_ct_top, box_width=width - (margin * 2), box_height=46, fill=(250, 250, 255))
+            draw_rect(page5, left=margin, top=_ct_top, box_width=4, box_height=46, fill=_ct_bar_color)
+            draw_text(page5, left=margin + 12, top=_ct_top + 4, text=f"{_ct_client}  ·  {_ct_time}  [{_ct_badge}]" + (f"  · до {_ct_deadline}" if _ct_deadline else ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page5, left=margin + 12, top=_ct_top + 20, text=f"«{_ct_script}»", size=8.0, color=(60, 80, 140), max_width=width - (margin * 2) - 24)
+            _ct_top += 52
     footer(page5, 5)
 
     # Page 6: Morning card
@@ -2124,6 +2158,54 @@ def _render_additional_situations_html(section: dict[str, Any]) -> str:
     return (
         f"<div class=\"section-bar\">{label}</div>"
         f"<section class=\"add-situations\">{cards}</section>"
+    )
+
+
+_CALL_TOMORROW_STATUS_LABEL: dict[str, str] = {
+    "rescheduled": "Перезвон",
+    "agreed": "Договорённость",
+    "open": "Открытый",
+}
+
+
+def _render_call_tomorrow_html(section: dict[str, Any]) -> str:
+    """Render ПОЗВОНИ ЗАВТРА block with follow-up contacts and opening scripts."""
+    label = html.escape(str(section.get("label") or "ПОЗВОНИ ЗАВТРА"))
+    contacts = list(section.get("contacts") or [])
+    if section.get("is_placeholder") or not contacts:
+        return (
+            f"<div class=\"section-bar\">{label}</div>"
+            "<section class=\"call-tomorrow\">"
+            "<div class=\"ct-placeholder\">Нет открытых контактов для перезвона — все звонки завершены с результатом.</div>"
+            "</section>"
+        )
+    rows = ""
+    for c in contacts:
+        status = str(c.get("status") or "open")
+        status_label = _CALL_TOMORROW_STATUS_LABEL.get(status, status)
+        status_class = f"ct-status-{status}"
+        client = html.escape(str(c.get("client_label") or "Клиент"))
+        time_lbl = html.escape(str(c.get("time_label") or "—"))
+        script = html.escape(str(c.get("opening_script") or ""))
+        deadline = c.get("deadline")
+        deadline_html = (
+            f"<span class=\"ct-deadline\"> · до {html.escape(str(deadline))}</span>"
+            if deadline else ""
+        )
+        rows += (
+            f"<article class=\"ct-row\">"
+            f"<div class=\"ct-row-header\">"
+            f"<span class=\"ct-client\">{client}</span>"
+            f"<span class=\"ct-time\">{time_lbl}</span>"
+            f"<span class=\"ct-badge {status_class}\">{html.escape(status_label)}</span>"
+            f"{deadline_html}"
+            f"</div>"
+            f"<div class=\"ct-script\">«{script}»</div>"
+            f"</article>"
+        )
+    return (
+        f"<div class=\"section-bar\">{label}</div>"
+        f"<section class=\"call-tomorrow\">{rows}</section>"
     )
 
 
