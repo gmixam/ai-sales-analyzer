@@ -15,6 +15,7 @@
     {"id": "call_list", "label": "Список звонков", "kind": "table"},
     {"id": "focus_criterion_dynamics", "label": "ДИНАМИКА ПО ФОКУСНОМУ КРИТЕРИЮ", "kind": "key_values"},
     {"id": "call_breakdown", "label": "РАЗБОР ЗВОНКА", "kind": "call_breakdown", "page_break_before": true},
+    {"id": "voice_of_customer", "label": "ГОЛОС КЛИЕНТА", "kind": "voice_of_customer"},
     {"id": "morning_card", "label": "УТРЕННЯЯ КАРТОЧКА", "kind": "morning_card", "page_break_before": true},
     {"id": "memo_legend", "label": "ПАМЯТКА", "kind": "bullet_groups", "page_break_before": true}
   ]

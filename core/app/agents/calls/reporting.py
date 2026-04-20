@@ -2904,6 +2904,7 @@ def build_manager_daily_payload(
     evidence_fragment = _select_evidence_fragment(artifacts)
     key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts, calls_count=calls_count)
     call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=artifacts)
+    voice_of_customer = _build_voice_of_customer(artifacts=artifacts)
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
@@ -2980,6 +2981,7 @@ def build_manager_daily_payload(
         "analysis_improve": improve_items,
         "key_problem_of_day": key_problem,
         "call_breakdown": call_breakdown,
+        "voice_of_customer": voice_of_customer,
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
@@ -3625,6 +3627,76 @@ def _latest_call_score(artifacts: list[ReportArtifact]) -> float | None:
     if latest is None:
         return None
     return _extract_score_percent(latest.analysis)
+
+
+def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
+    """Build up to 3 client situation snapshots from evidence_fragments and product_signals.
+
+    Selection rule: prefer evidence_fragments with meaningful client_text (≥15 chars),
+    prioritise missed_opportunity type first across all artifacts, then fill with
+    product_signal quotes. Deduplicates by quote text.
+    """
+    situations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _client_meta(artifact: ReportArtifact) -> tuple[str, str]:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        call_meta = dict(detail.get("call") or {})
+        name = str(call_meta.get("contact_name") or call_meta.get("contact_phone")
+                   or (artifact.interaction.metadata_ or {}).get("contact_phone") or "Клиент").strip()
+        ts = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+        return name, ts
+
+    def _add_from_fragments(frag_type_priority: str | None) -> None:
+        for artifact in artifacts:
+            detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+            for frag in (detail.get("evidence_fragments") or []):
+                if frag_type_priority and str(frag.get("fragment_type") or "") != frag_type_priority:
+                    continue
+                client_text = str(frag.get("client_text") or "").strip()
+                if len(client_text) < 15 or client_text in seen:
+                    continue
+                seen.add(client_text)
+                name, ts = _client_meta(artifact)
+                why = str(frag.get("why") or "").strip()
+                situations.append({
+                    "client_label": name,
+                    "time_label": ts,
+                    "quote": client_text[:120] + ("…" if len(client_text) > 120 else ""),
+                    "context": why[:100] + ("…" if len(why) > 100 else "") if why else None,
+                })
+                if len(situations) >= 3:
+                    return
+
+    _add_from_fragments("missed_opportunity")
+    if len(situations) < 3:
+        _add_from_fragments(None)
+
+    if len(situations) < 3:
+        for artifact in artifacts:
+            detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+            name, ts = _client_meta(artifact)
+            for sig in (detail.get("product_signals") or []):
+                quote = str(sig.get("quote") or "").strip()
+                if len(quote) < 10 or quote in seen:
+                    continue
+                seen.add(quote)
+                topic = str(sig.get("topic") or "").strip()
+                situations.append({
+                    "client_label": name,
+                    "time_label": ts,
+                    "quote": quote[:120] + ("…" if len(quote) > 120 else ""),
+                    "context": topic[:100] if topic else None,
+                })
+                if len(situations) >= 3:
+                    break
+            if len(situations) >= 3:
+                break
+
+    return {
+        "is_placeholder": len(situations) == 0,
+        "situations": situations[:3],
+    }
 
 
 def _build_call_breakdown(

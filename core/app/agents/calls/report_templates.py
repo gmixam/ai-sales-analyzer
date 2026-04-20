@@ -265,6 +265,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **dict(payload.get("call_breakdown") or {"is_placeholder": True, "client_label": None, "time_label": None, "stage_steps": [], "worked": [], "to_fix": [], "recommendation": None}),
         },
         {
+            **_section_meta(template, "voice_of_customer"),
+            **dict(payload.get("voice_of_customer") or {"is_placeholder": True, "situations": []}),
+        },
+        {
             **_section_meta(template, "morning_card"),
             "greeting": morning_card["greeting"],
             "summary_line": morning_card["summary_line"],
@@ -668,6 +672,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
     dynamics = sections["focus_criterion_dynamics"]
     morning_card = sections["morning_card"]
     call_breakdown = sections["call_breakdown"]
+    voice_of_customer = sections["voice_of_customer"]
     outcome_summary_cells = "".join(
         f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
         f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
@@ -882,6 +887,7 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         "</div>"
         f"{_bd_rec}"
         "</section>"
+        + _render_voice_of_customer_html(voice_of_customer)
         + _manager_daily_page_footer(report["footer"], 4)
     )
     mc_open_items = "".join(
@@ -1265,6 +1271,7 @@ def _render_manager_daily_pdf_report(
     dynamics = sections["focus_criterion_dynamics"]
     morning_card_section = sections["morning_card"]
     call_breakdown_section = sections["call_breakdown"]
+    voice_section = sections["voice_of_customer"]
 
     page1 = add_page()
     draw_rect(page1, left=margin, top=58, box_width=width - (margin * 2), box_height=72, fill=accent)
@@ -1539,12 +1546,31 @@ def _render_manager_daily_pdf_report(
         _item_top += 30
     # Recommendation card
     _bd_rec = _bd.get("recommendation") or {}
+    _page4_cursor = _item_top
     if _bd_rec.get("better_phrasing"):
         _rec_top = _item_top + 12
         draw_rect(page4, left=margin, top=_rec_top, box_width=width - (margin * 2), box_height=52, fill=light_blue)
         draw_rect(page4, left=margin, top=_rec_top, box_width=4, box_height=52, fill=accent)
         draw_text(page4, left=margin + 12, top=_rec_top + 8, text="Попробуй так:", size=8.5, color=accent, max_width=width - (margin * 2) - 24)
         draw_text(page4, left=margin + 12, top=_rec_top + 24, text=str(_bd_rec["better_phrasing"]), size=9.0, color=black, max_width=width - (margin * 2) - 24)
+        _page4_cursor = _rec_top + 52
+    # Voice of Customer section
+    _voice_situations = list(voice_section.get("situations") or [])
+    _voice_top = _page4_cursor + 22
+    draw_section_bar(page4, top=_voice_top, title=voice_section["label"], color=(70, 90, 140))
+    _voice_card_top = _voice_top + 30
+    if voice_section.get("is_placeholder") or not _voice_situations:
+        draw_text(page4, left=margin, top=_voice_card_top, text="Ситуации появятся после накопления материала по звонкам.", size=8.5, color=muted, max_width=width - (margin * 2))
+    else:
+        for _vs in _voice_situations[:3]:
+            _vq = str(_vs.get("quote") or "")
+            _vc = str(_vs.get("context") or "")
+            _vm = f"{_vs.get('client_label', 'Клиент')} · {_vs.get('time_label', '—')}"
+            draw_rect(page4, left=margin, top=_voice_card_top, box_width=width - (margin * 2), box_height=38, fill=(248, 248, 255))
+            draw_rect(page4, left=margin, top=_voice_card_top, box_width=3, box_height=38, fill=(70, 90, 140))
+            draw_text(page4, left=margin + 10, top=_voice_card_top + 4, text=f"«{_vq}»", size=8.5, color=(40, 40, 80), max_width=width - (margin * 2) - 20)
+            draw_text(page4, left=margin + 10, top=_voice_card_top + 20, text=_vm + (f" — {_vc}" if _vc else ""), size=7.8, color=muted, max_width=width - (margin * 2) - 20)
+            _voice_card_top += 44
     footer(page4, 4)
 
     page5 = add_page()
@@ -1974,6 +2000,35 @@ def _build_pattern_count_label(key_problem: dict[str, Any]) -> str | None:
     if count is None or not total:
         return None
     return f"Паттерн повторился в {count} из {total} звонков"
+
+
+def _render_voice_of_customer_html(section: dict[str, Any]) -> str:
+    """Render ГОЛОС КЛИЕНТА block with up to 3 client situation cards."""
+    label = html.escape(str(section.get("label") or "ГОЛОС КЛИЕНТА"))
+    situations = list(section.get("situations") or [])
+    if section.get("is_placeholder") or not situations:
+        return (
+            f"<div class=\"section-bar navy\">{label}</div>"
+            "<section class=\"voice-of-customer\">"
+            "<div class=\"voice-placeholder\">Ситуации появятся после накопления материала по звонкам.</div>"
+            "</section>"
+        )
+    cards = "".join(
+        f"<article class=\"voice-card\">"
+        f"<blockquote class=\"voice-quote\">«{html.escape(str(s.get('quote') or ''))}»</blockquote>"
+        f"<div class=\"voice-meta\">{html.escape(str(s.get('client_label') or 'Клиент'))} · {html.escape(str(s.get('time_label') or '—'))}</div>"
+        + (
+            f"<div class=\"voice-context\">{html.escape(str(s['context']))}</div>"
+            if s.get("context")
+            else ""
+        )
+        + "</article>"
+        for s in situations
+    )
+    return (
+        f"<div class=\"section-bar navy\">{label}</div>"
+        f"<section class=\"voice-of-customer\"><div class=\"voice-grid\">{cards}</div></section>"
+    )
 
 
 def _render_situation_call_example_html(call_example: dict[str, Any]) -> str:
