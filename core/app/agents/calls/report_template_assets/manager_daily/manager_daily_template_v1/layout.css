@@ -637,6 +637,43 @@ body {
   background: var(--red);
 }
 
+.stage-criteria-row td {
+  padding: 4px 10px 6px 10px;
+  background: #fff8f5;
+  border-bottom: 1px solid #ffe0cc;
+}
+
+.stage-criteria {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.crit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.crit-weak {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.crit-ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.crit-score {
+  font-weight: 700;
+  opacity: 0.85;
+}
+
 .stage-priority-col {
   padding: 10px 6px;
   text-align: center;

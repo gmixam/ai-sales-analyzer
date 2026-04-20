@@ -3220,8 +3220,11 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
 
     Score scale: 0–10 (stage_score / max_stage_score * 10).
     Priority rule: first stage below 4.0 in funnel order is marked as priority.
+    For the priority stage, criteria_detail is populated (avg per criterion, sorted asc).
     """
     stage_buckets: dict[str, list[float]] = {}
+    crit_stage: dict[str, dict[str, list[float]]] = {}
+    crit_names: dict[str, str] = {}
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for stage in detail.get("score_by_stage") or []:
@@ -3230,6 +3233,14 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             max_score = int(stage.get("max_stage_score") or 0)
             if max_score > 0:
                 stage_buckets.setdefault(code, []).append(round(stage_score / max_score * 10, 1))
+            for crit in stage.get("criteria_results") or []:
+                ccode = str(crit.get("criterion_code") or "").strip()
+                cname = str(crit.get("criterion_name") or ccode).strip()
+                cscore = int(crit.get("score") or 0)
+                cmax = int(crit.get("max_score") or 0)
+                if ccode and cmax > 0:
+                    crit_stage.setdefault(code, {}).setdefault(ccode, []).append(round(cscore / cmax * 10, 1))
+                    crit_names.setdefault(ccode, cname)
     rows: list[dict[str, Any]] = []
     priority_found = False
     for stage_code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
@@ -3240,12 +3251,25 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
         is_priority = not priority_found and avg < 4.0
         if is_priority:
             priority_found = True
+        criteria_detail: list[dict[str, Any]] | None = None
+        if is_priority and crit_stage.get(stage_code):
+            crits = []
+            for ccode, cscores in crit_stage[stage_code].items():
+                cavg = round(sum(cscores) / len(cscores), 1)
+                crits.append({
+                    "name": crit_names.get(ccode, ccode),
+                    "score": cavg,
+                    "is_weak": cavg < 5.0,
+                })
+            crits.sort(key=lambda x: x["score"])
+            criteria_detail = crits[:5]
         rows.append({
             "stage_code": stage_code,
             "funnel_label": funnel_label,
             "stage_name": stage_name,
             "score": avg,
             "is_priority": is_priority,
+            "criteria_detail": criteria_detail,
         })
     return rows
 

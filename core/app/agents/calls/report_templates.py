@@ -699,32 +699,46 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         f"<table class=\"outcome-table\"><tbody><tr>{outcome_summary_cells}</tr></tbody></table>"
         if outcome_summary_cells else ""
     )
-    stage_rows_html = "".join(
-        (
-            f"<tr class=\"{'stage-priority-row' if row.get('is_priority') else ''}\">"
+    _stage_rows_list = review.get("stage_rows") or []
+    _stage_rows_parts: list[str] = []
+    for _srow in _stage_rows_list:
+        _srow_html = (
+            f"<tr class=\"{'stage-priority-row' if _srow.get('is_priority') else ''}\">"
             f"<td class=\"stage-label\">"
-            f"<span class=\"stage-funnel-label\">{html.escape(str(row.get('funnel_label', '')))}</span>"
-            f" {html.escape(str(row.get('stage_name', '')))}"
+            f"<span class=\"stage-funnel-label\">{html.escape(str(_srow.get('funnel_label', '')))}</span>"
+            f" {html.escape(str(_srow.get('stage_name', '')))}"
             f"</td>"
-            f"<td class=\"stage-score {'stage-priority-score' if row.get('is_priority') else ''}\">"
-            f"{html.escape(str(row.get('score', '—')))}"
+            f"<td class=\"stage-score {'stage-priority-score' if _srow.get('is_priority') else ''}\">"
+            f"{html.escape(str(_srow.get('score', '—')))}"
             f"</td>"
             f"<td class=\"stage-bar-cell\">"
             f"<div class=\"stage-bar-wrap\">"
-            f"<div class=\"stage-bar-fill {'stage-bar-priority' if row.get('is_priority') else ''}\" style=\"width:{row.get('bar_pct', 0)}%\"></div>"
+            f"<div class=\"stage-bar-fill {'stage-bar-priority' if _srow.get('is_priority') else ''}\" style=\"width:{_srow.get('bar_pct', 0)}%\"></div>"
             f"</div>"
             f"</td>"
             f"<td class=\"stage-priority-col\">"
             + (
                 "<span class=\"stage-priority-flag\">★ приоритет</span>"
-                if row.get("is_priority")
+                if _srow.get("is_priority")
                 else ""
             )
-            + "</td>"
-            "</tr>"
+            + "</td></tr>"
         )
-        for row in review.get("stage_rows") or []
-    ) or (
+        _stage_rows_parts.append(_srow_html)
+        if _srow.get("is_priority") and _srow.get("criteria_detail"):
+            _chips = "".join(
+                f"<span class=\"crit-chip {'crit-weak' if c.get('is_weak') else 'crit-ok'}\">"
+                f"{html.escape(str(c.get('name') or ''))} "
+                f"<span class=\"crit-score\">{html.escape(str(c.get('score', '—')))}</span>"
+                f"</span>"
+                for c in (_srow.get("criteria_detail") or [])
+            )
+            _stage_rows_parts.append(
+                f"<tr class=\"stage-criteria-row\"><td colspan=\"4\">"
+                f"<div class=\"stage-criteria\">{_chips}</div>"
+                f"</td></tr>"
+            )
+    stage_rows_html = "".join(_stage_rows_parts) or (
         "<tr><td colspan=\"4\" class=\"stage-empty\">Данные по этапам появятся после накопления базы.</td></tr>"
     )
     recommendation_cards = "".join(
@@ -1356,7 +1370,9 @@ def _render_manager_daily_pdf_report(
     _sit_h = 96 if _has_call_ex else 80
     _stage_bar_top = 522 if _has_call_ex else 506
     _st_top_init = 546 if _has_call_ex else 530
-    _problem_card_top = 696 if _has_call_ex else 680
+    _stage_rows = review.get("stage_rows") or []
+    _has_prio_crit = any(bool(r.get("criteria_detail")) for r in _stage_rows if r.get("is_priority"))
+    _problem_card_top = (696 if _has_call_ex else 680) + (10 if _has_prio_crit else 0)
     draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=_sit_h, fill=(232, 240, 254))
     draw_rect(page1, left=margin, top=426, box_width=4, box_height=_sit_h, fill=(30, 80, 180))
     draw_text(page1, left=margin + 12, top=434, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
@@ -1390,13 +1406,14 @@ def _render_manager_daily_pdf_report(
     draw_text(page1, left=margin + _st_name_w + _st_score_w + 4, top=_st_top + 3, text="ШКАЛА", size=7.5, color=muted, max_width=_st_bar_w)
     draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 3, text="ПРИОРИТЕТ", size=7.5, color=muted, max_width=_st_prio_w)
     _st_top += 18
-    _stage_rows = review.get("stage_rows") or []
     if not _stage_rows:
         draw_text(page1, left=margin + 4, top=_st_top + 4, text="Данные по этапам появятся после накопления базы.", size=8.5, color=muted, max_width=width - (margin * 2))
     for _sr in _stage_rows:
         _is_prio = bool(_sr.get("is_priority"))
+        _sr_crits = list(_sr.get("criteria_detail") or []) if _is_prio else []
+        _this_row_h = 28 if _sr_crits else _st_row_h
         _row_fill = (255, 242, 230) if _is_prio else (248, 250, 252)
-        draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=_st_row_h, fill=_row_fill)
+        draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=_this_row_h, fill=_row_fill)
         _label_text = f"{_sr.get('funnel_label', '')} {_sr.get('stage_name', '')}"
         draw_text(page1, left=margin + 4, top=_st_top + 4, text=_label_text, size=8.0, color=red if _is_prio else black, max_width=_st_name_w - 8)
         draw_text(page1, left=margin + _st_name_w + 4, top=_st_top + 4, text=str(_sr.get("score", "—")), size=8.5, color=red if _is_prio else accent, max_width=_st_score_w - 4)
@@ -1408,7 +1425,13 @@ def _render_manager_daily_pdf_report(
             draw_rect(page1, left=_bar_track_left, top=_st_top + 5, box_width=_bar_fill_w, box_height=8, fill=red if _is_prio else accent)
         if _is_prio:
             draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 4, text="★ приоритет", size=7.5, color=red, max_width=_st_prio_w - 4)
-        _st_top += _st_row_h
+        if _sr_crits:
+            _weak_parts = [f"{c['name']}: {c['score']}" for c in _sr_crits if c.get("is_weak")][:3]
+            _ok_parts = [f"{c['name']}: {c['score']}" for c in _sr_crits if not c.get("is_weak")][:2]
+            _crit_line = "  ".join(_weak_parts) or "  ".join(_ok_parts) or ""
+            if _crit_line:
+                draw_text(page1, left=margin + 4, top=_st_top + 18, text=_crit_line, size=7.0, color=red, max_width=width - (margin * 2) - 8)
+        _st_top += _this_row_h
 
     draw_rect(page1, left=margin, top=_problem_card_top, box_width=width - (margin * 2), box_height=90, fill=light_red)
     draw_rect(page1, left=margin, top=_problem_card_top, box_width=4, box_height=90, fill=red)
@@ -2318,6 +2341,7 @@ def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[s
             "score_float": score_float,
             "bar_pct": bar_pct,
             "is_priority": bool(item.get("is_priority")),
+            "criteria_detail": list(item.get("criteria_detail") or []) or None,
         })
     return rows
 
