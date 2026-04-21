@@ -1295,6 +1295,10 @@ def _render_manager_daily_pdf_report(
             cursor += max(used, size * 1.4)
         return cursor - top
 
+    def measure_height(text: str, size: float, mw: float, leading: float = 1.28) -> float:
+        lines = _wrap_text(text=text, font=font, font_size=size, max_width=mw)
+        return len(lines) * size * leading
+
     day_summary = sections["day_summary"]
     executive = sections["executive_narrative"]
     signal = sections["signal_of_day"]
@@ -1348,18 +1352,31 @@ def _render_manager_daily_pdf_report(
         draw_centered_text(page1, left=_outcome_col_left, top=_outcome_col_top + 44, box_width=_outcome_col_width, text=str(item["label"]), size=7.8, color=muted)
         _outcome_col_left += _outcome_col_width + _outcome_col_gap
 
-    draw_rect(page1, left=margin, top=273, box_width=width - (margin * 2), box_height=78, fill=(243, 245, 247))
-    draw_rect(page1, left=margin, top=273, box_width=4, box_height=78, fill=(47, 97, 170))
-    draw_text(page1, left=margin + 12, top=286, text=str(executive.get("body") or "Итог дня будет сформирован после следующего запуска."), size=10.4, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=327, text=str(executive.get("progress_line") or "Сравнение с базой пока недоступно."), size=9.4, color=muted, max_width=width - (margin * 2) - 24)
+    # Executive block — dynamic height prevents progress_line from overlapping the signal card
+    _exec_max_w = width - (margin * 2) - 24
+    _exec_body_text = str(executive.get("body") or "Итог дня будет сформирован после следующего запуска.")
+    _exec_progress_text = str(executive.get("progress_line") or "Сравнение с базой пока недоступно.")
+    _exec_body_h = measure_height(_exec_body_text, 10.4, _exec_max_w)
+    _exec_progress_h = measure_height(_exec_progress_text, 9.4, _exec_max_w)
+    _exec_box_h = max(78, int(13 + _exec_body_h + 6 + _exec_progress_h + 12))
+    _exec_top = 273
+    draw_rect(page1, left=margin, top=_exec_top, box_width=width - (margin * 2), box_height=_exec_box_h, fill=(243, 245, 247))
+    draw_rect(page1, left=margin, top=_exec_top, box_width=4, box_height=_exec_box_h, fill=(47, 97, 170))
+    draw_text(page1, left=margin + 12, top=_exec_top + 13, text=_exec_body_text, size=10.4, color=black, max_width=_exec_max_w)
+    draw_text(page1, left=margin + 12, top=_exec_top + 13 + _exec_body_h + 6, text=_exec_progress_text, size=9.4, color=muted, max_width=_exec_max_w)
 
-    draw_rect(page1, left=margin, top=362, box_width=width - (margin * 2), box_height=54, fill=soft_green)
-    draw_rect(page1, left=margin, top=362, box_width=4, box_height=54, fill=green)
+    # Signal card — follows executive block bottom so wrapped body text cannot overlap it
+    _signal_top = _exec_top + _exec_box_h + 8
+    _signal_max_w = width - (margin * 2) - 24
     signal_text = (
         f"✓ {signal['label']}: {str(signal.get('body') or 'Опорный пример будет выбран после накопления базы.')} "
         f"Время: {str(signal.get('time_line') or 'не зафиксировано')}. {_manager_signal_reason(signal)}"
     )
-    draw_text(page1, left=margin + 12, top=378, text=signal_text, size=10.2, color=black, max_width=width - (margin * 2) - 24)
+    _signal_text_h = measure_height(signal_text, 10.2, _signal_max_w)
+    _signal_box_h = max(54, int(16 + _signal_text_h + 10))
+    draw_rect(page1, left=margin, top=_signal_top, box_width=width - (margin * 2), box_height=_signal_box_h, fill=soft_green)
+    draw_rect(page1, left=margin, top=_signal_top, box_width=4, box_height=_signal_box_h, fill=green)
+    draw_text(page1, left=margin + 12, top=_signal_top + 16, text=signal_text, size=10.2, color=black, max_width=_signal_max_w)
 
     situation_title_text = str(focus.get("situation_title") or "СИТУАЦИЯ ДНЯ")
     situation_body_text = str(focus.get("body") or "Описание ситуации будет сформировано после следующего запуска.")
@@ -1367,28 +1384,29 @@ def _render_manager_daily_pdf_report(
     situation_call_ex = dict(focus.get("call_example") or {})
     situation_scripts = list(focus.get("scripts") or [])
     _has_call_ex = bool(situation_call_ex.get("client_label") or situation_call_ex.get("time_label"))
-    _sit_h = 96 if _has_call_ex else 80
-    _stage_bar_top = 522 if _has_call_ex else 506
-    _st_top_init = 546 if _has_call_ex else 530
+
+    # СИТУАЦИЯ ДНЯ — follows signal card; height sized to contain all script lines without overflow
+    _sit_top = _signal_top + _signal_box_h + 8
+    _sit_h = 116 if _has_call_ex else 96
+    _stage_bar_top = _sit_top + _sit_h
+    _st_top_init = _stage_bar_top + 24
     _stage_rows = review.get("stage_rows") or []
-    _has_prio_crit = any(bool(r.get("criteria_detail")) for r in _stage_rows if r.get("is_priority"))
-    _problem_card_top = (696 if _has_call_ex else 680) + (10 if _has_prio_crit else 0)
-    draw_rect(page1, left=margin, top=426, box_width=width - (margin * 2), box_height=_sit_h, fill=(232, 240, 254))
-    draw_rect(page1, left=margin, top=426, box_width=4, box_height=_sit_h, fill=(30, 80, 180))
-    draw_text(page1, left=margin + 12, top=434, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=450, text=situation_body_text, size=9.5, color=black, max_width=width - (margin * 2) - 24)
+    draw_rect(page1, left=margin, top=_sit_top, box_width=width - (margin * 2), box_height=_sit_h, fill=(232, 240, 254))
+    draw_rect(page1, left=margin, top=_sit_top, box_width=4, box_height=_sit_h, fill=(30, 80, 180))
+    draw_text(page1, left=margin + 12, top=_sit_top + 8, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=_sit_top + 24, text=situation_body_text, size=9.5, color=black, max_width=width - (margin * 2) - 24)
     if situation_count_label:
-        draw_text(page1, left=margin + 12, top=462, text=situation_count_label, size=8.0, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
+        draw_text(page1, left=margin + 12, top=_sit_top + 36, text=situation_count_label, size=8.0, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
     if _has_call_ex:
         _ex_client = str(situation_call_ex.get("client_label") or "Клиент")
         _ex_time = str(situation_call_ex.get("time_label") or "")
         _ex_reason = str(situation_call_ex.get("reason_short") or "")
         _ex_contact_line = f"{_ex_client} · {_ex_time}" if _ex_time and _ex_time != "—" else _ex_client
-        draw_text(page1, left=margin + 12, top=474, text=f"Пример: {_ex_contact_line}", size=8.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
+        draw_text(page1, left=margin + 12, top=_sit_top + 48, text=f"Пример: {_ex_contact_line}", size=8.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
         if _ex_reason:
-            draw_text(page1, left=margin + 12, top=485, text=_ex_reason, size=7.8, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
-    _script_top = 497 if _has_call_ex else (474 if situation_count_label else 467)
-    _script_gap = 11 if _has_call_ex else (11 if situation_count_label else 13)
+            draw_text(page1, left=margin + 12, top=_sit_top + 60, text=_ex_reason, size=7.8, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
+    _script_top = _sit_top + (73 if _has_call_ex else (48 if situation_count_label else 40))
+    _script_gap = 13
     for _si, _script in enumerate(situation_scripts[:3]):
         draw_text(page1, left=margin + 12, top=_script_top + _si * _script_gap, text=f"{_si + 1}. {_script}", size=8.5, color=(70, 70, 130), max_width=width - (margin * 2) - 24)
 
@@ -1408,10 +1426,14 @@ def _render_manager_daily_pdf_report(
     _st_top += 18
     if not _stage_rows:
         draw_text(page1, left=margin + 4, top=_st_top + 4, text="Данные по этапам появятся после накопления базы.", size=8.5, color=muted, max_width=width - (margin * 2))
+    # Guard: stop adding rows before the problem card area (90px card + 6px gap + footer 36px)
+    _max_st_row_end = height - 36 - 90 - 6
     for _sr in _stage_rows:
         _is_prio = bool(_sr.get("is_priority"))
         _sr_crits = list(_sr.get("criteria_detail") or []) if _is_prio else []
         _this_row_h = 28 if _sr_crits else _st_row_h
+        if _st_top + _this_row_h > _max_st_row_end:
+            break
         _row_fill = (255, 242, 230) if _is_prio else (248, 250, 252)
         draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=_this_row_h, fill=_row_fill)
         _label_text = f"{_sr.get('funnel_label', '')} {_sr.get('stage_name', '')}"
@@ -1433,6 +1455,8 @@ def _render_manager_daily_pdf_report(
                 draw_text(page1, left=margin + 4, top=_st_top + 18, text=_crit_line, size=7.0, color=red, max_width=width - (margin * 2) - 8)
         _st_top += _this_row_h
 
+    # Problem card position follows the actual stage table bottom (fixes overlap with tall tables)
+    _problem_card_top = _st_top + 6
     draw_rect(page1, left=margin, top=_problem_card_top, box_width=width - (margin * 2), box_height=90, fill=light_red)
     draw_rect(page1, left=margin, top=_problem_card_top, box_width=4, box_height=90, fill=red)
     draw_text(page1, left=margin + 12, top=_problem_card_top + 15, text=f"{problem['label']}: {str(problem.get('title') or 'Критичный провал дня не выделился')}", size=11.0, color=red, max_width=width - (margin * 2) - 24)
@@ -1445,25 +1469,37 @@ def _render_manager_daily_pdf_report(
     for index, card in enumerate(recommendations.get("cards") or []):
         card_fill = soft_week if card.get("tone") == "orange" else soft_problem
         card_edge = amber if card.get("tone") == "orange" else red
-        card_height = 152
+        example_width = (width - (margin * 2) - 40) / 2
+        _ex_max_w = example_width - 16
+        _card_max_w = width - (margin * 2) - 28
+        _how_text = str(card.get("how_it_sounded") or "Формулировка была слишком общей.")
+        _better_text = str(card.get("better_phrasing") or "Сформулируй следующий шаг конкретно.")
+        _context_text = str(card.get("context") or card.get("body") or "")
+        _context_h = measure_height(_context_text, 9.5, _card_max_w)
+        # Example boxes: tall enough to contain both before/after texts without overflow
+        _ex_box_h = max(44, int(22 + max(measure_height(_how_text, 8.5, _ex_max_w), measure_height(_better_text, 8.5, _ex_max_w)) + 10))
+        _why_text = f"Почему это работает: {str(card.get('why_this_works') or '')}"
+        _example_top_offset = max(68, int(40 + _context_h + 8))
+        _why_top_offset = _example_top_offset + _ex_box_h + 8
+        _why_h = measure_height(_why_text, 8.9, _card_max_w)
+        card_height = max(152, int(_why_top_offset + _why_h + 14))
         draw_rect(page2, left=margin, top=rec_top, box_width=width - (margin * 2), box_height=card_height, fill=card_fill)
         draw_rect(page2, left=margin, top=rec_top, box_width=4, box_height=card_height, fill=card_edge)
         pill_width = 86
         draw_rect(page2, left=width - margin - pill_width, top=rec_top + 12, box_width=pill_width, box_height=20, fill=(194, 103, 17) if card.get("priority_tone") == "week" else (196, 12, 0))
         draw_centered_text(page2, left=width - margin - pill_width, top=rec_top + 18, box_width=pill_width, text=str(card.get("priority_tag") or "Сделай завтра"), size=7.8, color=white)
         draw_text(page2, left=margin + 14, top=rec_top + 18, text=f"{index + 1}. {str(card.get('title') or 'Рекомендация')}", size=11.4, color=accent, max_width=360)
-        draw_text(page2, left=margin + 14, top=rec_top + 40, text=str(card.get("context") or card.get("body") or ""), size=9.5, color=black, max_width=width - (margin * 2) - 28)
-        example_top = rec_top + 68
-        example_width = (width - (margin * 2) - 40) / 2
-        draw_rect(page2, left=margin + 14, top=example_top, box_width=example_width, box_height=44, fill=(250, 239, 239))
-        draw_rect(page2, left=margin + 14, top=example_top, box_width=2, box_height=44, fill=(227, 167, 164))
-        draw_rect(page2, left=margin + 26 + example_width, top=example_top, box_width=example_width, box_height=44, fill=(238, 247, 238))
-        draw_rect(page2, left=margin + 26 + example_width, top=example_top, box_width=2, box_height=44, fill=green)
-        draw_text(page2, left=margin + 22, top=example_top + 8, text="Как звучало:", size=8.8, color=red, max_width=example_width - 16)
-        draw_text(page2, left=margin + 22, top=example_top + 22, text=str(card.get("how_it_sounded") or "Формулировка была слишком общей."), size=8.5, color=muted, max_width=example_width - 16)
-        draw_text(page2, left=margin + 34 + example_width, top=example_top + 8, text="Как лучше:", size=8.8, color=green, max_width=example_width - 16)
-        draw_text(page2, left=margin + 34 + example_width, top=example_top + 22, text=str(card.get("better_phrasing") or "Сформулируй следующий шаг конкретно."), size=8.5, color=muted, max_width=example_width - 16)
-        draw_text(page2, left=margin + 14, top=rec_top + 121, text=f"Почему это работает: {str(card.get('why_this_works') or '')}", size=8.9, color=black, max_width=width - (margin * 2) - 28)
+        draw_text(page2, left=margin + 14, top=rec_top + 40, text=_context_text, size=9.5, color=black, max_width=_card_max_w)
+        example_top = rec_top + _example_top_offset
+        draw_rect(page2, left=margin + 14, top=example_top, box_width=example_width, box_height=_ex_box_h, fill=(250, 239, 239))
+        draw_rect(page2, left=margin + 14, top=example_top, box_width=2, box_height=_ex_box_h, fill=(227, 167, 164))
+        draw_rect(page2, left=margin + 26 + example_width, top=example_top, box_width=example_width, box_height=_ex_box_h, fill=(238, 247, 238))
+        draw_rect(page2, left=margin + 26 + example_width, top=example_top, box_width=2, box_height=_ex_box_h, fill=green)
+        draw_text(page2, left=margin + 22, top=example_top + 8, text="Как звучало:", size=8.8, color=red, max_width=_ex_max_w)
+        draw_text(page2, left=margin + 22, top=example_top + 22, text=_how_text, size=8.5, color=muted, max_width=_ex_max_w)
+        draw_text(page2, left=margin + 34 + example_width, top=example_top + 8, text="Как лучше:", size=8.8, color=green, max_width=_ex_max_w)
+        draw_text(page2, left=margin + 34 + example_width, top=example_top + 22, text=_better_text, size=8.5, color=muted, max_width=_ex_max_w)
+        draw_text(page2, left=margin + 14, top=rec_top + _why_top_offset, text=_why_text, size=8.9, color=black, max_width=_card_max_w)
         rec_top += card_height + 18
     footer(page2, 2)
 
@@ -1591,7 +1627,7 @@ def _render_manager_daily_pdf_report(
             draw_text(page4, left=margin + _col_w + 16, top=_item_top, text=f"• {_f['label']}", size=8.5, color=black, max_width=_col_w - 8)
             if _f.get("interpretation"):
                 draw_text(page4, left=margin + _col_w + 16, top=_item_top + 11, text=_f["interpretation"], size=7.8, color=muted, max_width=_col_w - 8)
-        _item_top += 30
+        _item_top += 44
     # Recommendation card
     _bd_rec = _bd.get("recommendation") or {}
     _page4_cursor = _item_top
