@@ -161,6 +161,7 @@ class CallsManualReportingOrchestrator:
         )
         execution_model = self._resolve_execution_model(preset=preset)
         source_summary = self._empty_source_summary(period=source_period, execution_model=execution_model)
+        source_discovery_errors: list[str] = []
         if self._allows_source_discovery(preset=preset):
             try:
                 source_summary = self._discover_and_persist_source_calls(
@@ -170,22 +171,27 @@ class CallsManualReportingOrchestrator:
                 )
                 source_summary["execution_model"] = execution_model
             except ASAError as exc:
-                return self._build_terminal_run_result(
-                    preset=preset,
-                    mode=normalized_mode,
-                    period=period,
-                    source_period=source_period,
-                    diagnostics_context=diagnostics_context,
-                    filters=filters,
-                    source_summary=self._empty_source_summary(period=source_period, execution_model=execution_model),
-                    build_summary=self._empty_build_summary(),
-                    reports=[],
-                    selected_interactions_count=0,
-                    final_selected_interactions_count=0,
-                    overall_status="blocked",
-                    errors=[f"source_discovery_failed:{exc}"],
-                    artifacts=[],
-                )
+                error_token = f"source_discovery_failed:{exc}"
+                if normalized_mode == "report_from_ready_data_only":
+                    # Non-fatal in ready-only mode: report from whatever is already persisted.
+                    source_discovery_errors.append(error_token)
+                else:
+                    return self._build_terminal_run_result(
+                        preset=preset,
+                        mode=normalized_mode,
+                        period=period,
+                        source_period=source_period,
+                        diagnostics_context=diagnostics_context,
+                        filters=filters,
+                        source_summary=self._empty_source_summary(period=source_period, execution_model=execution_model),
+                        build_summary=self._empty_build_summary(),
+                        reports=[],
+                        selected_interactions_count=0,
+                        final_selected_interactions_count=0,
+                        overall_status="blocked",
+                        errors=[error_token],
+                        artifacts=[],
+                    )
         interactions = self._select_interactions(filters=filters, period=source_period)
         if not interactions:
             if preset.code == "manager_daily":
@@ -254,7 +260,8 @@ class CallsManualReportingOrchestrator:
             send_email=send_email,
             manager_daily_windows=manager_daily_windows,
         )
-        overall_status = self._derive_run_overall_status(reports=reports, build_errors=build_errors)
+        all_errors = [*source_discovery_errors, *build_errors]
+        overall_status = self._derive_run_overall_status(reports=reports, build_errors=all_errors)
         return self._build_terminal_run_result(
             preset=preset,
             mode=normalized_mode,
@@ -272,7 +279,7 @@ class CallsManualReportingOrchestrator:
                 if item.get("payload")
             ),
             overall_status=overall_status,
-            errors=build_errors,
+            errors=all_errors,
             send_email=send_email,
             artifacts=artifacts,
         )
@@ -484,12 +491,13 @@ class CallsManualReportingOrchestrator:
 
     @staticmethod
     def _iter_period_days(*, period: dict[str, str]) -> list[str]:
-        """Return all YYYY-MM-DD days inside the selected period."""
+        """Return workday YYYY-MM-DD days inside the selected period (weekends skipped)."""
         current = date.fromisoformat(period["date_from"])
         end = date.fromisoformat(period["date_to"])
         days: list[str] = []
         while current <= end:
-            days.append(current.isoformat())
+            if current.weekday() < 5:
+                days.append(current.isoformat())
             current += timedelta(days=1)
         return days
 
