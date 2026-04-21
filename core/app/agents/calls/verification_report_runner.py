@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import sys
 import types
 import uuid
 from datetime import datetime, timezone
@@ -46,14 +45,201 @@ PROVENANCE = "manual_verification_fixture"
 
 
 # ──────────────────────────────────────────────────────────────
-# Fixture helpers
+# Analysis contract helpers
+# ──────────────────────────────────────────────────────────────
+# Key format contract (from _aggregate_finding_items / _aggregate_recommendation_cards):
+#   gaps[]:        {"title": ..., "impact": ..., "comment": ..., "evidence": ...}
+#   strengths[]:   {"title": ..., "impact": ..., "comment": ..., "evidence": ...}
+#   recommendations[]: {"criterion_name": ..., "criterion_code": ..., "better_phrase": ...,
+#                        "reason": ..., "problem": ..., "evidence": ...}
+#   evidence_fragments[]: {"fragment_type": ..., "client_text": ..., "why": ...}
+#   product_signals[]:    {"quote": ..., "topic": ...}
+
+def _gap(title: str, comment: str, impact: str = "") -> dict:
+    return {"title": title, "comment": comment, "impact": impact or comment, "evidence": comment}
+
+
+def _strength(title: str, comment: str) -> dict:
+    return {"title": title, "comment": comment, "impact": comment, "evidence": comment}
+
+
+def _rec(criterion_name: str, criterion_code: str, better_phrase: str,
+         reason: str, evidence: str = "") -> dict:
+    return {
+        "criterion_name": criterion_name,
+        "criterion_code": criterion_code,
+        "better_phrase": better_phrase,
+        "reason": reason,
+        "problem": reason,
+        "evidence": evidence or reason,
+    }
+
+
+def _efrag(client_text: str, why: str, fragment_type: str = "missed_opportunity") -> dict:
+    return {"fragment_type": fragment_type, "client_text": client_text, "why": why}
+
+
+def _psig(quote: str, topic: str) -> dict:
+    return {"quote": quote, "topic": topic}
+
+
+def _stage(code: str, name: str, stage_score: int, max_score: int,
+           criteria: list[dict]) -> dict:
+    return {
+        "stage_code": code,
+        "stage_name": name,
+        "stage_score": stage_score,
+        "max_stage_score": max_score,
+        "criteria_results": criteria,
+    }
+
+
+def _crit(code: str, name: str, score: int, max_score: int, comment: str) -> dict:
+    return {
+        "criterion_code": code,
+        "criterion_name": name,
+        "score": score,
+        "max_score": max_score,
+        "evidence": comment,
+        "comment": comment,
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# Shared fixture components
 # ──────────────────────────────────────────────────────────────
 
-def _ts(time_str: str) -> datetime:
-    return datetime.fromisoformat(f"{ANCHOR_DATE}T{time_str}+06:00").astimezone(timezone.utc)
+# The top gap label — used across calls so _aggregate_finding_items sees signal≥3
+TOP_GAP = "Не выявляет детальные потребности — переходит в презентацию до понимания задачи клиента"
+GAP_2 = "Не проверяет, удобно ли говорить перед началом разговора"
+GAP_3 = "Не фиксирует конкретный следующий шаг и срок — перенос остаётся открытым"
+
+STR_1 = "Чётко представляется и называет компанию в начале звонка"
+STR_2 = "Сохраняет вежливый и профессиональный тон на протяжении всего разговора"
+STR_3 = "Уверенно отрабатывает первичное возражение клиента"
+
+REC_1 = _rec(
+    "Выявление детальных потребностей",
+    "nd_use_cases",
+    "Расскажите, как у вас сейчас организован процесс подписания документов? "
+    "Какие типы контрагентов вам важно закрыть в первую очередь?",
+    reason="Без понимания конкретного сценария презентация теряет убедительность.",
+    evidence="Клиент сам пояснял контекст, менеджер не спрашивал.",
+)
+REC_2 = _rec(
+    "Завершение и фиксация договорённостей",
+    "completion_next_step",
+    "Итак, договариваемся: я пришлю договор до конца дня, вы ознакомитесь до пятницы — "
+    "в пятницу созвонимся и подтвердим. Удобно?",
+    reason="Открытый следующий шаг снижает вероятность конверсии.",
+    evidence="«Ну хорошо, я подумаю» — без конкретного срока.",
+)
+REC_3 = _rec(
+    "Проверка уместности разговора",
+    "cs_permission_and_relevance",
+    "Удобно ли вам сейчас пару минут уделить — я расскажу, почему звоню?",
+    reason="Клиенты раздражаются, когда разговор начинается без согласия.",
+    evidence="Менеджер сразу перешёл к теме, не спросив.",
+)
+
+# Stage templates
+
+def _stages_strong() -> list[dict]:
+    """Full score on first 3 stages, partial on needs_discovery — score ~75%"""
+    return [
+        _stage("contact_start", "Первичный контакт", 8, 8, [
+            _crit("cs_intro_and_company", "Представился и назвал компанию", 2, 2, "Чётко представился."),
+            _crit("cs_permission_and_relevance", "Проверил уместность разговора", 2, 2, "Спросил, удобно ли говорить."),
+            _crit("cs_reason_for_call", "Обозначил причину звонка", 2, 2, "Цель звонка озвучена."),
+            _crit("cs_tone_and_clarity", "Сохранил вежливый тон", 2, 2, "Тон профессиональный."),
+        ]),
+        _stage("qualification_primary", "Квалификация и потребность", 7, 8, [
+            _crit("qp_current_process", "Выяснил текущий процесс", 2, 2, "Уточнил схему документооборота."),
+            _crit("qp_role_and_scope", "Уточнил роль собеседника", 2, 2, "Выяснил, кто принимает решение."),
+            _crit("qp_need_or_trigger", "Подтвердил наличие задачи", 2, 2, "Задача подтверждена."),
+            _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 1, 2, "Небольшой ранний pitch."),
+        ]),
+        _stage("needs_discovery", "Выявление потребностей", 3, 8, [
+            _crit("nd_use_cases", "Выявил конкретные сценарии", 1, 2, "Сценарии намечены, не раскрыты."),
+            _crit("nd_pain_and_constraints", "Выявил боль и ограничения", 0, 2, "Боль не выявлена."),
+            _crit("nd_priority_and_timing", "Понял приоритет и срок", 0, 2, "Сроки не обсуждены."),
+            _crit("nd_decision_context", "Понял контекст решения", 2, 2, "Контекст выяснен."),
+        ]),
+        _stage("presentation", "Формирование предложения", 6, 8, [
+            _crit("pr_value_linked_to_context", "Связал ценность с задачей", 2, 2, "Хорошо связал."),
+            _crit("pr_adapted_pitch", "Адаптировал подачу", 2, 2, "Адаптировано."),
+            _crit("pr_handle_objection", "Отработал возражение", 2, 2, "Отработано."),
+            _crit("pr_clear_next_step", "Предложил чёткий шаг", 0, 2, "Шаг нечёткий."),
+        ]),
+    ]
 
 
-def _analysis(
+def _stages_baseline() -> list[dict]:
+    """Partial score — baseline range ~50%"""
+    return [
+        _stage("contact_start", "Первичный контакт", 6, 8, [
+            _crit("cs_intro_and_company", "Представился и назвал компанию", 2, 2, "Представился."),
+            _crit("cs_permission_and_relevance", "Проверил уместность разговора", 0, 2, "Не спросил."),
+            _crit("cs_reason_for_call", "Обозначил причину звонка", 2, 2, "Причина понятна."),
+            _crit("cs_tone_and_clarity", "Сохранил вежливый тон", 2, 2, "Тон вежливый."),
+        ]),
+        _stage("qualification_primary", "Квалификация и потребность", 4, 8, [
+            _crit("qp_current_process", "Выяснил текущий процесс", 2, 2, "Уточнил."),
+            _crit("qp_role_and_scope", "Уточнил роль собеседника", 0, 2, "Не уточнил."),
+            _crit("qp_need_or_trigger", "Подтвердил наличие задачи", 2, 2, "Подтверждено."),
+            _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 0, 2, "Ранний pitch."),
+        ]),
+        _stage("needs_discovery", "Выявление потребностей", 0, 8, [
+            _crit("nd_use_cases", "Выявил конкретные сценарии", 0, 2, "Не выявлено."),
+            _crit("nd_pain_and_constraints", "Выявил боль и ограничения", 0, 2, "Не выявлено."),
+            _crit("nd_priority_and_timing", "Понял приоритет и срок", 0, 2, "Не обсуждено."),
+            _crit("nd_decision_context", "Понял контекст решения", 0, 2, "Не выяснено."),
+        ]),
+        _stage("presentation", "Формирование предложения", 4, 8, [
+            _crit("pr_value_linked_to_context", "Связал ценность с задачей", 2, 2, "Частично."),
+            _crit("pr_adapted_pitch", "Адаптировал подачу", 0, 2, "Шаблонно."),
+            _crit("pr_handle_objection", "Отработал возражение", 0, 2, "Не отработано."),
+            _crit("pr_clear_next_step", "Предложил чёткий шаг", 2, 2, "Шаг предложен."),
+        ]),
+    ]
+
+
+def _stages_problematic() -> list[dict]:
+    """Low score — problematic range ~25–30%"""
+    return [
+        _stage("contact_start", "Первичный контакт", 4, 8, [
+            _crit("cs_intro_and_company", "Представился и назвал компанию", 2, 2, "Представился."),
+            _crit("cs_permission_and_relevance", "Проверил уместность разговора", 0, 2, "Не спросил."),
+            _crit("cs_reason_for_call", "Обозначил причину звонка", 0, 2, "Причина не озвучена."),
+            _crit("cs_tone_and_clarity", "Сохранил вежливый тон", 2, 2, "Тон нейтральный."),
+        ]),
+        _stage("qualification_primary", "Квалификация и потребность", 2, 8, [
+            _crit("qp_current_process", "Выяснил текущий процесс", 0, 2, "Не выяснил."),
+            _crit("qp_role_and_scope", "Уточнил роль собеседника", 2, 2, "Уточнил."),
+            _crit("qp_need_or_trigger", "Подтвердил наличие задачи", 0, 2, "Не подтверждено."),
+            _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 0, 2, "Сразу в презентацию."),
+        ]),
+        _stage("needs_discovery", "Выявление потребностей", 0, 8, [
+            _crit("nd_use_cases", "Выявил конкретные сценарии", 0, 2, "Не выявлено."),
+            _crit("nd_pain_and_constraints", "Выявил боль и ограничения", 0, 2, "Не выявлено."),
+            _crit("nd_priority_and_timing", "Понял приоритет и срок", 0, 2, "Не обсуждено."),
+            _crit("nd_decision_context", "Понял контекст решения", 0, 2, "Не выяснено."),
+        ]),
+        _stage("presentation", "Формирование предложения", 2, 8, [
+            _crit("pr_value_linked_to_context", "Связал ценность с задачей", 0, 2, "Не связал."),
+            _crit("pr_adapted_pitch", "Адаптировал подачу", 2, 2, "Частично."),
+            _crit("pr_handle_objection", "Отработал возражение", 0, 2, "Не отработано."),
+            _crit("pr_clear_next_step", "Предложил чёткий шаг", 0, 2, "Нет шага."),
+        ]),
+    ]
+
+
+# ──────────────────────────────────────────────────────────────
+# Fixture data builder
+# ──────────────────────────────────────────────────────────────
+
+def _build_analysis(
+    *,
     call_id: str,
     call_time: str,
     duration_sec: int,
@@ -70,14 +256,16 @@ def _analysis(
     reason_not_fixed: str | None,
     short_summary: str,
     score_by_stage: list[dict],
-    strengths: list[dict],
     gaps: list[dict],
+    strengths: list[dict],
     recommendations: list[dict],
+    evidence_fragments: list[dict],
+    product_signals: list[dict],
 ) -> dict:
-    total_pts = sum(s["stage_score"] for s in score_by_stage)
+    total = sum(s["stage_score"] for s in score_by_stage)
     max_pts = sum(s["max_stage_score"] for s in score_by_stage)
-    score_pct = round(total_pts / max_pts * 100, 1) if max_pts else 0.0
-    level = "strong" if score_pct >= 75 else ("basic" if score_pct >= 50 else "problematic")
+    pct = round(total / max_pts * 100, 1) if max_pts else 0.0
+    level = "strong" if pct >= 75 else ("basic" if pct >= 50 else "problematic")
     return {
         "schema_version": "call_analysis.v1",
         "instruction_version": INSTRUCTION_VERSION,
@@ -116,9 +304,9 @@ def _analysis(
             "legacy_card_score": None,
             "legacy_card_level": None,
             "checklist_score": {
-                "total_points": total_pts,
+                "total_points": total,
                 "max_points": max_pts,
-                "score_percent": score_pct,
+                "score_percent": pct,
                 "level": level,
             },
             "critical_failure": False,
@@ -138,14 +326,8 @@ def _analysis(
             "due_date_iso": due_date_iso,
             "reason_not_fixed": reason_not_fixed,
         },
-        "product_signals": [],
-        "evidence_fragments": [
-            {
-                "fragment": short_summary[:60] + "...",
-                "speaker": "manager",
-                "quality_signal": "positive" if score_pct >= 60 else "negative",
-            }
-        ],
+        "product_signals": product_signals,
+        "evidence_fragments": evidence_fragments,
         "analytics_tags": [],
         "data_quality": {
             "transcript_quality": "good",
@@ -157,127 +339,51 @@ def _analysis(
     }
 
 
-def _stage(code: str, name: str, stage_score: int, max_score: int, criteria: list[dict]) -> dict:
-    return {
-        "stage_code": code,
-        "stage_name": name,
-        "stage_score": stage_score,
-        "max_stage_score": max_score,
-        "criteria_results": criteria,
-    }
-
-
-def _crit(code: str, name: str, score: int, max_score: int, comment: str) -> dict:
-    return {
-        "criterion_code": code,
-        "criterion_name": name,
-        "score": score,
-        "max_score": max_score,
-        "evidence": "— (верификационный кейс)",
-        "comment": comment,
-    }
-
-
-def _gap(label: str, count: int = 1) -> dict:
-    return {"label": label, "count": count, "call_ids": [], "examples": []}
-
-
-def _strength(label: str, count: int = 1) -> dict:
-    return {"label": label, "count": count, "call_ids": [], "examples": []}
-
-
-def _rec(title: str, action: str) -> dict:
-    return {
-        "title": title,
-        "body": action,
-        "priority": "high",
-        "stage_code": "needs_discovery",
-        "criterion_code": None,
-    }
-
-
-# ──────────────────────────────────────────────────────────────
-# Fixture data — 8 calls
-# ──────────────────────────────────────────────────────────────
-
 def _build_fixtures() -> list[dict]:
-    """Return list of 8 analysis dicts for the verification case."""
+    """8 verification calls with correct contract format for all second-basket blocks."""
 
-    # Shared stages to reuse
-    stage_cs_ok = _stage("contact_start", "Первичный контакт", 8, 8, [
-        _crit("cs_intro_and_company", "Представился и обозначил компанию", 2, 2, "Чётко представился в начале."),
-        _crit("cs_permission_and_relevance", "Проверил уместность разговора", 2, 2, "Уточнил, удобно ли говорить."),
-        _crit("cs_reason_for_call", "Понятно обозначил причину звонка", 2, 2, "Озвучил цель звонка."),
-        _crit("cs_tone_and_clarity", "Сохранил вежливый тон", 2, 2, "Тон вежливый, понятный."),
-    ])
-    stage_cs_partial = _stage("contact_start", "Первичный контакт", 4, 8, [
-        _crit("cs_intro_and_company", "Представился и обозначил компанию", 2, 2, "Представился."),
-        _crit("cs_permission_and_relevance", "Проверил уместность разговора", 0, 2, "Не проверил, удобно ли говорить."),
-        _crit("cs_reason_for_call", "Понятно обозначил причину звонка", 2, 2, "Причина понятна."),
-        _crit("cs_tone_and_clarity", "Сохранил вежливый тон", 0, 2, "Тон несколько напряжённый."),
-    ])
-    stage_qp_ok = _stage("qualification_primary", "Квалификация и потребность", 6, 8, [
-        _crit("qp_current_process", "Выяснил текущий процесс", 2, 2, "Уточнил, как работают с документами."),
-        _crit("qp_role_and_scope", "Уточнил роль собеседника", 2, 2, "Выяснил, кто принимает решение."),
-        _crit("qp_need_or_trigger", "Проверил наличие реальной задачи", 2, 2, "Подтвердил интерес к системе."),
-        _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 0, 2, "Начал презентацию до завершения квалификации."),
-    ])
-    stage_qp_weak = _stage("qualification_primary", "Квалификация и потребность", 2, 8, [
-        _crit("qp_current_process", "Выяснил текущий процесс", 0, 2, "Текущий процесс не выяснен."),
-        _crit("qp_role_and_scope", "Уточнил роль собеседника", 2, 2, "Роль уточнена."),
-        _crit("qp_need_or_trigger", "Проверил наличие реальной задачи", 0, 2, "Реальная задача не проверена."),
-        _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 0, 2, "Ушёл в презентацию немедленно."),
-    ])
-    stage_nd_ok = _stage("needs_discovery", "Выявление детальных потребностей", 6, 8, [
-        _crit("nd_use_cases", "Выявил конкретные сценарии", 2, 2, "Уточнил типы документов и сценарии."),
-        _crit("nd_pain_and_constraints", "Выявил боль и ограничения", 2, 2, "Выявил неудобство текущего процесса."),
-        _crit("nd_priority_and_timing", "Понял приоритет и срок", 0, 2, "Сроки не обсуждались."),
-        _crit("nd_decision_context", "Понял контекст принятия решения", 2, 2, "Выяснил, кто влияет на решение."),
-    ])
-    stage_nd_weak = _stage("needs_discovery", "Выявление детальных потребностей", 0, 8, [
-        _crit("nd_use_cases", "Выявил конкретные сценарии", 0, 2, "Сценарии не выявлены."),
-        _crit("nd_pain_and_constraints", "Выявил боль и ограничения", 0, 2, "Боль не выявлена."),
-        _crit("nd_priority_and_timing", "Понял приоритет и срок", 0, 2, "Сроки не обсуждались."),
-        _crit("nd_decision_context", "Понял контекст принятия решения", 0, 2, "Контекст не выяснен."),
-    ])
-    stage_pr_ok = _stage("presentation", "Формирование предложения", 6, 8, [
-        _crit("pr_value_linked_to_context", "Связал ценность с контекстом", 2, 2, "Привязал преимущества к задаче клиента."),
-        _crit("pr_adapted_pitch", "Адаптировал подачу под тип клиента", 2, 2, "Подача адаптирована."),
-        _crit("pr_handle_objection", "Отработал возражение", 2, 2, "Возражение отработано."),
-        _crit("pr_clear_next_step", "Предложил чёткий следующий шаг", 0, 2, "Следующий шаг сформулирован нечётко."),
-    ])
-    stage_pr_mid = _stage("presentation", "Формирование предложения", 4, 8, [
-        _crit("pr_value_linked_to_context", "Связал ценность с контекстом", 2, 2, "Частично связал ценность."),
-        _crit("pr_adapted_pitch", "Адаптировал подачу", 0, 2, "Подача шаблонная."),
-        _crit("pr_handle_objection", "Отработал возражение", 0, 2, "Возражение не отработано."),
-        _crit("pr_clear_next_step", "Предложил чёткий следующий шаг", 2, 2, "Следующий шаг предложен."),
-    ])
+    # Repeated gaps — need the same title string across calls for signal counting
+    gap_nd = _gap(TOP_GAP,
+                  "Менеджер перешёл к презентации продукта, не задав ни одного вопроса "
+                  "о текущем документообороте, объёме контрагентов или болевых точках.",
+                  impact="Клиент не чувствует, что решение подобрано под его задачу.")
+    gap_cs = _gap(GAP_2,
+                  "Менеджер начал звонок с темы, не уточнив, удобно ли говорить.",
+                  impact="Высокий риск раздражения и преждевременного завершения разговора.")
+    gap_ns = _gap(GAP_3,
+                  "Разговор завершился без конкретного дедлайна следующего шага.",
+                  impact="Вероятность конверсии снижается без чёткой договорённости.")
 
-    common_gaps = [
-        _gap("Не проверяет возможность говорить перед началом разговора", 5),
-        _gap("Не выявляет детальные потребности — уходит в презентацию рано", 4),
-        _gap("Не фиксирует конкретный следующий шаг и сроки", 3),
-    ]
-    common_strengths = [
-        _strength("Чётко представляется и называет компанию", 6),
-        _strength("Сохраняет вежливый и профессиональный тон", 5),
-    ]
-    common_recs = [
-        _rec(
-            "Ввести стандарт проверки «удобно ли говорить»",
-            "Перед переходом к теме всегда уточнять: «Вам удобно говорить сейчас?» "
-            "Это снижает раздражение и повышает вовлечённость клиента.",
-        ),
-        _rec(
-            "Задавать вопросы о боли ДО презентации",
-            "Выяснить текущую проблему клиента и только после этого предлагать решение. "
-            "Шаблон: «Расскажите, как сейчас у вас организован процесс?»",
-        ),
-    ]
+    str_intro = _strength(STR_1, "Менеджер чётко называет имя и компанию в первой фразе.")
+    str_tone  = _strength(STR_2, "Профессиональный тон сохраняется даже при возражениях.")
+    str_obj   = _strength(STR_3, "Менеджер не теряется при первом «нет» и мягко переходит к выгодам.")
+
+    # Evidence fragments for ГОЛОС КЛИЕНТА
+    ef1 = _efrag(
+        "Я вообще-то не понимаю, чем вы отличаетесь от обычного ЭДО.",
+        "Клиент не получил достаточно вопросов о своём процессе — возражение возникло из-за отсутствия квалификации.",
+        "missed_opportunity",
+    )
+    ef2 = _efrag(
+        "Ну раз уж позвонили, расскажите подробнее — у нас пока нет времени разбираться самим.",
+        "Клиент проявил интерес, но менеджер ушёл в стандартный скрипт вместо уточняющих вопросов.",
+        "missed_opportunity",
+    )
+    ef3 = _efrag(
+        "Мне нравится, что вы объясняете просто, но хотелось бы конкретику по нашему объёму.",
+        "Клиент сигнализирует о потребности в персонализации, которая не была выявлена.",
+        "product_signal",
+    )
+
+    # Product signals
+    ps1 = _psig("Мы подписываем около 300 договоров в месяц — если система ускорит хотя бы треть, это уже интересно.",
+                "объём подписания / ROI")
+    ps2 = _psig("Сейчас у нас два контрагента, которые вообще не работают с цифровыми документами.",
+                "барьеры контрагентов")
 
     return [
-        # Call 1 — outbound, 75%, agreed, "Алексей Морозов"
-        _analysis(
+        # ── Call 1: STRONG, agreed, Алексей Морозов ──────────────────────────────
+        _build_analysis(
             call_id=str(uuid.UUID(int=1)),
             call_time="09:15:00",
             duration_sec=365,
@@ -287,19 +393,22 @@ def _build_fixtures() -> list[dict]:
             call_type="sales_primary",
             scenario_type="warm_webinar_or_lead",
             outcome_code="agreed",
-            outcome_text="Договорились о подключении тарифа.",
+            outcome_text="Договорились на подключение тарифа Бизнес.",
             next_step_text="Направить договор на email до 17:00.",
             next_step_fixed=True,
             due_date_iso="2026-04-06",
             reason_not_fixed=None,
             short_summary="Клиент заинтересован в ЭДО, договорились о подключении.",
-            score_by_stage=[stage_cs_ok, stage_qp_ok, stage_nd_ok, stage_pr_ok],
-            strengths=common_strengths[:],
-            gaps=[common_gaps[0]],
-            recommendations=[common_recs[0]],
+            score_by_stage=_stages_strong(),
+            strengths=[str_intro, str_tone],
+            gaps=[gap_nd],
+            recommendations=[REC_1, REC_3],
+            evidence_fragments=[ef1],
+            product_signals=[ps1],
         ),
-        # Call 2 — outbound, 31%, rescheduled, "Анна Сидорова"
-        _analysis(
+        # ── Call 2: PROBLEMATIC, rescheduled, Анна Сидорова ─────────────────────
+        # next_step_fixed=False + reason_not_fixed with "перезвон" → status=rescheduled
+        _build_analysis(
             call_id=str(uuid.UUID(int=2)),
             call_time="10:30:00",
             duration_sec=290,
@@ -309,19 +418,21 @@ def _build_fixtures() -> list[dict]:
             call_type="sales_primary",
             scenario_type="cold_outbound",
             outcome_code="callback_planned",
-            outcome_text="Клиент попросил перезвонить на следующей неделе.",
+            outcome_text="Клиент попросил перезвонить позже.",
             next_step_text="Перезвонить 07.04 после 14:00.",
-            next_step_fixed=True,
+            next_step_fixed=False,
             due_date_iso="2026-04-07",
-            reason_not_fixed=None,
-            short_summary="Клиент занят, попросил перезвонить позже.",
-            score_by_stage=[stage_cs_partial, stage_qp_weak, stage_nd_weak, stage_pr_mid],
-            strengths=[],
-            gaps=common_gaps[:],
-            recommendations=common_recs[:],
+            reason_not_fixed="Попросила перезвонить — занята до следующей недели",
+            short_summary="Клиент занят, попросила перезвонить позже.",
+            score_by_stage=_stages_problematic(),
+            strengths=[str_intro],
+            gaps=[gap_nd, gap_cs, gap_ns],
+            recommendations=[REC_1, REC_2, REC_3],
+            evidence_fragments=[ef2],
+            product_signals=[],
         ),
-        # Call 3 — inbound, 87%, agreed, phone
-        _analysis(
+        # ── Call 3: STRONG, agreed, inbound ──────────────────────────────────────
+        _build_analysis(
             call_id=str(uuid.UUID(int=3)),
             call_time="11:00:00",
             duration_sec=412,
@@ -334,35 +445,43 @@ def _build_fixtures() -> list[dict]:
             outcome_text="Клиент согласился на демо-доступ.",
             next_step_text="Отправить ссылку на демо на email.",
             next_step_fixed=True,
-            due_date_iso="2026-04-06",
+            due_date_iso="2026-04-07",
             reason_not_fixed=None,
             short_summary="Входящий интерес к системе, договорились о демо.",
             score_by_stage=[
-                stage_cs_ok,
+                _stage("contact_start", "Первичный контакт", 8, 8, [
+                    _crit("cs_intro_and_company", "Представился и назвал компанию", 2, 2, "Отлично."),
+                    _crit("cs_permission_and_relevance", "Проверил уместность разговора", 2, 2, "Спросил."),
+                    _crit("cs_reason_for_call", "Обозначил причину звонка", 2, 2, "Обозначил."),
+                    _crit("cs_tone_and_clarity", "Сохранил вежливый тон", 2, 2, "Отличный тон."),
+                ]),
                 _stage("qualification_primary", "Квалификация и потребность", 8, 8, [
-                    _crit("qp_current_process", "Выяснил текущий процесс", 2, 2, "Полностью выяснен."),
-                    _crit("qp_role_and_scope", "Уточнил роль собеседника", 2, 2, "Роль и масштаб выяснены."),
-                    _crit("qp_need_or_trigger", "Проверил наличие реальной задачи", 2, 2, "Задача подтверждена."),
-                    _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 2, 2, "Квалификация завершена до презентации."),
+                    _crit("qp_current_process", "Выяснил текущий процесс", 2, 2, "Полностью."),
+                    _crit("qp_role_and_scope", "Уточнил роль собеседника", 2, 2, "Выяснил."),
+                    _crit("qp_need_or_trigger", "Подтвердил наличие задачи", 2, 2, "Подтверждено."),
+                    _crit("qp_no_early_pitch", "Не ушёл в презентацию рано", 2, 2, "Отлично."),
                 ]),
-                stage_nd_ok,
+                _stage("needs_discovery", "Выявление потребностей", 6, 8, [
+                    _crit("nd_use_cases", "Выявил конкретные сценарии", 2, 2, "Выявил."),
+                    _crit("nd_pain_and_constraints", "Выявил боль и ограничения", 2, 2, "Выявил."),
+                    _crit("nd_priority_and_timing", "Понял приоритет и срок", 0, 2, "Не обсуждено."),
+                    _crit("nd_decision_context", "Понял контекст решения", 2, 2, "Выяснил."),
+                ]),
                 _stage("presentation", "Формирование предложения", 7, 8, [
-                    _crit("pr_value_linked_to_context", "Связал ценность с контекстом", 2, 2, "Отлично связал."),
-                    _crit("pr_adapted_pitch", "Адаптировал подачу", 2, 2, "Подача адаптирована."),
-                    _crit("pr_handle_objection", "Отработал возражение", 2, 2, "Возражение снято."),
-                    _crit("pr_clear_next_step", "Предложил чёткий следующий шаг", 1, 2, "Шаг предложен, но без чёткого дедлайна."),
+                    _crit("pr_value_linked_to_context", "Связал ценность с задачей", 2, 2, "Отлично."),
+                    _crit("pr_adapted_pitch", "Адаптировал подачу", 2, 2, "Адаптировано."),
+                    _crit("pr_handle_objection", "Отработал возражение", 2, 2, "Снял возражение."),
+                    _crit("pr_clear_next_step", "Предложил чёткий шаг", 1, 2, "Шаг без дедлайна."),
                 ]),
             ],
-            strengths=[
-                _strength("Чётко представляется и называет компанию", 6),
-                _strength("Завершает квалификацию до начала презентации", 3),
-                _strength("Точно отрабатывает возражения", 2),
-            ],
-            gaps=[common_gaps[0]],
-            recommendations=[common_recs[0]],
+            strengths=[str_intro, str_tone, str_obj],
+            gaps=[gap_nd],
+            recommendations=[REC_1],
+            evidence_fragments=[ef3],
+            product_signals=[ps2],
         ),
-        # Call 4 — outbound, 50%, callback_planned, "Дмитрий Козлов"
-        _analysis(
+        # ── Call 4: BASELINE, agreed (callback_planned outcome, fixed step) ──────
+        _build_analysis(
             call_id=str(uuid.UUID(int=4)),
             call_time="11:45:00",
             duration_sec=245,
@@ -378,13 +497,15 @@ def _build_fixtures() -> list[dict]:
             due_date_iso="2026-04-08",
             reason_not_fixed=None,
             short_summary="Клиент запросил коммерческое предложение.",
-            score_by_stage=[stage_cs_ok, stage_qp_ok, stage_nd_weak, stage_pr_mid],
-            strengths=[common_strengths[0]],
-            gaps=[common_gaps[1], common_gaps[2]],
-            recommendations=[common_recs[1]],
+            score_by_stage=_stages_baseline(),
+            strengths=[str_intro],
+            gaps=[gap_nd, gap_ns],
+            recommendations=[REC_1, REC_2],
+            evidence_fragments=[],
+            product_signals=[],
         ),
-        # Call 5 — outbound, 43%, rescheduled, "Мария Петрова"
-        _analysis(
+        # ── Call 5: PROBLEMATIC, rescheduled (перезвон → status=rescheduled) ─────
+        _build_analysis(
             call_id=str(uuid.UUID(int=5)),
             call_time="12:10:00",
             duration_sec=195,
@@ -396,17 +517,20 @@ def _build_fixtures() -> list[dict]:
             outcome_code="callback_planned",
             outcome_text="Договорились перезвонить в пятницу.",
             next_step_text="Перезвонить в пятницу до 12:00.",
-            next_step_fixed=True,
+            next_step_fixed=False,
             due_date_iso="2026-04-10",
-            reason_not_fixed=None,
-            short_summary="Клиент занят, перенесли звонок на пятницу.",
-            score_by_stage=[stage_cs_partial, stage_qp_ok, stage_nd_weak, stage_pr_mid],
+            reason_not_fixed="Перенос на пятницу, попросила перезвонить позже",
+            short_summary="Клиент занята, перенесли звонок на пятницу.",
+            score_by_stage=_stages_problematic(),
             strengths=[],
-            gaps=[common_gaps[1], common_gaps[0]],
-            recommendations=[common_recs[1], common_recs[0]],
+            gaps=[gap_nd, gap_cs],
+            recommendations=[REC_1, REC_3],
+            evidence_fragments=[],
+            product_signals=[],
         ),
-        # Call 6 — inbound, 25%, refusal
-        _analysis(
+        # ── Call 6: PROBLEMATIC, refusal ─────────────────────────────────────────
+        # next_step_fixed=False + reason_not_fixed with "отказ" → status=refusal
+        _build_analysis(
             call_id=str(uuid.UUID(int=6)),
             call_time="13:00:00",
             duration_sec=180,
@@ -420,15 +544,17 @@ def _build_fixtures() -> list[dict]:
             next_step_text="Предложить вернуться через 3 месяца.",
             next_step_fixed=False,
             due_date_iso=None,
-            reason_not_fixed="Клиент отказался — работает с конкурентом",
-            short_summary="Клиент уже использует другую систему ЭДО, отказ.",
-            score_by_stage=[stage_cs_partial, stage_qp_weak, stage_nd_weak, stage_pr_mid],
+            reason_not_fixed="Отказ — работает с конкурентом, не интересно",
+            short_summary="Клиент уже использует другую систему ЭДО.",
+            score_by_stage=_stages_problematic(),
             strengths=[],
-            gaps=common_gaps[:],
-            recommendations=common_recs[:],
+            gaps=[gap_nd, gap_cs, gap_ns],
+            recommendations=[REC_1, REC_2, REC_3],
+            evidence_fragments=[],
+            product_signals=[],
         ),
-        # Call 7 — outbound, 62%, open, "Сергей Иванов"
-        _analysis(
+        # ── Call 7: BASELINE, open (no fixed step, no keyword → open) ────────────
+        _build_analysis(
             call_id=str(uuid.UUID(int=7)),
             call_time="14:20:00",
             duration_sec=335,
@@ -438,19 +564,21 @@ def _build_fixtures() -> list[dict]:
             call_type="sales_primary",
             scenario_type="warm_webinar_or_lead",
             outcome_code="open",
-            outcome_text="Клиент взял паузу, нужно уточнение у руководства.",
+            outcome_text="Клиент взял паузу, нужно одобрение руководства.",
             next_step_text="Ждать ответа от клиента.",
             next_step_fixed=False,
             due_date_iso=None,
-            reason_not_fixed=None,
-            short_summary="Клиент интересуется, но нужно одобрение руководства.",
-            score_by_stage=[stage_cs_ok, stage_qp_ok, stage_nd_ok, stage_pr_mid],
-            strengths=[common_strengths[0], common_strengths[1]],
-            gaps=[common_gaps[2]],
-            recommendations=[common_recs[1]],
+            reason_not_fixed="Ждёт одобрения руководства",
+            short_summary="Клиент интересуется, но нужно согласование.",
+            score_by_stage=_stages_baseline(),
+            strengths=[str_intro, str_tone],
+            gaps=[gap_ns],
+            recommendations=[REC_2],
+            evidence_fragments=[],
+            product_signals=[],
         ),
-        # Call 8 — inbound, 68%, agreed, "Лариса Новикова"
-        _analysis(
+        # ── Call 8: STRONG, agreed, Лариса Новикова ──────────────────────────────
+        _build_analysis(
             call_id=str(uuid.UUID(int=8)),
             call_time="15:30:00",
             duration_sec=478,
@@ -466,26 +594,18 @@ def _build_fixtures() -> list[dict]:
             due_date_iso="2026-04-07",
             reason_not_fixed=None,
             short_summary="Клиент запросил пробный доступ, договорились.",
-            score_by_stage=[
-                stage_cs_ok,
-                stage_qp_ok,
-                stage_nd_ok,
-                _stage("presentation", "Формирование предложения", 6, 8, [
-                    _crit("pr_value_linked_to_context", "Связал ценность с контекстом", 2, 2, "Хорошо связал."),
-                    _crit("pr_adapted_pitch", "Адаптировал подачу", 2, 2, "Адаптация есть."),
-                    _crit("pr_handle_objection", "Отработал возражение", 0, 2, "Возражение пропущено."),
-                    _crit("pr_clear_next_step", "Предложил чёткий следующий шаг", 2, 2, "Чёткий шаг предложен."),
-                ]),
-            ],
-            strengths=common_strengths[:],
-            gaps=[common_gaps[0], common_gaps[2]],
-            recommendations=[common_recs[0]],
+            score_by_stage=_stages_strong(),
+            strengths=[str_intro, str_tone, str_obj],
+            gaps=[gap_nd, gap_ns],
+            recommendations=[REC_1, REC_2],
+            evidence_fragments=[],
+            product_signals=[ps1],
         ),
     ]
 
 
 # ──────────────────────────────────────────────────────────────
-# Mock ORM object builder
+# Mock ORM object builders
 # ──────────────────────────────────────────────────────────────
 
 def _make_interaction(call_id: str, scores_detail: dict) -> object:
@@ -529,19 +649,17 @@ def _build_artifacts(fixture_list: list[dict]) -> list[ReportArtifact]:
     for detail in fixture_list:
         call = detail.get("call", {})
         call_id = str(call.get("call_id", uuid.uuid4()))
-        started_raw = call.get("call_started_at", "")
         try:
-            call_started_at = datetime.fromisoformat(started_raw).astimezone(timezone.utc)
+            call_started_at = datetime.fromisoformat(
+                call.get("call_started_at", "")).astimezone(timezone.utc)
         except (ValueError, TypeError):
             call_started_at = None
-        artifacts.append(
-            ReportArtifact(
-                interaction=_make_interaction(call_id, detail),
-                analysis=_make_analysis(detail),
-                manager=manager,
-                call_started_at=call_started_at,
-            )
-        )
+        artifacts.append(ReportArtifact(
+            interaction=_make_interaction(call_id, detail),
+            analysis=_make_analysis(detail),
+            manager=manager,
+            call_started_at=call_started_at,
+        ))
     return artifacts
 
 
@@ -552,13 +670,12 @@ def _build_artifacts(fixture_list: list[dict]) -> list[ReportArtifact]:
 async def run() -> None:
     print("=" * 60)
     print("VERIFICATION-ONLY REPORT RUNNER")
-    print("Provenance: manual_verification_fixture")
+    print(f"Provenance: {PROVENANCE}")
     print("No DB reads/writes. No AI steps.")
     print("=" * 60)
 
     fixture_list = _build_fixtures()
     artifacts = _build_artifacts(fixture_list)
-
     filters = ReportRunFilters(
         manager_ids={MANAGER_ID},
         date_from=ANCHOR_DATE,
@@ -574,16 +691,32 @@ async def run() -> None:
         mode="report_from_ready_data_only",
         model_override=None,
     )
-    # Mark provenance clearly in payload meta
     payload["meta"]["verification_only"] = True
     payload["meta"]["provenance"] = PROVENANCE
 
-    print(f"\nPayload built. Manager: {payload['header']['manager_name']}")
-    print(f"Calls: {payload['kpi_overview']['calls_count']}")
+    # Quick content check
+    kp = payload.get("key_problem_of_day", {})
+    voc = payload.get("voice_of_customer", {})
+    ads = payload.get("additional_situations", {})
+    ct = payload.get("call_tomorrow", {})
+    sr = payload.get("score_by_stage", [])
+    cb = payload.get("call_breakdown", {})
+
+    print(f"\nManager: {payload['header']['manager_name']} | Calls: {payload['kpi_overview']['calls_count']}")
+    print(f"СИТУАЦИЯ ДНЯ: title={kp.get('title', '')[:50]!r}, example={bool(kp.get('call_example'))}, scripts={len(kp.get('scripts') or [])}")
+    print(f"РАЗБОР ЗВОНКА: placeholder={cb.get('is_placeholder')}, stages={len(cb.get('stage_steps') or [])}")
+    print(f"ГОЛОС КЛИЕНТА: placeholder={voc.get('is_placeholder')}, quotes={len(voc.get('situations') or [])}")
+    print(f"ДОП СИТУАЦИИ:  placeholder={ads.get('is_placeholder')}, situations={len(ads.get('situations') or [])}")
+    print(f"ПОЗВОНИ ЗАВТРА: contacts={len(ct.get('contacts') or [])}")
+    for c in (ct.get("contacts") or []):
+        print(f"  {c.get('client_label')} | {c.get('status')} | {c.get('deadline')}")
+    print(f"БАЛЛЫ ПО ЭТАПАМ: rows={len(sr)}")
+    for row in sr:
+        print(f"  {row.get('stage_name')} avg={row.get('score')} prio={row.get('is_priority')} crit={len(row.get('criteria_detail') or [])}")
 
     rendered = render_report_artifact(payload)
     pdf_bytes: bytes = rendered["pdf_bytes"]
-    print(f"PDF rendered: {len(pdf_bytes)} bytes, {rendered.get('page_count')} pages")
+    print(f"\nPDF rendered: {len(pdf_bytes):,} bytes, {rendered.get('page_count')} pages")
 
     from app.core_shared.db.session import SessionLocal
     with SessionLocal() as db:
@@ -599,14 +732,14 @@ async def run() -> None:
             template_meta=payload["meta"].get("report_template"),
             send_business_email=False,
             morning_card_text=(
-                f"[ВЕРИФИКАЦИЯ ФОРМАТА] {ANCHOR_DATE}\n"
-                f"{MANAGER_NAME} — {len(artifacts)} звонков (синтетические данные)\n"
-                f"Провенанс: {PROVENANCE}"
+                f"[ВЕРИФИКАЦИЯ ФОРМАТА — ВТОРАЯ КОРЗИНА]\n"
+                f"{ANCHOR_DATE} · {MANAGER_NAME}\n"
+                f"{len(artifacts)} синтетических звонков · {PROVENANCE}"
             ),
         )
-    telegram_status = (result.get("telegram_test_delivery") or {}).get("status") or "sent (see log)"
-    print(f"\nTelegram delivery: {telegram_status}")
-    print("\nDone. This report is VERIFICATION-ONLY — not an AI production artifact.")
+    tg_status = (result.get("telegram_test_delivery") or {}).get("status") or "sent (see log)"
+    print(f"\nTelegram: {tg_status}")
+    print("\nDone. VERIFICATION-ONLY — not a production AI artifact.")
 
 
 if __name__ == "__main__":
