@@ -324,8 +324,10 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(rendered["artifact"]["media_type"], "application/pdf")
         self.assertGreater(rendered["artifact"]["size_bytes"], 0)
         self.assertGreaterEqual(rendered["artifact"]["page_count"], 4)
-        self.assertEqual(rendered["template"]["version"], "manager_daily_template_v1")
-        self.assertEqual(payload["meta"]["template_version"], "manager_daily_template_v1")
+        self.assertEqual(rendered["template"]["version"], "manager_daily_template_v2")
+        self.assertEqual(payload["meta"]["template_version"], "manager_daily_template_v2")
+        self.assertEqual(rendered["artifact"]["render_variant"], "template_pdf_manager_daily_template_v2")
+        self.assertEqual(rendered["artifact"]["generator_path"], "app.agents.calls.report_templates.render_report_artifact")
 
 
 class ManualReportingStatusTests(unittest.TestCase):
@@ -946,6 +948,9 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(observability["summary"]["rebuilt_analyses_count"], 1)
         self.assertEqual(observability["summary"]["source"]["ingest_created_total"], 1)
         self.assertEqual(observability["summary"]["delivery"]["mode"], "split_operator_delivery")
+        self.assertEqual(observability["summary"]["template_version"], "manager_daily_template_v2")
+        self.assertEqual(observability["summary"]["render_variant"], "template_pdf_manager_daily_template_v2")
+        self.assertEqual(observability["summary"]["generator_path"], "app.agents.calls.report_templates.render_report_artifact")
         self.assertEqual(observability["stages"][-1]["status"], "completed")
         self.assertEqual(observability["stages"][0]["code"], "source-discovery")
         self.assertEqual(observability["ai_costs"][0]["cost_status"], "not_available")

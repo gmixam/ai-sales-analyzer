@@ -804,7 +804,31 @@ class CallsManualReportingOrchestrator:
                         for report in reports
                         if (report.get("artifact") or {}).get("template_version")
                     ),
-                    None,
+                    get_active_template_version(preset.code),
+                ),
+                "template_id": next(
+                    (
+                        ((report.get("artifact") or {}).get("template_id"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("template_id")
+                    ),
+                    get_active_template_version(preset.code),
+                ),
+                "render_variant": next(
+                    (
+                        ((report.get("artifact") or {}).get("render_variant"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("render_variant")
+                    ),
+                    f"template_pdf_{get_active_template_version(preset.code)}",
+                ),
+                "generator_path": next(
+                    (
+                        ((report.get("artifact") or {}).get("generator_path"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("generator_path")
+                    ),
+                    "app.agents.calls.report_templates.render_report_artifact",
                 ),
                 "delivery": delivery_summary,
                 "source": source_summary,
@@ -974,6 +998,40 @@ class CallsManualReportingOrchestrator:
             "reason_codes": reason_codes,
             "machine_readable_status": overall_status,
             "notes": notes,
+            "report_origin": {
+                "template_version": next(
+                    (
+                        ((report.get("artifact") or {}).get("template_version"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("template_version")
+                    ),
+                    get_active_template_version(preset.code),
+                ),
+                "template_id": next(
+                    (
+                        ((report.get("artifact") or {}).get("template_id"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("template_id")
+                    ),
+                    None,
+                ),
+                "render_variant": next(
+                    (
+                        ((report.get("artifact") or {}).get("render_variant"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("render_variant")
+                    ),
+                    f"template_pdf_{get_active_template_version(preset.code)}",
+                ),
+                "generator_path": next(
+                    (
+                        ((report.get("artifact") or {}).get("generator_path"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("generator_path")
+                    ),
+                    "app.agents.calls.report_templates.render_report_artifact",
+                ),
+            },
             "source": source_summary,
             "readiness": self._build_readiness_summary(reports=reports),
             "local_directory": {
@@ -3167,6 +3225,9 @@ def _build_base_meta(
         "reuse_policy_version": REPORTING_REUSE_POLICY_VERSION,
         "checklist_version": APPROVED_CHECKLIST_VERSION,
         "template_version": get_active_template_version(preset),
+        "template_id": get_active_template_version(preset),
+        "render_variant": f"template_pdf_{get_active_template_version(preset)}",
+        "generator_path": "app.agents.calls.report_templates.render_report_artifact",
         "generated_at": datetime.now(UTC).isoformat(),
         "department_id": department_id,
         "period": period,
@@ -3189,6 +3250,9 @@ def _build_base_meta(
             "reuse_policy_version": REPORTING_REUSE_POLICY_VERSION,
             "checklist_version": APPROVED_CHECKLIST_VERSION,
             "template_version": get_active_template_version(preset),
+            "template_id": get_active_template_version(preset),
+            "render_variant": f"template_pdf_{get_active_template_version(preset)}",
+            "generator_path": "app.agents.calls.report_templates.render_report_artifact",
             "analysis_instruction_versions": instruction_versions,
         },
         "reuse": {
@@ -4264,9 +4328,10 @@ def _build_rop_weekly_executive_summary(
     current_period_score: float | None,
 ) -> str:
     """Build short executive summary for weekly report."""
+    score_label = "n/a" if current_period_score is None else str(current_period_score)
     return (
         f"По команде {department_name} в отчёт вошло {len(dashboard_rows)} менеджеров; "
-        f"текущий средний уровень качества звонков — {_value(current_period_score, 'n/a')}."
+        f"текущий средний уровень качества звонков — {score_label}."
     )
 
 
@@ -4292,9 +4357,11 @@ def _build_rop_weekly_tasks_commentary(*, tasks: list[dict[str, Any]]) -> str:
     if not tasks:
         return "На этой неделе нет новых обязательных задач сверх стандартного управленческого контроля."
     first = tasks[0]
+    task_label = str(first.get("task_for_next_week") or "не определён")
+    verify_label = str(first.get("how_to_verify") or "не определена")
     return (
-        f"Главный управленческий фокус недели: {_value(first.get('task_for_next_week'))}. "
-        f"Проверка: {_value(first.get('how_to_verify'))}."
+        f"Главный управленческий фокус недели: {task_label}. "
+        f"Проверка: {verify_label}."
     )
 
 
@@ -4304,9 +4371,11 @@ def _build_rop_weekly_final_commentary(
     anti_top_block: dict[str, Any],
 ) -> str:
     """Build final managerial commentary for weekly report."""
+    top_manager = str(top_block.get("manager") or "команды")
+    anti_top_manager = str(anti_top_block.get("manager") or "ключевого менеджера")
     return (
-        f"Сохранить сильный паттерн у {_value(top_block.get('manager'), 'команды')} и отдельно "
-        f"отработать зону риска у {_value(anti_top_block.get('manager'), 'ключевого менеджера')}."
+        f"Сохранить сильный паттерн у {top_manager} и отдельно "
+        f"отработать зону риска у {anti_top_manager}."
     )
 
 

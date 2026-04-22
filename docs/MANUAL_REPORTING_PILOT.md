@@ -51,7 +51,7 @@
 ### Pilot baseline version
 
 - pilot baseline version = current stable `Manual Reporting Pilot` slice;
-- active template versions = `manager_daily_template_v1` and `rop_weekly_template_v1`;
+- active template versions = `manager_daily_template_v2` and `rop_weekly_template_v1`;
 - approved analyzer contract и current scoring baseline остаются без изменений;
 - `Business-ready Report Pack` и full report mechanism upgrade в этот baseline не входят.
 
@@ -413,9 +413,11 @@ Readiness проверяется последовательно:
 На 2026-03-27 повторная live delivery validation всё ещё не подтвердила `delivered`: текущий runtime доходит до SMTP login и правильно резолвит primary recipient + monitoring copy, но сам SMTP login в этой среде продолжает отвечать `535`, поэтому фактический happy path остаётся зависимым от отдельного operational credentials fix, а не от reporting code path.
 На 2026-03-27 после переключения runtime на `smtp.mail.ru:587` delivered happy path был подтверждён и для CLI, и для API; первый операторский web UI использует тот же delivery path без отдельного frontend-приложения и без смены backend execution contract.
 На 2026-03-27 после задания `TEST_DELIVERY_TELEGRAM_CHAT_ID` live operator run подтвердил always-on Telegram test delivery semantics: `manager_daily` и `rop_weekly` manual runs с `send_email=false` всё равно возвращают `delivered` через target `telegram:74665909`, а resolved business recipients сохраняются в response как reference/fallback metadata для optional email channel.
-На 2026-03-30 active standard template versions зафиксированы как `manager_daily_template_v1` и `rop_weekly_template_v1`; live API smoke подтвердил для обоих preset’ов, что operator run возвращает final `artifact{kind=pdf_report, template_version=manager_daily_template_v1|rop_weekly_template_v1}` и доставляет в Telegram именно `.pdf` document (`manager_daily_*_manager_daily_template_v1.pdf`, `rop_weekly_*_rop_weekly_template_v1.pdf`).
+На 2026-03-30 active standard template versions были зафиксированы как `manager_daily_template_v1` и `rop_weekly_template_v1`; live API smoke подтвердил для обоих preset’ов, что operator run возвращает final `artifact{kind=pdf_report, template_version=manager_daily_template_v1|rop_weekly_template_v1}` и доставляет в Telegram именно `.pdf` document (`manager_daily_*_manager_daily_template_v1.pdf`, `rop_weekly_*_rop_weekly_template_v1.pdf`).
 На 2026-03-30 `manager_daily_template_v1` дополнительно адаптирован прямо от approved HTML reference asset `docs/report_templates/reference/manager_daily_reference_html`: runtime filling теперь держит reference composition (hero, tiles, summary box, signal/focus banners, review grid, recommendation cards, outcomes table, dynamics, memo) и убирает reader-facing service traces вроде raw `not available`, `Note:` и template/debug lines из final report artifact.
 На 2026-03-30 corrective visual polish для `manager_daily_template_v1` довёл именно PDF renderer до той же логики композиции: first page теперь собирается как оформленный manager report, `РЕКОМЕНДАЦИИ` остаются карточными даже при скромных данных, `ИТОГИ ЗВОНКОВ` сохраняют table-based presentation со статусной дифференциацией, а fallback states в `РАЗБОР` и `КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ` формулируются редакторски, без ощущения технической заглушки.
+На 2026-04-22 improved Business-ready runtime format переведён в обычный pipeline как `manager_daily_template_v2`: active runtime registry теперь указывает на `v2`, а `manager_daily_template_v1` сохранён как legacy runtime template id.
+На 2026-04-22 safe ready-only rerun через обычный `POST /pipeline/calls/report-run` для case `department=472cda28-ce71-494c-9068-25d3ffbf7399`, `manager=09cae83f-7ac1-4ee0-b1d5-3a76c8053c3f`, `extension=322`, requested period `2026-04-06` подтвердил, что normal runtime path строит и доставляет в Telegram уже `manager_daily_template_v2` (`manager_daily_preview_Эльмира Кешубаева_2026-04-02_manager_daily_template_v2.pdf`) без новых `STT / LLM-1 / LLM-2`; observability/diagnostics теперь явно показывают `template_version`, `template_id`, `render_variant`, `generator_path`.
 
 ## Operator UI specifics
 

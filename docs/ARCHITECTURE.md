@@ -146,9 +146,11 @@ Current bounded implementation status:
 - visual/layout source of truth for the first standard templates comes from:
   - `manager_daily` visual baseline is adapted from the approved HTML reference asset `docs/report_templates/reference/manager_daily_reference_html`, while `docs/report_templates/reference/manager_daily_reference.md` stays the repo-readable summary of the same layout contract;
   - `docs/report_templates/reference/rop_weekly_reference.md`
-- current active template versions are `manager_daily_template_v1` and `rop_weekly_template_v1`;
+- current active template versions are `manager_daily_template_v2` and `rop_weekly_template_v1`;
 - the main operator artifact is now a rendered PDF report built from the active template version, while HTML/text remain preview/supporting render outputs;
-- `manager_daily_template_v1` now renders a reference-aligned composition with hero banner, summary tiles, narrative box, signal/focus banners, two-column review, recommendation cards, outcomes table, dynamics block, and memo page, rather than a generic section dump;
+- `manager_daily_template_v2` is the canonical runtime `manager_daily` output for Business-ready Report Pack testing; `manager_daily_template_v1` remains the separated legacy template id;
+- `manager_daily_template_v2` renders the current reference-aligned composition with hero banner, summary tiles, narrative box, signal/focus banners, stage-review table, recommendation cards, outcomes table, dynamics block, breakdown/voice/coaching follow-up pages, and morning card, rather than a generic section dump;
+- report provenance is explicit in payload/result/observability via `template_version`, `template_id`, `render_variant`, and `generator_path`;
 - the operator page uses lightweight supporting endpoints for form context, local-manager sync, and recipient preview, while report execution still goes through the existing `/pipeline/calls/report-run` contract;
 - email delivery now has a reporting-specific skeleton with `To + Cc + text/html` support;
 - Telegram test delivery for operator runs now sends the final PDF document artifact, not a text-only dump;

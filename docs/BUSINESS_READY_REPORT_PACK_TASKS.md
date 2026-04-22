@@ -42,8 +42,8 @@
 |---|---|
 | Renderer / template engine | `core/app/agents/calls/report_templates.py` |
 | Active version registry | `core/app/agents/calls/report_template_assets/active_versions.json` |
-| Active manager_daily version | `manager_daily_template_v1` |
-| Template assets | `core/app/agents/calls/report_template_assets/manager_daily/manager_daily_template_v1/` |
+| Active manager_daily version | `manager_daily_template_v2` |
+| Template assets | `core/app/agents/calls/report_template_assets/manager_daily/manager_daily_template_v2/` |
 | Short delivery wrapper | `core/app/agents/calls/delivery.py` (строки ~640–720) |
 | Reference layout | `docs/report_templates/reference/manager_daily_reference.md` |
 
@@ -76,7 +76,7 @@
 
 **Файлы:**
 - `core/app/agents/calls/report_templates.py` — `_build_manager_daily_model()`
-- `core/app/agents/calls/report_template_assets/manager_daily/manager_daily_template_v1/`
+- `core/app/agents/calls/report_template_assets/manager_daily/manager_daily_template_v2/`
 
 ---
 

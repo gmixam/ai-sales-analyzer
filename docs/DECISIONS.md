@@ -226,13 +226,16 @@
 
 ## ADR-034: Final manual reports use repo-local versioned templates and PDF as the primary operator artifact
 - **Decision:** `manager_daily` and `rop_weekly` final report layouts must be defined by repo-local versioned template assets, not by ad-hoc inline rendering logic alone.
-- **Decision:** The first standard active template versions are `manager_daily_template_v1` and `rop_weekly_template_v1`, with semantic and visual/layout assets stored in `core/app/agents/calls/report_template_assets/...`.
+- **Decision:** The first standard active template versions were `manager_daily_template_v1` and `rop_weekly_template_v1`, with semantic and visual/layout assets stored in `core/app/agents/calls/report_template_assets/...`.
 - **Decision:** For these first standard versions, visual/layout precedence comes from:
   - `manager_daily` must follow the approved HTML reference asset `docs/report_templates/reference/manager_daily_reference_html`; `docs/report_templates/reference/manager_daily_reference.md` remains the repo-readable semantic/visual summary of that reference
   - `docs/report_templates/reference/rop_weekly_reference.md`
   while semantic/content rules still come from the existing reporting docs and normalized runtime contracts.
 - **Decision:** `manager_daily_template_v1` is now the first approved runtime adaptation of that HTML reference; final reader-facing PDF output must preserve its visual composition and must not expose service/debug text like raw `not available`, `Note:`, template ids, or generation metadata.
 - **Decision:** Within that same `manager_daily_template_v1`, reader-facing fallback states must preserve the approved card/banner/table composition and use editorial manager-facing wording, not technical empty-state formulas that make the PDF look like a raw text export.
+- **Decision:** For Business-ready Report Pack runtime testing, the improved canonical `manager_daily` runtime output is now versioned as `manager_daily_template_v2`, while `manager_daily_template_v1` remains the separated legacy runtime template id.
+- **Decision:** The ordinary `/pipeline/calls/report-run` -> `manager_daily` -> Telegram delivery path must use `manager_daily_template_v2` as the active runtime default, including `report_from_ready_data_only` preview-shell outcomes.
+- **Decision:** Structured report results, artifact metadata, observability, and diagnostics must expose report provenance explicitly via `template_version`, `template_id`, `render_variant`, and `generator_path`, so `v1` and `v2` outputs cannot be confused operationally.
 - **Decision:** The primary operator artifact of a manual report run is a rendered PDF built from the active template version. HTML/text outputs remain supporting previews.
 - **Decision:** Telegram test delivery for operator runs must send that final PDF document artifact; optional business email delivery should reuse the same PDF as attachment.
 - **Reason:** Manual reporting now needs a stable, reviewable deliverable that can be read, forwarded, and compared across iterations without rebuilding layout intent in code for every run.

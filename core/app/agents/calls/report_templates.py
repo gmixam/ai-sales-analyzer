@@ -12,6 +12,7 @@ from typing import Any
 
 ASSET_ROOT = Path(__file__).resolve().parent / "report_template_assets"
 FONT_PATH = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+REPORT_RENDER_GENERATOR_PATH = "app.agents.calls.report_templates.render_report_artifact"
 
 
 @dataclass(slots=True)
@@ -66,6 +67,8 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         "preset": template.preset,
         "version": template.version,
         "template_id": template.template_id,
+        "render_variant": f"template_pdf_{template.version}",
+        "generator_path": REPORT_RENDER_GENERATOR_PATH,
     }
     report = _build_render_model(payload=payload, template=template)
     text = _render_text_report(report)
@@ -82,6 +85,8 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             "preset": template.preset,
             "version": template.version,
             "template_id": template.template_id,
+            "render_variant": f"template_pdf_{template.version}",
+            "generator_path": REPORT_RENDER_GENERATOR_PATH,
             "semantic_asset": f"report_template_assets/{template.preset}/{template.version}/semantic.json",
             "visual_asset": f"report_template_assets/{template.preset}/{template.version}/visual.json",
             "layout_asset": f"report_template_assets/{template.preset}/{template.version}/layout.css",
@@ -94,6 +99,8 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             "page_count": page_count,
             "template_version": template.version,
             "template_id": template.template_id,
+            "render_variant": f"template_pdf_{template.version}",
+            "generator_path": REPORT_RENDER_GENERATOR_PATH,
         },
         "pdf_bytes": pdf_bytes,
         "morning_card_text": report.get("morning_card_text"),

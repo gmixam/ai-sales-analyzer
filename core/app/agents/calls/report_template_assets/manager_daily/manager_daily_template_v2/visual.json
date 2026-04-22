@@ -1,0 +1,19 @@
+{
+  "font_family": "\"DejaVu Sans\", Arial, sans-serif",
+  "page": {"size": "A4", "margin_mm": 12},
+  "theme": {
+    "dark_blue": "#173a63",
+    "dark_blue_2": "#224d7a",
+    "green": "#2f8b57",
+    "green_soft": "#e9f6ef",
+    "amber": "#c58a1d",
+    "amber_soft": "#fff4d7",
+    "red": "#bf4c4c",
+    "red_soft": "#fdeaea",
+    "surface": "#ffffff",
+    "surface_alt": "#f7f9fc",
+    "border": "#d7e0ea",
+    "muted": "#5a6876",
+    "ink": "#182230"
+  }
+}

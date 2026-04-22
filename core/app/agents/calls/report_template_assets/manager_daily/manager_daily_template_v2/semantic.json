@@ -1,0 +1,24 @@
+{
+  "template_key": "manager_daily_template_v2",
+  "version": "manager_daily_template_v2",
+  "title": "manager_daily_template_v2",
+  "source_of_truth": true,
+  "sections": [
+    {"id": "day_summary", "label": "ИТОГ ДНЯ", "kind": "outcome_table"},
+    {"id": "executive_narrative", "label": "Краткий вывод", "kind": "text", "model_dependent": true},
+    {"id": "signal_of_day", "label": "Сигнал дня", "kind": "card"},
+    {"id": "main_focus_for_tomorrow", "label": "СИТУАЦИЯ ДНЯ", "kind": "situation_card"},
+    {"id": "review_block", "label": "БАЛЛЫ ПО ЭТАПАМ", "kind": "stage_scores_table"},
+    {"id": "key_problem_of_day", "label": "КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ", "kind": "card"},
+    {"id": "recommendations", "label": "РЕКОМЕНДАЦИИ", "kind": "cards", "model_dependent": true},
+    {"id": "call_outcomes_summary", "label": "ИТОГИ ЗВОНКОВ", "kind": "metric_cards"},
+    {"id": "call_list", "label": "Список звонков", "kind": "table"},
+    {"id": "focus_criterion_dynamics", "label": "ДИНАМИКА ПО ФОКУСНОМУ КРИТЕРИЮ", "kind": "key_values"},
+    {"id": "call_breakdown", "label": "РАЗБОР ЗВОНКА", "kind": "call_breakdown", "page_break_before": true},
+    {"id": "voice_of_customer", "label": "ГОЛОС КЛИЕНТА", "kind": "voice_of_customer"},
+    {"id": "additional_situations", "label": "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ", "kind": "situation_cards", "page_break_before": true},
+    {"id": "call_tomorrow", "label": "ПОЗВОНИ ЗАВТРА", "kind": "call_tomorrow"},
+    {"id": "morning_card", "label": "УТРЕННЯЯ КАРТОЧКА", "kind": "morning_card", "page_break_before": true},
+    {"id": "memo_legend", "label": "ПАМЯТКА", "kind": "bullet_groups", "page_break_before": true}
+  ]
+}

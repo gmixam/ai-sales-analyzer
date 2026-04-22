@@ -454,7 +454,7 @@ The result is acceptable only if:
 
 Recommended active template id:
 
-* `manager_daily_template_v1`
+* `manager_daily_template_v2`
 
 If a separate layout spec is needed, use:
 
