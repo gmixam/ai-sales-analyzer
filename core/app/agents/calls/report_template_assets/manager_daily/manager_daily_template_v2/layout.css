@@ -1121,3 +1121,96 @@ body {
   justify-content: space-between;
   gap: 12px;
 }
+
+.title-page {
+  margin-top: 18px;
+  padding: 26px 28px;
+  background: linear-gradient(135deg, var(--navy), var(--navy-2));
+  color: #fff;
+}
+
+.title-page h1 {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: 0.02em;
+}
+
+.title-page .subtitle {
+  margin: 10px 0 0;
+  font-size: 17px;
+  color: #d7e4f4;
+}
+
+.title-page .divider {
+  height: 1px;
+  margin: 14px 0 12px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.section-body {
+  margin-top: 16px;
+}
+
+.section-body table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.section-body th,
+.section-body td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  vertical-align: top;
+  text-align: left;
+}
+
+.section-body th {
+  background: var(--surface_alt);
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.header-card,
+.focus-panel,
+.mini-card {
+  border: 1px solid var(--line);
+  background: var(--surface_alt);
+  padding: 18px 20px;
+}
+
+.focus-panel.warning {
+  background: var(--amber_soft);
+}
+
+.header-manager {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--navy);
+}
+
+.header-meta,
+.muted {
+  color: var(--muted);
+}
+
+.header-score {
+  margin-top: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--navy-2);
+}
+
+.mini-card {
+  margin: 12px 0;
+  background: #fff;
+}
+
+.sub-row td {
+  font-size: 12px;
+  color: var(--muted);
+  background: #fafbfd;
+}

@@ -121,45 +121,56 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     editorial_recommendations = dict(payload.get("editorial_recommendations") or {})
     total_calls = int(kpi.get("calls_count") or 0)
     narrative = _build_manager_daily_narrative_block(payload)
-    focus_dynamics = payload["focus_criterion_dynamics"]
     call_outcomes = dict(payload.get("call_outcomes_summary") or {})
+    call_list_raw = list(payload.get("call_list") or [])
+    warm_pipeline = _build_warm_pipeline_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
+    money_on_table = _build_money_on_table_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
     morning_card = _build_morning_card_data(
         header=header,
         call_outcomes=call_outcomes,
         total_calls=total_calls,
-        call_list_raw=list(payload.get("call_list") or []),
+        call_list_raw=call_list_raw,
         focus_of_week=dict(payload.get("focus_of_week") or {}),
+    )
+    challenge = _build_challenge_data(
+        score_by_stage=list(payload.get("score_by_stage") or []),
+        key_problem=dict(payload.get("key_problem_of_day") or {}),
+        total_calls=total_calls,
     )
     outcome_cols = [
         {"label": "ЗВОНКОВ", "value": total_calls, "tone": "neutral"},
-        {"label": "ДОГОВОРЕННОСТЬ", "value": _value(call_outcomes.get("agreed_count")), "tone": "positive"},
-        {"label": "ПЕРЕНОС", "value": _value(call_outcomes.get("rescheduled_count")), "tone": "focus"},
-        {"label": "ОТКАЗ", "value": _value(call_outcomes.get("refusal_count")), "tone": "problem"},
-        {"label": "ОТКРЫТ", "value": _value(call_outcomes.get("open_count")), "tone": "warning"},
-        {"label": "ТЕХ/СЕРВИС", "value": _value(call_outcomes.get("tech_service_count")), "tone": "neutral"},
+        {"label": "ДОГОВОРЕННОСТЬ", "value": _manager_reader_value(call_outcomes.get("agreed_count"), "0"), "tone": "positive"},
+        {"label": "ПЕРЕНОС", "value": _manager_reader_value(call_outcomes.get("rescheduled_count"), "0"), "tone": "focus"},
+        {"label": "ОТКАЗ", "value": _manager_reader_value(call_outcomes.get("refusal_count"), "0"), "tone": "problem"},
+        {"label": "ОТКРЫТ", "value": _manager_reader_value(call_outcomes.get("open_count"), "0"), "tone": "warning"},
+        {"label": "ТЕХ/СЕРВИС", "value": _manager_reader_value(call_outcomes.get("tech_service_count"), "0"), "tone": "neutral"},
     ]
     sections = [
+        {
+            **_section_meta(template, "report_header"),
+            "manager_name": header["manager_name"],
+            "report_date": header["report_date"],
+            "calls_count": total_calls,
+            "day_score": _manager_reader_value(
+                round(float(kpi.get("average_score")) / 20.0, 1) if kpi.get("average_score") is not None else None,
+                "Нет базы",
+            ),
+        },
         {
             **_section_meta(template, "day_summary"),
             "outcome_cols": outcome_cols,
         },
         {
-            **_section_meta(template, "executive_narrative"),
-            "body": narrative["summary"],
-            "progress_line": narrative["progress"],
+            **_section_meta(template, "money_on_table"),
+            **money_on_table,
         },
         {
-            **_section_meta(template, "signal_of_day"),
-            "title": f"Лучший эпизод: {_value(payload['signal_of_day'].get('client_or_phone_mask'), 'Опорный звонок дня')}",
-            "body": _value(
-                payload["signal_of_day"].get("short_evidence"),
-                "В выборке есть сильный эпизод, который стоит использовать как модель поведения.",
-            ),
-            "time_line": _short_time(payload["signal_of_day"].get("call_time")),
-            "items": [
-                f"Почему это правильная модель: {_value(payload['signal_of_day'].get('reason_this_matters'), 'Показывает удачный образец разговора за день.')}",
-            ],
-            "tone": "positive",
+            **_section_meta(template, "warm_pipeline"),
+            **warm_pipeline,
+        },
+        {
+            **_section_meta(template, "review_block"),
+            "stage_rows": _build_stage_score_rows(payload.get("score_by_stage") or []),
         },
         {
             **_section_meta(template, "main_focus_for_tomorrow"),
@@ -169,159 +180,84 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 "На этой выборке нет доминирующей проблемы по этапу воронки. Держим фокус на завершении звонков с конкретным следующим шагом.",
             ),
             "pattern_count_label": _build_pattern_count_label(dict(payload.get("key_problem_of_day") or {})),
+            "client_need": _build_situation_client_need(dict(payload.get("key_problem_of_day") or {})),
+            "manager_task": _build_situation_manager_task(
+                score_by_stage=list(payload.get("score_by_stage") or []),
+                recommendations=list(payload.get("recommendations") or []),
+            ),
             "call_example": dict(payload["key_problem_of_day"].get("call_example") or {}),
             "scripts": _build_situation_scripts(
                 key_problem=dict(payload.get("key_problem_of_day") or {}),
                 recommendations=list(payload.get("recommendations") or []),
                 score_by_stage=list(payload.get("score_by_stage") or []),
             ),
-            "tone": "focus",
-        },
-        {
-            **_section_meta(template, "review_block"),
-            "stage_rows": _build_stage_score_rows(payload.get("score_by_stage") or []),
-        },
-        {
-            **_section_meta(template, "key_problem_of_day"),
-            "title": _value(payload["key_problem_of_day"].get("title"), "Критичный провал дня не выделился"),
-            "body": _value(
-                payload["key_problem_of_day"].get("description"),
-                "На этой выборке нет одной доминирующей проблемы. Рабочий фокус остаётся на том, чтобы каждое завершение заканчивалось понятным следующим шагом и зафиксированной договорённостью.",
+            "why_it_works": _build_situation_why_it_works(
+                recommendations=list(payload.get("recommendations") or []),
+                score_by_stage=list(payload.get("score_by_stage") or []),
             ),
-            "tone": "problem",
         },
         {
-            **_section_meta(template, "recommendations"),
-            "editorial_note": _clean_reader_text(
-                editorial_recommendations.get("text")
-                or "Рекомендации сформированы автоматически и могут быть уточнены оператором перед отправкой."
+            **_section_meta(template, "call_breakdown"),
+            **_build_v5_call_breakdown_section(
+                section=dict(payload.get("call_breakdown") or {}),
+                recommendations=list(payload.get("recommendations") or []),
             ),
-            "cards": [
-                {
-                    "title": item["title"],
-                    "priority_tag": item["priority_tag"],
-                    "priority_tone": "tomorrow" if item.get("priority_tag") == "Сделай завтра" else "week",
-                    "body": _clean_reader_text(item.get("reason") or "Контекст закрепим на ближайшем разборе."),
-                    "context": _clean_reader_text(item.get("reason") or "Контекст для примера сформирован по итогам разборов дня."),
-                    "how_it_sounded": _clean_reader_text(item.get("how_it_sounded") or "Формулировка пока звучит слишком общей и не закрепляет у клиента конкретный следующий шаг."),
-                    "better_phrasing": _clean_reader_text(item.get("better_phrasing") or "Сформулируй следующий шаг конкретно: дата, формат и ответственный."),
-                    "why_this_works": _clean_reader_text(item.get("why_this_works") or "Конкретика переводит разговор из намерения в договорённость."),
-                    "tone": "orange" if item.get("priority_tag") == "На неделе" else "red",
-                }
-                for item in payload.get("recommendations") or []
-            ],
         },
         {
-            **_section_meta(template, "call_outcomes_summary"),
-            "metrics": [
-                {"label": "Договорились", "value": payload["call_outcomes_summary"].get("agreed_count"), "tone": "positive"},
-                {"label": "Перенесли", "value": payload["call_outcomes_summary"].get("rescheduled_count"), "tone": "focus"},
-                {"label": "Отказ", "value": payload["call_outcomes_summary"].get("refusal_count"), "tone": "problem"},
-                {"label": "Открыт", "value": payload["call_outcomes_summary"].get("open_count"), "tone": "warning"},
-            ],
-            "note": "Открыт = звонок состоялся, но следующий шаг не зафиксирован.",
+            **_section_meta(template, "voice_of_customer"),
+            **_build_v5_voice_of_customer_section(
+                section=dict(payload.get("voice_of_customer") or {}),
+                recommendations=list(payload.get("recommendations") or []),
+            ),
+        },
+        {
+            **_section_meta(template, "additional_situations"),
+            **_build_v5_additional_situations_section(
+                section=dict(payload.get("additional_situations") or {}),
+            ),
+        },
+        {
+            **_section_meta(template, "challenge"),
+            **challenge,
+        },
+        {
+            **_section_meta(template, "call_tomorrow"),
+            **_build_v5_call_tomorrow_section(
+                section=dict(payload.get("call_tomorrow") or {}),
+            ),
         },
         {
             **_section_meta(template, "call_list"),
-            "columns": ["#", "Время", "Клиент", "Тема", "Статус", "Контекст", "Следующий шаг"],
+            "columns": ["#", "Время", "Клиент", "Тема", "Контекст", "Статус"],
             "rows": [
                 [
                     str(idx + 1),
                     _short_time(row.get("time")),
                     _manager_reader_value(row.get("client_or_phone"), "Клиент не определён"),
                     _call_topic_label(row.get("call_type"), row.get("scenario_type")),
-                    _call_status_label(row.get("status")),
                     _call_context_label(
                         str(row.get("status") or ""),
                         row.get("deadline"),
                         row.get("reason"),
                     ),
-                    _manager_reader_value(row.get("next_step"), "—"),
+                    _call_status_label(row.get("status")),
                 ]
-                for idx, row in enumerate(payload.get("call_list") or [])
+                for idx, row in enumerate(call_list_raw)
             ],
             "note": (
-                f"Показаны первые {min(10, len(payload.get('call_list') or []))} из {len(payload.get('call_list') or [])} "
-                "звонков дня. Полный список — в CRM."
+                f"Показаны все {len(call_list_raw)} звонков дня."
+                if call_list_raw
+                else "Звонки за выбранный день не найдены."
             ),
-        },
-        {
-            **_section_meta(template, "focus_criterion_dynamics"),
-            "pairs": [
-                ("Фокусный критерий", _manager_reader_value(focus_dynamics.get("focus_criterion_name"), "Критерий будет определён после накопления базы")),
-                ("Текущий период", _manager_reader_value(focus_dynamics.get("current_period_value"), "Нет данных")),
-                ("Предыдущий период", _manager_reader_value(focus_dynamics.get("previous_period_value"), "Нет базы сравнения")),
-                ("Delta", _manager_reader_value(focus_dynamics.get("delta"), "Нет базы сравнения")),
-            ],
-            "interpretation": "Сохраняем контроль по одному главному критерию и смотрим, появилась ли динамика между периодами.",
-            "bars": [
-                {
-                    "label": "Предыдущий период",
-                    "value": _manager_reader_value(focus_dynamics.get("previous_period_value"), "Нет базы"),
-                    "tone": "blue",
-                },
-                {
-                    "label": "Текущий период",
-                    "value": _manager_reader_value(focus_dynamics.get("current_period_value"), "Нет данных"),
-                    "tone": "orange",
-                },
-            ],
-            "stage_line": (
-                f"{_manager_reader_value(focus_dynamics.get('focus_criterion_name'), 'Фокусный критерий')} — "
-                f"{_manager_reader_value(focus_dynamics.get('previous_period_value'), 'нет базы')} → "
-                f"{_manager_reader_value(focus_dynamics.get('current_period_value'), 'нет данных')}"
-            ),
-        },
-        {
-            **_section_meta(template, "call_breakdown"),
-            **dict(payload.get("call_breakdown") or {"is_placeholder": True, "client_label": None, "time_label": None, "stage_steps": [], "worked": [], "to_fix": [], "recommendation": None}),
-        },
-        {
-            **_section_meta(template, "voice_of_customer"),
-            **dict(payload.get("voice_of_customer") or {"is_placeholder": True, "situations": []}),
-        },
-        {
-            **_section_meta(template, "additional_situations"),
-            **dict(payload.get("additional_situations") or {"is_placeholder": True, "situations": []}),
-        },
-        {
-            **_section_meta(template, "call_tomorrow"),
-            **dict(payload.get("call_tomorrow") or {"is_placeholder": True, "contacts": []}),
         },
         {
             **_section_meta(template, "morning_card"),
             "greeting": morning_card["greeting"],
             "summary_line": morning_card["summary_line"],
             "open_calls": morning_card["open_calls"],
+            "financial_line": money_on_table["highlight_line"],
             "challenge": morning_card["challenge"],
-        },
-        {
-            **_section_meta(template, "memo_legend"),
-            "groups": [
-                {
-                    "title": "Как читать уровни качества",
-                    "items": [_call_level_label(item) for item in payload["memo_legend"].get("call_level_legend") or []],
-                },
-                {
-                    "title": "Как читать статусы звонка",
-                    "items": [_call_status_label(item) for item in payload["memo_legend"].get("call_status_legend") or []],
-                },
-                {
-                    "title": "Как читать приоритет рекомендаций",
-                    "items": payload["memo_legend"].get("recommendation_priority_legend") or [],
-                },
-                {
-                    "title": "Как читать этапы оценки",
-                    "items": [
-                        "Э1 — контакт и представление",
-                        "Э2 — управление временем и переход к сути",
-                        "Э3 — выявление потребности",
-                        "Э4 — формирование предложения",
-                        "Э5 — работа с возражениями",
-                        "Э6 — завершение и следующий шаг",
-                    ],
-                },
-            ],
+            "call_tomorrow_contacts": list((_build_v5_call_tomorrow_section(section=dict(payload.get("call_tomorrow") or {}))).get("contacts") or [])[:3],
         },
     ]
     return {
@@ -331,7 +267,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             "template_id": template.template_id,
         },
         "metadata_line": (
-            "Ежедневный отчёт • "
+            "Ежедневный отчёт v5 • "
             f"{header['manager_name']} • {header['report_date']} • "
             f"{header['department_name']}"
             + (
@@ -340,16 +276,16 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 else ""
             )
         ),
-        "title": header["report_title"],
+        "title": "ЕЖЕДНЕВНЫЙ ОТЧЁТ МЕНЕДЖЕРА",
         "subtitle": f"{header['manager_name']} • {header['report_date']} • {header['department_name']}",
         "hero_focus": empty_state.get("hero_focus")
         or payload["focus_of_week"].get("text")
         or "На этой неделе держим контроль над конкретным следующим шагом в каждом звонке.",
-        "summary_cards": outcome_cols,
+        "summary_cards": [],
         "morning_card_text": morning_card["text"],
         "sections": sections,
         "footer": empty_state.get("footer") or "Конфиденциально · Только для менеджера и РОПа",
-        "generation_note": empty_state.get("generation_note") or "",
+        "generation_note": editorial_recommendations.get("text") or narrative["summary"] or "",
     }
 
 
@@ -554,6 +490,146 @@ def _render_text_report(report: dict[str, Any]) -> str:
 def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     """Render one section as text lines."""
     kind = section["kind"]
+    if kind == "header_card":
+        return [
+            f"Менеджер: {section.get('manager_name') or '—'}",
+            f"Дата: {section.get('report_date') or '—'}",
+            f"Звонков: {_value(section.get('calls_count'))}",
+            f"Балл дня: {_value(section.get('day_score'))} / 5",
+        ]
+    if kind == "outcome_table":
+        return [f"- {item['label']}: {_value(item.get('value'))}" for item in section.get("outcome_cols") or []]
+    if kind == "money_focus":
+        lines = [
+            str(section.get("body") or "Открытых возможностей на выбранной выборке не найдено."),
+            str(section.get("highlight_line") or ""),
+            str(section.get("reason_line") or ""),
+            str(section.get("note") or ""),
+        ]
+        return [line for line in lines if line]
+    if kind == "pipeline_summary":
+        lines = [
+            str(section.get("summary_line") or "Тёплые лиды не выделены."),
+            str(section.get("counts_line") or ""),
+            str(section.get("conversion_line") or ""),
+            str(section.get("average_line") or ""),
+        ]
+        if section.get("contacts"):
+            lines.append("Тёплые лиды без обратного звонка:")
+            lines.extend(
+                [
+                    f"- {item.get('client') or 'Клиент'} | {item.get('phone') or '—'} | {item.get('status') or '—'}"
+                    for item in section.get("contacts") or []
+                ]
+            )
+        return [line for line in lines if line]
+    if kind == "stage_scores_table":
+        lines = ["Этап | Сегодня | Среднее | Шкала | Приоритет"]
+        for row in section.get("stage_rows") or []:
+            lines.append(
+                " | ".join(
+                    [
+                        f"{row.get('funnel_label', '')} {row.get('stage_name', '')}".strip(),
+                        str(row.get("score", "—")),
+                        "—",
+                        str(row.get("bar_text") or "—"),
+                        "●" if row.get("is_priority") else ("✓" if row.get("bar_pct", 0) >= 80 else "—"),
+                    ]
+                )
+            )
+            for crit in row.get("criteria_detail") or []:
+                lines.append(
+                    f"  - {crit.get('name') or 'Критерий'}: {crit.get('score') or '—'}"
+                )
+        if section.get("note"):
+            lines.append(str(section["note"]))
+        return lines
+    if kind == "situation_card":
+        lines = [
+            str(section.get("situation_title") or section.get("label") or "Ситуация дня"),
+            str(section.get("body") or ""),
+            f"Что хотел клиент: {section.get('client_need') or 'Нет данных'}",
+            f"Наша задача: {section.get('manager_task') or 'Нет данных'}",
+        ]
+        example = dict(section.get("call_example") or {})
+        if example.get("client_label") or example.get("time_label"):
+            lines.append(
+                f"Пример из сегодня: {example.get('client_label') or 'Клиент'} · {example.get('time_label') or '—'}"
+            )
+        if example.get("reason_short"):
+            lines.append(str(example["reason_short"]))
+        if section.get("scripts"):
+            lines.append("Варианты речёвок:")
+            lines.extend([f"- {item}" for item in section.get("scripts") or []])
+        if section.get("why_it_works"):
+            lines.append(f"Почему работает: {section.get('why_it_works')}")
+        return [line for line in lines if line]
+    if kind == "call_breakdown":
+        lines = [str(section.get("summary_line") or "Разбор звонка")]
+        rows = section.get("rows") or []
+        if rows:
+            lines.append("Момент | Что было | Что лучше")
+            lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
+        else:
+            lines.append("—")
+        return lines
+    if kind == "voice_of_customer":
+        lines = []
+        if section.get("intro"):
+            lines.append(str(section["intro"]))
+        rows = section.get("rows") or []
+        if rows:
+            lines.append("Клиент | Что сказал | Смысл → Как ответить")
+            lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
+        else:
+            lines.append("—")
+        return lines
+    if kind == "expanded_situations":
+        lines = []
+        for item in section.get("situations") or []:
+            lines.extend(
+                [
+                    f"{item.get('badge') or 'Ситуация'}: {item.get('title') or '—'}",
+                    f"Что сказал клиент: {item.get('client_said') or '—'}",
+                    f"Что имел в виду: {item.get('meant') or '—'}",
+                    f"Как надо было: {item.get('how_to') or '—'}",
+                    f"Почему так: {item.get('why') or '—'}",
+                    "",
+                ]
+            )
+        return lines[:-1] if lines else ["—"]
+    if kind == "challenge_card":
+        return [
+            str(section.get("goal_line") or "Челлендж не определён."),
+            str(section.get("today_line") or ""),
+            str(section.get("record_line") or ""),
+            f"Фраза для завтра: {section.get('phrase_line') or 'Нет данных'}",
+        ]
+    if kind == "call_tomorrow":
+        rows = section.get("rows") or []
+        if rows:
+            return ["Приоритет | Клиент | Контекст | Скрипт открытия"] + [
+                " | ".join(_value(cell) for cell in row) for row in rows
+            ]
+        return ["Нет открытых контактов для перезвона."]
+    if kind == "morning_card":
+        lines = [
+            str(section.get("greeting") or ""),
+            str(section.get("summary_line") or ""),
+        ]
+        if section.get("financial_line"):
+            lines.append(str(section["financial_line"]))
+        if section.get("call_tomorrow_contacts"):
+            lines.append("Позвони сегодня:")
+            lines.extend(
+                [
+                    f"- {item.get('client_label') or 'Клиент'} — {item.get('opening_script') or 'Скрипт не задан'}"
+                    for item in section.get("call_tomorrow_contacts") or []
+                ]
+            )
+        if section.get("challenge"):
+            lines.append(f"Челлендж: {section.get('challenge')}")
+        return [line for line in lines if line]
     if kind in {"text", "callout", "placeholder"}:
         result = [str(section.get("body") or "—")]
         if section.get("reinforcement"):
@@ -641,29 +717,18 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
 
 def _render_html_report(*, report: dict[str, Any], template: ReportTemplate) -> str:
     """Render HTML from the generic report model and visual asset."""
-    if template.preset == "manager_daily":
-        return _render_manager_daily_html_report(report=report, template=template)
     sections_html = "".join(_render_html_section(section) for section in report["sections"])
     metadata_html = (
         f"<div class=\"metadata-line\"><span>{html.escape(report['metadata_line'])}</span></div>"
     )
-    if template.preset == "manager_daily":
-        hero_html = (
-            "<section class=\"hero\">"
-            f"<h1>{html.escape(report['title'])}</h1>"
-            f"<p>{html.escape(report['subtitle'])}</p>"
-            f"<div class=\"focus-chip\">Фокус недели: {html.escape(report.get('hero_focus') or 'not available')}</div>"
-            "</section>"
-        )
-    else:
-        hero_html = (
-            "<section class=\"title-page\">"
-            f"<h1>{html.escape(report['title'])}</h1>"
-            f"<p class=\"subtitle\">{html.escape(report['subtitle'])}</p>"
-            "<div class=\"divider\"></div>"
-            f"<p>{html.escape(report.get('hero_context') or '')}</p>"
-            "</section>"
-        )
+    hero_html = (
+        "<section class=\"title-page\">"
+        f"<h1>{html.escape(report['title'])}</h1>"
+        f"<p class=\"subtitle\">{html.escape(report['subtitle'])}</p>"
+        "<div class=\"divider\"></div>"
+        f"<p>{html.escape(report.get('hero_focus') or report.get('hero_context') or '')}</p>"
+        "</section>"
+    )
     return (
         "<html><head><meta charset=\"utf-8\">"
         f"<style>{template.css}</style>"
@@ -976,6 +1041,180 @@ def _render_html_section(section: dict[str, Any]) -> str:
         title = f"<div class=\"section-bar risk\">{html.escape(section['label'])}</div>"
     if section["id"] == "business_results_placeholder":
         title = f"<div class=\"section-bar business\">{html.escape(section['label'])}</div>"
+    if kind == "header_card":
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            "<article class=\"header-card\">"
+            f"<div class=\"header-manager\">{html.escape(str(section.get('manager_name') or '—'))}</div>"
+            f"<div class=\"header-meta\">{html.escape(str(section.get('report_date') or '—'))} · "
+            f"{html.escape(_value(section.get('calls_count')))} звонков</div>"
+            f"<div class=\"header-score\">Балл дня: {html.escape(_value(section.get('day_score')))} / 5</div>"
+            "</article></div></section>"
+        )
+    if kind == "outcome_table":
+        header = "".join(
+            (
+                f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
+                f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
+                f"<div class=\"outcome-label\">{html.escape(str(item['label']))}</div>"
+                "</td>"
+            )
+            for item in section.get("outcome_cols") or []
+        )
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><table class=\"outcome-table\"><tbody><tr>{header}</tr></tbody></table></div></section>"
+    if kind == "money_focus":
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel warning\">"
+            f"<p>{html.escape(str(section.get('body') or ''))}</p>"
+            f"<p><strong>{html.escape(str(section.get('highlight_line') or ''))}</strong></p>"
+            f"<p>{html.escape(str(section.get('reason_line') or ''))}</p>"
+            f"<p class=\"muted\">{html.escape(str(section.get('note') or ''))}</p>"
+            "</article></div></section>"
+        )
+    if kind == "pipeline_summary":
+        contacts = "".join(
+            f"<tr><td>{html.escape(str(item.get('client') or '—'))}</td><td>{html.escape(str(item.get('phone') or '—'))}</td><td>{html.escape(str(item.get('status') or '—'))}</td></tr>"
+            for item in section.get("contacts") or []
+        ) or "<tr><td colspan=\"3\">Тёплые лиды без обратного звонка не найдены.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            f"<p>{html.escape(str(section.get('summary_line') or ''))}</p>"
+            f"<p>{html.escape(str(section.get('counts_line') or ''))}</p>"
+            f"<p><strong>{html.escape(str(section.get('conversion_line') or ''))}</strong></p>"
+            f"<p class=\"muted\">{html.escape(str(section.get('average_line') or ''))}</p>"
+            "<table><thead><tr><th>Клиент</th><th>Телефон</th><th>Статус</th></tr></thead>"
+            f"<tbody>{contacts}</tbody></table></div></section>"
+        )
+    if kind == "stage_scores_table":
+        rows = []
+        for row in section.get("stage_rows") or []:
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape((str(row.get('funnel_label') or '') + ' ' + str(row.get('stage_name') or '')).strip())}</td>"
+                f"<td>{html.escape(str(row.get('score') or '—'))}</td>"
+                "<td>—</td>"
+                f"<td>{html.escape(str(row.get('bar_text') or '—'))}</td>"
+                f"<td>{'●' if row.get('is_priority') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
+                "</tr>"
+            )
+            for crit in row.get("criteria_detail") or []:
+                rows.append(
+                    "<tr class=\"sub-row\">"
+                    f"<td colspan=\"5\">{html.escape(str(crit.get('name') or 'Критерий'))}: {html.escape(str(crit.get('score') or '—'))}</td>"
+                    "</tr>"
+                )
+        body = "".join(rows) or "<tr><td colspan=\"5\">Данные по этапам появятся после накопления базы.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
+            f"<tbody>{body}</tbody></table></div></section>"
+        )
+    if kind == "situation_card":
+        scripts = "".join(f"<li>{html.escape(str(item))}</li>" for item in section.get("scripts") or [])
+        example = dict(section.get("call_example") or {})
+        example_html = (
+            "<div class=\"mini-card\">"
+            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_label') or 'Клиент'))} · {html.escape(str(example.get('time_label') or '—'))}"
+            + (
+                f"<div class=\"muted\">{html.escape(str(example.get('reason_short') or ''))}</div>"
+                if example.get("reason_short") else ""
+            )
+            + "</div>"
+            if example.get("client_label") or example.get("time_label")
+            else ""
+        )
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"<h3>{html.escape(str(section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
+            f"<p>{html.escape(str(section.get('body') or ''))}</p>"
+            f"<p><strong>Что хотел клиент:</strong> {html.escape(str(section.get('client_need') or 'Нет данных'))}</p>"
+            f"<p><strong>Наша задача:</strong> {html.escape(str(section.get('manager_task') or 'Нет данных'))}</p>"
+            f"{example_html}"
+            "<div class=\"mini-card\"><strong>Варианты речёвок</strong><ol>"
+            f"{scripts}</ol></div>"
+            f"<p><strong>Почему работает:</strong> {html.escape(str(section.get('why_it_works') or ''))}</p>"
+            "</article></div></section>"
+        )
+    if kind == "call_breakdown":
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
+            for row in section.get("rows") or []
+        ) or "<tr><td colspan=\"3\">Недостаточно данных для разбора звонка.</td></tr>"
+        intro = (
+            f"<p class=\"muted\">{html.escape(str(section.get('summary_line') or ''))}</p>"
+            if section.get("summary_line") else ""
+        )
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+            "<table><thead><tr><th>Момент</th><th>Что было</th><th>Что лучше</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div></section>"
+        )
+    if kind == "voice_of_customer":
+        intro = (
+            f"<p class=\"muted\">{html.escape(str(section.get('intro') or ''))}</p>"
+            if section.get("intro") else ""
+        )
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
+            for row in section.get("rows") or []
+        ) or "<tr><td colspan=\"3\">Ситуации появятся после накопления материала по звонкам.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+            "<table><thead><tr><th>Клиент</th><th>Что сказал</th><th>Смысл → Как ответить</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div></section>"
+        )
+    if kind == "expanded_situations":
+        cards = "".join(
+            "<article class=\"card\">"
+            f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
+            f"<p><strong>Что сказал клиент:</strong> {html.escape(str(item.get('client_said') or '—'))}</p>"
+            f"<p><strong>Что имел в виду:</strong> {html.escape(str(item.get('meant') or '—'))}</p>"
+            f"<p><strong>Как надо было:</strong> {html.escape(str(item.get('how_to') or '—'))}</p>"
+            f"<p><strong>Почему так:</strong> {html.escape(str(item.get('why') or '—'))}</p>"
+            "</article>"
+            for item in section.get("situations") or []
+        ) or "<article class=\"card\"><p>Дополнительные ситуации появятся после накопления данных по звонкам.</p></article>"
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
+    if kind == "challenge_card":
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"<p><strong>{html.escape(str(section.get('goal_line') or ''))}</strong></p>"
+            f"<p>{html.escape(str(section.get('today_line') or ''))}</p>"
+            f"<p>{html.escape(str(section.get('record_line') or ''))}</p>"
+            f"<p><strong>Фраза для завтра:</strong> {html.escape(str(section.get('phrase_line') or ''))}</p>"
+            "</article></div></section>"
+        )
+    if kind == "call_tomorrow":
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
+            for row in section.get("rows") or []
+        ) or "<tr><td colspan=\"4\">Нет открытых контактов для перезвона.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Скрипт открытия</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div></section>"
+        )
+    if kind == "morning_card":
+        calls = "".join(
+            f"<li>{html.escape(str(item.get('client_label') or 'Клиент'))} — {html.escape(str(item.get('opening_script') or 'Скрипт не задан'))}</li>"
+            for item in section.get("call_tomorrow_contacts") or []
+        ) or "".join(
+            f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
+            for call in section.get("open_calls") or []
+        ) or "<li>Открытых звонков нет.</li>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"<h3>{html.escape(str(section.get('greeting') or ''))}</h3>"
+            f"<p>{html.escape(str(section.get('summary_line') or ''))}</p>"
+            + (
+                f"<p><strong>{html.escape(str(section.get('financial_line') or ''))}</strong></p>"
+                if section.get("financial_line") else ""
+            )
+            + "<p><strong>Позвони сегодня:</strong></p>"
+            + f"<ul>{calls}</ul>"
+            + f"<p><strong>Челлендж:</strong> {html.escape(str(section.get('challenge') or ''))}</p>"
+            + "</article></div></section>"
+        )
     if kind in {"text", "callout", "placeholder"}:
         note = (
             f"<p class=\"muted\">{html.escape(str(section['note']))}</p>"
@@ -1114,21 +1353,6 @@ def _render_pdf_report(*, report: dict[str, Any], template: ReportTemplate) -> t
     height = 842
     margin = 42
     line_gap = 4
-    if template.preset == "manager_daily":
-        return _render_manager_daily_pdf_report(
-            report=report,
-            font=font,
-            width=width,
-            height=height,
-            margin=margin,
-            accent=accent,
-            muted=muted,
-            black=black,
-            green=green,
-            amber=amber,
-            red=red,
-            surface_alt=surface_alt,
-        )
     pages: list[list[dict[str, Any]]] = []
     y = height - margin
 
@@ -1164,18 +1388,9 @@ def _render_pdf_report(*, report: dict[str, Any], template: ReportTemplate) -> t
         y -= 10
 
     add_page()
-    if template.preset == "manager_daily":
-        ensure_space(88)
-        y -= 52
-        pages[-1].append({"type": "rect", "x": margin, "y": y, "w": width - (margin * 2), "h": 52, "fill": accent})
-        pages[-1].append({"type": "text", "x": margin + 14, "y": y + 32, "size": 18, "color": (255, 255, 255), "text": report["title"]})
-        pages[-1].append({"type": "text", "x": margin + 14, "y": y + 16, "size": 9.5, "color": (255, 255, 255), "text": report["subtitle"]})
-        y -= 12
-        add_line(f"Фокус недели: {report.get('hero_focus') or 'not available'}", size=9.5, color=amber, gap=12)
-    else:
-        add_line(report["title"], size=24, color=accent, gap=2)
-        add_line(report["subtitle"], size=11, color=muted, gap=4)
-        add_line(report.get("hero_context") or "", size=10, color=black, gap=12)
+    add_line(report["title"], size=24, color=accent, gap=2)
+    add_line(report["subtitle"], size=11, color=muted, gap=4)
+    add_line(report.get("hero_focus") or report.get("hero_context") or "", size=10, color=black, gap=12)
 
     for section in report["sections"]:
         if section.get("page_break_before"):
@@ -2375,18 +2590,318 @@ def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[s
     for item in score_by_stage:
         score = item.get("score")
         score_float = float(score) if score is not None else None
-        bar_pct = round((score_float / 10.0) * 100) if score_float is not None else 0
+        score_on_5 = round(score_float / 2.0, 1) if score_float is not None else None
+        bar_pct = round((score_on_5 / 5.0) * 100) if score_on_5 is not None else 0
         bar_pct = max(0, min(100, bar_pct))
         rows.append({
             "funnel_label": str(item.get("funnel_label") or ""),
             "stage_name": str(item.get("stage_name") or ""),
-            "score": _value(score_float),
+            "score": _value(score_on_5),
             "score_float": score_float,
             "bar_pct": bar_pct,
+            "bar_text": _progress_bar_20(score_on_5),
             "is_priority": bool(item.get("is_priority")),
             "criteria_detail": list(item.get("criteria_detail") or []) or None,
         })
     return rows
+
+
+def _progress_bar_20(score: float | None) -> str:
+    """Return the v5-style 20-char progress bar on a 0-5 scale."""
+    if score is None:
+        return "—"
+    filled = max(0, min(20, round((score / 5.0) * 20)))
+    return ("█" * filled) + ("░" * (20 - filled))
+
+
+def _build_money_on_table_data(
+    *,
+    call_list_raw: list[dict[str, Any]],
+    call_outcomes: dict[str, Any],
+) -> dict[str, str]:
+    """Build the fixed-structure v5 block 'ДЕНЬГИ НА СТОЛЕ' with honest fallbacks."""
+    open_rows = [row for row in call_list_raw if str(row.get("status") or "") == "open"]
+    open_count = int(call_outcomes.get("open_count") or len(open_rows) or 0)
+    if open_rows:
+        first_open = open_rows[0]
+        client = _manager_reader_value(first_open.get("client_or_phone"), "клиент")
+        context = _call_context_label(
+            str(first_open.get("status") or ""),
+            first_open.get("deadline"),
+            first_open.get("reason"),
+        )
+        return {
+            "body": f"{open_count} открытых звонк(ов). Ближайшая незакрытая возможность: {client}.",
+            "highlight_line": "Потенциал в деньгах не определён текущим runtime contract и требует внешней CRM/прайсинговой логики.",
+            "reason_line": f"Причина: звонок остался без зафиксированного следующего шага. Контекст: {context}.",
+            "note": "Блок сохранён в формате v5; при отсутствии revenue-данных runtime честно показывает structural fallback.",
+        }
+    return {
+        "body": "Открытых возможностей на выбранной выборке не найдено.",
+        "highlight_line": "Денежный потенциал не зафиксирован.",
+        "reason_line": "Причина: все звонки либо доведены до статуса, либо не содержат открытого follow-up.",
+        "note": "При появлении CRM/pricing-данных сюда будет подставляться сумма без изменения формата блока.",
+    }
+
+
+def _build_warm_pipeline_data(
+    *,
+    call_list_raw: list[dict[str, Any]],
+    call_outcomes: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the fixed-structure v5 block 'PIPELINE' from existing call list/classification."""
+    warm_rows = [
+        row
+        for row in call_list_raw
+        if str(row.get("call_type") or "").lower() in {"warm", "hot"}
+        or str(row.get("scenario_type") or "").lower() in {"warm", "hot", "warm_lead", "inbound_hot"}
+    ]
+    total = len(warm_rows)
+    agreed = sum(1 for row in warm_rows if str(row.get("status") or "") == "agreed")
+    rescheduled = sum(1 for row in warm_rows if str(row.get("status") or "") == "rescheduled")
+    refusal = sum(1 for row in warm_rows if str(row.get("status") or "") == "refusal")
+    open_count = sum(1 for row in warm_rows if str(row.get("status") or "") == "open")
+    contacts = [
+        {
+            "client": _manager_reader_value(row.get("client_or_phone"), "Клиент"),
+            "phone": _manager_reader_value(row.get("client_or_phone"), "—"),
+            "status": _call_context_label(
+                str(row.get("status") or ""),
+                row.get("deadline"),
+                row.get("reason"),
+            ),
+        }
+        for row in warm_rows
+        if str(row.get("status") or "") == "open"
+    ][:5]
+    conversion = round((agreed / total) * 100) if total else 0
+    if total <= 0:
+        return {
+            "summary_line": "Тёплые и горячие лиды в текущем срезе не выделены.",
+            "counts_line": "0 → Договорились · 0 → Перенос · 0 → Отказ · 0 → Открыт",
+            "conversion_line": "Конверсия тёплых: нет базы для расчёта.",
+            "average_line": "Среднее: нет базы для сравнения.",
+            "contacts": [],
+        }
+    return {
+        "summary_line": f"{total} повторных/тёплых звонков сегодня.",
+        "counts_line": f"{agreed} → Договорились · {rescheduled} → Перенос · {refusal} → Отказ · {open_count} → Открыт",
+        "conversion_line": f"Конверсия тёплых: {conversion}% ({agreed} из {total})",
+        "average_line": (
+            "Среднее: нет базы для сравнения."
+            if int(call_outcomes.get("tech_service_count") or 0) >= 0
+            else "Среднее: нет данных."
+        ),
+        "contacts": contacts,
+    }
+
+
+def _build_situation_client_need(key_problem: dict[str, Any]) -> str:
+    """Return a deterministic 'Что хотел клиент' line for v5 situation block."""
+    description = str(key_problem.get("description") or "").strip()
+    if description:
+        return (
+            "Клиент хотел услышать решение под свою конкретную задачу, а не общую презентацию. "
+            + description
+        )
+    return "Клиент ждал конкретики под свой контекст и понятного следующего шага."
+
+
+def _build_situation_manager_task(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    recommendations: list[dict[str, Any]],
+) -> str:
+    """Return a deterministic 'Наша задача' line for v5 situation block."""
+    priority_row = next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    if priority_row is not None:
+        return (
+            f"Поднять этап '{priority_row.get('stage_name') or 'приоритетный этап'}' до 4.0+ "
+            "и до презентации фиксировать 2–3 уточняющих вопроса."
+        )
+    if recommendations:
+        return _clean_reader_text(str(recommendations[0].get("better_phrasing") or ""))
+    return "Доводить каждый разговор до понятной договорённости и фиксированного следующего шага."
+
+
+def _build_situation_why_it_works(
+    *,
+    recommendations: list[dict[str, Any]],
+    score_by_stage: list[dict[str, Any]],
+) -> str:
+    """Return the v5 'Почему работает' explanation."""
+    if recommendations:
+        return _clean_reader_text(
+            str(recommendations[0].get("why_this_works") or recommendations[0].get("reason") or "")
+        ) or "Конкретика переводит разговор из намерения в договорённость."
+    priority_row = next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    if priority_row is not None:
+        return (
+            f"Когда менеджер усиливает этап '{priority_row.get('stage_name') or 'приоритетный этап'}', "
+            "клиент слышит решение под свой контекст, а не шаблонную подачу."
+        )
+    return "Фокус на одном повторяющемся паттерне ускоряет улучшение качества звонков."
+
+
+def _build_v5_call_breakdown_section(
+    *,
+    section: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Map legacy call_breakdown payload to the approved v5 3-column structure."""
+    rows: list[list[str]] = []
+    for idx, item in enumerate(section.get("to_fix") or []):
+        better = ""
+        if idx < len(recommendations):
+            better = _clean_reader_text(
+                str(recommendations[idx].get("better_phrasing") or recommendations[idx].get("title") or "")
+            )
+        if not better:
+            better = _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Следующий шаг нужно формулировать конкретнее."))
+        rows.append(
+            [
+                "—",
+                f"{item.get('label') or 'Момент разговора'}: {item.get('interpretation') or 'Требует уточнения.'}",
+                better,
+            ]
+        )
+    if not rows:
+        rows.append(
+            [
+                "—",
+                "Недостаточно данных для детального покадрового разбора звонка.",
+                _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Повторите разбор после следующего полного запуска.")),
+            ]
+        )
+    return {
+        "summary_line": (
+            f"{section.get('client_label') or 'Клиент'} · {section.get('time_label') or '—'}"
+            if section.get("client_label") or section.get("time_label")
+            else "Звонок выбран как наиболее показательный для основного паттерна дня."
+        ),
+        "rows": rows[:5],
+    }
+
+
+def _build_voice_reply_line(context: str | None, quote: str | None) -> str:
+    """Build a safe fallback reply suggestion for voice-of-customer."""
+    context_text = _clean_reader_text(str(context or ""))
+    if context_text:
+        return f"{context_text} Ответить: уточнить задачу клиента и привязать предложение к его процессу."
+    quote_text = _clean_reader_text(str(quote or ""))
+    if quote_text:
+        return "Смысл: клиенту не хватило конкретики. Ответить: сначала уточнить контекст, затем давать решение."
+    return "Смысл: нужен более точный ответ под ситуацию клиента."
+
+
+def _build_v5_voice_of_customer_section(
+    *,
+    section: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Map legacy voice payload to the approved v5 3-column structure."""
+    reply_seed = _clean_reader_text(
+        str(recommendations[0].get("better_phrasing") or "")
+    ) if recommendations else ""
+    rows = [
+        [
+            f"{item.get('client_label') or 'Клиент'} · {item.get('time_label') or '—'}",
+            item.get("quote") or "—",
+            (
+                _build_voice_reply_line(item.get("context"), item.get("quote"))
+                + (f" База ответа: {reply_seed}" if reply_seed else "")
+            ),
+        ]
+        for item in section.get("situations") or []
+    ]
+    return {
+        "intro": "3 наиболее показательные ситуации из звонков дня. Критерий выбора: скрытое возражение / незакрытая боль / упущенная связка.",
+        "rows": rows[:3],
+    }
+
+
+def _build_v5_additional_situations_section(*, section: dict[str, Any]) -> dict[str, Any]:
+    """Expand compact additional situations into the v5 four-row card structure."""
+    situations: list[dict[str, Any]] = []
+    for item in section.get("situations") or []:
+        title = _clean_reader_text(str(item.get("title") or "Ситуация"))
+        interpretation = _clean_reader_text(str(item.get("interpretation") or ""))
+        kind = str(item.get("kind") or "gap")
+        situations.append(
+            {
+                "badge": "Сильная сторона" if kind == "strength" else "Зона роста",
+                "title": title,
+                "client_said": interpretation or "Ситуация повторяется в нескольких звонках.",
+                "meant": (
+                    "За этим стоит устойчивый рабочий паттерн, который стоит сохранить."
+                    if kind == "strength"
+                    else "Клиент не получил достаточно конкретики или фиксации следующего шага."
+                ),
+                "how_to": (
+                    "Повторять удачную формулировку и усиливать её короткой привязкой к задаче клиента."
+                    if kind == "strength"
+                    else "Задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг и дедлайн."
+                ),
+                "why": (
+                    "Такой паттерн помогает удерживать доверие и ускоряет движение к договорённости."
+                    if kind == "strength"
+                    else "Конкретика снижает зависание звонка и переводит разговор в управляемый follow-up."
+                ),
+            }
+        )
+    return {"situations": situations[:3]}
+
+
+def _build_challenge_data(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    key_problem: dict[str, Any],
+    total_calls: int,
+) -> dict[str, str]:
+    """Build the fixed-structure v5 challenge block."""
+    priority_row = next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    stage_name = priority_row.get("stage_name") if priority_row else "приоритетный этап"
+    calls_basis = max(total_calls, 1)
+    target = max(1, round(calls_basis * 0.75))
+    today_count = int(key_problem.get("pattern_count") or 0)
+    return {
+        "goal_line": f"Из следующих {calls_basis} звонков — отработать '{stage_name}' минимум в {target} случаях.",
+        "today_line": f"Сегодня: {today_count} звонк(ов) с повторением основного паттерна дня.",
+        "record_line": "Рекорд: нет базы (первый период отслеживания).",
+        "phrase_line": "Сначала уточняем контекст клиента, затем даём решение и фиксируем следующий шаг.",
+    }
+
+
+def _priority_icon_for_contact(status: str) -> str:
+    """Return v5 priority icon for call_tomorrow row."""
+    return {"agreed": "🔴", "rescheduled": "🟡", "open": "🔵"}.get(status, "🔵")
+
+
+def _priority_label_for_contact(status: str) -> str:
+    """Return v5 priority label for call_tomorrow row."""
+    return {"agreed": "Горячий", "rescheduled": "Тёплый", "open": "Открытый"}.get(status, "Открытый")
+
+
+def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy call_tomorrow payload to the approved v5 table structure."""
+    contacts = list(section.get("contacts") or [])
+    rows = [
+        [
+            f"{_priority_icon_for_contact(str(item.get('status') or 'open'))} {_priority_label_for_contact(str(item.get('status') or 'open'))}",
+            _manager_reader_value(item.get("client_label"), "Клиент"),
+            _call_context_label(
+                str(item.get("status") or ""),
+                item.get("deadline"),
+                None,
+            ),
+            _clean_reader_text(str(item.get("opening_script") or "Скрипт открытия будет добавлен после следующего полного запуска.")),
+        ]
+        for item in contacts
+    ]
+    return {
+        "contacts": contacts,
+        "rows": rows[:5],
+    }
 
 
 def _build_morning_card_data(
@@ -2684,3 +3199,181 @@ def _manager_status_text_color(
     if status == "open":
         return amber
     return black
+    if kind == "header_card":
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            "<article class=\"header-card\">"
+            f"<div class=\"header-manager\">{html.escape(str(section.get('manager_name') or '—'))}</div>"
+            f"<div class=\"header-meta\">{html.escape(str(section.get('report_date') or '—'))} · "
+            f"{html.escape(_value(section.get('calls_count')))} звонков</div>"
+            f"<div class=\"header-score\">Балл дня: {html.escape(_value(section.get('day_score')))} / 5</div>"
+            "</article></div></section>"
+        )
+    if kind == "outcome_table":
+        header = "".join(
+            (
+                f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
+                f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
+                f"<div class=\"outcome-label\">{html.escape(str(item['label']))}</div>"
+                "</td>"
+            )
+            for item in section.get("outcome_cols") or []
+        )
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><table class=\"outcome-table\"><tbody><tr>{header}</tr></tbody></table></div></section>"
+    if kind == "money_focus":
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel warning\">"
+            f"<p>{html.escape(str(section.get('body') or ''))}</p>"
+            f"<p><strong>{html.escape(str(section.get('highlight_line') or ''))}</strong></p>"
+            f"<p>{html.escape(str(section.get('reason_line') or ''))}</p>"
+            f"<p class=\"muted\">{html.escape(str(section.get('note') or ''))}</p>"
+            "</article></div></section>"
+        )
+    if kind == "pipeline_summary":
+        contacts = "".join(
+            f"<tr><td>{html.escape(str(item.get('client') or '—'))}</td><td>{html.escape(str(item.get('phone') or '—'))}</td><td>{html.escape(str(item.get('status') or '—'))}</td></tr>"
+            for item in section.get("contacts") or []
+        ) or "<tr><td colspan=\"3\">Тёплые лиды без обратного звонка не найдены.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            f"<p>{html.escape(str(section.get('summary_line') or ''))}</p>"
+            f"<p>{html.escape(str(section.get('counts_line') or ''))}</p>"
+            f"<p><strong>{html.escape(str(section.get('conversion_line') or ''))}</strong></p>"
+            f"<p class=\"muted\">{html.escape(str(section.get('average_line') or ''))}</p>"
+            "<table><thead><tr><th>Клиент</th><th>Телефон</th><th>Статус</th></tr></thead>"
+            f"<tbody>{contacts}</tbody></table></div></section>"
+        )
+    if kind == "stage_scores_table":
+        rows = []
+        for row in section.get("stage_rows") or []:
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape((str(row.get('funnel_label') or '') + ' ' + str(row.get('stage_name') or '')).strip())}</td>"
+                f"<td>{html.escape(str(row.get('score') or '—'))}</td>"
+                "<td>—</td>"
+                f"<td>{html.escape(str(row.get('bar_text') or '—'))}</td>"
+                f"<td>{'●' if row.get('is_priority') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
+                "</tr>"
+            )
+            for crit in row.get("criteria_detail") or []:
+                rows.append(
+                    "<tr class=\"sub-row\">"
+                    f"<td colspan=\"5\">{html.escape(str(crit.get('name') or 'Критерий'))}: {html.escape(str(crit.get('score') or '—'))}</td>"
+                    "</tr>"
+                )
+        body = "".join(rows) or "<tr><td colspan=\"5\">Данные по этапам появятся после накопления базы.</td></tr>"
+        note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('note') or ''))}</p>"
+            if section.get("note") else ""
+        )
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
+            f"<tbody>{body}</tbody></table>{note}</div></section>"
+        )
+    if kind == "situation_card":
+        scripts = "".join(f"<li>{html.escape(str(item))}</li>" for item in section.get("scripts") or [])
+        example = dict(section.get("call_example") or {})
+        example_html = (
+            "<div class=\"mini-card\">"
+            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_label') or 'Клиент'))} · {html.escape(str(example.get('time_label') or '—'))}"
+            + (
+                f"<div class=\"muted\">{html.escape(str(example.get('reason_short') or ''))}</div>"
+                if example.get("reason_short") else ""
+            )
+            + "</div>"
+            if example.get("client_label") or example.get("time_label")
+            else ""
+        )
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"<h3>{html.escape(str(section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
+            f"<p>{html.escape(str(section.get('body') or ''))}</p>"
+            f"<p><strong>Что хотел клиент:</strong> {html.escape(str(section.get('client_need') or 'Нет данных'))}</p>"
+            f"<p><strong>Наша задача:</strong> {html.escape(str(section.get('manager_task') or 'Нет данных'))}</p>"
+            f"{example_html}"
+            "<div class=\"mini-card\"><strong>Варианты речёвок</strong><ol>"
+            f"{scripts}</ol></div>"
+            f"<p><strong>Почему работает:</strong> {html.escape(str(section.get('why_it_works') or ''))}</p>"
+            "</article></div></section>"
+        )
+    if kind == "call_breakdown":
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
+            for row in section.get("rows") or []
+        ) or "<tr><td colspan=\"3\">Недостаточно данных для разбора звонка.</td></tr>"
+        intro = (
+            f"<p class=\"muted\">{html.escape(str(section.get('summary_line') or ''))}</p>"
+            if section.get("summary_line") else ""
+        )
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+            "<table><thead><tr><th>Момент</th><th>Что было</th><th>Что лучше</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div></section>"
+        )
+    if kind == "voice_of_customer":
+        intro = (
+            f"<p class=\"muted\">{html.escape(str(section.get('intro') or ''))}</p>"
+            if section.get("intro") else ""
+        )
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
+            for row in section.get("rows") or []
+        ) or "<tr><td colspan=\"3\">Ситуации появятся после накопления материала по звонкам.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+            "<table><thead><tr><th>Клиент</th><th>Что сказал</th><th>Смысл → Как ответить</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div></section>"
+        )
+    if kind == "expanded_situations":
+        cards = "".join(
+            "<article class=\"card\">"
+            f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
+            f"<p><strong>Что сказал клиент:</strong> {html.escape(str(item.get('client_said') or '—'))}</p>"
+            f"<p><strong>Что имел в виду:</strong> {html.escape(str(item.get('meant') or '—'))}</p>"
+            f"<p><strong>Как надо было:</strong> {html.escape(str(item.get('how_to') or '—'))}</p>"
+            f"<p><strong>Почему так:</strong> {html.escape(str(item.get('why') or '—'))}</p>"
+            "</article>"
+            for item in section.get("situations") or []
+        ) or "<article class=\"card\"><p>Дополнительные ситуации появятся после накопления данных по звонкам.</p></article>"
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
+    if kind == "challenge_card":
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"<p><strong>{html.escape(str(section.get('goal_line') or ''))}</strong></p>"
+            f"<p>{html.escape(str(section.get('today_line') or ''))}</p>"
+            f"<p>{html.escape(str(section.get('record_line') or ''))}</p>"
+            f"<p><strong>Фраза для завтра:</strong> {html.escape(str(section.get('phrase_line') or ''))}</p>"
+            "</article></div></section>"
+        )
+    if kind == "call_tomorrow":
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
+            for row in section.get("rows") or []
+        ) or "<tr><td colspan=\"4\">Нет открытых контактов для перезвона.</td></tr>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Скрипт открытия</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div></section>"
+        )
+    if kind == "morning_card":
+        calls = "".join(
+            f"<li>{html.escape(str(item.get('client_label') or 'Клиент'))} — {html.escape(str(item.get('opening_script') or 'Скрипт не задан'))}</li>"
+            for item in section.get("call_tomorrow_contacts") or []
+        ) or "".join(
+            f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
+            for call in section.get("open_calls") or []
+        ) or "<li>Открытых звонков нет.</li>"
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"<h3>{html.escape(str(section.get('greeting') or ''))}</h3>"
+            f"<p>{html.escape(str(section.get('summary_line') or ''))}</p>"
+            + (
+                f"<p><strong>{html.escape(str(section.get('financial_line') or ''))}</strong></p>"
+                if section.get("financial_line") else ""
+            )
+            + "<p><strong>Позвони сегодня:</strong></p>"
+            + f"<ul>{calls}</ul>"
+            + f"<p><strong>Челлендж:</strong> {html.escape(str(section.get('challenge') or ''))}</p>"
+            + "</article></div></section>"
+        )
