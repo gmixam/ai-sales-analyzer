@@ -107,6 +107,20 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_report_render_model(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build the runtime render model for one normalized payload without rendering bytes."""
+    template = load_report_template(str(payload["meta"]["preset"]))
+    payload.setdefault("meta", {})
+    payload["meta"]["report_template"] = {
+        "preset": template.preset,
+        "version": template.version,
+        "template_id": template.template_id,
+        "render_variant": f"template_pdf_{template.version}",
+        "generator_path": REPORT_RENDER_GENERATOR_PATH,
+    }
+    return _build_render_model(payload=payload, template=template)
+
+
 def _build_render_model(*, payload: dict[str, Any], template: ReportTemplate) -> dict[str, Any]:
     """Convert normalized payload into a generic render model for HTML/PDF/text."""
     if template.preset == "manager_daily":
@@ -119,12 +133,17 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     kpi = payload["kpi_overview"]
     empty_state = dict(payload.get("empty_state") or {})
     editorial_recommendations = dict(payload.get("editorial_recommendations") or {})
+    verification_overrides = dict(payload.get("verification_overrides") or {})
     total_calls = int(kpi.get("calls_count") or 0)
     narrative = _build_manager_daily_narrative_block(payload)
     call_outcomes = dict(payload.get("call_outcomes_summary") or {})
     call_list_raw = list(payload.get("call_list") or [])
     warm_pipeline = _build_warm_pipeline_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
-    money_on_table = _build_money_on_table_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
+    money_on_table = _build_money_on_table_data(
+        call_list_raw=call_list_raw,
+        call_outcomes=call_outcomes,
+        override=dict(verification_overrides.get("money_on_table") or payload.get("money_on_table") or {}),
+    )
     morning_card = _build_morning_card_data(
         header=header,
         call_outcomes=call_outcomes,
@@ -151,10 +170,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             "manager_name": header["manager_name"],
             "report_date": header["report_date"],
             "calls_count": total_calls,
-            "day_score": _manager_reader_value(
-                round(float(kpi.get("average_score")) / 20.0, 1) if kpi.get("average_score") is not None else None,
-                "Нет базы",
-            ),
+            "day_score": _manager_reader_value(_resolve_manager_day_score(payload=payload), "Нет базы"),
         },
         {
             **_section_meta(template, "day_summary"),
@@ -1929,6 +1945,37 @@ def _short_time(value: Any) -> str:
     return text
 
 
+def _resolve_manager_day_score(*, payload: dict[str, Any]) -> float | None:
+    """Return the visible day score on a 0-5 scale, with optional parity override."""
+    verification_overrides = dict(payload.get("verification_overrides") or {})
+    override = verification_overrides.get("day_score")
+    if override is not None:
+        try:
+            return round(float(override), 1)
+        except (TypeError, ValueError):
+            return None
+    score_by_stage = list(payload.get("score_by_stage") or [])
+    if score_by_stage:
+        values = []
+        for item in score_by_stage:
+            score = item.get("score")
+            if score is None:
+                continue
+            try:
+                values.append(float(score) / 2.0)
+            except (TypeError, ValueError):
+                continue
+        if values:
+            return round(sum(values) / len(values), 1)
+    average_score = payload.get("kpi_overview", {}).get("average_score")
+    if average_score is None:
+        return None
+    try:
+        return round(float(average_score) / 20.0, 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_situation_title(score_by_stage: list[dict[str, Any]]) -> str:
     """Build СИТУАЦИЯ ДНЯ heading from the priority stage (first below 4.0 in funnel order)."""
     for item in score_by_stage:
@@ -2207,8 +2254,17 @@ def _build_money_on_table_data(
     *,
     call_list_raw: list[dict[str, Any]],
     call_outcomes: dict[str, Any],
+    override: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Build the fixed-structure v5 block 'ДЕНЬГИ НА СТОЛЕ' with honest fallbacks."""
+    override = dict(override or {})
+    if any(override.get(key) for key in ("body", "highlight_line", "reason_line", "note")):
+        return {
+            "body": str(override.get("body") or ""),
+            "highlight_line": str(override.get("highlight_line") or ""),
+            "reason_line": str(override.get("reason_line") or ""),
+            "note": str(override.get("note") or ""),
+        }
     open_rows = [row for row in call_list_raw if str(row.get("status") or "") == "open"]
     open_count = int(call_outcomes.get("open_count") or len(open_rows) or 0)
     if open_rows:
@@ -2338,6 +2394,19 @@ def _build_v5_call_breakdown_section(
     recommendations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Map legacy call_breakdown payload to the approved v5 3-column structure."""
+    explicit_rows = [list(map(str, row)) for row in (section.get("rows") or []) if isinstance(row, (list, tuple))]
+    if explicit_rows:
+        return {
+            "summary_line": str(
+                section.get("summary_line")
+                or (
+                    f"{section.get('client_label') or 'Клиент'} · {section.get('time_label') or '—'}"
+                    if section.get("client_label") or section.get("time_label")
+                    else "Звонок выбран как наиболее показательный для основного паттерна дня."
+                )
+            ),
+            "rows": explicit_rows[:5],
+        }
     rows: list[list[str]] = []
     for idx, item in enumerate(section.get("to_fix") or []):
         better = ""
@@ -2389,6 +2458,15 @@ def _build_v5_voice_of_customer_section(
     recommendations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Map legacy voice payload to the approved v5 3-column structure."""
+    explicit_rows = [list(map(str, row)) for row in (section.get("rows") or []) if isinstance(row, (list, tuple))]
+    if explicit_rows:
+        return {
+            "intro": str(
+                section.get("intro")
+                or "3 наиболее показательные ситуации из звонков дня. Критерий выбора: скрытое возражение / незакрытая боль / упущенная связка."
+            ),
+            "rows": explicit_rows[:3],
+        }
     reply_seed = _clean_reader_text(
         str(recommendations[0].get("better_phrasing") or "")
     ) if recommendations else ""
@@ -2396,7 +2474,8 @@ def _build_v5_voice_of_customer_section(
         [
             f"{item.get('client_label') or 'Клиент'} · {item.get('time_label') or '—'}",
             item.get("quote") or "—",
-            (
+            str(item.get("interpretation") or "").strip()
+            or (
                 _build_voice_reply_line(item.get("context"), item.get("quote"))
                 + (f" База ответа: {reply_seed}" if reply_seed else "")
             ),
@@ -2420,18 +2499,18 @@ def _build_v5_additional_situations_section(*, section: dict[str, Any]) -> dict[
             {
                 "badge": "Сильная сторона" if kind == "strength" else "Зона роста",
                 "title": title,
-                "client_said": interpretation or "Ситуация повторяется в нескольких звонках.",
-                "meant": (
+                "client_said": _clean_reader_text(str(item.get("client_said") or "")) or interpretation or "Ситуация повторяется в нескольких звонках.",
+                "meant": _clean_reader_text(str(item.get("meant") or "")) or (
                     "За этим стоит устойчивый рабочий паттерн, который стоит сохранить."
                     if kind == "strength"
                     else "Клиент не получил достаточно конкретики или фиксации следующего шага."
                 ),
-                "how_to": (
+                "how_to": _clean_reader_text(str(item.get("how_to") or "")) or (
                     "Повторять удачную формулировку и усиливать её короткой привязкой к задаче клиента."
                     if kind == "strength"
                     else "Задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг и дедлайн."
                 ),
-                "why": (
+                "why": _clean_reader_text(str(item.get("why") or "")) or (
                     "Такой паттерн помогает удерживать доверие и ускоряет движение к договорённости."
                     if kind == "strength"
                     else "Конкретика снижает зависание звонка и переводит разговор в управляемый follow-up."

@@ -39,6 +39,9 @@ from app.agents.calls.reporting import (  # noqa: E402
     render_report_email,
     resolve_report_preset,
 )
+from app.agents.calls.verification_report_runner import (  # noqa: E402
+    build_canonical_verification_bundle,
+)
 from app.agents.calls.intake import OnlinePBXIntake  # noqa: E402
 from app.agents.calls.delivery import CallsDelivery  # noqa: E402
 from app.agents.calls.scheduled_reporting import (  # noqa: E402
@@ -347,6 +350,29 @@ class ManualReportingPayloadTests(unittest.TestCase):
         ]
         positions = [rendered["html"].index(f">{label}</div>") for label in ordered_labels]
         self.assertEqual(positions, sorted(positions))
+
+    def test_canonical_verification_bundle_renders_rich_same_payload_report(self) -> None:
+        bundle = build_canonical_verification_bundle()
+
+        payload = bundle["payload"]
+        rendered = render_report_email(payload)
+
+        self.assertEqual(bundle["case"]["manager_name"], "Эльмира Кешубаева")
+        self.assertEqual(bundle["case"]["date_from"], "2026-04-06")
+        self.assertEqual(bundle["case"]["date_to"], "2026-04-06")
+        self.assertEqual(len(bundle["case"]["selected_calls"]), 8)
+        self.assertEqual(payload["meta"]["canonical_verification_case"]["manager_name"], "Эльмира Кешубаева")
+        self.assertEqual(payload["meta"]["canonical_verification_case"]["date_from"], "2026-04-06")
+        self.assertEqual(payload["header"]["report_date"], "2026-04-06")
+        self.assertEqual(payload["kpi_overview"]["calls_count"], 8)
+        self.assertNotIn("PREVIEW", rendered["subject"])
+        self.assertNotIn("insufficient data", rendered["text"].lower())
+        self.assertNotIn("preview shell", rendered["text"].lower())
+        self.assertGreaterEqual(rendered["artifact"]["page_count"], 6)
+        self.assertIn("0:10", rendered["text"])
+        self.assertIn("10:30", rendered["text"])
+        self.assertIn("~180 000 тенге", rendered["text"])
+        self.assertIn("Что имел в виду", rendered["text"])
 
 
 class ManualReportingStatusTests(unittest.TestCase):

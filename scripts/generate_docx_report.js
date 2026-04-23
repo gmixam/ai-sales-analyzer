@@ -34,177 +34,165 @@ const {
 } = require("docx");
 
 // ──────────────────────────────────────────────────────────────
-// Hardcoded data from verification_Эльмира_Кешубаева_2026-04-06.pdf
+// Same-payload verification bundle
 // ──────────────────────────────────────────────────────────────
 
-const DATA = {
-  manager: "Эльмира Кешубаева",
-  date: "06.04.2026",
-  calls: 8,
-  // Average of available stages on /5 scale: (3.8+2.8+1.0+2.6)/4 ≈ 2.6
-  day_score: 2.6,
+function readBundleFromFile(bundlePath) {
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error(
+      `Verification bundle not found: ${bundlePath}. ` +
+      "Generate it first with `docker compose exec api python -m app.agents.calls.verification_report_runner --no-delivery`."
+    );
+  }
+  return JSON.parse(fs.readFileSync(bundlePath, "utf-8"));
+}
 
-  outcomes: {
-    total: 8,
-    agreed: 4,
-    rescheduled: 2,
-    refusal: 1,
-    open: 1,
-    tech_service: 0,
-  },
+function loadVerificationBundle() {
+  const repoRoot = path.join(__dirname, "..");
+  const defaultPath = path.join(repoRoot, "verification_manager_daily_v5_case_bundle.json");
+  return readBundleFromFile(process.env.VERIFICATION_BUNDLE_PATH || defaultPath);
+}
 
-  // Stage scores: source 0–10 scale → /5
-  stages: [
-    { code: "E1", name: "Э1 Первичный контакт",            score10: 7.5, score5: 3.8, priority: false, subs: [] },
-    { code: "E2", name: "Э2 Квалификация и потребность",    score10: 5.6, score5: 2.8, priority: false, subs: [] },
-    {
-      code: "E3", name: "Э3 Выявление детальных потребностей", score10: 1.9, score5: 1.0, priority: true,
-      subs: [
-        { name: "↳ Понял приоритет и срок",          score10: 0.0, score5: 0.0 },
-        { name: "↳ Выявил боль и ограничения",        score10: 1.2, score5: 0.6 },
-        { name: "↳ Выявил конкретные сценарии",       score10: 2.5, score5: 1.3 },
-      ],
-    },
-    { code: "E4", name: "Э4 Формирование предложения",      score10: 5.2, score5: 2.6, priority: false, subs: [] },
-    { code: "E5", name: "Э5 Работа с возражениями",         score10: null, score5: null, priority: false, subs: [] },
-    { code: "E6", name: "Э6 Завершение и следующий шаг",    score10: null, score5: null, priority: false, subs: [] },
-    { code: "EX", name: "Сквозной критерий",                score10: null, score5: null, priority: false, subs: [] },
-  ],
+function dataFromBundle(bundle) {
+  const payload = bundle.payload || {};
+  const report = bundle.report || {};
+  const sections = Object.fromEntries((report.sections || []).map((section) => [section.id, section]));
 
-  // ГОЛОС КЛИЕНТА
-  voice_of_customer: [
-    {
-      client: "Алексей Морозов, 03:15, Тёплый лид",
-      quote: "«Я вообще-то не понимаю, чем вы отличаетесь от обычного ЭДО.»",
-      interpretation: "Скрытое возражение по дифференциации. Клиент не получил достаточно вопросов о своём процессе — сравнивает по поверхностным признакам. Ответить: «Давайте я спрошу пару вещей о вашем документообороте — тогда смогу объяснить точно, что изменится.»",
-    },
-    {
-      client: "Анна Сидорова, 04:30, Холодный",
-      quote: "«Ну раз уж позвонили, расскажите подробнее — у нас пока нет времени разбираться самим.»",
-      interpretation: "Пассивный интерес с порогом. Клиент готов слушать, но нужна конкретика под его задачу. Ответить: «Два быстрых вопроса: сколько договоров в месяц и с кем в основном подписываете? Потом за 2 минуты покажу, где экономия.»",
-    },
-    {
-      client: "+77019876543, 05:00, Входящий",
-      quote: "«Мне нравится, что вы объясняете просто, но хотелось бы конкретику по нашему объёму.»",
-      interpretation: "Сигнал персонализации: клиент готов к сделке, но хочет цифры под свой профиль. Ответить: «Скажите объём — я сразу назову, на чём именно экономия и сколько по вашей ситуации.»",
-    },
-  ],
+  const reportHeader = sections.report_header || {};
+  const daySummary = sections.day_summary || {};
+  const moneyOnTable = sections.money_on_table || {};
+  const warmPipeline = sections.warm_pipeline || {};
+  const review = sections.review_block || {};
+  const situation = sections.main_focus_for_tomorrow || {};
+  const callBreakdown = sections.call_breakdown || {};
+  const voice = sections.voice_of_customer || {};
+  const challenge = sections.challenge || {};
+  const callTomorrow = sections.call_tomorrow || {};
+  const callList = sections.call_list || {};
+  const morningCard = sections.morning_card || {};
 
-  // РАЗБОР ЗВОНКА — Анна Сидорова
-  call_breakdown: {
-    client: "Анна Сидорова",
-    time: "10:30",
-    stages: [
-      {
-        moment: "0:10",
-        what: "Представилась, назвала компанию ✓. Не спросила, удобно ли говорить ✗",
-        better: "Добавить: «Удобно сейчас пару минут?» до перехода к теме.",
-      },
-      {
-        moment: "0:45",
-        what: "Назвала причину звонка ✓. Сразу перешла к возможностям системы ✗",
-        better: "Сначала спросить: «Как у вас сейчас устроен процесс подписания документов?»",
-      },
-      {
-        moment: "2:10",
-        what: "Презентовала общие преимущества ЭДО. Без адаптации к профилю клиента ✗",
-        better: "Связать с контекстом клиента: «Вы упомянули контрагентов — именно для этого сценария...»",
-      },
-      {
-        moment: "4:15",
-        what: "Завершила без конкретного следующего шага ✗",
-        better: "Зафиксировать дедлайн: «Договариваемся: я пришлю материалы, в пятницу в 14:00 созвонимся?»",
-      },
-    ],
-  },
+  const outcomeMap = Object.fromEntries((daySummary.outcome_cols || []).map((item) => [item.label, item.value]));
+  const statusLabelMap = {
+    agreed: "Договор",
+    rescheduled: "Перенос",
+    refusal: "Отказ",
+    open: "Открыт",
+  };
 
-  // ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ
-  additional_situations: [
-    {
-      title: "«Не фиксирует конкретный следующий шаг»",
-      client_said: "«Ну ладно, я подумаю» — без согласованного срока и формата следующего контакта.",
-      meant: "Клиент не отказывает, но и не берёт обязательство. Разговор «завис» — без дедлайна высока вероятность потери.",
-      how_to: "«Хорошо. Давайте зафиксируем: я пришлю КП на email до 17:00, а в пятницу в 11:00 созвонимся и подтвердим. Удобно?»",
-      why: "Конкретный шаг с дедлайном переводит «я подумаю» в управляемый процесс. Без него клиент остаётся в статусе «открытый» бессрочно.",
-      type: "gap",
-      signal: 5,
+  return {
+    manager: reportHeader.manager_name || payload.header?.manager_name || "—",
+    date: reportHeader.report_date || payload.header?.report_date || "—",
+    calls: Number(reportHeader.calls_count || payload.kpi_overview?.calls_count || 0),
+    day_score: Number(reportHeader.day_score || 0),
+    outcomes: {
+      total: Number(outcomeMap["ЗВОНКОВ"] || 0),
+      agreed: Number(outcomeMap["ДОГОВОРЕННОСТЬ"] || 0),
+      rescheduled: Number(outcomeMap["ПЕРЕНОС"] || 0),
+      refusal: Number(outcomeMap["ОТКАЗ"] || 0),
+      open: Number(outcomeMap["ОТКРЫТ"] || 0),
+      tech_service: Number(outcomeMap["ТЕХ/СЕРВИС"] || 0),
     },
-    {
-      title: "«Не проверяет, удобно ли говорить»",
-      client_said: "Менеджер начинает диалог без проверки уместности — клиент раздражается или отвечает вполсилы.",
-      meant: "Клиент может быть занят или не готов. Вопрос о времени — это уважение, которое снижает барьер к разговору.",
-      how_to: "«Здравствуйте, это Эльмира из Договор-24. Звоню по конкретной теме — удобно сейчас пару минут?»",
-      why: "Клиент, который сказал «да, удобно», психологически уже согласился продолжать. Это снижает риск прерванного разговора.",
-      type: "gap",
-      signal: 3,
+    money_on_table: {
+      body: moneyOnTable.body || "",
+      highlight_line: moneyOnTable.highlight_line || "",
+      reason_line: moneyOnTable.reason_line || "",
+      note: moneyOnTable.note || "",
     },
-    {
-      title: "«Чётко представляется и называет компанию»",
-      client_said: "«Эльмира, Договор-24» — клиент сразу понимает, кто звонит и с какой компанией.",
-      meant: "Чёткое представление устанавливает профессиональный контекст с первой секунды. Клиент не тратит ресурс на идентификацию звонящего.",
-      how_to: "Продолжать развивать: добавлять краткую причину звонка сразу после имени: «Эльмира, Договор-24 — звоню по теме оформления документов с контрагентами.»",
-      why: "Это уже сильная сторона. Усиление: причина звонка в первой фразе снижает настороженность и ускоряет переход к диалогу.",
-      type: "strength",
-      signal: 6,
+    pipeline: {
+      summary_line: warmPipeline.summary_line || "",
+      counts_line: warmPipeline.counts_line || "",
+      conversion_line: warmPipeline.conversion_line || "",
+      average_line: warmPipeline.average_line || "",
+      contacts: warmPipeline.contacts || [],
     },
-  ],
+    stages: (payload.score_by_stage || []).map((stage) => ({
+      code: stage.funnel_label || stage.stage_code || "—",
+      name: `${stage.funnel_label || ""} ${stage.stage_name || ""}`.trim(),
+      score10: stage.score ?? null,
+      score5: stage.score === null || stage.score === undefined ? null : Number((Number(stage.score) / 2).toFixed(1)),
+      priority: Boolean(stage.is_priority),
+      subs: (stage.criteria_detail || []).map((criterion) => ({
+        name: `↳ ${criterion.name || "Критерий"}`,
+        score10: criterion.score ?? null,
+        score5: criterion.score === null || criterion.score === undefined ? null : Number((Number(criterion.score) / 2).toFixed(1)),
+      })),
+    })),
+    situation: {
+      title: situation.situation_title || "СИТУАЦИЯ ДНЯ",
+      body: situation.body || "",
+      pattern_count_label: situation.pattern_count_label || "",
+      client_need: situation.client_need || "",
+      manager_task: situation.manager_task || "",
+      call_example: situation.call_example || {},
+      scripts: situation.scripts || [],
+      why_it_works: situation.why_it_works || "",
+    },
+    call_breakdown: {
+      client: payload.call_breakdown?.client_label || "Клиент",
+      time: payload.call_breakdown?.time_label || "—",
+      stages: (callBreakdown.rows || []).map((row) => ({
+        moment: row[0] || "—",
+        what: row[1] || "—",
+        better: row[2] || "—",
+      })),
+    },
+    voice_of_customer: (voice.rows || []).map((row) => ({
+      client: row[0] || "Клиент",
+      quote: `«${String(row[1] || "").replace(/^«|»$/g, "")}»`,
+      interpretation: row[2] || "",
+    })),
+    additional_situations: (payload.additional_situations?.situations || []).map((item) => ({
+      title: `«${item.title || "Ситуация"}»`,
+      client_said: item.client_said || "",
+      meant: item.meant || "",
+      how_to: item.how_to || "",
+      why: item.why || "",
+      type: item.kind || "gap",
+      signal: item.signal || 0,
+    })),
+    challenge: {
+      goal_line: challenge.goal_line || "",
+      today_line: challenge.today_line || "",
+      record_line: challenge.record_line || "",
+      phrase_line: challenge.phrase_line || "",
+    },
+    call_tomorrow: (callTomorrow.rows || []).map((row) => {
+      const priorityText = String(row[0] || "");
+      const priority = priorityText.split(" ")[0] || "";
+      const label = priorityText.replace(`${priority} `, "");
+      return {
+        priority,
+        label,
+        client: row[1] || "Клиент",
+        phone: "",
+        context: row[2] || "",
+        script: row[3] || "",
+      };
+    }),
+    all_calls: (callList.rows || []).map((row) => ({
+      n: row[0] || "—",
+      time: row[1] || "—",
+      client: row[2] || "—",
+      topic: row[3] || "—",
+      context: row[4] || "—",
+      status: statusLabelMap[String((payload.call_list || [])[Number(row[0]) - 1]?.status || "").trim()] || row[5] || "—",
+    })),
+    morning: {
+      greeting: morningCard.greeting || "",
+      summary_line: morningCard.summary_line || "",
+      financial_line: morningCard.financial_line || "",
+      top_contacts: (callTomorrow.rows || []).slice(0, 3).map((row, index) => ({
+        index: index + 1,
+        client: row[1] || "Клиент",
+        phone: "",
+        script: row[3] || "",
+      })),
+      challenge: morningCard.challenge || challenge.goal_line || "",
+    },
+  };
+}
 
-  // ПОЗВОНИ ЗАВТРА
-  call_tomorrow: [
-    {
-      priority: "🔴",
-      label: "Горячий",
-      client: "Алексей Морозов",
-      phone: "+7 701 999-6001",
-      context: "Договор до 2026-04-06",
-      script: "«Алексей, Эльмира. Отправила договор — хотела уточнить, получили? Готовы подтвердить?»",
-    },
-    {
-      priority: "🔴",
-      label: "Горячий",
-      client: "+77019876543",
-      phone: "+7 701 987-6543",
-      context: "Демо-доступ до 2026-04-07",
-      script: "«Здравствуйте, Эльмира из Договор-24. Вчера договорились на демо — отправила ссылку, всё получили?»",
-    },
-    {
-      priority: "🔴",
-      label: "Горячий",
-      client: "Лариса Новикова",
-      phone: "+7 701 999-6008",
-      context: "Пробный доступ до 2026-04-07",
-      script: "«Лариса, Эльмира. Активировала пробный доступ — отправила инструкцию. Удобно сейчас пройтись по первым шагам?»",
-    },
-    {
-      priority: "🟡",
-      label: "Тёплый",
-      client: "Анна Сидорова",
-      phone: "+7 701 999-6002",
-      context: "Перезвон до 2026-04-07",
-      script: "«Анна, Эльмира из Договор-24. Договорились созвониться — удобно сейчас пару минут?»",
-    },
-    {
-      priority: "🟡",
-      label: "Тёплый",
-      client: "Мария Петрова",
-      phone: "+7 701 999-6005",
-      context: "Перезвон до 2026-04-10",
-      script: "«Мария, Эльмира. Вы просили перезвонить в пятницу — звоню как договорились.»",
-    },
-  ],
-
-  // СПИСОК ВСЕХ ЗВОНКОВ
-  all_calls: [
-    { n: 1, time: "09:15", client: "Алексей Морозов",    topic: "Тёплый/Продажа",  context: "до 06.04",    status: "Договор" },
-    { n: 2, time: "10:30", client: "Анна Сидорова",      topic: "Холодный",         context: "→ 07.04",     status: "Перенос" },
-    { n: 3, time: "11:00", client: "+77019876543",        topic: "Горячий/Входящий", context: "до 07.04",    status: "Договор" },
-    { n: 4, time: "11:45", client: "Дмитрий Козлов",     topic: "Тёплый/Продажа",  context: "до 08.04",    status: "Договор" },
-    { n: 5, time: "12:10", client: "Мария Петрова",       topic: "Холодный",         context: "→ 10.04",     status: "Перенос" },
-    { n: 6, time: "13:00", client: "+77071234567",         topic: "Горячий/Входящий", context: "Конкурент",   status: "Отказ" },
-    { n: 7, time: "14:20", client: "Сергей Иванов",       topic: "Тёплый/Продажа",  context: "Ждёт решения", status: "Открыт" },
-    { n: 8, time: "15:30", client: "Лариса Новикова",     topic: "Горячий/Входящий", context: "до 07.04",    status: "Договор" },
-  ],
-};
+const DATA = dataFromBundle(loadVerificationBundle());
 
 // ──────────────────────────────────────────────────────────────
 // Helper: progress bar
@@ -444,20 +432,10 @@ function buildSvodnaya() {
 function buildDengi() {
   return [
     blockHeading("💰", "ДЕНЬГИ НА СТОЛЕ"),
-    bodyPara(
-      `${DATA.outcomes.open} звонок «Открыт». Клиент (Сергей Иванов) проявил интерес, но ждёт одобрения руководства — без зафиксированной даты следующего контакта.`,
-    ),
-    bodyPara(
-      "Потенциал: ~180 000 тенге годовых подписок (1 × 180к) — не подобраны.",
-    ),
-    bodyPara(
-      "Причина: нет зафиксированного следующего шага, клиент не взял обязательство о дате ответа.",
-      { color: COLORS.orange },
-    ),
-    bodyPara(
-      "Как определена сумма: ориентировочно — средний чек 180к/год для профиля «малый бизнес без ЭДО». Автоматическая логика (CRM → профиль → минимум) — в разработке.",
-      { color: COLORS.gray },
-    ),
+    bodyPara(DATA.money_on_table.body),
+    bodyPara(DATA.money_on_table.highlight_line),
+    bodyPara(DATA.money_on_table.reason_line, { color: COLORS.orange }),
+    bodyPara(DATA.money_on_table.note, { color: COLORS.gray }),
   ];
 }
 
@@ -466,14 +444,12 @@ function buildDengi() {
 // ──────────────────────────────────────────────────────────────
 
 function buildPipeline() {
-  // warm/hot: calls 1(warm), 3(hot), 4(warm), 6(hot), 7(warm), 8(hot) = 6
-  // results: 4 agreed, 0 rescheduled, 1 refusal, 1 open
   return [
     blockHeading("📊", "PIPELINE ТЁПЛЫХ ЛИДОВ"),
-    bodyPara("6 повторных/тёплых звонков сегодня (Тёплый/заявка × 3, Горячий/Входящий × 3)"),
-    bodyPara("4 → Договорились  ·  0 → Перенос  ·  1 → Отказ  ·  1 → Открыт"),
-    bodyPara("Конверсия тёплых: 67% (4 из 6)", { bold: true }),
-    bodyPara("Среднее: нет базы для сравнения (первый период).", { color: COLORS.gray }),
+    bodyPara(DATA.pipeline.summary_line),
+    bodyPara(DATA.pipeline.counts_line),
+    bodyPara(DATA.pipeline.conversion_line, { bold: true }),
+    bodyPara(DATA.pipeline.average_line, { color: COLORS.gray }),
     spacer(4),
     subHeading("Тёплые лиды без обратного звонка:"),
     new Table({
@@ -486,13 +462,15 @@ function buildPipeline() {
             headCell("Статус",  { width: { size: 35, type: WidthType.PERCENTAGE } }),
           ],
         }),
-        new TableRow({
-          children: [
-            cell("Сергей Иванов"),
-            cell("+7 701 999-6007"),
-            cell("Открытый — ждёт одобрения руководства", { color: COLORS.orange }),
-          ],
-        }),
+        ...(DATA.pipeline.contacts || []).map((contact) =>
+          new TableRow({
+            children: [
+              cell(contact.client || "Клиент"),
+              cell(contact.phone || "—"),
+              cell(contact.status || "—", { color: COLORS.orange }),
+            ],
+          })
+        ),
       ],
     }),
     spacer(6),
@@ -583,39 +561,30 @@ function buildSituatsiya() {
     blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
     new Paragraph({
       children: [new TextRun({
-        text: "Э3 Выявление детальных потребностей (1.0 / 5) — первый этап ниже 4 по воронке",
+        text: DATA.situation.title,
         bold: true, size: 24, color: COLORS.red, font: "Arial",
       })],
       spacing: { before: 0, after: 60 },
     }),
-    bodyPara(
-      "«Менеджер переходит к презентации, не задав вопросов о потребностях» — 7 из 8 звонков · конверсия по этим звонкам: 43%",
-      { color: COLORS.orange },
-    ),
+    bodyPara(DATA.situation.body, { color: COLORS.orange }),
+    ...(DATA.situation.pattern_count_label ? [bodyPara(DATA.situation.pattern_count_label, { color: COLORS.gray })] : []),
     spacer(4),
     subHeading("Что хотел сказать клиент"),
-    bodyPara(
-      "Клиент звонил не слушать скрипт, а получить ощущение, что ему предлагают решение под его задачу. Когда вопросов о процессе нет — клиент слышит «стандартную презентацию» и начинает сравнивать по цене, а не по ценности.",
-    ),
+    bodyPara(DATA.situation.client_need),
     spacer(4),
     subHeading("Наша задача"),
-    bodyPara(
-      "Задать 2–3 уточняющих вопроса о процессе клиента ДО начала презентации в каждом звонке.",
-      { bold: true },
-    ),
+    bodyPara(DATA.situation.manager_task, { bold: true }),
     spacer(4),
     subHeading("Пример из сегодня"),
-    bodyPara("Звонок 10:30 — Анна Сидорова. Менеджер перешла к презентации через 45 секунд, не спросив ни об объёме, ни о контрагентах — клиент завершила разговор без обязательства."),
+    bodyPara(
+      `Звонок ${DATA.situation.call_example.time_label || "—"} — ${DATA.situation.call_example.client_label || "Клиент"}. ${DATA.situation.call_example.reason_short || ""}`.trim()
+    ),
     spacer(4),
     subHeading("Варианты речёвок"),
-    bodyPara("1. «Расскажите, как у вас сейчас организован процесс подписания документов? Какие типы контрагентов вам важно закрыть в первую очередь?»"),
-    bodyPara("2. «Удобно ли вам сейчас пару минут уделить — я расскажу, почему звоню?» → затем сразу вопрос о процессе."),
-    bodyPara("3. «Два быстрых вопроса: сколько договоров в месяц и с кем в основном подписываете? Потом за 2 минуты покажу, где конкретно экономия.»"),
+    ...(DATA.situation.scripts || []).map((script, index) => bodyPara(`${index + 1}. ${script}`)),
     spacer(4),
     subHeading("Почему работает"),
-    bodyPara(
-      "Вопросы о процессе создают контекст, в котором предложение звучит как решение конкретной задачи клиента, а не как шаблонная презентация. Клиент, который сам описал свою боль, легче соглашается с тем, что это боль — и что у вас есть ответ.",
-    ),
+    bodyPara(DATA.situation.why_it_works),
   ];
 }
 
@@ -754,19 +723,13 @@ function buildDopSituatsii() {
 function buildChellendj() {
   return [
     blockHeading("🏆", "ЧЕЛЛЕНДЖ НА ЗАВТРА"),
-    bodyPara(
-      "Из следующих 8 продажных звонков — задай минимум 2 уточняющих вопроса о потребностях ДО начала презентации хотя бы в 6 из 8.",
-      { bold: true, size: 24 },
-    ),
+    bodyPara(DATA.challenge.goal_line, { bold: true, size: 24 }),
     spacer(4),
-    bodyPara("Сегодня: 1 из 8 звонков с уточняющими вопросами."),
-    bodyPara("Рекорд: нет базы (первый период отслеживания)."),
+    bodyPara(DATA.challenge.today_line),
+    bodyPara(DATA.challenge.record_line),
     spacer(4),
     subHeading("Фраза для завтра:"),
-    bodyPara(
-      "«Расскажите, как у вас сейчас организован процесс подписания документов? Какие типы контрагентов вам важно закрыть в первую очередь?»",
-      { italic: true, color: COLORS.heading },
-    ),
+    bodyPara(DATA.challenge.phrase_line, { italic: true, color: COLORS.heading }),
   ];
 }
 
@@ -863,7 +826,7 @@ function buildSpisokZvonkov() {
 // ──────────────────────────────────────────────────────────────
 
 function buildUtrennaya() {
-  const top3 = DATA.call_tomorrow.slice(0, 3);
+  const top3 = DATA.morning.top_contacts || [];
 
   return [
     blockHeading("📱", "УТРЕННЯЯ КАРТОЧКА (Telegram)"),
@@ -880,21 +843,21 @@ function buildUtrennaya() {
               children: [
                 new Paragraph({
                   children: [new TextRun({
-                    text: `${DATA.manager.split(" ")[0]}, доброе утро! 👋`,
+                    text: `${DATA.morning.greeting} 👋`,
                     bold: true, size: 26, font: "Arial",
                   })],
                   spacing: { before: 0, after: 80 },
                 }),
                 new Paragraph({
                   children: [new TextRun({
-                    text: `Вчерашний итог: ${DATA.calls} звонков → ${DATA.outcomes.agreed} Договорились, ${DATA.outcomes.open} Открытых`,
+                    text: `Вчерашний итог: ${DATA.morning.summary_line}`,
                     size: 22, font: "Arial",
                   })],
                   spacing: { before: 0, after: 60 },
                 }),
                 new Paragraph({
                   children: [new TextRun({
-                    text: `~180 000 тенге ждут обратного звонка 📞`,
+                    text: `${DATA.morning.financial_line} 📞`,
                     bold: true, size: 22, color: COLORS.orange, font: "Arial",
                   })],
                   spacing: { before: 0, after: 80 },
@@ -909,7 +872,7 @@ function buildUtrennaya() {
                 ...top3.map((c, i) =>
                   new Paragraph({
                     children: [new TextRun({
-                      text: `${i + 1}. ${c.client} (${c.phone}) — ${c.script}`,
+                      text: `${i + 1}. ${c.client} — ${c.script}`,
                       size: 20, font: "Arial",
                     })],
                     spacing: { before: 0, after: 40 },
@@ -919,7 +882,7 @@ function buildUtrennaya() {
                 spacer(4),
                 new Paragraph({
                   children: [new TextRun({
-                    text: "🏆 Челлендж: Задай 2+ уточняющих вопроса о потребностях ДО презентации (цель: 6 из 8 звонков · вчера 1/8 · рекорд: нет базы)",
+                    text: `🏆 Челлендж: ${DATA.morning.challenge}`,
                     size: 20, color: COLORS.heading, font: "Arial",
                   })],
                   spacing: { before: 40, after: 0 },

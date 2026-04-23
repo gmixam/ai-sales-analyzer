@@ -18,13 +18,16 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 import types
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.agents.calls.delivery import CallsDelivery
-from app.agents.calls.report_templates import render_report_artifact
+from app.agents.calls.report_templates import build_report_render_model, render_report_artifact
 from app.agents.calls.reporting import (
     ReportArtifact,
     ReportRunFilters,
@@ -42,6 +45,74 @@ MANAGER_NAME = "Эльмира Кешубаева"
 ANCHOR_DATE = "2026-04-06"
 INSTRUCTION_VERSION = "verification_only_v0"
 PROVENANCE = "manual_verification_fixture"
+
+
+def _detect_repo_root() -> Path:
+    """Return the project root both on host and inside the api container."""
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "scripts" / "generate_docx_report.js").exists():
+            return parent
+    return current.parents[4]
+
+
+REPO_ROOT = _detect_repo_root()
+DEFAULT_BUNDLE_PATH = REPO_ROOT / "verification_manager_daily_v5_case_bundle.json"
+DEFAULT_PDF_PATH = REPO_ROOT / f"verification_{MANAGER_NAME.replace(' ', '_')}_{ANCHOR_DATE}_runtime.pdf"
+
+DOCX_PARITY_MONEY_ON_TABLE = {
+    "body": "1 звонок «Открыт». Клиент (Сергей Иванов) проявил интерес, но ждёт одобрения руководства — без зафиксированной даты следующего контакта.",
+    "highlight_line": "Потенциал: ~180 000 тенге годовых подписок (1 × 180к) — не подобраны.",
+    "reason_line": "Причина: нет зафиксированного следующего шага, клиент не взял обязательство о дате ответа.",
+    "note": "Как определена сумма: ориентировочно — средний чек 180к/год для профиля «малый бизнес без ЭДО». Автоматическая логика (CRM → профиль → минимум) — в разработке.",
+}
+DOCX_PARITY_CALL_BREAKDOWN_ROWS = [
+    ["0:10", "Представилась, назвала компанию ✓. Не спросила, удобно ли говорить ✗", "Добавить: «Удобно сейчас пару минут?» до перехода к теме."],
+    ["0:45", "Назвала причину звонка ✓. Сразу перешла к возможностям системы ✗", "Сначала спросить: «Как у вас сейчас устроен процесс подписания документов?»"],
+    ["2:10", "Презентовала общие преимущества ЭДО. Без адаптации к профилю клиента ✗", "Связать с контекстом клиента: «Вы упомянули контрагентов — именно для этого сценария...»"],
+    ["4:15", "Завершила без конкретного следующего шага ✗", "Зафиксировать дедлайн: «Договариваемся: я пришлю материалы, в пятницу в 14:00 созвонимся?»"],
+]
+DOCX_PARITY_VOICE_INTERPRETATIONS = {
+    "Алексей Морозов": "Скрытое возражение по дифференциации. Клиент не получил достаточно вопросов о своём процессе — сравнивает по поверхностным признакам. Ответить: «Давайте я спрошу пару вещей о вашем документообороте — тогда смогу объяснить точно, что изменится.»",
+    "Анна Сидорова": "Пассивный интерес с порогом. Клиент готов слушать, но нужна конкретика под его задачу. Ответить: «Два быстрых вопроса: сколько договоров в месяц и с кем в основном подписываете? Потом за 2 минуты покажу, где экономия.»",
+    "+77019876543": "Сигнал персонализации: клиент готов к сделке, но хочет цифры под свой профиль. Ответить: «Скажите объём — я сразу назову, на чём именно экономия и сколько по вашей ситуации.»",
+}
+DOCX_PARITY_ADDITIONAL_SITUATIONS = [
+    {
+        "kind": "gap",
+        "title": "Не фиксирует конкретный следующий шаг",
+        "signal": 5,
+        "client_said": "«Ну ладно, я подумаю» — без согласованного срока и формата следующего контакта.",
+        "meant": "Клиент не отказывает, но и не берёт обязательство. Разговор «завис» — без дедлайна высока вероятность потери.",
+        "how_to": "«Хорошо. Давайте зафиксируем: я пришлю КП на email до 17:00, а в пятницу в 11:00 созвонимся и подтвердим. Удобно?»",
+        "why": "Конкретный шаг с дедлайном переводит «я подумаю» в управляемый процесс. Без него клиент остаётся в статусе «открытый» бессрочно.",
+    },
+    {
+        "kind": "gap",
+        "title": "Не проверяет, удобно ли говорить",
+        "signal": 3,
+        "client_said": "Менеджер начинает диалог без проверки уместности — клиент раздражается или отвечает вполсилы.",
+        "meant": "Клиент может быть занят или не готов. Вопрос о времени — это уважение, которое снижает барьер к разговору.",
+        "how_to": "«Здравствуйте, это Эльмира из Договор-24. Звоню по конкретной теме — удобно сейчас пару минут?»",
+        "why": "Клиент, который сказал «да, удобно», психологически уже согласился продолжать. Это снижает риск прерванного разговора.",
+    },
+    {
+        "kind": "strength",
+        "title": "Чётко представляется и называет компанию",
+        "signal": 6,
+        "client_said": "«Эльмира, Договор-24» — клиент сразу понимает, кто звонит и с какой компанией.",
+        "meant": "Чёткое представление устанавливает профессиональный контекст с первой секунды. Клиент не тратит ресурс на идентификацию звонящего.",
+        "how_to": "Продолжать развивать: добавлять краткую причину звонка сразу после имени: «Эльмира, Договор-24 — звоню по теме оформления документов с контрагентами.»",
+        "why": "Это уже сильная сторона. Усиление: причина звонка в первой фразе снижает настороженность и ускоряет переход к диалогу.",
+    },
+]
+DOCX_PARITY_CALL_TOMORROW_SCRIPTS = {
+    "Анна Сидорова": "«Анна, Эльмира из Договор-24. Договорились созвониться — удобно сейчас пару минут?»",
+    "Мария Петрова": "«Мария, Эльмира. Вы просили перезвонить в пятницу — звоню как договорились.»",
+    "Алексей Морозов": "«Алексей, Эльмира. Отправила договор — хотела уточнить, получили? Готовы подтвердить?»",
+    "+77019876543": "«Здравствуйте, Эльмира из Договор-24. Вчера договорились на демо — отправила ссылку, всё получили?»",
+    "Лариса Новикова": "«Лариса, Эльмира. Активировала пробный доступ — отправила инструкцию. Удобно сейчас пройтись по первым шагам?»",
+}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -650,8 +721,7 @@ def _build_artifacts(fixture_list: list[dict]) -> list[ReportArtifact]:
         call = detail.get("call", {})
         call_id = str(call.get("call_id", uuid.uuid4()))
         try:
-            call_started_at = datetime.fromisoformat(
-                call.get("call_started_at", "")).astimezone(timezone.utc)
+            call_started_at = datetime.fromisoformat(call.get("call_started_at", ""))
         except (ValueError, TypeError):
             call_started_at = None
         artifacts.append(ReportArtifact(
@@ -663,17 +733,37 @@ def _build_artifacts(fixture_list: list[dict]) -> list[ReportArtifact]:
     return artifacts
 
 
-# ──────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────
+def _build_case_manifest(fixture_list: list[dict]) -> dict[str, object]:
+    """Return the canonical verification case manifest used by both docx and PDF."""
+    selected_calls = []
+    for detail in fixture_list:
+        call = dict(detail.get("call") or {})
+        summary = dict(detail.get("summary") or {})
+        follow_up = dict(detail.get("follow_up") or {})
+        selected_calls.append(
+            {
+                "call_id": str(call.get("call_id") or ""),
+                "time_local": str(call.get("call_started_at") or "")[11:16],
+                "client": str(call.get("contact_name") or call.get("contact_phone") or "Клиент"),
+                "outcome_code": str(summary.get("outcome_code") or ""),
+                "next_step": str(summary.get("next_step_text") or ""),
+                "deadline": follow_up.get("due_date_iso"),
+                "reason_not_fixed": follow_up.get("reason_not_fixed"),
+            }
+        )
+    return {
+        "manager_id": MANAGER_ID,
+        "manager_name": MANAGER_NAME,
+        "department_id": DEPARTMENT_ID,
+        "department_name": DEPARTMENT_NAME,
+        "date_from": ANCHOR_DATE,
+        "date_to": ANCHOR_DATE,
+        "selected_calls": selected_calls,
+    }
 
-async def run() -> None:
-    print("=" * 60)
-    print("VERIFICATION-ONLY REPORT RUNNER")
-    print(f"Provenance: {PROVENANCE}")
-    print("No DB reads/writes. No AI steps.")
-    print("=" * 60)
 
+def build_canonical_verification_payload() -> tuple[dict[str, object], dict[str, object]]:
+    """Build one canonical rich verification payload for same-payload docx/PDF parity."""
     fixture_list = _build_fixtures()
     artifacts = _build_artifacts(fixture_list)
     filters = ReportRunFilters(
@@ -681,7 +771,6 @@ async def run() -> None:
         date_from=ANCHOR_DATE,
         date_to=ANCHOR_DATE,
     )
-
     payload = build_manager_daily_payload(
         department_id=DEPARTMENT_ID,
         department_name=DEPARTMENT_NAME,
@@ -693,6 +782,56 @@ async def run() -> None:
     )
     payload["meta"]["verification_only"] = True
     payload["meta"]["provenance"] = PROVENANCE
+    payload["meta"]["canonical_verification_case"] = _build_case_manifest(fixture_list)
+    payload["verification_overrides"] = {
+        "day_score": 2.6,
+        "money_on_table": DOCX_PARITY_MONEY_ON_TABLE,
+    }
+    payload["call_breakdown"]["time_label"] = "10:30"
+    payload["call_breakdown"]["rows"] = DOCX_PARITY_CALL_BREAKDOWN_ROWS
+    for situation in payload.get("voice_of_customer", {}).get("situations") or []:
+        client_label = str(situation.get("client_label") or "")
+        situation["interpretation"] = DOCX_PARITY_VOICE_INTERPRETATIONS.get(client_label)
+    payload["additional_situations"]["situations"] = DOCX_PARITY_ADDITIONAL_SITUATIONS
+    for contact in payload.get("call_tomorrow", {}).get("contacts") or []:
+        client_label = str(contact.get("client_label") or "")
+        if client_label in DOCX_PARITY_CALL_TOMORROW_SCRIPTS:
+            contact["opening_script"] = DOCX_PARITY_CALL_TOMORROW_SCRIPTS[client_label]
+    return payload, _build_case_manifest(fixture_list)
+
+
+def build_canonical_verification_bundle() -> dict[str, object]:
+    """Return the canonical case manifest plus normalized payload and runtime report model."""
+    payload, case_manifest = build_canonical_verification_payload()
+    return {
+        "case": case_manifest,
+        "payload": payload,
+        "report": build_report_render_model(payload),
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────
+
+async def run(
+    *,
+    dump_bundle_path: Path | None = None,
+    dump_pdf_path: Path | None = None,
+    send_delivery: bool = True,
+    stdout_payload_json: bool = False,
+) -> None:
+    bundle = build_canonical_verification_bundle()
+    payload = dict(bundle["payload"])
+    case_manifest = dict(bundle["case"])
+    if stdout_payload_json:
+        print(json.dumps(bundle, ensure_ascii=False, indent=2))
+        return
+    print("=" * 60)
+    print("VERIFICATION-ONLY REPORT RUNNER")
+    print(f"Provenance: {PROVENANCE}")
+    print("No DB reads/writes. No AI steps.")
+    print("=" * 60)
 
     # Quick content check
     kp = payload.get("key_problem_of_day", {})
@@ -703,8 +842,9 @@ async def run() -> None:
     cb = payload.get("call_breakdown", {})
 
     print(f"\nManager: {payload['header']['manager_name']} | Calls: {payload['kpi_overview']['calls_count']}")
+    print(f"Canonical case: {case_manifest['date_from']}..{case_manifest['date_to']} | selected calls={len(case_manifest['selected_calls'])}")
     print(f"СИТУАЦИЯ ДНЯ: title={kp.get('title', '')[:50]!r}, example={bool(kp.get('call_example'))}, scripts={len(kp.get('scripts') or [])}")
-    print(f"РАЗБОР ЗВОНКА: placeholder={cb.get('is_placeholder')}, stages={len(cb.get('stage_steps') or [])}")
+    print(f"РАЗБОР ЗВОНКА: placeholder={cb.get('is_placeholder')}, stages={len(cb.get('stage_steps') or [])}, rows={len(cb.get('rows') or [])}")
     print(f"ГОЛОС КЛИЕНТА: placeholder={voc.get('is_placeholder')}, quotes={len(voc.get('situations') or [])}")
     print(f"ДОП СИТУАЦИИ:  placeholder={ads.get('is_placeholder')}, situations={len(ads.get('situations') or [])}")
     print(f"ПОЗВОНИ ЗАВТРА: contacts={len(ct.get('contacts') or [])}")
@@ -716,31 +856,53 @@ async def run() -> None:
 
     rendered = render_report_artifact(payload)
     pdf_bytes: bytes = rendered["pdf_bytes"]
-    print(f"\nPDF rendered: {len(pdf_bytes):,} bytes, {rendered.get('page_count')} pages")
+    print(f"\nPDF rendered: {len(pdf_bytes):,} bytes, {rendered['artifact'].get('page_count')} pages")
+    if dump_bundle_path is not None:
+        dump_bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Bundle saved: {dump_bundle_path}")
+    if dump_pdf_path is not None:
+        dump_pdf_path.write_bytes(pdf_bytes)
+        print(f"PDF saved: {dump_pdf_path}")
 
-    from app.core_shared.db.session import SessionLocal
-    with SessionLocal() as db:
-        delivery = CallsDelivery(department_id=DEPARTMENT_ID, db=db)
-        result = delivery.deliver_operator_report(
-            primary_email=None,
-            cc_emails=[],
-            subject=f"[VERIFICATION ONLY] {MANAGER_NAME} — {ANCHOR_DATE}",
-            text=rendered.get("text", ""),
-            html=rendered.get("html"),
-            pdf_bytes=pdf_bytes,
-            pdf_filename=f"verification_{MANAGER_NAME.replace(' ', '_')}_{ANCHOR_DATE}.pdf",
-            template_meta=payload["meta"].get("report_template"),
-            send_business_email=False,
-            morning_card_text=(
-                f"[ВЕРИФИКАЦИЯ ФОРМАТА — ВТОРАЯ КОРЗИНА]\n"
-                f"{ANCHOR_DATE} · {MANAGER_NAME}\n"
-                f"{len(artifacts)} синтетических звонков · {PROVENANCE}"
-            ),
-        )
-    tg_status = (result.get("telegram_test_delivery") or {}).get("status") or "sent (see log)"
-    print(f"\nTelegram: {tg_status}")
+    if send_delivery:
+        from app.core_shared.db.session import SessionLocal
+        with SessionLocal() as db:
+            delivery = CallsDelivery(department_id=DEPARTMENT_ID, db=db)
+            result = delivery.deliver_operator_report(
+                primary_email=None,
+                cc_emails=[],
+                subject=f"[VERIFICATION ONLY] {MANAGER_NAME} — {ANCHOR_DATE}",
+                text=rendered.get("text", ""),
+                html=rendered.get("html"),
+                pdf_bytes=pdf_bytes,
+                pdf_filename=f"verification_{MANAGER_NAME.replace(' ', '_')}_{ANCHOR_DATE}.pdf",
+                template_meta=payload["meta"].get("report_template"),
+                send_business_email=False,
+                morning_card_text=(
+                    f"[ВЕРИФИКАЦИЯ SAME-PAYLOAD PARITY]\n"
+                    f"{ANCHOR_DATE} · {MANAGER_NAME}\n"
+                    f"{len(case_manifest['selected_calls'])} синтетических звонков · {PROVENANCE}"
+                ),
+            )
+        tg_status = (result.get("telegram_test_delivery") or {}).get("status") or "sent (see log)"
+        print(f"\nTelegram: {tg_status}")
+    else:
+        print("\nTelegram: skipped (--no-delivery)")
     print("\nDone. VERIFICATION-ONLY — not a production AI artifact.")
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    parser = argparse.ArgumentParser(description="Verification-only rich manager_daily runner")
+    parser.add_argument("--dump-bundle-json", default=str(DEFAULT_BUNDLE_PATH))
+    parser.add_argument("--dump-pdf", default=str(DEFAULT_PDF_PATH))
+    parser.add_argument("--no-delivery", action="store_true")
+    parser.add_argument("--stdout-payload-json", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(
+        run(
+            dump_bundle_path=None if args.stdout_payload_json else Path(args.dump_bundle_json),
+            dump_pdf_path=None if args.stdout_payload_json else Path(args.dump_pdf),
+            send_delivery=not args.no_delivery,
+            stdout_payload_json=args.stdout_payload_json,
+        )
+    )
