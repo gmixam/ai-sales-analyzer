@@ -325,11 +325,28 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("manager_daily_template_v1", rendered["html"])
         self.assertEqual(rendered["artifact"]["media_type"], "application/pdf")
         self.assertGreater(rendered["artifact"]["size_bytes"], 0)
-        self.assertGreaterEqual(rendered["artifact"]["page_count"], 2)
+        self.assertGreaterEqual(rendered["artifact"]["page_count"], 6)
         self.assertEqual(rendered["template"]["version"], "manager_daily_template_v2")
         self.assertEqual(payload["meta"]["template_version"], "manager_daily_template_v2")
         self.assertEqual(rendered["artifact"]["render_variant"], "template_pdf_manager_daily_template_v2")
         self.assertEqual(rendered["artifact"]["generator_path"], "app.agents.calls.report_templates.render_report_artifact")
+        ordered_labels = [
+            "ШАПКА",
+            "СВОДНАЯ ТАБЛИЦА ЗВОНКОВ",
+            "ДЕНЬГИ НА СТОЛЕ",
+            "PIPELINE ТЁПЛЫХ ЛИДОВ",
+            "БАЛЛЫ ПО ЭТАПАМ",
+            "СИТУАЦИЯ ДНЯ",
+            "РАЗБОР ЗВОНКА",
+            "ГОЛОС КЛИЕНТА",
+            "ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ",
+            "ЧЕЛЛЕНДЖ НА ЗАВТРА",
+            "ПОЗВОНИ ЗАВТРА",
+            "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ",
+            "УТРЕННЯЯ КАРТОЧКА",
+        ]
+        positions = [rendered["html"].index(f">{label}</div>") for label in ordered_labels]
+        self.assertEqual(positions, sorted(positions))
 
 
 class ManualReportingStatusTests(unittest.TestCase):

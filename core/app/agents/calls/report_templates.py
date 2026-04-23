@@ -717,6 +717,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
 
 def _render_html_report(*, report: dict[str, Any], template: ReportTemplate) -> str:
     """Render HTML from the generic report model and visual asset."""
+    if template.preset == "manager_daily" and template.version == "manager_daily_template_v2":
+        return _render_manager_daily_html_report(report=report, template=template)
     sections_html = "".join(_render_html_section(section) for section in report["sections"])
     metadata_html = (
         f"<div class=\"metadata-line\"><span>{html.escape(report['metadata_line'])}</span></div>"
@@ -743,289 +745,41 @@ def _render_html_report(*, report: dict[str, Any], template: ReportTemplate) -> 
 
 
 def _render_manager_daily_html_report(*, report: dict[str, Any], template: ReportTemplate) -> str:
-    """Render manager_daily close to the approved HTML reference layout."""
+    """Render manager_daily in the approved v5 block order."""
     sections = {section["id"]: section for section in report["sections"]}
-    day_summary = sections["day_summary"]
-    executive = sections["executive_narrative"]
-    signal = sections["signal_of_day"]
-    focus = sections["main_focus_for_tomorrow"]
-    review = sections["review_block"]
-    problem = sections["key_problem_of_day"]
-    recommendations = sections["recommendations"]
-    outcomes = sections["call_outcomes_summary"]
-    call_list = sections["call_list"]
-    dynamics = sections["focus_criterion_dynamics"]
-    morning_card = sections["morning_card"]
-    call_breakdown = sections["call_breakdown"]
-    voice_of_customer = sections["voice_of_customer"]
-    additional_situations = sections["additional_situations"]
-    call_tomorrow = sections["call_tomorrow"]
-    outcome_summary_cells = "".join(
-        f"<td class=\"outcome-cell {_outcome_col_class(item)}\">"
-        f"<div class=\"outcome-value\">{html.escape(_manager_reader_value(item.get('value'), '—'))}</div>"
-        f"<div class=\"outcome-label\">{html.escape(str(item['label']))}</div>"
-        "</td>"
-        for item in day_summary.get("outcome_cols") or []
-    )
-    summary_table = (
-        f"<table class=\"outcome-table\"><tbody><tr>{outcome_summary_cells}</tr></tbody></table>"
-        if outcome_summary_cells else ""
-    )
-    _stage_rows_list = review.get("stage_rows") or []
-    _stage_rows_parts: list[str] = []
-    for _srow in _stage_rows_list:
-        _srow_html = (
-            f"<tr class=\"{'stage-priority-row' if _srow.get('is_priority') else ''}\">"
-            f"<td class=\"stage-label\">"
-            f"<span class=\"stage-funnel-label\">{html.escape(str(_srow.get('funnel_label', '')))}</span>"
-            f" {html.escape(str(_srow.get('stage_name', '')))}"
-            f"</td>"
-            f"<td class=\"stage-score {'stage-priority-score' if _srow.get('is_priority') else ''}\">"
-            f"{html.escape(str(_srow.get('score', '—')))}"
-            f"</td>"
-            f"<td class=\"stage-bar-cell\">"
-            f"<div class=\"stage-bar-wrap\">"
-            f"<div class=\"stage-bar-fill {'stage-bar-priority' if _srow.get('is_priority') else ''}\" style=\"width:{_srow.get('bar_pct', 0)}%\"></div>"
-            f"</div>"
-            f"</td>"
-            f"<td class=\"stage-priority-col\">"
-            + (
-                "<span class=\"stage-priority-flag\">★ приоритет</span>"
-                if _srow.get("is_priority")
-                else ""
+    page_groups = [
+        ["report_header", "day_summary", "money_on_table", "warm_pipeline"],
+        ["review_block", "main_focus_for_tomorrow"],
+        ["call_breakdown", "voice_of_customer"],
+        ["additional_situations", "challenge"],
+        ["call_tomorrow"],
+        ["call_list"],
+        ["morning_card"],
+    ]
+    pages_html: list[str] = []
+    for page_number, page_group in enumerate(page_groups, start=1):
+        body_parts = []
+        if page_number == 1:
+            body_parts.append(
+                "<section class=\"hero\">"
+                f"<div class=\"hero-title\">{html.escape(report['title'])}"
+                f"<span class=\"hero-sub\">· {html.escape(report['subtitle'])}</span></div>"
+                f"<div class=\"focus-week\">{html.escape(report.get('hero_focus') or '')}</div>"
+                "</section>"
             )
-            + "</td></tr>"
+        body_parts.extend(_render_html_section(sections[section_id]) for section_id in page_group if section_id in sections)
+        pages_html.append(
+            "<section class=\"page\">"
+            f"{_manager_daily_page_header(report['metadata_line'])}"
+            f"{''.join(body_parts)}"
+            f"{_manager_daily_page_footer(report['footer'], page_number)}"
+            "</section>"
         )
-        _stage_rows_parts.append(_srow_html)
-        if _srow.get("is_priority") and _srow.get("criteria_detail"):
-            _chips = "".join(
-                f"<span class=\"crit-chip {'crit-weak' if c.get('is_weak') else 'crit-ok'}\">"
-                f"{html.escape(str(c.get('name') or ''))} "
-                f"<span class=\"crit-score\">{html.escape(str(c.get('score', '—')))}</span>"
-                f"</span>"
-                for c in (_srow.get("criteria_detail") or [])
-            )
-            _stage_rows_parts.append(
-                f"<tr class=\"stage-criteria-row\"><td colspan=\"4\">"
-                f"<div class=\"stage-criteria\">{_chips}</div>"
-                f"</td></tr>"
-            )
-    stage_rows_html = "".join(_stage_rows_parts) or (
-        "<tr><td colspan=\"4\" class=\"stage-empty\">Данные по этапам появятся после накопления базы.</td></tr>"
-    )
-    recommendation_cards = "".join(
-        _render_manager_daily_recommendation_card(card, index + 1)
-        for index, card in enumerate(recommendations.get("cards") or [])
-    ) or (
-        "<article class=\"recommendation-card orange\">"
-        "<div class=\"priority-pill week\">На неделе</div>"
-        "<div class=\"rec-title\">Рекомендации появятся после следующего полного ручного запуска</div>"
-        "<div class=\"rec-context\">Пока в выборке недостаточно материала для отдельных coaching-карточек.</div>"
-        "</article>"
-    )
-    outcome_tiles = "".join(
-        (
-            f"<article class=\"tile {_manager_outcome_tile_class(item)}\">"
-            f"<div class=\"tile-value\">{html.escape(_manager_reader_value(item.get('value'), '0'))}</div>"
-            f"<div class=\"tile-label\">{html.escape(str(item['label']))}</div>"
-            "</article>"
-        )
-        for item in outcomes.get("metrics") or []
-    )
-    table_head = "".join(f"<th>{html.escape(str(item))}</th>" for item in call_list.get("columns") or [])
-    table_rows = "".join(
-        "<tr>"
-        + "".join(
-            (
-                f"<td><span class=\"status {html.escape(_manager_status_class(cell))}\">{html.escape(_manager_reader_value(cell, '—'))}</span></td>"
-                if index == 4
-                else f"<td>{html.escape(_manager_reader_value(cell, '—'))}</td>"
-            )
-            for index, cell in enumerate(row)
-        )
-        + "</tr>"
-        for row in call_list.get("rows") or []
-    ) or (
-        "<tr><td colspan=\"7\">По выбранным фильтрам нет звонков, готовых к включению в таблицу.</td></tr>"
-    )
-    dynamics_bars = "".join(
-        (
-            f"<div>{html.escape(str(item['label']))}</div>"
-            f"<div class=\"bars\"><div class=\"bar {html.escape(str(item.get('tone') or 'ghost'))}\"></div>"
-            f"<span class=\"bar-value {html.escape(str(item.get('tone') or 'ghost'))}\">"
-            f"{html.escape(_manager_reader_value(item.get('value'), '—'))}</span></div>"
-        )
-        for item in dynamics.get("bars") or []
-    )
-    page_one = (
-        _manager_daily_page_header(report["metadata_line"])
-        + "<section class=\"hero\">"
-        f"<div class=\"hero-title\">{html.escape(report['title'])}"
-        f"<span class=\"hero-sub\">· {html.escape(report['subtitle'])}</span></div>"
-        f"<div class=\"focus-week\">{html.escape(report.get('hero_focus') or '')}</div>"
-        "</section>"
-        f"<div class=\"section-bar\">{html.escape(day_summary['label'])}</div>"
-        + summary_table
-        + "<section class=\"summary-box\">"
-        f"<p>{html.escape(str(executive.get('body') or 'Итог дня будет сформирован после следующего запуска.'))}</p>"
-        f"<div class=\"progress\">{html.escape(str(executive.get('progress_line') or 'Сравнение с базой пока недоступно.'))}</div>"
-        "</section>"
-        "<section class=\"banner green\">"
-        f"<span class=\"label\">✓ {html.escape(signal['label'])}:</span> "
-        f"{html.escape(str(signal.get('body') or 'Опорный пример будет выбран после накопления базы.'))} "
-        f"<strong>{html.escape(str(signal.get('time_line') or ''))}</strong>. "
-        f"{html.escape(_manager_signal_reason(signal))}"
-        "</section>"
-        "<section class=\"situation-day\">"
-        f"<div class=\"situation-title\">{html.escape(str(focus.get('situation_title') or 'СИТУАЦИЯ ДНЯ'))}</div>"
-        f"<div class=\"situation-body\">{html.escape(str(focus.get('body') or 'Описание ситуации будет сформировано после следующего запуска.'))}</div>"
-        + (
-            f"<div class=\"situation-count\">{html.escape(str(focus['pattern_count_label']))}</div>"
-            if focus.get("pattern_count_label")
-            else ""
-        )
-        + _render_situation_call_example_html(focus.get("call_example") or {})
-        + (
-            "<ol class=\"situation-scripts\">"
-            + "".join(f"<li>{html.escape(str(s))}</li>" for s in (focus.get("scripts") or []))
-            + "</ol>"
-            if focus.get("scripts")
-            else ""
-        )
-        + "</section>"
-        f"<div class=\"section-bar navy\">{html.escape(review['label'])}</div>"
-        "<section class=\"stage-scores-section\">"
-        "<table class=\"stage-scores-table\">"
-        "<thead><tr>"
-        "<th class=\"stage-th-label\">Этап</th>"
-        "<th class=\"stage-th-score\">Сегодня</th>"
-        "<th class=\"stage-th-bar\">Шкала</th>"
-        "<th class=\"stage-th-priority\">Приоритет</th>"
-        "</tr></thead>"
-        f"<tbody>{stage_rows_html}</tbody>"
-        "</table>"
-        "</section>"
-        "<section class=\"problem-card\">"
-        f"<h3>{html.escape(problem['label'])}: <span>{html.escape(str(problem.get('title') or 'Требует уточнения'))}</span></h3>"
-        f"<div>{html.escape(str(problem.get('body') or 'Описание будет уточнено после следующего запуска.'))}</div>"
-        "</section>"
-        + _manager_daily_page_footer(report["footer"], 1)
-    )
-    page_two = (
-        _manager_daily_page_header(report["metadata_line"]) +
-        f"<div class=\"section-bar navy\">{html.escape(recommendations['label'])}</div>"
-        + (
-            f"<section class=\"summary-box\"><p>{html.escape(str(recommendations.get('editorial_note') or ''))}</p></section>"
-            if recommendations.get("editorial_note")
-            else ""
-        )
-        + f"{recommendation_cards}"
-        + _manager_daily_page_footer(report["footer"], 2)
-    )
-    page_three = (
-        _manager_daily_page_header(report["metadata_line"]) +
-        f"<div class=\"section-bar navy\">{html.escape(outcomes['label'])}</div>"
-        "<section class=\"tiles tiles-4\">"
-        f"{outcome_tiles}"
-        "</section>"
-        "<table class=\"call-table\"><thead><tr>"
-        f"{table_head}"
-        "</tr></thead><tbody>"
-        f"{table_rows}"
-        "</tbody></table>"
-        f"<div class=\"table-note\">{html.escape(str(call_list.get('note') or ''))}</div>"
-        f"<div class=\"section-bar teal\">{html.escape(dynamics['label'])}</div>"
-        f"<div class=\"dynamics-title\">{html.escape(_manager_reader_value((dynamics.get('pairs') or [['', '']])[0][1], 'Критерий будет определён'))}</div>"
-        f"<div class=\"period-bars\">{dynamics_bars}</div>"
-        f"<div class=\"stage-line\">{html.escape(str(dynamics.get('stage_line') or dynamics.get('interpretation') or ''))}</div>"
-        + _manager_daily_page_footer(report["footer"], 3)
-    )
-    _bd_stage_rows = "".join(
-        (
-            f"<tr class=\"{'bd-stage-weak' if row.get('is_weak') else ''}\">"
-            f"<td class=\"bd-stage-label\">"
-            f"<span class=\"stage-funnel-label\">{html.escape(str(row.get('funnel_label', '')))}</span>"
-            f" {html.escape(str(row.get('stage_name', '')))}</td>"
-            f"<td class=\"bd-stage-score\">{html.escape(str(row.get('score', '—')))}</td>"
-            f"<td class=\"bd-stage-flag\">"
-            + ("<span class=\"bd-weak-flag\">слабо</span>" if row.get("is_weak") else "")
-            + "</td></tr>"
-        )
-        for row in call_breakdown.get("stage_steps") or []
-    ) or "<tr><td colspan=\"3\">Нет данных по этапам.</td></tr>"
-    _bd_worked = "".join(
-        f"<li><strong>{html.escape(str(item['label']))}</strong> — {html.escape(str(item['interpretation']))}</li>"
-        for item in (call_breakdown.get("worked") or [])
-    ) or "<li>Нет данных.</li>"
-    _bd_to_fix = "".join(
-        f"<li><strong>{html.escape(str(item['label']))}</strong> — {html.escape(str(item['interpretation']))}</li>"
-        for item in (call_breakdown.get("to_fix") or [])
-    ) or "<li>Нет данных.</li>"
-    _bd_rec = (
-        f"<div class=\"bd-rec\">"
-        f"<span class=\"bd-rec-label\">Попробуй так: </span>"
-        f"<span class=\"bd-rec-text\">{html.escape(str((call_breakdown.get('recommendation') or {}).get('better_phrasing') or ''))}</span>"
-        f"</div>"
-        if call_breakdown.get("recommendation") and (call_breakdown["recommendation"] or {}).get("better_phrasing")
-        else ""
-    )
-    _bd_header = (
-        f"{html.escape(str(call_breakdown.get('client_label') or 'Клиент'))} · {html.escape(str(call_breakdown.get('time_label') or '—'))}"
-        if not call_breakdown.get("is_placeholder")
-        else "Недостаточно данных для разбора"
-    )
-    page_four = (
-        _manager_daily_page_header(report["metadata_line"])
-        + f"<div class=\"section-bar navy\">{html.escape(call_breakdown['label'])}</div>"
-        f"<div class=\"bd-header\">{_bd_header}</div>"
-        "<section class=\"call-breakdown\">"
-        "<table class=\"bd-stage-table\"><thead><tr>"
-        "<th>Этап</th><th>Балл</th><th></th>"
-        f"</tr></thead><tbody>{_bd_stage_rows}</tbody></table>"
-        "<div class=\"bd-analysis-grid\">"
-        f"<div class=\"bd-col bd-worked\"><div class=\"bd-col-title\">✓ Что сработало</div><ul>{_bd_worked}</ul></div>"
-        f"<div class=\"bd-col bd-to-fix\"><div class=\"bd-col-title\">✗ Что исправить</div><ul>{_bd_to_fix}</ul></div>"
-        "</div>"
-        f"{_bd_rec}"
-        "</section>"
-        + _render_voice_of_customer_html(voice_of_customer)
-        + _manager_daily_page_footer(report["footer"], 4)
-    )
-    page_five = (
-        _manager_daily_page_header(report["metadata_line"])
-        + _render_additional_situations_html(additional_situations)
-        + _render_call_tomorrow_html(call_tomorrow)
-        + _manager_daily_page_footer(report["footer"], 5)
-    )
-    mc_open_items = "".join(
-        f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
-        for call in morning_card.get("open_calls") or []
-    ) or "<li>Открытых звонков нет — отличный результат!</li>"
-    page_six = (
-        _manager_daily_page_header(report["metadata_line"])
-        + f"<div class=\"section-bar\">{html.escape(morning_card['label'])}</div>"
-        "<section class=\"morning-card\">"
-        f"<div class=\"morning-greeting\">{html.escape(str(morning_card.get('greeting') or ''))}</div>"
-        f"<div class=\"morning-summary\">{html.escape(str(morning_card.get('summary_line') or ''))}</div>"
-        "<div class=\"morning-open-label\">Открытые звонки:</div>"
-        f"<ul class=\"morning-open-list\">{mc_open_items}</ul>"
-        "<div class=\"morning-challenge\">"
-        "<span class=\"morning-challenge-label\">Фокус: </span>"
-        f"{html.escape(str(morning_card.get('challenge') or ''))}"
-        "</div>"
-        "</section>"
-        + _manager_daily_page_footer(report["footer"], 6)
-    )
     return (
         "<html><head><meta charset=\"utf-8\">"
         f"<style>{template.css}</style>"
         "</head><body><div class=\"workspace\">"
-        f"<section class=\"page\">{page_one}</section>"
-        f"<section class=\"page\">{page_two}</section>"
-        f"<section class=\"page\">{page_three}</section>"
-        f"<section class=\"page\">{page_four}</section>"
-        f"<section class=\"page\">{page_five}</section>"
-        f"<section class=\"page\">{page_six}</section>"
+        f"{''.join(pages_html)}"
         "</div></body></html>"
     )
 
@@ -1352,6 +1106,21 @@ def _render_pdf_report(*, report: dict[str, Any], template: ReportTemplate) -> t
     width = 595
     height = 842
     margin = 42
+    if template.preset == "manager_daily" and template.version == "manager_daily_template_v2":
+        return _render_manager_daily_pdf_report(
+            report=report,
+            font=font,
+            width=width,
+            height=height,
+            margin=margin,
+            accent=accent,
+            muted=muted,
+            black=black,
+            green=green,
+            amber=amber,
+            red=red,
+            surface_alt=surface_alt,
+        )
     line_gap = 4
     pages: list[list[dict[str, Any]]] = []
     y = height - margin
@@ -1430,17 +1199,14 @@ def _render_manager_daily_pdf_report(
     red: tuple[int, int, int],
     surface_alt: tuple[int, int, int],
 ) -> tuple[bytes, int]:
-    """Render manager_daily PDF with a fixed reference-like composition."""
+    """Render manager_daily PDF with the approved v5 block composition."""
     white = (255, 255, 255)
-    light_blue = (215, 228, 239)
-    light_green = (223, 233, 215)
-    light_yellow = (243, 229, 184)
-    light_red = (248, 230, 230)
-    light_orange = (246, 223, 207)
-    soft_green = (231, 240, 223)
-    soft_yellow = (246, 234, 201)
-    soft_problem = (249, 236, 236)
-    soft_week = (247, 232, 220)
+    light_blue = (232, 240, 254)
+    light_green = (231, 240, 223)
+    light_yellow = (246, 234, 201)
+    light_red = (249, 236, 236)
+    light_orange = (247, 232, 220)
+    light_gray = (243, 245, 247)
     pages: list[list[dict[str, Any]]] = []
     sections = {section["id"]: section for section in report["sections"]}
 
@@ -1499,462 +1265,285 @@ def _render_manager_daily_pdf_report(
         draw_rect(page, left=margin, top=top, box_width=width - (margin * 2), box_height=22, fill=color)
         draw_text(page, left=margin + 14, top=top + 5, text=title, size=11.5, color=white)
 
-    def draw_bullets(
-        page: list[dict[str, Any]],
-        *,
-        left: float,
-        top: float,
-        items: list[str],
-        width_limit: float,
-        color: tuple[int, int, int] = black,
-        bullet_color: tuple[int, int, int] | None = None,
-        size: float = 10.2,
-    ) -> float:
-        cursor = top
-        for item in items:
-            draw_text(page, left=left, top=cursor, text="•", size=size, color=bullet_color or color, max_width=10)
-            used = draw_text(page, left=left + 10, top=cursor, text=item, size=size, color=color, max_width=width_limit - 10)
-            cursor += max(used, size * 1.4)
-        return cursor - top
-
     def measure_height(text: str, size: float, mw: float, leading: float = 1.28) -> float:
         lines = _wrap_text(text=text, font=font, font_size=size, max_width=mw)
         return len(lines) * size * leading
 
+    def draw_table(
+        page: list[dict[str, Any]],
+        *,
+        top: float,
+        columns: list[str],
+        rows: list[list[str]],
+        col_widths: list[float],
+        header_fill: tuple[int, int, int] = accent,
+        row_fill: tuple[int, int, int] = white,
+        alt_row_fill: tuple[int, int, int] = light_gray,
+        header_size: float = 7.8,
+        body_size: float = 7.7,
+        lefts: list[float] | None = None,
+    ) -> float:
+        x_positions = lefts or []
+        if not x_positions:
+            x = margin
+            for col_width in col_widths:
+                x_positions.append(x)
+                x += col_width
+        header_height = 22
+        for idx, column in enumerate(columns):
+            draw_rect(page, left=x_positions[idx], top=top, box_width=col_widths[idx], box_height=header_height, fill=header_fill)
+            draw_text(page, left=x_positions[idx] + 4, top=top + 6, text=str(column), size=header_size, color=white, max_width=col_widths[idx] - 8)
+        cursor = top + header_height + 2
+        for row_index, row in enumerate(rows):
+            cell_heights = [
+                measure_height(str(cell), body_size, col_widths[idx] - 8, leading=1.18)
+                for idx, cell in enumerate(row)
+            ]
+            row_height = max(24, int(max(cell_heights, default=12) + 10))
+            fill = row_fill if row_index % 2 == 0 else alt_row_fill
+            for idx, cell in enumerate(row):
+                draw_rect(page, left=x_positions[idx], top=cursor, box_width=col_widths[idx], box_height=row_height, fill=fill)
+                draw_text(page, left=x_positions[idx] + 4, top=cursor + 5, text=str(cell), size=body_size, color=black, max_width=col_widths[idx] - 8, leading=1.18)
+            cursor += row_height + 2
+        return cursor
+
+    header = sections["report_header"]
     day_summary = sections["day_summary"]
-    executive = sections["executive_narrative"]
-    signal = sections["signal_of_day"]
-    focus = sections["main_focus_for_tomorrow"]
+    money_on_table = sections["money_on_table"]
+    warm_pipeline = sections["warm_pipeline"]
     review = sections["review_block"]
-    problem = sections["key_problem_of_day"]
-    recommendations = sections["recommendations"]
-    outcomes = sections["call_outcomes_summary"]
+    focus = sections["main_focus_for_tomorrow"]
+    call_breakdown = sections["call_breakdown"]
+    voice = sections["voice_of_customer"]
+    additional = sections["additional_situations"]
+    challenge = sections["challenge"]
+    call_tomorrow = sections["call_tomorrow"]
     call_list = sections["call_list"]
-    dynamics = sections["focus_criterion_dynamics"]
-    morning_card_section = sections["morning_card"]
-    call_breakdown_section = sections["call_breakdown"]
-    voice_section = sections["voice_of_customer"]
-    add_sit_section = sections["additional_situations"]
-    call_tomorrow_section = sections["call_tomorrow"]
+    morning_card = sections["morning_card"]
 
     page1 = add_page()
-    draw_rect(page1, left=margin, top=58, box_width=width - (margin * 2), box_height=72, fill=accent)
-    draw_text(page1, left=margin + 18, top=72, text=report["title"], size=19, color=white, max_width=300)
-    draw_text(page1, left=margin + 18, top=95, text=report["subtitle"], size=10.2, color=(198, 215, 243), max_width=340)
-    draw_text(page1, left=margin + 18, top=112, text=f"Фокус недели: {report.get('hero_focus') or ''}", size=10.4, color=white, max_width=460)
+    draw_section_bar(page1, top=58, title=header["label"], color=accent)
+    draw_rect(page1, left=margin, top=88, box_width=width - (margin * 2), box_height=78, fill=accent)
+    draw_text(page1, left=margin + 18, top=102, text=report["title"], size=18.4, color=white, max_width=width - (margin * 2) - 36)
+    draw_text(page1, left=margin + 18, top=126, text=report["subtitle"], size=10.0, color=(198, 215, 243), max_width=width - (margin * 2) - 36)
+    draw_text(page1, left=margin + 18, top=144, text=f"Фокус недели: {report.get('hero_focus') or ''}", size=10.0, color=white, max_width=width - (margin * 2) - 36)
+    draw_text(
+        page1,
+        left=width - margin - 150,
+        top=102,
+        text=f"Звонков: {_manager_reader_value(header.get('calls_count'), '0')}",
+        size=10.5,
+        color=white,
+        max_width=132,
+    )
+    draw_text(
+        page1,
+        left=width - margin - 150,
+        top=122,
+        text=f"Балл дня: {_manager_reader_value(header.get('day_score'), 'Нет базы')} / 5",
+        size=10.5,
+        color=white,
+        max_width=132,
+    )
 
-    draw_section_bar(page1, top=150, title=day_summary["label"], color=(47, 97, 170))
-    _outcome_col_gap = 6
-    _num_outcome_cols = 6
-    _outcome_col_width = (width - (margin * 2) - (_outcome_col_gap * (_num_outcome_cols - 1))) / _num_outcome_cols
-    _outcome_col_left = margin
-    _outcome_col_top = 183
-    _outcome_col_height = 64
-    _outcome_fills = {
+    draw_section_bar(page1, top=184, title=day_summary["label"], color=accent)
+    outcome_gap = 6
+    outcome_width = (width - (margin * 2) - (outcome_gap * 5)) / 6
+    outcome_left = margin
+    tone_fill = {
         "neutral": light_blue,
         "positive": light_green,
         "focus": light_yellow,
         "problem": light_red,
         "warning": light_orange,
     }
-    _outcome_accent_colors = {
-        "neutral": (47, 97, 170),
+    tone_accent = {
+        "neutral": accent,
         "positive": green,
-        "focus": (138, 107, 9),
+        "focus": amber,
         "problem": red,
-        "warning": (186, 88, 22),
+        "warning": amber,
     }
     for item in day_summary.get("outcome_cols") or []:
-        _tone = str(item.get("tone") or "neutral")
-        _fill = _outcome_fills.get(_tone, light_blue)
-        _accent = _outcome_accent_colors.get(_tone, accent)
-        draw_rect(page1, left=_outcome_col_left, top=_outcome_col_top, box_width=_outcome_col_width, box_height=_outcome_col_height, fill=_fill)
-        draw_rect(page1, left=_outcome_col_left, top=_outcome_col_top, box_width=_outcome_col_width, box_height=4, fill=_accent)
-        draw_centered_text(page1, left=_outcome_col_left, top=_outcome_col_top + 20, box_width=_outcome_col_width, text=_manager_reader_value(item.get("value"), "—"), size=16.0, color=_accent)
-        draw_centered_text(page1, left=_outcome_col_left, top=_outcome_col_top + 44, box_width=_outcome_col_width, text=str(item["label"]), size=7.8, color=muted)
-        _outcome_col_left += _outcome_col_width + _outcome_col_gap
+        tone = str(item.get("tone") or "neutral")
+        draw_rect(page1, left=outcome_left, top=214, box_width=outcome_width, box_height=58, fill=tone_fill.get(tone, light_blue))
+        draw_rect(page1, left=outcome_left, top=214, box_width=outcome_width, box_height=4, fill=tone_accent.get(tone, accent))
+        draw_centered_text(page1, left=outcome_left, top=231, box_width=outcome_width, text=_manager_reader_value(item.get("value"), "—"), size=15.5, color=tone_accent.get(tone, accent))
+        draw_centered_text(page1, left=outcome_left, top=252, box_width=outcome_width, text=str(item.get("label") or ""), size=7.2, color=muted)
+        outcome_left += outcome_width + outcome_gap
 
-    # Executive block — dynamic height prevents progress_line from overlapping the signal card
-    _exec_max_w = width - (margin * 2) - 24
-    _exec_body_text = str(executive.get("body") or "Итог дня будет сформирован после следующего запуска.")
-    _exec_progress_text = str(executive.get("progress_line") or "Сравнение с базой пока недоступно.")
-    _exec_body_h = measure_height(_exec_body_text, 10.4, _exec_max_w)
-    _exec_progress_h = measure_height(_exec_progress_text, 9.4, _exec_max_w)
-    _exec_box_h = max(78, int(13 + _exec_body_h + 6 + _exec_progress_h + 12))
-    _exec_top = 273
-    draw_rect(page1, left=margin, top=_exec_top, box_width=width - (margin * 2), box_height=_exec_box_h, fill=(243, 245, 247))
-    draw_rect(page1, left=margin, top=_exec_top, box_width=4, box_height=_exec_box_h, fill=(47, 97, 170))
-    draw_text(page1, left=margin + 12, top=_exec_top + 13, text=_exec_body_text, size=10.4, color=black, max_width=_exec_max_w)
-    draw_text(page1, left=margin + 12, top=_exec_top + 13 + _exec_body_h + 6, text=_exec_progress_text, size=9.4, color=muted, max_width=_exec_max_w)
-
-    # Signal card — follows executive block bottom so wrapped body text cannot overlap it
-    _signal_top = _exec_top + _exec_box_h + 8
-    _signal_max_w = width - (margin * 2) - 24
-    signal_text = (
-        f"✓ {signal['label']}: {str(signal.get('body') or 'Опорный пример будет выбран после накопления базы.')} "
-        f"Время: {str(signal.get('time_line') or 'не зафиксировано')}. {_manager_signal_reason(signal)}"
+    draw_section_bar(page1, top=288, title=money_on_table["label"], color=amber)
+    money_box_h = max(
+        82,
+        int(
+            20
+            + measure_height(str(money_on_table.get("body") or ""), 9.2, width - (margin * 2) - 24)
+            + measure_height(str(money_on_table.get("highlight_line") or ""), 9.0, width - (margin * 2) - 24)
+            + measure_height(str(money_on_table.get("reason_line") or ""), 8.6, width - (margin * 2) - 24)
+            + 18
+        ),
     )
-    _signal_text_h = measure_height(signal_text, 10.2, _signal_max_w)
-    _signal_box_h = max(54, int(16 + _signal_text_h + 10))
-    draw_rect(page1, left=margin, top=_signal_top, box_width=width - (margin * 2), box_height=_signal_box_h, fill=soft_green)
-    draw_rect(page1, left=margin, top=_signal_top, box_width=4, box_height=_signal_box_h, fill=green)
-    draw_text(page1, left=margin + 12, top=_signal_top + 16, text=signal_text, size=10.2, color=black, max_width=_signal_max_w)
+    draw_rect(page1, left=margin, top=318, box_width=width - (margin * 2), box_height=money_box_h, fill=light_yellow)
+    draw_rect(page1, left=margin, top=318, box_width=4, box_height=money_box_h, fill=amber)
+    draw_text(page1, left=margin + 12, top=330, text=str(money_on_table.get("body") or ""), size=9.2, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=352, text=str(money_on_table.get("highlight_line") or ""), size=9.0, color=accent, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=372, text=str(money_on_table.get("reason_line") or ""), size=8.6, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=390, text=str(money_on_table.get("note") or ""), size=7.8, color=muted, max_width=width - (margin * 2) - 24)
 
-    situation_title_text = str(focus.get("situation_title") or "СИТУАЦИЯ ДНЯ")
-    situation_body_text = str(focus.get("body") or "Описание ситуации будет сформировано после следующего запуска.")
-    situation_count_label = str(focus.get("pattern_count_label") or "")
-    situation_call_ex = dict(focus.get("call_example") or {})
-    situation_scripts = list(focus.get("scripts") or [])
-    _has_call_ex = bool(situation_call_ex.get("client_label") or situation_call_ex.get("time_label"))
-
-    # СИТУАЦИЯ ДНЯ — follows signal card; height sized to contain all script lines without overflow
-    _sit_top = _signal_top + _signal_box_h + 8
-    _sit_h = 116 if _has_call_ex else 96
-    _stage_bar_top = _sit_top + _sit_h
-    _st_top_init = _stage_bar_top + 24
-    _stage_rows = review.get("stage_rows") or []
-    draw_rect(page1, left=margin, top=_sit_top, box_width=width - (margin * 2), box_height=_sit_h, fill=(232, 240, 254))
-    draw_rect(page1, left=margin, top=_sit_top, box_width=4, box_height=_sit_h, fill=(30, 80, 180))
-    draw_text(page1, left=margin + 12, top=_sit_top + 8, text=situation_title_text, size=9.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=_sit_top + 24, text=situation_body_text, size=9.5, color=black, max_width=width - (margin * 2) - 24)
-    if situation_count_label:
-        draw_text(page1, left=margin + 12, top=_sit_top + 36, text=situation_count_label, size=8.0, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
-    if _has_call_ex:
-        _ex_client = str(situation_call_ex.get("client_label") or "Клиент")
-        _ex_time = str(situation_call_ex.get("time_label") or "")
-        _ex_reason = str(situation_call_ex.get("reason_short") or "")
-        _ex_contact_line = f"{_ex_client} · {_ex_time}" if _ex_time and _ex_time != "—" else _ex_client
-        draw_text(page1, left=margin + 12, top=_sit_top + 48, text=f"Пример: {_ex_contact_line}", size=8.5, color=(20, 50, 140), max_width=width - (margin * 2) - 24)
-        if _ex_reason:
-            draw_text(page1, left=margin + 12, top=_sit_top + 60, text=_ex_reason, size=7.8, color=(100, 110, 150), max_width=width - (margin * 2) - 24)
-    _script_top = _sit_top + (73 if _has_call_ex else (48 if situation_count_label else 40))
-    _script_gap = 13
-    for _si, _script in enumerate(situation_scripts[:3]):
-        draw_text(page1, left=margin + 12, top=_script_top + _si * _script_gap, text=f"{_si + 1}. {_script}", size=8.5, color=(70, 70, 130), max_width=width - (margin * 2) - 24)
-
-    draw_section_bar(page1, top=_stage_bar_top, title=review["label"], color=accent)
-    _st_top = _st_top_init
-    _st_name_w = 190
-    _st_score_w = 45
-    _st_bar_w = 208
-    _st_prio_w = 68
-    _st_row_h = 18
-    _st_header_fill = (232, 237, 245)
-    draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=16, fill=_st_header_fill)
-    draw_text(page1, left=margin + 4, top=_st_top + 3, text="ЭТАП", size=7.5, color=muted, max_width=_st_name_w)
-    draw_text(page1, left=margin + _st_name_w + 4, top=_st_top + 3, text="СЕГОДНЯ", size=7.5, color=muted, max_width=_st_score_w)
-    draw_text(page1, left=margin + _st_name_w + _st_score_w + 4, top=_st_top + 3, text="ШКАЛА", size=7.5, color=muted, max_width=_st_bar_w)
-    draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 3, text="ПРИОРИТЕТ", size=7.5, color=muted, max_width=_st_prio_w)
-    _st_top += 18
-    if not _stage_rows:
-        draw_text(page1, left=margin + 4, top=_st_top + 4, text="Данные по этапам появятся после накопления базы.", size=8.5, color=muted, max_width=width - (margin * 2))
-    # Guard: stop adding rows before the problem card area (90px card + 6px gap + footer 36px)
-    _max_st_row_end = height - 36 - 90 - 6
-    for _sr in _stage_rows:
-        _is_prio = bool(_sr.get("is_priority"))
-        _sr_crits = list(_sr.get("criteria_detail") or []) if _is_prio else []
-        _this_row_h = 28 if _sr_crits else _st_row_h
-        if _st_top + _this_row_h > _max_st_row_end:
-            break
-        _row_fill = (255, 242, 230) if _is_prio else (248, 250, 252)
-        draw_rect(page1, left=margin, top=_st_top, box_width=width - (margin * 2), box_height=_this_row_h, fill=_row_fill)
-        _label_text = f"{_sr.get('funnel_label', '')} {_sr.get('stage_name', '')}"
-        draw_text(page1, left=margin + 4, top=_st_top + 4, text=_label_text, size=8.0, color=red if _is_prio else black, max_width=_st_name_w - 8)
-        draw_text(page1, left=margin + _st_name_w + 4, top=_st_top + 4, text=str(_sr.get("score", "—")), size=8.5, color=red if _is_prio else accent, max_width=_st_score_w - 4)
-        _bar_track_left = margin + _st_name_w + _st_score_w + 4
-        _bar_track_w = _st_bar_w - 12
-        draw_rect(page1, left=_bar_track_left, top=_st_top + 5, box_width=_bar_track_w, box_height=8, fill=(220, 228, 238))
-        _bar_fill_w = round(_bar_track_w * ((_sr.get("bar_pct") or 0) / 100))
-        if _bar_fill_w > 0:
-            draw_rect(page1, left=_bar_track_left, top=_st_top + 5, box_width=_bar_fill_w, box_height=8, fill=red if _is_prio else accent)
-        if _is_prio:
-            draw_text(page1, left=margin + _st_name_w + _st_score_w + _st_bar_w + 4, top=_st_top + 4, text="★ приоритет", size=7.5, color=red, max_width=_st_prio_w - 4)
-        if _sr_crits:
-            _weak_parts = [f"{c['name']}: {c['score']}" for c in _sr_crits if c.get("is_weak")][:3]
-            _ok_parts = [f"{c['name']}: {c['score']}" for c in _sr_crits if not c.get("is_weak")][:2]
-            _crit_line = "  ".join(_weak_parts) or "  ".join(_ok_parts) or ""
-            if _crit_line:
-                draw_text(page1, left=margin + 4, top=_st_top + 18, text=_crit_line, size=7.0, color=red, max_width=width - (margin * 2) - 8)
-        _st_top += _this_row_h
-
-    # Problem card position follows the actual stage table bottom (fixes overlap with tall tables)
-    _problem_card_top = _st_top + 6
-    draw_rect(page1, left=margin, top=_problem_card_top, box_width=width - (margin * 2), box_height=90, fill=light_red)
-    draw_rect(page1, left=margin, top=_problem_card_top, box_width=4, box_height=90, fill=red)
-    draw_text(page1, left=margin + 12, top=_problem_card_top + 15, text=f"{problem['label']}: {str(problem.get('title') or 'Критичный провал дня не выделился')}", size=11.0, color=red, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=_problem_card_top + 37, text=str(problem.get("body") or ""), size=9.8, color=black, max_width=width - (margin * 2) - 24)
+    pipeline_top = 318 + money_box_h + 16
+    draw_section_bar(page1, top=pipeline_top, title=warm_pipeline["label"], color=accent)
+    draw_rect(page1, left=margin, top=pipeline_top + 30, box_width=width - (margin * 2), box_height=104, fill=light_gray)
+    draw_rect(page1, left=margin, top=pipeline_top + 30, box_width=4, box_height=104, fill=accent)
+    draw_text(page1, left=margin + 12, top=pipeline_top + 42, text=str(warm_pipeline.get("summary_line") or ""), size=9.4, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=pipeline_top + 60, text=str(warm_pipeline.get("counts_line") or ""), size=8.8, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=pipeline_top + 78, text=str(warm_pipeline.get("conversion_line") or ""), size=8.8, color=accent, max_width=width - (margin * 2) - 24)
+    draw_text(page1, left=margin + 12, top=pipeline_top + 96, text=str(warm_pipeline.get("average_line") or ""), size=8.4, color=muted, max_width=width - (margin * 2) - 24)
     footer(page1, 1)
 
     page2 = add_page()
-    draw_section_bar(page2, top=58, title=recommendations["label"], color=accent)
-    rec_top = 92
-    for index, card in enumerate(recommendations.get("cards") or []):
-        card_fill = soft_week if card.get("tone") == "orange" else soft_problem
-        card_edge = amber if card.get("tone") == "orange" else red
-        example_width = (width - (margin * 2) - 40) / 2
-        _ex_max_w = example_width - 16
-        _card_max_w = width - (margin * 2) - 28
-        _how_text = str(card.get("how_it_sounded") or "Формулировка была слишком общей.")
-        _better_text = str(card.get("better_phrasing") or "Сформулируй следующий шаг конкретно.")
-        _context_text = str(card.get("context") or card.get("body") or "")
-        _context_h = measure_height(_context_text, 9.5, _card_max_w)
-        # Example boxes: tall enough to contain both before/after texts without overflow
-        _ex_box_h = max(44, int(22 + max(measure_height(_how_text, 8.5, _ex_max_w), measure_height(_better_text, 8.5, _ex_max_w)) + 10))
-        _why_text = f"Почему это работает: {str(card.get('why_this_works') or '')}"
-        _example_top_offset = max(68, int(40 + _context_h + 8))
-        _why_top_offset = _example_top_offset + _ex_box_h + 8
-        _why_h = measure_height(_why_text, 8.9, _card_max_w)
-        card_height = max(152, int(_why_top_offset + _why_h + 14))
-        draw_rect(page2, left=margin, top=rec_top, box_width=width - (margin * 2), box_height=card_height, fill=card_fill)
-        draw_rect(page2, left=margin, top=rec_top, box_width=4, box_height=card_height, fill=card_edge)
-        pill_width = 86
-        draw_rect(page2, left=width - margin - pill_width, top=rec_top + 12, box_width=pill_width, box_height=20, fill=(194, 103, 17) if card.get("priority_tone") == "week" else (196, 12, 0))
-        draw_centered_text(page2, left=width - margin - pill_width, top=rec_top + 18, box_width=pill_width, text=str(card.get("priority_tag") or "Сделай завтра"), size=7.8, color=white)
-        draw_text(page2, left=margin + 14, top=rec_top + 18, text=f"{index + 1}. {str(card.get('title') or 'Рекомендация')}", size=11.4, color=accent, max_width=360)
-        draw_text(page2, left=margin + 14, top=rec_top + 40, text=_context_text, size=9.5, color=black, max_width=_card_max_w)
-        example_top = rec_top + _example_top_offset
-        draw_rect(page2, left=margin + 14, top=example_top, box_width=example_width, box_height=_ex_box_h, fill=(250, 239, 239))
-        draw_rect(page2, left=margin + 14, top=example_top, box_width=2, box_height=_ex_box_h, fill=(227, 167, 164))
-        draw_rect(page2, left=margin + 26 + example_width, top=example_top, box_width=example_width, box_height=_ex_box_h, fill=(238, 247, 238))
-        draw_rect(page2, left=margin + 26 + example_width, top=example_top, box_width=2, box_height=_ex_box_h, fill=green)
-        draw_text(page2, left=margin + 22, top=example_top + 8, text="Как звучало:", size=8.8, color=red, max_width=_ex_max_w)
-        draw_text(page2, left=margin + 22, top=example_top + 22, text=_how_text, size=8.5, color=muted, max_width=_ex_max_w)
-        draw_text(page2, left=margin + 34 + example_width, top=example_top + 8, text="Как лучше:", size=8.8, color=green, max_width=_ex_max_w)
-        draw_text(page2, left=margin + 34 + example_width, top=example_top + 22, text=_better_text, size=8.5, color=muted, max_width=_ex_max_w)
-        draw_text(page2, left=margin + 14, top=rec_top + _why_top_offset, text=_why_text, size=8.9, color=black, max_width=_card_max_w)
-        rec_top += card_height + 18
+    draw_section_bar(page2, top=58, title=review["label"], color=accent)
+    review_rows = [
+        [
+            f"{row.get('funnel_label', '')} {row.get('stage_name', '')}".strip(),
+            str(row.get("score") or "—"),
+            "—",
+            str(row.get("bar_text") or "—"),
+            "Приоритет" if row.get("is_priority") else "Норма",
+        ]
+        for row in review.get("stage_rows") or []
+    ] or [["Данные по этапам появятся после накопления базы.", "", "", "", ""]]
+    review_col_widths = [216, 46, 54, 150, 45]
+    review_bottom = draw_table(
+        page2,
+        top=88,
+        columns=["Этап", "Сегодня", "Среднее", "Шкала", "Статус"],
+        rows=review_rows,
+        col_widths=review_col_widths,
+        body_size=7.5,
+    )
+    focus_top = review_bottom + 10
+    draw_section_bar(page2, top=focus_top, title=focus["label"], color=amber)
+    draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=230, fill=light_blue)
+    draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=230, fill=accent)
+    draw_text(page2, left=margin + 12, top=focus_top + 42, text=str(focus.get("situation_title") or focus["label"]), size=10.2, color=accent, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=focus_top + 62, text=str(focus.get("body") or ""), size=9.0, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=focus_top + 94, text=f"Что хотел клиент: {focus.get('client_need') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=focus_top + 120, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    example = dict(focus.get("call_example") or {})
+    example_line = ""
+    if example.get("client_label") or example.get("time_label"):
+        example_line = f"Пример: {example.get('client_label') or 'Клиент'} · {example.get('time_label') or '—'}"
+    if example_line:
+        draw_text(page2, left=margin + 12, top=focus_top + 150, text=example_line, size=8.3, color=accent, max_width=width - (margin * 2) - 24)
+    script_top = focus_top + 170
+    for idx, script in enumerate((focus.get("scripts") or [])[:3], start=1):
+        draw_text(page2, left=margin + 12, top=script_top + ((idx - 1) * 16), text=f"{idx}. {script}", size=8.2, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=focus_top + 220, text=f"Почему работает: {focus.get('why_it_works') or ''}", size=8.0, color=muted, max_width=width - (margin * 2) - 24)
     footer(page2, 2)
 
     page3 = add_page()
-    draw_section_bar(page3, top=58, title=outcomes["label"], color=accent)
-    outcome_gap = 12
-    outcome_width = (width - (margin * 2) - (outcome_gap * 3)) / 4
-    outcome_left = margin
-    outcome_top = 92
-    outcome_fills = {
-        "green": light_green,
-        "yellow": light_yellow,
-        "red-danger": light_red,
-        "yellow-open": light_orange,
-    }
-    outcome_value_colors = {
-        "green": green,
-        "yellow": (138, 107, 9),
-        "red-danger": red,
-        "yellow-open": amber,
-    }
-    for item in outcomes.get("metrics") or []:
-        tile_class = _manager_outcome_tile_class(item)
-        draw_rect(page3, left=outcome_left, top=outcome_top, box_width=outcome_width, box_height=70, fill=outcome_fills.get(tile_class, light_green))
-        draw_rect(page3, left=outcome_left, top=outcome_top, box_width=outcome_width, box_height=4, fill=outcome_value_colors.get(tile_class, accent))
-        draw_centered_text(page3, left=outcome_left, top=outcome_top + 24, box_width=outcome_width, text=_manager_reader_value(item.get("value"), "0"), size=18.0, color=outcome_value_colors.get(tile_class, accent))
-        draw_centered_text(page3, left=outcome_left, top=outcome_top + 47, box_width=outcome_width, text=str(item["label"]), size=8.6, color=muted)
-        outcome_left += outcome_width + outcome_gap
-
-    table_top = 182
-    columns = call_list.get("columns") or []
-    rows = call_list.get("rows") or []
-    _cl_num = 22
-    _cl_time = 42
-    _cl_client = 72
-    _cl_topic = 76
-    _cl_status = 62
-    _cl_context = 72
-    _cl_next = width - (margin * 2) - _cl_num - _cl_time - _cl_client - _cl_topic - _cl_status - _cl_context
-    col_widths = [_cl_num, _cl_time, _cl_client, _cl_topic, _cl_status, _cl_context, _cl_next]
-    x = margin
-    for column, col_width in zip(columns, col_widths, strict=False):
-        draw_rect(page3, left=x, top=table_top, box_width=col_width, box_height=22, fill=accent)
-        draw_text(page3, left=x + 4, top=table_top + 6, text=str(column), size=8.0, color=white, max_width=col_width - 8)
-        x += col_width
-    row_top = table_top + 24
-    for row in rows[:8]:
-        x = margin
-        status_value = str(row[4]) if len(row) > 4 else ""
-        for index, (cell, col_width) in enumerate(zip(row, col_widths, strict=False)):
-            fill = (248, 248, 248)
-            if index == 4:
-                fill = _manager_status_fill(status_value)
-            draw_rect(page3, left=x, top=row_top, box_width=col_width, box_height=24, fill=fill)
-            draw_text(page3, left=x + 4, top=row_top + 7, text=str(cell), size=7.7, color=black if index != 4 else _manager_status_text_color(status_value, black, green, amber, red), max_width=col_width - 8)
-            x += col_width
-        row_top += 24
-    draw_text(page3, left=margin, top=row_top + 8, text=str(call_list.get("note") or ""), size=8.8, color=muted, max_width=width - (margin * 2))
-
-    dynamics_top = row_top + 34
-    draw_section_bar(page3, top=dynamics_top, title=dynamics["label"], color=(33, 122, 133))
-    draw_text(page3, left=margin, top=dynamics_top + 32, text=str((dynamics.get("pairs") or [["", ""]])[0][1]), size=10.5, color=(33, 122, 133), max_width=width - (margin * 2))
-    bars_top = dynamics_top + 58
-    for index, item in enumerate(dynamics.get("bars") or []):
-        base_top = bars_top + (index * 26)
-        draw_text(page3, left=margin, top=base_top, text=str(item["label"]), size=8.8, color=black, max_width=110)
-        bar_left = margin + 116
-        bar_width = 120 if item.get("tone") == "blue" else 86 if item.get("tone") == "orange" else 42
-        draw_rect(page3, left=bar_left, top=base_top + 2, box_width=bar_width, box_height=14, fill=(47, 97, 170) if item.get("tone") == "blue" else amber if item.get("tone") == "orange" else (214, 214, 214))
-        draw_text(page3, left=bar_left + bar_width + 8, top=base_top, text=_manager_reader_value(item.get("value"), "—"), size=9.0, color=(47, 97, 170) if item.get("tone") == "blue" else amber, max_width=140)
-    draw_text(page3, left=margin, top=bars_top + 62, text=str(dynamics.get("stage_line") or dynamics.get("interpretation") or ""), size=9.6, color=black, max_width=width - (margin * 2))
+    draw_section_bar(page3, top=58, title=call_breakdown["label"], color=accent)
+    draw_text(page3, left=margin, top=86, text=str(call_breakdown.get("summary_line") or ""), size=9.5, color=black, max_width=width - (margin * 2))
+    breakdown_bottom = draw_table(
+        page3,
+        top=104,
+        columns=["Момент", "Что было", "Что лучше"],
+        rows=[list(map(str, row)) for row in (call_breakdown.get("rows") or [])],
+        col_widths=[56, 208, 247],
+        body_size=7.5,
+    )
+    voice_top = breakdown_bottom + 10
+    draw_section_bar(page3, top=voice_top, title=voice["label"], color=(70, 90, 140))
+    if voice.get("intro"):
+        draw_text(page3, left=margin, top=voice_top + 30, text=str(voice.get("intro") or ""), size=8.2, color=muted, max_width=width - (margin * 2))
+        voice_table_top = voice_top + 48
+    else:
+        voice_table_top = voice_top + 30
+    draw_table(
+        page3,
+        top=voice_table_top,
+        columns=["Клиент", "Что сказал", "Смысл → Как ответить"],
+        rows=[list(map(str, row)) for row in (voice.get("rows") or [])] or [["—", "Ситуации появятся после накопления материала по звонкам.", "—"]],
+        col_widths=[120, 150, 241],
+        body_size=7.4,
+    )
     footer(page3, 3)
 
     page4 = add_page()
-    _bd = call_breakdown_section
-    _bd_client = str(_bd.get("client_label") or "Клиент")
-    _bd_time = str(_bd.get("time_label") or "—")
-    _bd_header_text = (
-        f"{_bd_client} · {_bd_time}" if not _bd.get("is_placeholder") else "Недостаточно данных для разбора"
-    )
-    draw_section_bar(page4, top=58, title=_bd["label"], color=accent)
-    draw_text(page4, left=margin, top=82, text=_bd_header_text, size=10.5, color=black, max_width=width - (margin * 2))
-    # Stage breakdown table
-    _bd_st_top = 104
-    _bd_st_name_w = 210
-    _bd_st_score_w = 46
-    _bd_st_flag_w = 60
-    draw_rect(page4, left=margin, top=_bd_st_top, box_width=width - (margin * 2), box_height=15, fill=(232, 237, 245))
-    draw_text(page4, left=margin + 4, top=_bd_st_top + 3, text="ЭТАП", size=7.5, color=muted, max_width=_bd_st_name_w)
-    draw_text(page4, left=margin + _bd_st_name_w + 4, top=_bd_st_top + 3, text="БАЛЛ", size=7.5, color=muted, max_width=_bd_st_score_w)
-    draw_text(page4, left=margin + _bd_st_name_w + _bd_st_score_w + 4, top=_bd_st_top + 3, text="ОЦЕНКА", size=7.5, color=muted, max_width=_bd_st_flag_w)
-    _bd_st_top += 17
-    _bd_stage_steps = list(_bd.get("stage_steps") or [])
-    if not _bd_stage_steps:
-        draw_text(page4, left=margin + 4, top=_bd_st_top + 4, text="Нет данных по этапам.", size=8.5, color=muted, max_width=width - (margin * 2))
-        _bd_st_top += 20
-    for _bds in _bd_stage_steps:
-        _is_weak = bool(_bds.get("is_weak"))
-        _row_fill = (255, 242, 230) if _is_weak else (248, 250, 252)
-        draw_rect(page4, left=margin, top=_bd_st_top, box_width=width - (margin * 2), box_height=16, fill=_row_fill)
-        draw_text(page4, left=margin + 4, top=_bd_st_top + 3, text=f"{_bds.get('funnel_label', '')} {_bds.get('stage_name', '')}", size=7.8, color=red if _is_weak else black, max_width=_bd_st_name_w - 8)
-        draw_text(page4, left=margin + _bd_st_name_w + 4, top=_bd_st_top + 3, text=str(_bds.get("score", "—")), size=8.0, color=red if _is_weak else accent, max_width=_bd_st_score_w - 4)
-        if _is_weak:
-            draw_text(page4, left=margin + _bd_st_name_w + _bd_st_score_w + 4, top=_bd_st_top + 3, text="слабо", size=7.5, color=red, max_width=_bd_st_flag_w - 4)
-        _bd_st_top += 16
-    # Worked / To-fix two-column analysis
-    _analysis_top = _bd_st_top + 18
-    _col_w = (width - (margin * 2) - 12) // 2
-    draw_rect(page4, left=margin, top=_analysis_top, box_width=_col_w, box_height=14, fill=(220, 238, 220))
-    draw_text(page4, left=margin + 4, top=_analysis_top + 2, text="✓ Что сработало", size=8.5, color=green, max_width=_col_w - 8)
-    draw_rect(page4, left=margin + _col_w + 12, top=_analysis_top, box_width=_col_w, box_height=14, fill=(255, 232, 232))
-    draw_text(page4, left=margin + _col_w + 16, top=_analysis_top + 2, text="✗ Что исправить", size=8.5, color=red, max_width=_col_w - 8)
-    _item_top = _analysis_top + 18
-    _bd_worked = list(_bd.get("worked") or [])
-    _bd_to_fix = list(_bd.get("to_fix") or [])
-    _max_items = max(len(_bd_worked), len(_bd_to_fix), 1)
-    for _idx in range(_max_items):
-        if _idx < len(_bd_worked):
-            _w = _bd_worked[_idx]
-            draw_text(page4, left=margin + 4, top=_item_top, text=f"• {_w['label']}", size=8.5, color=black, max_width=_col_w - 8)
-            if _w.get("interpretation"):
-                draw_text(page4, left=margin + 4, top=_item_top + 11, text=_w["interpretation"], size=7.8, color=muted, max_width=_col_w - 8)
-        if _idx < len(_bd_to_fix):
-            _f = _bd_to_fix[_idx]
-            draw_text(page4, left=margin + _col_w + 16, top=_item_top, text=f"• {_f['label']}", size=8.5, color=black, max_width=_col_w - 8)
-            if _f.get("interpretation"):
-                draw_text(page4, left=margin + _col_w + 16, top=_item_top + 11, text=_f["interpretation"], size=7.8, color=muted, max_width=_col_w - 8)
-        _item_top += 44
-    # Recommendation card
-    _bd_rec = _bd.get("recommendation") or {}
-    _page4_cursor = _item_top
-    if _bd_rec.get("better_phrasing"):
-        _rec_top = _item_top + 12
-        draw_rect(page4, left=margin, top=_rec_top, box_width=width - (margin * 2), box_height=52, fill=light_blue)
-        draw_rect(page4, left=margin, top=_rec_top, box_width=4, box_height=52, fill=accent)
-        draw_text(page4, left=margin + 12, top=_rec_top + 8, text="Попробуй так:", size=8.5, color=accent, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=_rec_top + 24, text=str(_bd_rec["better_phrasing"]), size=9.0, color=black, max_width=width - (margin * 2) - 24)
-        _page4_cursor = _rec_top + 52
-    # Voice of Customer section
-    _voice_situations = list(voice_section.get("situations") or [])
-    _voice_top = _page4_cursor + 22
-    draw_section_bar(page4, top=_voice_top, title=voice_section["label"], color=(70, 90, 140))
-    _voice_card_top = _voice_top + 30
-    if voice_section.get("is_placeholder") or not _voice_situations:
-        draw_text(page4, left=margin, top=_voice_card_top, text="Ситуации появятся после накопления материала по звонкам.", size=8.5, color=muted, max_width=width - (margin * 2))
-    else:
-        for _vs in _voice_situations[:3]:
-            _vq = str(_vs.get("quote") or "")
-            _vc = str(_vs.get("context") or "")
-            _vm = f"{_vs.get('client_label', 'Клиент')} · {_vs.get('time_label', '—')}"
-            draw_rect(page4, left=margin, top=_voice_card_top, box_width=width - (margin * 2), box_height=38, fill=(248, 248, 255))
-            draw_rect(page4, left=margin, top=_voice_card_top, box_width=3, box_height=38, fill=(70, 90, 140))
-            draw_text(page4, left=margin + 10, top=_voice_card_top + 4, text=f"«{_vq}»", size=8.5, color=(40, 40, 80), max_width=width - (margin * 2) - 20)
-            draw_text(page4, left=margin + 10, top=_voice_card_top + 20, text=_vm + (f" — {_vc}" if _vc else ""), size=7.8, color=muted, max_width=width - (margin * 2) - 20)
-            _voice_card_top += 44
+    draw_section_bar(page4, top=58, title=additional["label"], color=accent)
+    additional_top = 92
+    for item in (additional.get("situations") or [])[:3]:
+        card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
+        card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
+        card_h = 92
+        draw_rect(page4, left=margin, top=additional_top, box_width=width - (margin * 2), box_height=card_h, fill=card_fill)
+        draw_rect(page4, left=margin, top=additional_top, box_width=4, box_height=card_h, fill=card_color)
+        draw_text(page4, left=margin + 12, top=additional_top + 8, text=f"{item.get('badge') or 'Ситуация'} · {item.get('title') or ''}", size=9.2, color=card_color, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=additional_top + 26, text=f"Что сказал клиент: {item.get('client_said') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=additional_top + 42, text=f"Что имел в виду: {item.get('meant') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=additional_top + 58, text=f"Как надо было: {item.get('how_to') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=additional_top + 74, text=f"Почему так: {item.get('why') or '—'}", size=7.6, color=muted, max_width=width - (margin * 2) - 24)
+        additional_top += card_h + 10
+    challenge_top = additional_top + 2
+    draw_section_bar(page4, top=challenge_top, title=challenge["label"], color=accent)
+    draw_rect(page4, left=margin, top=challenge_top + 30, box_width=width - (margin * 2), box_height=106, fill=light_blue)
+    draw_rect(page4, left=margin, top=challenge_top + 30, box_width=4, box_height=106, fill=accent)
+    draw_text(page4, left=margin + 12, top=challenge_top + 42, text=str(challenge.get("goal_line") or ""), size=9.2, color=accent, max_width=width - (margin * 2) - 24)
+    draw_text(page4, left=margin + 12, top=challenge_top + 62, text=str(challenge.get("today_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page4, left=margin + 12, top=challenge_top + 80, text=str(challenge.get("record_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page4, left=margin + 12, top=challenge_top + 98, text=f"Фраза для завтра: {challenge.get('phrase_line') or ''}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
     footer(page4, 4)
 
-    # Page 5: Additional coaching situations
     page5 = add_page()
-    draw_section_bar(page5, top=58, title=add_sit_section["label"], color=accent)
-    _as_top = 96
-    _as_sits = list(add_sit_section.get("situations") or [])
-    if add_sit_section.get("is_placeholder") or not _as_sits:
-        draw_text(page5, left=margin, top=_as_top, text="Дополнительные ситуации появятся после накопления данных по звонкам.", size=8.5, color=muted, max_width=width - (margin * 2))
-    else:
-        for _as in _as_sits[:3]:
-            _as_kind = str(_as.get("kind") or "gap")
-            _as_fill = (255, 245, 230) if _as_kind == "gap" else (230, 248, 230)
-            _as_bar_color = (200, 100, 40) if _as_kind == "gap" else green
-            _as_badge = "Зона роста" if _as_kind == "gap" else "Сильная сторона"
-            _as_signal = int(_as.get("signal") or 0)
-            _as_title = str(_as.get("title") or "")
-            _as_interp = str(_as.get("interpretation") or "")
-            draw_rect(page5, left=margin, top=_as_top, box_width=width - (margin * 2), box_height=52, fill=_as_fill)
-            draw_rect(page5, left=margin, top=_as_top, box_width=4, box_height=52, fill=_as_bar_color)
-            draw_text(page5, left=margin + 12, top=_as_top + 5, text=_as_badge + (f" · {_as_signal} зв." if _as_signal else ""), size=7.5, color=_as_bar_color, max_width=width - (margin * 2) - 24)
-            draw_text(page5, left=margin + 12, top=_as_top + 18, text=_as_title, size=9.5, color=black, max_width=width - (margin * 2) - 24)
-            draw_text(page5, left=margin + 12, top=_as_top + 34, text=_as_interp, size=8.0, color=muted, max_width=width - (margin * 2) - 24)
-            _as_top += 58
-    # ПОЗВОНИ ЗАВТРА section on page 5
-    _ct_contacts = list(call_tomorrow_section.get("contacts") or [])
-    _ct_top = _as_top + 20
-    _ct_status_colors = {
-        "rescheduled": (200, 100, 40),
-        "agreed": accent,
-        "open": muted,
-    }
-    _ct_status_labels = {"rescheduled": "Перезвон", "agreed": "Договорённость", "open": "Открытый"}
-    draw_section_bar(page5, top=_ct_top, title=call_tomorrow_section["label"], color=accent)
-    _ct_top += 30
-    if call_tomorrow_section.get("is_placeholder") or not _ct_contacts:
-        draw_text(page5, left=margin, top=_ct_top, text="Нет открытых контактов для перезвона.", size=8.5, color=muted, max_width=width - (margin * 2))
-    else:
-        for _ct in _ct_contacts:
-            _ct_status = str(_ct.get("status") or "open")
-            _ct_bar_color = _ct_status_colors.get(_ct_status, muted)
-            _ct_client = str(_ct.get("client_label") or "Клиент")
-            _ct_time = str(_ct.get("time_label") or "—")
-            _ct_badge = _ct_status_labels.get(_ct_status, _ct_status)
-            _ct_script = str(_ct.get("opening_script") or "")
-            _ct_deadline = _ct.get("deadline")
-            draw_rect(page5, left=margin, top=_ct_top, box_width=width - (margin * 2), box_height=46, fill=(250, 250, 255))
-            draw_rect(page5, left=margin, top=_ct_top, box_width=4, box_height=46, fill=_ct_bar_color)
-            draw_text(page5, left=margin + 12, top=_ct_top + 4, text=f"{_ct_client}  ·  {_ct_time}  [{_ct_badge}]" + (f"  · до {_ct_deadline}" if _ct_deadline else ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
-            draw_text(page5, left=margin + 12, top=_ct_top + 20, text=f"«{_ct_script}»", size=8.0, color=(60, 80, 140), max_width=width - (margin * 2) - 24)
-            _ct_top += 52
+    draw_section_bar(page5, top=58, title=call_tomorrow["label"], color=accent)
+    draw_table(
+        page5,
+        top=92,
+        columns=["Приоритет", "Клиент", "Контекст", "Скрипт открытия"],
+        rows=[list(map(str, row)) for row in (call_tomorrow.get("rows") or [])] or [["—", "Нет открытых контактов для перезвона.", "—", "—"]],
+        col_widths=[82, 116, 118, 195],
+        body_size=7.5,
+    )
     footer(page5, 5)
 
-    # Page 6: Morning card
     page6 = add_page()
-    draw_section_bar(page6, top=58, title=morning_card_section["label"], color=(47, 97, 170))
-    mc_top = 96
-    draw_text(page6, left=margin, top=mc_top, text=str(morning_card_section.get("greeting") or ""), size=14.0, color=black, max_width=width - (margin * 2))
-    mc_top += 30
-    draw_text(page6, left=margin, top=mc_top, text=str(morning_card_section.get("summary_line") or ""), size=11.0, color=accent, max_width=width - (margin * 2))
-    mc_top += 32
-    _mc_open_calls = list(morning_card_section.get("open_calls") or [])
-    if _mc_open_calls:
-        draw_text(page6, left=margin, top=mc_top, text="Открытые звонки:", size=9.0, color=muted, max_width=width - (margin * 2))
-        mc_top += 18
-        for _mc_call in _mc_open_calls:
-            draw_rect(page6, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=22, fill=light_orange)
-            draw_text(page6, left=margin + 8, top=mc_top + 5, text=f"• {_mc_call.get('time', '—')}  ·  {_mc_call.get('client', '—')}  ·  {_mc_call.get('status', '—')}", size=9.2, color=black, max_width=width - (margin * 2) - 16)
-            mc_top += 26
-    else:
-        draw_text(page6, left=margin, top=mc_top, text="Открытых звонков нет — отличный результат!", size=10.0, color=green, max_width=width - (margin * 2))
-        mc_top += 26
-    mc_top += 16
-    draw_rect(page6, left=margin, top=mc_top, box_width=width - (margin * 2), box_height=54, fill=light_blue)
-    draw_rect(page6, left=margin, top=mc_top, box_width=4, box_height=54, fill=accent)
-    draw_text(page6, left=margin + 12, top=mc_top + 8, text="Фокус дня:", size=9.0, color=accent, max_width=width - (margin * 2) - 24)
-    draw_text(page6, left=margin + 12, top=mc_top + 26, text=str(morning_card_section.get("challenge") or ""), size=10.0, color=black, max_width=width - (margin * 2) - 24)
+    draw_section_bar(page6, top=58, title=call_list["label"], color=accent)
+    draw_table(
+        page6,
+        top=92,
+        columns=[str(column) for column in (call_list.get("columns") or [])],
+        rows=[list(map(str, row)) for row in (call_list.get("rows") or [])] or [["—"] * max(1, len(call_list.get("columns") or []))],
+        col_widths=[22, 44, 112, 110, 126, 97],
+        body_size=7.2,
+    )
+    if call_list.get("note"):
+        draw_text(page6, left=margin, top=744, text=str(call_list.get("note") or ""), size=8.0, color=muted, max_width=width - (margin * 2))
     footer(page6, 6)
+
+    page7 = add_page()
+    draw_section_bar(page7, top=58, title=morning_card["label"], color=accent)
+    draw_rect(page7, left=margin, top=92, box_width=width - (margin * 2), box_height=250, fill=light_blue)
+    draw_rect(page7, left=margin, top=92, box_width=4, box_height=250, fill=accent)
+    draw_text(page7, left=margin + 16, top=114, text=str(morning_card.get("greeting") or ""), size=16.0, color=black, max_width=width - (margin * 2) - 32)
+    draw_text(page7, left=margin + 16, top=146, text=str(morning_card.get("summary_line") or ""), size=11.0, color=accent, max_width=width - (margin * 2) - 32)
+    if morning_card.get("financial_line"):
+        draw_text(page7, left=margin + 16, top=176, text=str(morning_card.get("financial_line") or ""), size=8.8, color=black, max_width=width - (margin * 2) - 32)
+    draw_text(page7, left=margin + 16, top=208, text="Позвони сегодня:", size=9.2, color=accent, max_width=width - (margin * 2) - 32)
+    contact_top = 228
+    contacts = morning_card.get("call_tomorrow_contacts") or []
+    if contacts:
+        for item in contacts[:3]:
+            draw_rect(page7, left=margin + 16, top=contact_top, box_width=width - (margin * 2) - 32, box_height=34, fill=white)
+            draw_text(page7, left=margin + 24, top=contact_top + 7, text=f"{item.get('client_label') or 'Клиент'}", size=8.8, color=black, max_width=150)
+            draw_text(page7, left=margin + 160, top=contact_top + 7, text=str(item.get("opening_script") or "Скрипт не задан"), size=7.8, color=muted, max_width=width - (margin * 2) - 200)
+            contact_top += 40
+    else:
+        draw_text(page7, left=margin + 16, top=contact_top, text="Открытых звонков нет — отличный результат!", size=9.2, color=green, max_width=width - (margin * 2) - 32)
+    draw_rect(page7, left=margin + 16, top=360, box_width=width - (margin * 2) - 32, box_height=70, fill=white)
+    draw_rect(page7, left=margin + 16, top=360, box_width=4, box_height=70, fill=amber)
+    draw_text(page7, left=margin + 28, top=374, text="Челлендж:", size=9.2, color=accent, max_width=width - (margin * 2) - 56)
+    draw_text(page7, left=margin + 28, top=394, text=str(morning_card.get("challenge") or ""), size=9.2, color=black, max_width=width - (margin * 2) - 56)
+    footer(page7, 7)
 
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 
