@@ -374,6 +374,48 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("~180 000 тенге", rendered["text"])
         self.assertIn("Что имел в виду", rendered["text"])
 
+    def test_render_report_email_prefers_docx_first_when_requested(self) -> None:
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[_artifact()],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        with patch(
+            "app.agents.calls.report_templates._render_docx_first_pdf_report",
+            return_value=(
+                b"%PDF-docx-first",
+                7,
+                "template_docx_first_pdf_manager_daily_template_v2",
+                {
+                    "build_path": "docx_first_pdf_delivery",
+                    "conversion_path": "soffice --headless --convert-to pdf",
+                    "conversion_status": "converted",
+                    "source_artifact": {
+                        "kind": "docx_report",
+                        "filename": "report.docx",
+                        "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "size_bytes": 1234,
+                        "generator_path": "scripts/generate_docx_report.js",
+                    },
+                },
+                {
+                    "conversion_path": "soffice --headless --convert-to pdf",
+                    "conversion_status": "converted",
+                },
+            ),
+        ):
+            rendered = render_report_email(payload, prefer_docx_first=True)
+
+        self.assertEqual(rendered["artifact"]["render_variant"], "template_docx_first_pdf_manager_daily_template_v2")
+        self.assertEqual(rendered["artifact"]["conversion_status"], "converted")
+        self.assertEqual(rendered["artifact"]["source_artifact"]["kind"], "docx_report")
+        self.assertEqual(rendered["template"]["source_of_truth_generator_path"], "scripts/generate_docx_report.js")
+
 
 class ManualReportingStatusTests(unittest.TestCase):
     def test_execution_model_differs_between_presets(self) -> None:

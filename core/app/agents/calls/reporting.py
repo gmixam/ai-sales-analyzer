@@ -830,6 +830,30 @@ class CallsManualReportingOrchestrator:
                     ),
                     "app.agents.calls.report_templates.render_report_artifact",
                 ),
+                "artifact_type": next(
+                    (
+                        ((report.get("artifact") or {}).get("media_type"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("media_type")
+                    ),
+                    "application/pdf",
+                ),
+                "conversion_path": next(
+                    (
+                        ((report.get("artifact") or {}).get("conversion_path"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("conversion_path")
+                    ),
+                    None,
+                ),
+                "conversion_status": next(
+                    (
+                        ((report.get("artifact") or {}).get("conversion_status"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("conversion_status")
+                    ),
+                    None,
+                ),
                 "delivery": delivery_summary,
                 "source": source_summary,
             },
@@ -1030,6 +1054,30 @@ class CallsManualReportingOrchestrator:
                         if (report.get("artifact") or {}).get("generator_path")
                     ),
                     "app.agents.calls.report_templates.render_report_artifact",
+                ),
+                "artifact_type": next(
+                    (
+                        ((report.get("artifact") or {}).get("media_type"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("media_type")
+                    ),
+                    "application/pdf",
+                ),
+                "conversion_path": next(
+                    (
+                        ((report.get("artifact") or {}).get("conversion_path"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("conversion_path")
+                    ),
+                    None,
+                ),
+                "conversion_status": next(
+                    (
+                        ((report.get("artifact") or {}).get("conversion_status"))
+                        for report in reports
+                        if (report.get("artifact") or {}).get("conversion_status")
+                    ),
+                    None,
                 ),
             },
             "source": source_summary,
@@ -2199,7 +2247,7 @@ class CallsManualReportingOrchestrator:
         readiness: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Render one ready payload and run split delivery."""
-        rendered = render_report_email(payload)
+        rendered = render_report_email(payload, prefer_docx_first=True)
 
         try:
             delivery_targets = self._resolve_delivery_targets(
@@ -2254,6 +2302,7 @@ class CallsManualReportingOrchestrator:
             pdf_bytes=rendered["pdf_bytes"],
             pdf_filename=rendered["artifact"]["filename"],
             template_meta=rendered.get("template"),
+            artifact_meta=rendered.get("artifact"),
             send_business_email=send_email,
             email_resolution_error=email_resolution_error,
             morning_card_text=rendered.get("morning_card_text"),
@@ -2315,7 +2364,7 @@ class CallsManualReportingOrchestrator:
             readiness=readiness,
             missing=missing,
         )
-        rendered = render_report_email(payload)
+        rendered = render_report_email(payload, prefer_docx_first=True)
         preview = {key: value for key, value in rendered.items() if key != "pdf_bytes"}
         delivery = self.delivery.deliver_operator_report(
             primary_email=None,
@@ -2326,6 +2375,7 @@ class CallsManualReportingOrchestrator:
             pdf_bytes=rendered["pdf_bytes"],
             pdf_filename=rendered["artifact"]["filename"],
             template_meta=rendered.get("template"),
+            artifact_meta=rendered.get("artifact"),
             send_business_email=False,
             email_resolution_error=None,
             morning_card_text=rendered.get("morning_card_text"),
@@ -3194,9 +3244,9 @@ def build_rop_weekly_payload(
     return payload
 
 
-def render_report_email(payload: dict[str, Any]) -> dict[str, Any]:
+def render_report_email(payload: dict[str, Any], *, prefer_docx_first: bool = False) -> dict[str, Any]:
     """Render the final operator artifact from versioned template assets."""
-    return render_report_artifact(payload)
+    return render_report_artifact(payload, prefer_docx_first=prefer_docx_first)
 
 
 def _build_base_meta(

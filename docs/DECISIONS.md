@@ -467,3 +467,13 @@
 - **Reason:** Pilot Ready now includes a bounded scheduled reviewable flow, so operator control and raw-analysis immutability must survive repeated scans, direct API calls, and incorrect status sequencing without relying on UI discipline.
 - **Scope:** This hardening does not add retries, recovery engine, generic scheduler platform, analyzer-contract change, Business-ready Report Pack, or full report mechanism upgrade.
 - **Date:** 2026-04-15
+
+## ADR-047: `manager_daily` delivery is docx-first; PDF is a converted artifact, not a separate format source
+- **Decision:** For ordinary `manager_daily` runtime delivery, the canonical report format source of truth is the approved docx generator `scripts/generate_docx_report.js` and the corresponding approved v5 docx structure it emits.
+- **Decision:** `manager_daily_template_v2` delivery must build canonical `.docx` first and then convert that document to `.pdf` server-side before Telegram or business-channel delivery.
+- **Decision:** The standard conversion path is headless LibreOffice: `soffice --headless --convert-to pdf`.
+- **Decision:** Observability and artifact metadata must explicitly expose `generator_path`, `source_of_truth_generator_path`, `conversion_path`, `artifact_type`, and `conversion_status`, so operators can distinguish successful docx-first delivery from fallback behavior.
+- **Decision:** If canonical docx generation or docx-to-pdf conversion fails, the pipeline may use the existing runtime PDF renderer only as a bounded fallback. That fallback must stay explicit via `conversion_status=fallback_runtime_pdf` plus error metadata; it must not silently redefine the format source of truth.
+- **Reason:** The approved docx report is already the reliable business-facing standard for structure and style, while maintaining exact parity with a separate runtime PDF renderer has repeatedly created integration drag. Docx-first delivery preserves one canonical format source and still keeps PDF as the delivered artifact.
+- **Scope:** This is a bounded `manager_daily` delivery/runtime standard only. It does not redesign the report format, does not change analyzer contracts, does not switch delivery to raw docx, and does not introduce a broader document platform or scheduler redesign.
+- **Date:** 2026-04-23

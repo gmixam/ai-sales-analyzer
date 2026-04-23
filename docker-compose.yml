@@ -44,6 +44,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./core:/app
+      - ./scripts:/app/report_scripts:ro
       - asa_audio_tmp:/tmp/audio
     depends_on:
       postgres:
@@ -70,6 +71,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./core:/app
+      - ./scripts:/app/report_scripts:ro
       - asa_audio_tmp:/tmp/audio
     depends_on:
       postgres:
@@ -88,6 +90,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./core:/app
+      - ./scripts:/app/report_scripts:ro
       - asa_beat_data:/var/run/celery
     depends_on:
       worker:
@@ -106,6 +109,9 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
     ports:
       - "${FLOWER_PORT}:5555"
     depends_on:

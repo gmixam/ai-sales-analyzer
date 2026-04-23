@@ -467,7 +467,7 @@ class ScheduledReviewableReportingService:
                 payload=dict(draft.generated_payload or {}),
                 edited_blocks=dict(draft.edited_blocks or {}),
             )
-            rendered = render_report_email(effective_payload)
+            rendered = render_report_email(effective_payload, prefer_docx_first=True)
             transport = dict((draft.delivery or {}).get("transport") or {})
             resolved_email = dict(transport.get("resolved_email") or {})
             primary_email = str(resolved_email.get("primary_email") or "").strip() or None
@@ -486,6 +486,7 @@ class ScheduledReviewableReportingService:
                 pdf_bytes=rendered["pdf_bytes"],
                 pdf_filename=rendered["artifact"]["filename"],
                 template_meta=rendered.get("template"),
+                artifact_meta=rendered.get("artifact"),
                 send_business_email=batch.business_email_enabled,
                 email_resolution_error=email_resolution_error,
                 morning_card_text=rendered.get("morning_card_text"),

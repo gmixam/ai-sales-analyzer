@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import html
 import json
+import logging
+import os
+import re
+import shutil
 import struct
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +19,10 @@ from typing import Any
 ASSET_ROOT = Path(__file__).resolve().parent / "report_template_assets"
 FONT_PATH = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 REPORT_RENDER_GENERATOR_PATH = "app.agents.calls.report_templates.render_report_artifact"
+DOCX_SOURCE_OF_TRUTH_PATH = "scripts/generate_docx_report.js"
+DOCX_PDF_CONVERSION_PATH = "soffice --headless --convert-to pdf"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -59,7 +69,7 @@ def _section_meta(template: ReportTemplate, section_id: str) -> dict[str, Any]:
     )
 
 
-def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
+def render_report_artifact(payload: dict[str, Any], *, prefer_docx_first: bool = False) -> dict[str, Any]:
     """Render one final report artifact from normalized payload and active template assets."""
     template = load_report_template(str(payload["meta"]["preset"]))
     payload.setdefault("meta", {})
@@ -69,11 +79,22 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         "template_id": template.template_id,
         "render_variant": f"template_pdf_{template.version}",
         "generator_path": REPORT_RENDER_GENERATOR_PATH,
+        "source_of_truth_generator_path": DOCX_SOURCE_OF_TRUTH_PATH,
     }
     report = _build_render_model(payload=payload, template=template)
     text = _render_text_report(report)
     html_doc = _render_html_report(report=report, template=template)
-    pdf_bytes, page_count = _render_pdf_report(report=report, template=template)
+    render_variant = f"template_pdf_{template.version}"
+    artifact_extras: dict[str, Any] = {}
+    template_extras: dict[str, Any] = {}
+    if prefer_docx_first and template.preset == "manager_daily" and template.version == "manager_daily_template_v2":
+        pdf_bytes, page_count, render_variant, artifact_extras, template_extras = _render_docx_first_pdf_report(
+            payload=payload,
+            report=report,
+            template=template,
+        )
+    else:
+        pdf_bytes, page_count = _render_pdf_report(report=report, template=template)
     safe_group_key = str(payload["meta"].get("group_key") or template.template_id).replace(":", "_")
     filename = f"{safe_group_key}_{template.version}.pdf"
     subject = str(payload["delivery_meta"]["email_subject"])
@@ -85,11 +106,13 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             "preset": template.preset,
             "version": template.version,
             "template_id": template.template_id,
-            "render_variant": f"template_pdf_{template.version}",
+            "render_variant": render_variant,
             "generator_path": REPORT_RENDER_GENERATOR_PATH,
             "semantic_asset": f"report_template_assets/{template.preset}/{template.version}/semantic.json",
             "visual_asset": f"report_template_assets/{template.preset}/{template.version}/visual.json",
             "layout_asset": f"report_template_assets/{template.preset}/{template.version}/layout.css",
+            "source_of_truth_generator_path": DOCX_SOURCE_OF_TRUTH_PATH,
+            **template_extras,
         },
         "artifact": {
             "kind": "pdf_report",
@@ -99,8 +122,9 @@ def render_report_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             "page_count": page_count,
             "template_version": template.version,
             "template_id": template.template_id,
-            "render_variant": f"template_pdf_{template.version}",
+            "render_variant": render_variant,
             "generator_path": REPORT_RENDER_GENERATOR_PATH,
+            **artifact_extras,
         },
         "pdf_bytes": pdf_bytes,
         "morning_card_text": report.get("morning_card_text"),
@@ -119,6 +143,157 @@ def build_report_render_model(payload: dict[str, Any]) -> dict[str, Any]:
         "generator_path": REPORT_RENDER_GENERATOR_PATH,
     }
     return _build_render_model(payload=payload, template=template)
+
+
+def _render_docx_first_pdf_report(
+    *,
+    payload: dict[str, Any],
+    report: dict[str, Any],
+    template: ReportTemplate,
+) -> tuple[bytes, int, str, dict[str, Any], dict[str, Any]]:
+    """Build manager_daily PDF from canonical docx source and convert it to PDF."""
+    safe_group_key = str(payload["meta"].get("group_key") or template.template_id).replace(":", "_")
+    docx_filename = f"{safe_group_key}_{template.version}.docx"
+    render_variant = f"template_docx_first_pdf_{template.version}"
+    bundle = {
+        "payload": payload,
+        "report": report,
+    }
+    with tempfile.TemporaryDirectory(prefix="asa_manager_daily_docx_") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        bundle_path = temp_dir / "bundle.json"
+        docx_path = temp_dir / docx_filename
+        pdf_path = temp_dir / f"{safe_group_key}_{template.version}.pdf"
+        bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+        docx_bytes = b""
+        try:
+            _generate_manager_daily_docx(bundle_path=bundle_path, output_path=docx_path)
+            docx_bytes = docx_path.read_bytes()
+            _convert_docx_to_pdf(docx_path=docx_path, output_dir=temp_dir)
+            pdf_bytes = pdf_path.read_bytes()
+            page_count = _count_pdf_pages(pdf_bytes)
+            artifact_extras = {
+                "build_path": "docx_first_pdf_delivery",
+                "conversion_path": DOCX_PDF_CONVERSION_PATH,
+                "conversion_status": "converted",
+                "source_artifact": {
+                    "kind": "docx_report",
+                    "filename": docx_filename,
+                    "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "size_bytes": len(docx_bytes),
+                    "generator_path": DOCX_SOURCE_OF_TRUTH_PATH,
+                },
+            }
+            template_extras = {
+                "conversion_path": DOCX_PDF_CONVERSION_PATH,
+                "conversion_status": "converted",
+            }
+            return pdf_bytes, page_count, render_variant, artifact_extras, template_extras
+        except Exception as exc:
+            logger.warning("manager_daily docx-first conversion failed; falling back to runtime PDF: %s", exc)
+            pdf_bytes, page_count = _render_pdf_report(report=report, template=template)
+            artifact_extras = {
+                "build_path": "docx_first_pdf_delivery",
+                "conversion_path": DOCX_PDF_CONVERSION_PATH,
+                "conversion_status": "fallback_runtime_pdf",
+                "conversion_error": str(exc),
+                "source_artifact": {
+                    "kind": "docx_report",
+                    "filename": docx_filename,
+                    "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "size_bytes": len(docx_bytes),
+                    "generator_path": DOCX_SOURCE_OF_TRUTH_PATH,
+                },
+            }
+            template_extras = {
+                "conversion_path": DOCX_PDF_CONVERSION_PATH,
+                "conversion_status": "fallback_runtime_pdf",
+                "conversion_error": str(exc),
+            }
+            return pdf_bytes, page_count, render_variant, artifact_extras, template_extras
+
+
+def _resolve_docx_generator_script() -> Path:
+    """Locate the canonical JS docx generator in repo or mounted runtime paths."""
+    env_path = os.environ.get("ASA_MANAGER_DAILY_DOCX_SCRIPT")
+    candidates = []
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(Path("/app/report_scripts/generate_docx_report.js"))
+    for parent in Path(__file__).resolve().parents:
+        candidates.append(parent / "scripts" / "generate_docx_report.js")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError("manager_daily docx generator script is not available in runtime environment")
+
+
+def _generate_manager_daily_docx(*, bundle_path: Path, output_path: Path) -> None:
+    """Generate one canonical manager_daily docx via the approved JS source."""
+    node_path = shutil.which("node")
+    if not node_path:
+        raise RuntimeError("node binary is not available for manager_daily docx generation")
+    script_path = _resolve_docx_generator_script()
+    env = dict(os.environ)
+    node_path_entries = [
+        entry
+        for entry in (
+            env.get("NODE_PATH"),
+            "/usr/local/lib/node_modules",
+            "/usr/lib/node_modules",
+        )
+        if entry
+    ]
+    env["NODE_PATH"] = ":".join(dict.fromkeys(node_path_entries))
+    env["VERIFICATION_BUNDLE_PATH"] = str(bundle_path)
+    env["DOCX_OUTPUT_PATH"] = str(output_path)
+    completed = subprocess.run(
+        [node_path, str(script_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if not output_path.exists():
+        raise RuntimeError(f"docx generator did not create expected output file: {output_path}")
+    if completed.stderr.strip():
+        logger.debug("manager_daily docx generator stderr: %s", completed.stderr.strip())
+
+
+def _convert_docx_to_pdf(*, docx_path: Path, output_dir: Path) -> None:
+    """Convert one docx artifact into PDF using headless LibreOffice."""
+    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice_path:
+        raise RuntimeError("soffice/libreoffice binary is not available for manager_daily PDF conversion")
+    profile_dir = output_dir / "soffice-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        [
+            soffice_path,
+            "--headless",
+            f"-env:UserInstallation={profile_dir.as_uri()}",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(output_dir),
+            str(docx_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+    )
+    pdf_path = output_dir / f"{docx_path.stem}.pdf"
+    if not pdf_path.exists():
+        raise RuntimeError(f"docx -> pdf conversion did not create expected file: {pdf_path}")
+    if completed.stderr.strip():
+        logger.debug("manager_daily docx -> pdf stderr: %s", completed.stderr.strip())
+
+
+def _count_pdf_pages(pdf_bytes: bytes) -> int:
+    """Best-effort page count for already rendered PDF bytes."""
+    matches = re.findall(rb"/Type\s*/Page\b", pdf_bytes)
+    return max(1, len(matches))
 
 
 def _build_render_model(*, payload: dict[str, Any], template: ReportTemplate) -> dict[str, Any]:

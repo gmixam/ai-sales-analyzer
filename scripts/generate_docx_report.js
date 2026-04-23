@@ -9,6 +9,10 @@
  *
  * Usage:
  *   NODE_PATH=/usr/lib/node_modules node scripts/generate_docx_report.js
+ *
+ * Runtime env overrides:
+ *   VERIFICATION_BUNDLE_PATH=/tmp/runtime_bundle.json
+ *   DOCX_OUTPUT_PATH=/tmp/manager_daily.docx
  */
 
 "use strict";
@@ -976,7 +980,7 @@ async function main() {
 
   const buffer = await Packer.toBuffer(doc);
 
-  const outPath = path.join(
+  const outPath = process.env.DOCX_OUTPUT_PATH || path.join(
     __dirname,
     "..",
     "Ежедневный_отчет_Кешубаева_2026-04-06_v5.docx"

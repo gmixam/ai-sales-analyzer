@@ -645,6 +645,7 @@ class CallsDelivery:
         pdf_filename: str,
         template_meta: dict[str, Any] | None,
         send_business_email: bool,
+        artifact_meta: dict[str, Any] | None = None,
         email_resolution_error: str | None = None,
         morning_card_text: str | None = None,
     ) -> dict[str, Any]:
@@ -692,6 +693,10 @@ class CallsDelivery:
                 telegram_chat_id=settings.test_delivery_telegram_chat_id,
                 resolved_primary_email=primary_email,
                 resolved_cc_emails=cc_emails,
+                artifact_type=(artifact_meta or {}).get("media_type"),
+                generator_path=(artifact_meta or {}).get("generator_path"),
+                conversion_path=(artifact_meta or {}).get("conversion_path"),
+                conversion_status=(artifact_meta or {}).get("conversion_status"),
             )
         except DeliveryError as exc:
             telegram_state.update({"status": "failed", "error": str(exc)})
@@ -732,6 +737,7 @@ class CallsDelivery:
                 "filename": pdf_filename,
                 "media_type": "application/pdf",
                 "template": template_meta,
+                "meta": artifact_meta,
             },
             "transport": {
                 "mode": "split_operator_delivery",

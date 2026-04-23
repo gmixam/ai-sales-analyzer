@@ -877,6 +877,7 @@ async def run(
                 pdf_bytes=pdf_bytes,
                 pdf_filename=f"verification_{MANAGER_NAME.replace(' ', '_')}_{ANCHOR_DATE}.pdf",
                 template_meta=payload["meta"].get("report_template"),
+                artifact_meta=rendered.get("artifact"),
                 send_business_email=False,
                 morning_card_text=(
                     f"[ВЕРИФИКАЦИЯ SAME-PAYLOAD PARITY]\n"
