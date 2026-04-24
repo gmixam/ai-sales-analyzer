@@ -2247,6 +2247,8 @@ class CallsManualReportingOrchestrator:
         readiness: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Render one ready payload and run split delivery."""
+        if readiness is not None:
+            payload.setdefault("meta", {})["readiness"] = readiness
         rendered = render_report_email(payload, prefer_docx_first=True)
 
         try:
@@ -2263,8 +2265,6 @@ class CallsManualReportingOrchestrator:
             email_resolution_error = str(exc)
 
         preview = {key: value for key, value in rendered.items() if key != "pdf_bytes"}
-        if readiness is not None:
-            payload.setdefault("meta", {})["readiness"] = readiness
         result = {
             "status": "ready",
             "preset": preset.code,

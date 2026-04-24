@@ -1204,6 +1204,13 @@ body {
   color: var(--navy-2);
 }
 
+.header-selection-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .mini-card {
   margin: 12px 0;
   background: #fff;

@@ -39,6 +39,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     render_report_email,
     resolve_report_preset,
 )
+from app.agents.calls.report_templates import build_report_render_model  # noqa: E402
 from app.agents.calls.verification_report_runner import (  # noqa: E402
     build_canonical_verification_bundle,
 )
@@ -820,6 +821,13 @@ class ManualReportingStatusTests(unittest.TestCase):
                 },
             },
         )
+        missing_artifact = _artifact_for_manager(
+            manager,
+            score_percent=62.0,
+            level="baseline",
+            call_date="2026-03-25 11:00:00",
+        )
+        missing_artifact.analysis = None
         artifacts = [
             _artifact_for_manager(
                 manager,
@@ -859,6 +867,7 @@ class ManualReportingStatusTests(unittest.TestCase):
                     }
                 ],
             ),
+            missing_artifact,
         ]
 
         result = CallsManualReportingOrchestrator._build_manager_daily_group_result(
@@ -875,9 +884,70 @@ class ManualReportingStatusTests(unittest.TestCase):
 
         self.assertEqual(result["readiness_outcome"], "signal_report")
         self.assertEqual(result["window_days_used"], 2)
-        self.assertEqual(result["relevant_calls"], 2)
+        self.assertEqual(result["relevant_calls"], 3)
+        self.assertEqual(result["ready_analyses"], 2)
         self.assertIn("signal_report_ready", result["readiness_reason_codes"])
         self.assertEqual(result["status"], "delivered")
+        self.assertIn("Это сигнальный отчёт", result["preview"]["text"])
+        self.assertIn("найдено 3 звонк", result["preview"]["text"])
+        self.assertIn("в разбор вошло 2", result["preview"]["text"])
+
+    def test_signal_report_model_uses_manager_facing_polish_rules(self) -> None:
+        manager = _manager()
+        artifacts = [
+            _artifact_for_manager(manager, score_percent=58.0, level="problematic"),
+            _artifact_for_manager(manager, score_percent=90.0, level="strong", call_date="2026-03-25 11:00:00"),
+        ]
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=artifacts,
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload["meta"]["readiness"] = {
+            "readiness_outcome": "signal_report",
+            "relevant_calls": 4,
+            "ready_analyses": 2,
+            "readiness_reason_codes": ["signal_report_ready"],
+            "window_days_used": 1,
+            "analysis_coverage": 50.0,
+            "content_blocks": {},
+            "content_signals": {},
+        }
+        payload["voice_of_customer"] = {
+            "rows": [
+                ["Клиент 1", "Нужно подумать", "Смысл: клиенту не хватило конкретики. Ответить: уточнить задачу."],
+                ["Клиент 2", "Пока не уверен", "Смысл: клиенту не хватило конкретики. Ответить: уточнить задачу."],
+                ["Клиент 3", "Сначала согласуем внутри", "Смысл: клиенту не хватило конкретики. Ответить: уточнить задачу."],
+            ]
+        }
+        payload["score_by_stage"] = [
+            {
+                "stage_code": "completion_next_step",
+                "stage_name": "Завершение и следующий шаг",
+                "score": 6.0,
+                "is_priority": True,
+                "criteria_detail": [],
+            }
+        ]
+
+        report = build_report_render_model(payload)
+        sections = {section["id"]: section for section in report["sections"]}
+
+        self.assertIn("Это сигнальный отчёт", sections["report_header"]["selection_note"])
+        self.assertIn("/5", sections["main_focus_for_tomorrow"]["situation_title"])
+        self.assertNotIn("первый этап ниже", sections["main_focus_for_tomorrow"]["situation_title"])
+        self.assertEqual(len(sections["voice_of_customer"]["rows"]), 1)
+        self.assertEqual(
+            sections["call_tomorrow"]["rows"][0][:3],
+            ["🔴 Горячий", "+77070000000", "Повод: подтвердить договорённость"],
+        )
+        self.assertEqual(len(sections["call_tomorrow"]["rows"][0]), 5)
+        self.assertIn("Подтвердить договорённость", sections["call_tomorrow"]["rows"][0][3])
+        self.assertIn("Хочу подтвердить", sections["call_tomorrow"]["rows"][0][4])
 
     def test_manager_daily_group_result_returns_skip_accumulate_when_readiness_is_not_met(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)

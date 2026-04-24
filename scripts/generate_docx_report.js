@@ -127,7 +127,7 @@ function dataFromBundle(bundle) {
 
   const outcomeMap = Object.fromEntries((daySummary.outcome_cols || []).map((item) => [item.label, item.value]));
   const statusLabelMap = {
-    agreed: "Договор",
+    agreed: "Договорённость",
     rescheduled: "Перенос",
     refusal: "Отказ",
     open: "Открыт",
@@ -138,6 +138,7 @@ function dataFromBundle(bundle) {
     date: reportHeader.report_date || payload.header?.report_date || "—",
     calls: safeNumber(reportHeader.calls_count || payload.kpi_overview?.calls_count),
     day_score: safeNumber(reportHeader.day_score),
+    selection_note: reportHeader.selection_note || "",
     outcomes: {
       total: safeNumber(outcomeMap["ЗВОНКОВ"]),
       agreed: safeNumber(outcomeMap["ДОГОВОРЕННОСТЬ"]),
@@ -219,8 +220,9 @@ function dataFromBundle(bundle) {
         label,
         client: row[1] || "Клиент",
         phone: "",
-        context: row[2] || "",
-        script: row[3] || "",
+        timing: row[2] || "",
+        goal: row[3] || "",
+        first_phrase: row[4] || "",
       };
     }),
     all_calls: (callList.rows || []).map((row) => ({
@@ -239,7 +241,7 @@ function dataFromBundle(bundle) {
         index: index + 1,
         client: row[1] || "Клиент",
         phone: "",
-        script: row[3] || "",
+        script: row[4] || row[3] || "",
       })),
       challenge: morningCard.challenge || challenge.goal_line || "",
     },
@@ -426,8 +428,16 @@ function buildShapka() {
         text: `Балл дня: ${DATA.day_score.toFixed(1)} / 5`,
         bold: true, size: 26, color: COLORS.heading, font: "Arial",
       })],
-      spacing: { before: 0, after: 160 },
+      spacing: { before: 0, after: DATA.selection_note ? 60 : 160 },
     }),
+    ...(DATA.selection_note ? [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({
+        text: DATA.selection_note,
+        size: 16, color: COLORS.gray, font: "Arial",
+      })],
+      spacing: { before: 0, after: 140 },
+    })] : []),
   ];
 }
 
@@ -466,7 +476,7 @@ function buildSvodnaya() {
         new TableRow({
           children: [
             outCell(total,        "Звонков",    COLORS.heading),
-            outCell(agreed,       "Договор",    COLORS.green),
+            outCell(agreed,       "Договорённость",    COLORS.green),
             outCell(rescheduled,  "Перенос",    COLORS.orange),
             outCell(refusal,      "Отказ",      COLORS.red),
             outCell(open,         "Открыт",     COLORS.gray),
@@ -498,12 +508,18 @@ function buildDengi() {
 // ──────────────────────────────────────────────────────────────
 
 function buildPipeline() {
-  return [
+  const blocks = [
     blockHeading("📊", "PIPELINE ТЁПЛЫХ ЛИДОВ"),
     bodyPara(DATA.pipeline.summary_line),
     bodyPara(DATA.pipeline.counts_line),
     bodyPara(DATA.pipeline.conversion_line, { bold: true }),
     bodyPara(DATA.pipeline.average_line, { color: COLORS.gray }),
+  ];
+  if (!DATA.pipeline.contacts || DATA.pipeline.contacts.length === 0) {
+    blocks.push(bodyPara("Тёплые лиды без обратного звонка не найдены.", { color: COLORS.gray, size: 18 }));
+    return blocks;
+  }
+  blocks.push(
     spacer(4),
     subHeading("Тёплые лиды без обратного звонка:"),
     new Table({
@@ -528,7 +544,8 @@ function buildPipeline() {
       ],
     }),
     spacer(6),
-  ];
+  );
+  return blocks;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -648,6 +665,13 @@ function buildSituatsiya() {
 
 function buildRazbor() {
   const { client, time, stages } = DATA.call_breakdown;
+  if (!stages || stages.length === 0) {
+    return [
+      blockHeading("🔍", "РАЗБОР ЗВОНКА"),
+      bodyPara(`${client} · ${time}`, { color: COLORS.gray }),
+      bodyPara("Недостаточно данных для детального разбора звонка.", { color: COLORS.gray }),
+    ];
+  }
   const headerRows = [
     new TableRow({
       children: [
@@ -684,10 +708,16 @@ function buildRazbor() {
 // ──────────────────────────────────────────────────────────────
 
 function buildGolos() {
+  if (!DATA.voice_of_customer || DATA.voice_of_customer.length === 0) {
+    return [
+      blockHeading("👤", "ГОЛОС КЛИЕНТА"),
+      bodyPara("Клиентские цитаты появятся после накопления материала по звонкам.", { color: COLORS.gray, size: 18 }),
+    ];
+  }
   const headerRow = new TableRow({
     children: [
-      headCell("Клиент",                { width: { size: 22, type: WidthType.PERCENTAGE } }),
-      headCell("Что сказал",             { width: { size: 33, type: WidthType.PERCENTAGE } }),
+      headCell("Паттерн",                { width: { size: 22, type: WidthType.PERCENTAGE } }),
+      headCell("Подтверждающие цитаты",  { width: { size: 33, type: WidthType.PERCENTAGE } }),
       headCell("Смысл → Как ответить",  { width: { size: 45, type: WidthType.PERCENTAGE } }),
     ],
   });
@@ -705,7 +735,7 @@ function buildGolos() {
   return [
     blockHeading("👤", "ГОЛОС КЛИЕНТА"),
     bodyPara(
-      "3 наиболее показательные ситуации из всех звонков дня. Критерий выбора: скрытое возражение / незакрытая боль / упущенная связка.",
+      "Сгруппированы повторяющиеся клиентские сигналы: один смысл и один способ ответа на несколько похожих цитат.",
       { color: COLORS.gray, size: 18 },
     ),
     spacer(4),
@@ -727,6 +757,10 @@ function buildDopSituatsii() {
     "Приложение к основному отчёту. Для углублённого разбора с менеджером или самостоятельно.",
     { color: COLORS.gray, size: 18 },
   ));
+  if (!DATA.additional_situations || DATA.additional_situations.length === 0) {
+    blocks.push(bodyPara("Дополнительные ситуации появятся после накопления данных по звонкам.", { color: COLORS.gray, size: 18 }));
+    return blocks;
+  }
   blocks.push(spacer(4));
 
   for (let i = 0; i < DATA.additional_situations.length; i++) {
@@ -792,12 +826,19 @@ function buildChellendj() {
 // ──────────────────────────────────────────────────────────────
 
 function buildPozvoni() {
+  if (!DATA.call_tomorrow || DATA.call_tomorrow.length === 0) {
+    return [
+      blockHeading("📞", "ПОЗВОНИ ЗАВТРА"),
+      bodyPara("Нет открытых контактов для перезвона.", { color: COLORS.gray }),
+    ];
+  }
   const headerRow = new TableRow({
     children: [
-      headCell("Приоритет", { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Клиент",    { width: { size: 20, type: WidthType.PERCENTAGE } }),
-      headCell("Контекст",  { width: { size: 20, type: WidthType.PERCENTAGE } }),
-      headCell("Скрипт открытия", { width: { size: 47, type: WidthType.PERCENTAGE } }),
+      headCell("Приоритет", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Клиент",    { width: { size: 18, type: WidthType.PERCENTAGE } }),
+      headCell("Срок/повод",  { width: { size: 18, type: WidthType.PERCENTAGE } }),
+      headCell("Цель звонка", { width: { size: 24, type: WidthType.PERCENTAGE } }),
+      headCell("Первая фраза", { width: { size: 28, type: WidthType.PERCENTAGE } }),
     ],
   });
 
@@ -810,8 +851,9 @@ function buildPozvoni() {
       children: [
         cell(`${c.priority} ${c.label}`, { align: AlignmentType.CENTER, color: prioColor, bold: true, shading: altShading(i) }),
         cell(c.client, { shading: altShading(i) }),
-        cell(c.context, { shading: altShading(i), color: COLORS.gray, size: 20 }),
-        cell(c.script, { shading: altShading(i), italic: true, color: COLORS.heading }),
+        cell(c.timing, { shading: altShading(i), color: COLORS.gray, size: 20 }),
+        cell(c.goal, { shading: altShading(i), color: COLORS.heading, size: 20 }),
+        cell(c.first_phrase, { shading: altShading(i), italic: true, color: COLORS.heading, size: 20 }),
       ],
     });
   });
@@ -831,7 +873,7 @@ function buildPozvoni() {
 
 function buildSpisokZvonkov() {
   function statusColor(status) {
-    if (status === "Договор") return COLORS.green;
+    if (status === "Договорённость" || status === "Договор") return COLORS.green;
     if (status === "Отказ") return COLORS.red;
     if (status === "Перенос") return COLORS.orange;
     return COLORS.gray;

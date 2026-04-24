@@ -313,6 +313,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     narrative = _build_manager_daily_narrative_block(payload)
     call_outcomes = dict(payload.get("call_outcomes_summary") or {})
     call_list_raw = list(payload.get("call_list") or [])
+    selection_note = _build_manager_daily_selection_note(payload=payload, total_calls=total_calls)
     warm_pipeline = _build_warm_pipeline_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
     money_on_table = _build_money_on_table_data(
         call_list_raw=call_list_raw,
@@ -346,6 +347,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             "report_date": header["report_date"],
             "calls_count": total_calls,
             "day_score": _manager_reader_value(_resolve_manager_day_score(payload=payload), "Нет базы"),
+            "selection_note": selection_note,
         },
         {
             **_section_meta(template, "day_summary"),
@@ -366,9 +368,9 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {
             **_section_meta(template, "main_focus_for_tomorrow"),
             "situation_title": _build_situation_title(payload.get("score_by_stage") or []),
-            "body": _value(
-                payload["key_problem_of_day"].get("description"),
-                "На этой выборке нет доминирующей проблемы по этапу воронки. Держим фокус на завершении звонков с конкретным следующим шагом.",
+            "body": _build_situation_body(
+                key_problem=dict(payload.get("key_problem_of_day") or {}),
+                score_by_stage=list(payload.get("score_by_stage") or []),
             ),
             "pattern_count_label": _build_pattern_count_label(dict(payload.get("key_problem_of_day") or {})),
             "client_need": _build_situation_client_need(dict(payload.get("key_problem_of_day") or {})),
@@ -682,12 +684,15 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     """Render one section as text lines."""
     kind = section["kind"]
     if kind == "header_card":
-        return [
+        lines = [
             f"Менеджер: {section.get('manager_name') or '—'}",
             f"Дата: {section.get('report_date') or '—'}",
             f"Звонков: {_value(section.get('calls_count'))}",
             f"Балл дня: {_value(section.get('day_score'))} / 5",
         ]
+        if section.get("selection_note"):
+            lines.append(str(section["selection_note"]))
+        return lines
     if kind == "outcome_table":
         return [f"- {item['label']}: {_value(item.get('value'))}" for item in section.get("outcome_cols") or []]
     if kind == "money_focus":
@@ -770,7 +775,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append(str(section["intro"]))
         rows = section.get("rows") or []
         if rows:
-            lines.append("Клиент | Что сказал | Смысл → Как ответить")
+            lines.append("Паттерн | Подтверждающие цитаты | Смысл → Как ответить")
             lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
         else:
             lines.append("—")
@@ -799,7 +804,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     if kind == "call_tomorrow":
         rows = section.get("rows") or []
         if rows:
-            return ["Приоритет | Клиент | Контекст | Скрипт открытия"] + [
+            return ["Приоритет | Клиент | Срок/повод | Цель звонка | Первая фраза"] + [
                 " | ".join(_value(cell) for cell in row) for row in rows
             ]
         return ["Нет открытых контактов для перезвона."]
@@ -987,6 +992,10 @@ def _render_html_section(section: dict[str, Any]) -> str:
     if section["id"] == "business_results_placeholder":
         title = f"<div class=\"section-bar business\">{html.escape(section['label'])}</div>"
     if kind == "header_card":
+        selection_note = (
+            f"<div class=\"header-selection-note\">{html.escape(str(section['selection_note']))}</div>"
+            if section.get("selection_note") else ""
+        )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
             "<article class=\"header-card\">"
@@ -994,7 +1003,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             f"<div class=\"header-meta\">{html.escape(str(section.get('report_date') or '—'))} · "
             f"{html.escape(_value(section.get('calls_count')))} звонков</div>"
             f"<div class=\"header-score\">Балл дня: {html.escape(_value(section.get('day_score')))} / 5</div>"
-            "</article></div></section>"
+            f"{selection_note}</article></div></section>"
         )
     if kind == "outcome_table":
         header = "".join(
@@ -1084,11 +1093,17 @@ def _render_html_section(section: dict[str, Any]) -> str:
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
-        ) or "<tr><td colspan=\"3\">Недостаточно данных для разбора звонка.</td></tr>"
+        )
         intro = (
             f"<p class=\"muted\">{html.escape(str(section.get('summary_line') or ''))}</p>"
             if section.get("summary_line") else ""
         )
+        if not rows:
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+                "<p class=\"muted\">Недостаточно данных для детального разбора звонка.</p>"
+                "</div></section>"
+            )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
             "<table><thead><tr><th>Момент</th><th>Что было</th><th>Что лучше</th></tr></thead>"
@@ -1102,10 +1117,16 @@ def _render_html_section(section: dict[str, Any]) -> str:
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
-        ) or "<tr><td colspan=\"3\">Ситуации появятся после накопления материала по звонкам.</td></tr>"
+        )
+        if not rows:
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+                "<p class=\"muted\">Клиентские цитаты появятся после накопления материала по звонкам.</p>"
+                "</div></section>"
+            )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Клиент</th><th>Что сказал</th><th>Смысл → Как ответить</th></tr></thead>"
+            "<table><thead><tr><th>Паттерн</th><th>Подтверждающие цитаты</th><th>Смысл → Как ответить</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
@@ -1118,7 +1139,13 @@ def _render_html_section(section: dict[str, Any]) -> str:
             f"<p><strong>Почему так:</strong> {html.escape(str(item.get('why') or '—'))}</p>"
             "</article>"
             for item in section.get("situations") or []
-        ) or "<article class=\"card\"><p>Дополнительные ситуации появятся после накопления данных по звонкам.</p></article>"
+        )
+        if not cards:
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+                "<p class=\"muted\">Дополнительные ситуации появятся после накопления данных по звонкам.</p>"
+                "</div></section>"
+            )
         return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
         return (
@@ -1133,10 +1160,16 @@ def _render_html_section(section: dict[str, Any]) -> str:
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
-        ) or "<tr><td colspan=\"4\">Нет открытых контактов для перезвона.</td></tr>"
+        )
+        if not rows:
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+                "<p class=\"muted\">Нет открытых контактов для перезвона.</p>"
+                "</div></section>"
+            )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Скрипт открытия</th></tr></thead>"
+            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Срок/повод</th><th>Цель звонка</th><th>Первая фраза</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "morning_card":
@@ -1536,6 +1569,16 @@ def _render_manager_daily_pdf_report(
         color=white,
         max_width=132,
     )
+    if header.get("selection_note"):
+        draw_text(
+            page1,
+            left=margin,
+            top=168,
+            text=str(header.get("selection_note") or ""),
+            size=7.4,
+            color=muted,
+            max_width=width - (margin * 2),
+        )
 
     draw_section_bar(page1, top=184, title=day_summary["label"], color=accent)
     outcome_gap = 6
@@ -1635,14 +1678,18 @@ def _render_manager_daily_pdf_report(
     page3 = add_page()
     draw_section_bar(page3, top=58, title=call_breakdown["label"], color=accent)
     draw_text(page3, left=margin, top=86, text=str(call_breakdown.get("summary_line") or ""), size=9.5, color=black, max_width=width - (margin * 2))
-    breakdown_bottom = draw_table(
-        page3,
-        top=104,
-        columns=["Момент", "Что было", "Что лучше"],
-        rows=[list(map(str, row)) for row in (call_breakdown.get("rows") or [])],
-        col_widths=[56, 208, 247],
-        body_size=7.5,
-    )
+    if call_breakdown.get("rows"):
+        breakdown_bottom = draw_table(
+            page3,
+            top=104,
+            columns=["Момент", "Что было", "Что лучше"],
+            rows=[list(map(str, row)) for row in (call_breakdown.get("rows") or [])],
+            col_widths=[56, 208, 247],
+            body_size=7.5,
+        )
+    else:
+        draw_text(page3, left=margin, top=106, text="Недостаточно данных для детального разбора звонка.", size=8.6, color=muted, max_width=width - (margin * 2))
+        breakdown_bottom = 128
     voice_top = breakdown_bottom + 10
     draw_section_bar(page3, top=voice_top, title=voice["label"], color=(70, 90, 140))
     if voice.get("intro"):
@@ -1650,19 +1697,25 @@ def _render_manager_daily_pdf_report(
         voice_table_top = voice_top + 48
     else:
         voice_table_top = voice_top + 30
-    draw_table(
-        page3,
-        top=voice_table_top,
-        columns=["Клиент", "Что сказал", "Смысл → Как ответить"],
-        rows=[list(map(str, row)) for row in (voice.get("rows") or [])] or [["—", "Ситуации появятся после накопления материала по звонкам.", "—"]],
-        col_widths=[120, 150, 241],
-        body_size=7.4,
-    )
+    if voice.get("rows"):
+        draw_table(
+            page3,
+            top=voice_table_top,
+            columns=["Паттерн", "Подтверждающие цитаты", "Смысл → Как ответить"],
+            rows=[list(map(str, row)) for row in (voice.get("rows") or [])],
+            col_widths=[116, 170, 225],
+            body_size=7.2,
+        )
+    else:
+        draw_text(page3, left=margin, top=voice_table_top, text="Клиентские цитаты появятся после накопления материала по звонкам.", size=8.6, color=muted, max_width=width - (margin * 2))
     footer(page3, 3)
 
     page4 = add_page()
     draw_section_bar(page4, top=58, title=additional["label"], color=accent)
     additional_top = 92
+    if not (additional.get("situations") or []):
+        draw_text(page4, left=margin, top=92, text="Дополнительные ситуации появятся после накопления данных по звонкам.", size=8.8, color=muted, max_width=width - (margin * 2))
+        additional_top = 120
     for item in (additional.get("situations") or [])[:3]:
         card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
         card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
@@ -1687,14 +1740,17 @@ def _render_manager_daily_pdf_report(
 
     page5 = add_page()
     draw_section_bar(page5, top=58, title=call_tomorrow["label"], color=accent)
-    draw_table(
-        page5,
-        top=92,
-        columns=["Приоритет", "Клиент", "Контекст", "Скрипт открытия"],
-        rows=[list(map(str, row)) for row in (call_tomorrow.get("rows") or [])] or [["—", "Нет открытых контактов для перезвона.", "—", "—"]],
-        col_widths=[82, 116, 118, 195],
-        body_size=7.5,
-    )
+    if call_tomorrow.get("rows"):
+        draw_table(
+            page5,
+            top=92,
+            columns=["Приоритет", "Клиент", "Срок/повод", "Цель звонка", "Первая фраза"],
+            rows=[list(map(str, row)) for row in (call_tomorrow.get("rows") or [])],
+            col_widths=[66, 96, 90, 120, 139],
+            body_size=6.9,
+        )
+    else:
+        draw_text(page5, left=margin, top=94, text="Нет открытых контактов для перезвона.", size=9.0, color=muted, max_width=width - (margin * 2))
     footer(page5, 5)
 
     page6 = add_page()
@@ -2151,14 +2207,39 @@ def _resolve_manager_day_score(*, payload: dict[str, Any]) -> float | None:
         return None
 
 
+def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls: int) -> str | None:
+    """Build a compact manager-facing note for signal-report sampling transparency."""
+    readiness = dict((payload.get("meta") or {}).get("readiness") or {})
+    if readiness.get("readiness_outcome") != "signal_report":
+        return None
+    found = int(readiness.get("relevant_calls") or total_calls or 0)
+    included = int(readiness.get("ready_analyses") or total_calls or 0)
+    excluded = max(0, found - included)
+    if excluded <= 0:
+        reason = "остальные звонки в этом окне не найдены"
+    else:
+        reason = (
+            "остальные звонки пока не дают надёжной основы для разбора: по ним не хватает готового текста, "
+            "полного анализа или они не подходят для управленческого вывода"
+        )
+    return (
+        f"Это сигнальный отчёт: найдено {found} звонк(ов), в разбор вошло {included}. "
+        f"{reason.capitalize()}."
+    )
+
+
+def _priority_stage_row(score_by_stage: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the render-ready priority stage row from one source of truth."""
+    return next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+
+
 def _build_situation_title(score_by_stage: list[dict[str, Any]]) -> str:
     """Build СИТУАЦИЯ ДНЯ heading from the priority stage (first below 4.0 in funnel order)."""
-    for item in score_by_stage:
-        if item.get("is_priority"):
-            name = str(item.get("stage_name") or "")
-            score = item.get("score")
-            score_str = f" ({score})" if score is not None else ""
-            return f"СИТУАЦИЯ ДНЯ · {name}{score_str} — первый этап ниже 4 по воронке"
+    row = _priority_stage_row(score_by_stage)
+    if row is not None:
+        name = str(row.get("stage_name") or "приоритетный этап")
+        score = str(row.get("score") or "—")
+        return f"СИТУАЦИЯ ДНЯ · {name} — {score}/5"
     return "СИТУАЦИЯ ДНЯ — приоритетный этап не определён"
 
 
@@ -2518,13 +2599,26 @@ def _build_warm_pipeline_data(
 
 def _build_situation_client_need(key_problem: dict[str, Any]) -> str:
     """Return a deterministic 'Что хотел клиент' line for v5 situation block."""
-    description = str(key_problem.get("description") or "").strip()
-    if description:
-        return (
-            "Клиент хотел услышать решение под свою конкретную задачу, а не общую презентацию. "
-            + description
-        )
+    client_need = str(key_problem.get("client_need") or key_problem.get("customer_need") or "").strip()
+    if client_need:
+        return _clean_reader_text(client_need)
     return "Клиент ждал конкретики под свой контекст и понятного следующего шага."
+
+
+def _build_situation_body(*, key_problem: dict[str, Any], score_by_stage: list[dict[str, Any]]) -> str:
+    """Return a compact non-repetitive intro for СИТУАЦИЯ ДНЯ."""
+    row = _priority_stage_row(score_by_stage)
+    title = str(key_problem.get("title") or "").strip()
+    if row is not None:
+        stage = str(row.get("stage_name") or "приоритетный этап")
+        score = str(row.get("score") or "—")
+        if title and title.lower() not in stage.lower():
+            return f"Главный сигнал дня: {title}. Он проявился на этапе «{stage}» ({score}/5)."
+        return f"Главный сигнал дня проявился на этапе «{stage}» ({score}/5)."
+    description = _clean_reader_text(str(key_problem.get("description") or ""))
+    if description:
+        return description
+    return "На этой выборке нет доминирующей проблемы по этапу воронки. Держим фокус на конкретном следующем шаге."
 
 
 def _build_situation_manager_task(
@@ -2533,7 +2627,7 @@ def _build_situation_manager_task(
     recommendations: list[dict[str, Any]],
 ) -> str:
     """Return a deterministic 'Наша задача' line for v5 situation block."""
-    priority_row = next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    priority_row = _priority_stage_row(score_by_stage)
     if priority_row is not None:
         return (
             f"Поднять этап '{priority_row.get('stage_name') or 'приоритетный этап'}' до 4.0+ "
@@ -2554,7 +2648,7 @@ def _build_situation_why_it_works(
         return _clean_reader_text(
             str(recommendations[0].get("why_this_works") or recommendations[0].get("reason") or "")
         ) or "Конкретика переводит разговор из намерения в договорённость."
-    priority_row = next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    priority_row = _priority_stage_row(score_by_stage)
     if priority_row is not None:
         return (
             f"Когда менеджер усиливает этап '{priority_row.get('stage_name') or 'приоритетный этап'}', "
@@ -2627,6 +2721,40 @@ def _build_voice_reply_line(context: str | None, quote: str | None) -> str:
     return "Смысл: нужен более точный ответ под ситуацию клиента."
 
 
+def _normalize_pattern_key(text: str) -> str:
+    """Return a stable key for grouping repeated coaching intent."""
+    cleaned = re.sub(r"\s+", " ", _clean_reader_text(text).lower()).strip()
+    cleaned = re.sub(r"[^\wа-яё ]+", "", cleaned)
+    return cleaned[:120]
+
+
+def _group_voice_rows_by_intent(rows: list[list[str]]) -> list[list[str]]:
+    """Group several customer quotes when they lead to the same coaching intent."""
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        client = str(row[0] if len(row) > 0 else "Клиент")
+        quote = str(row[1] if len(row) > 1 else "—")
+        intent = str(row[2] if len(row) > 2 else "")
+        key = _normalize_pattern_key(intent or quote)
+        if key not in grouped:
+            grouped[key] = {"clients": [], "quotes": [], "intent": intent}
+            order.append(key)
+        if client and client not in grouped[key]["clients"]:
+            grouped[key]["clients"].append(client)
+        if quote and quote != "—" and quote not in grouped[key]["quotes"]:
+            grouped[key]["quotes"].append(quote)
+        if intent and not grouped[key]["intent"]:
+            grouped[key]["intent"] = intent
+    result: list[list[str]] = []
+    for index, key in enumerate(order, start=1):
+        item = grouped[key]
+        clients = "; ".join(item["clients"][:3]) or "Клиенты"
+        quotes = " / ".join(item["quotes"][:3]) or "—"
+        result.append([f"Паттерн {index}: {clients}", quotes, item["intent"] or "Смысл требует уточнения на разборе."])
+    return result
+
+
 def _build_v5_voice_of_customer_section(
     *,
     section: dict[str, Any],
@@ -2638,9 +2766,9 @@ def _build_v5_voice_of_customer_section(
         return {
             "intro": str(
                 section.get("intro")
-                or "3 наиболее показательные ситуации из звонков дня. Критерий выбора: скрытое возражение / незакрытая боль / упущенная связка."
+                or "Сгруппированы повторяющиеся клиентские сигналы: один смысл и один способ ответа на несколько похожих цитат."
             ),
-            "rows": explicit_rows[:3],
+            "rows": _group_voice_rows_by_intent(explicit_rows)[:3],
         }
     reply_seed = _clean_reader_text(
         str(recommendations[0].get("better_phrasing") or "")
@@ -2658,8 +2786,8 @@ def _build_v5_voice_of_customer_section(
         for item in section.get("situations") or []
     ]
     return {
-        "intro": "3 наиболее показательные ситуации из звонков дня. Критерий выбора: скрытое возражение / незакрытая боль / упущенная связка.",
-        "rows": rows[:3],
+        "intro": "Сгруппированы повторяющиеся клиентские сигналы: один смысл и один способ ответа на несколько похожих цитат.",
+        "rows": _group_voice_rows_by_intent(rows)[:3],
     }
 
 
@@ -2702,7 +2830,7 @@ def _build_challenge_data(
     total_calls: int,
 ) -> dict[str, str]:
     """Build the fixed-structure v5 challenge block."""
-    priority_row = next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    priority_row = _priority_stage_row(score_by_stage)
     stage_name = priority_row.get("stage_name") if priority_row else "приоритетный этап"
     calls_basis = max(total_calls, 1)
     target = max(1, round(calls_basis * 0.75))
@@ -2725,6 +2853,42 @@ def _priority_label_for_contact(status: str) -> str:
     return {"agreed": "Горячий", "rescheduled": "Тёплый", "open": "Открытый"}.get(status, "Открытый")
 
 
+def _deadline_label_for_contact(item: dict[str, Any]) -> str:
+    """Return manager-facing timing/reason label for a follow-up row."""
+    status = str(item.get("status") or "open")
+    deadline = str(item.get("deadline") or "").strip()
+    if deadline:
+        return f"Срок: {deadline}"
+    if status == "rescheduled":
+        return "Повод: вернуться к разговору"
+    if status == "agreed":
+        return "Повод: подтвердить договорённость"
+    return "Повод: закрыть неопределённость"
+
+
+def _call_goal_for_contact(item: dict[str, Any]) -> str:
+    """Return a concrete goal for a call-tomorrow action card."""
+    status = str(item.get("status") or "open")
+    if status == "rescheduled":
+        return "Вернуть разговор и зафиксировать следующий шаг."
+    if status == "agreed":
+        return "Подтвердить договорённость и снять оставшиеся вопросы."
+    return "Понять текущий интерес клиента и договориться о конкретном следующем шаге."
+
+
+def _first_phrase_for_contact(item: dict[str, Any]) -> str:
+    """Return a usable first phrase, not a next-step recap."""
+    status = str(item.get("status") or "open")
+    deadline = str(item.get("deadline") or "").strip()
+    if status == "rescheduled" and deadline:
+        return f"Добрый день! Договаривались вернуться {deadline}; удобно сейчас коротко продолжить?"
+    if status == "rescheduled":
+        return "Добрый день! Возвращаюсь к нашему разговору; удобно сейчас коротко продолжить?"
+    if status == "agreed":
+        return "Добрый день! Хочу подтвердить нашу договорённость и уточнить один следующий шаг."
+    return "Добрый день! Хочу коротко понять, актуален ли вопрос, и договориться о следующем шаге."
+
+
 def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any]:
     """Map legacy call_tomorrow payload to the approved v5 table structure."""
     contacts = list(section.get("contacts") or [])
@@ -2732,12 +2896,9 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
         [
             f"{_priority_icon_for_contact(str(item.get('status') or 'open'))} {_priority_label_for_contact(str(item.get('status') or 'open'))}",
             _manager_reader_value(item.get("client_label"), "Клиент"),
-            _call_context_label(
-                str(item.get("status") or ""),
-                item.get("deadline"),
-                None,
-            ),
-            _clean_reader_text(str(item.get("opening_script") or "Скрипт открытия будет добавлен после следующего полного запуска.")),
+            _deadline_label_for_contact(item),
+            _call_goal_for_contact(item),
+            _first_phrase_for_contact(item),
         ]
         for item in contacts
     ]
@@ -2979,7 +3140,7 @@ def _call_context_label(status: str, deadline: str | None, reason: str | None) -
 def _call_status_label(value: Any) -> str:
     """Map internal call status to reader-facing Russian label."""
     mapping = {
-        "agreed": "Договорились",
+        "agreed": "Договорённость",
         "rescheduled": "Перенесли",
         "refusal": "Отказ",
         "open": "Открыт",
