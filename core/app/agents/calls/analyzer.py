@@ -38,6 +38,7 @@ APPROVED_SCHEMA_VERSION = "call_analysis.v1"
 APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v1"
 APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
+NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
 ANALYSIS_FORENSICS_ATTR = "_analysis_forensics"
 
 CHECKLIST_DEFINITION: dict[str, Any] = {
@@ -853,12 +854,7 @@ class CallsAnalyzer:
                 {"role": "assistant", "content": content},
                 {
                     "role": "user",
-                    "content": (
-                        "The JSON above failed strict approved-contract validation with this error:\n"
-                        f"{exc}\n\n"
-                        "Return one corrected JSON object only. Preserve the approved schema, include "
-                        "all required stage and criterion fields, and do not add explanations."
-                    ),
+                    "content": self._build_analysis_retry_instruction(exc),
                 },
             ]
             retry_content = self._request_analysis_content(
@@ -874,6 +870,27 @@ class CallsAnalyzer:
                     instruction_version=instruction_version,
                 )
             except LLMResponseError as retry_exc:
+                if self._should_mark_not_coachable(
+                    error=retry_exc,
+                    llm1_first_pass=llm1_first_pass,
+                ):
+                    normalized = self._mark_not_coachable_result(
+                        normalized_result=getattr(retry_exc, "normalized_result", None),
+                        llm1_first_pass=llm1_first_pass,
+                    )
+                    self._store_analysis_forensics(
+                        interaction=interaction,
+                        raw_llm_response=retry_exc.raw_response or retry_content,
+                        normalized_result=normalized,
+                        failure_reason=NOT_COACHABLE_ANALYSIS_REASON,
+                    )
+                    raise SemanticAnalysisError(
+                        "Analyzer marked call as not coachable/reportable.",
+                        interaction_id=str(interaction.id),
+                        raw_response=retry_exc.raw_response or retry_content,
+                        normalized_result=normalized,
+                        reason_code=NOT_COACHABLE_ANALYSIS_REASON,
+                    ) from retry_exc
                 self._store_analysis_forensics(
                     interaction=interaction,
                     raw_llm_response=retry_exc.raw_response or retry_content,
@@ -893,6 +910,83 @@ class CallsAnalyzer:
             stages=len(validated["score_by_stage"]),
         )
         return validated
+
+    @staticmethod
+    def _should_mark_not_coachable(
+        *,
+        error: LLMResponseError,
+        llm1_first_pass: dict[str, Any],
+    ) -> bool:
+        """Return True when a semantic-empty retry is a bounded non-coachable call."""
+        if str(getattr(error, "reason_code", "") or "") != SEMANTIC_EMPTY_ANALYSIS_REASON:
+            return False
+        candidates: list[dict[str, Any]] = []
+        normalized_result = getattr(error, "normalized_result", None)
+        if isinstance(normalized_result, dict):
+            candidates.append(dict(normalized_result.get("classification") or {}))
+        candidates.append(dict(llm1_first_pass.get("classification") or {}))
+        for classification in candidates:
+            call_type = str(classification.get("call_type") or "").strip()
+            eligibility = str(classification.get("analysis_eligibility") or "").strip()
+            reason = str(classification.get("eligibility_reason") or "").lower()
+            if eligibility == "not_eligible" or call_type in {"support", "internal", "other"}:
+                return True
+            if any(token in reason for token in ("support", "technical", "non-sales", "not_sales", "internal")):
+                return True
+        return False
+
+    def _mark_not_coachable_result(
+        self,
+        *,
+        normalized_result: dict[str, Any] | None,
+        llm1_first_pass: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a schema-safe normalized snapshot for non-coachable forensics."""
+        result = deepcopy(normalized_result or {})
+        classification = self._merge_dict(
+            dict(llm1_first_pass.get("classification") or {}),
+            dict(result.get("classification") or {}),
+        )
+        classification["analysis_eligibility"] = "not_eligible"
+        classification["eligibility_reason"] = (
+            classification.get("eligibility_reason")
+            or "not_coachable_or_reportable"
+        )
+        result["classification"] = classification
+        result.setdefault("score_by_stage", [])
+        result.setdefault("strengths", [])
+        result.setdefault("gaps", [])
+        result.setdefault("recommendations", [])
+        result.setdefault("evidence_fragments", [])
+        return result
+
+    @staticmethod
+    def _build_analysis_retry_instruction(exc: LLMResponseError) -> str:
+        """Build a focused retry instruction for contract or semantic validation failures."""
+        reason_code = str(getattr(exc, "reason_code", "") or "").strip()
+        base = (
+            "The JSON above failed strict approved-contract validation with this error:\n"
+            f"{exc}\n\n"
+            "Return one corrected JSON object only. Preserve the approved schema, include "
+            "all required stage and criterion fields, and do not add explanations."
+        )
+        if reason_code == SEMANTIC_EMPTY_ANALYSIS_REASON:
+            return (
+                f"{base}\n\n"
+                "If the transcript is sales-relevant and eligible, do not return an empty coaching shell: "
+                "include applicable `score_by_stage` with criterion-level evidence plus at least one "
+                "`strengths`, one `gaps`, one `recommendations`, and usable `evidence_fragments` when "
+                "the transcript supports them. If the call is truly support-only/internal/non-coachable, "
+                "set `classification.analysis_eligibility` to `not_eligible` and provide a clear "
+                "`eligibility_reason`."
+            )
+        if "max_score" in str(exc):
+            return (
+                f"{base}\n\n"
+                "Every criterion in `criteria_results` must include `max_score`. For this approved "
+                "checklist each criterion has `max_score: 2`."
+            )
+        return base
 
     def _request_llm1_first_pass(
         self,
@@ -1272,6 +1366,7 @@ class CallsAnalyzer:
                     raw_response=json.dumps(raw_contract, ensure_ascii=False),
                 )
             if isinstance(stage.get("criteria_results"), list):
+                self._repair_criterion_scores_from_checklist(stage)
                 self._populate_stage_scores(stage)
             missing_stage_fields = sorted(REQUIRED_STAGE_FIELDS.difference(stage))
             if missing_stage_fields:
@@ -1338,6 +1433,7 @@ class CallsAnalyzer:
             items=contract.get("recommendations") or [],
             criterion_name_map=criterion_name_map,
         )
+        self._enrich_contract_for_reporting(contract)
         self._populate_checklist_score(contract)
         self._validate_semantic_completeness(
             contract=contract,
@@ -1361,6 +1457,12 @@ class CallsAnalyzer:
     @staticmethod
     def _semantic_invalid_reason_codes(contract: dict[str, Any]) -> list[str]:
         """Return bounded semantic-invalid reasons for a normalized contract."""
+        classification = dict(contract.get("classification") or {})
+        analysis_eligibility = str(classification.get("analysis_eligibility") or "").strip()
+        call_type = str(classification.get("call_type") or "").strip()
+        if analysis_eligibility == "not_eligible" or call_type in {"support", "internal", "other"}:
+            if not (contract.get("score_by_stage") or []):
+                return [NOT_COACHABLE_ANALYSIS_REASON]
         if (
             not (contract.get("score_by_stage") or [])
             and not (contract.get("strengths") or [])
@@ -1379,13 +1481,13 @@ class CallsAnalyzer:
     ) -> None:
         """Reject shape-valid but semantically empty analysis outputs."""
         reason_codes = self._semantic_invalid_reason_codes(contract)
-        if SEMANTIC_EMPTY_ANALYSIS_REASON in reason_codes:
+        if reason_codes:
             raise SemanticAnalysisError(
                 "Analyzer returned a semantically empty analysis contract.",
                 interaction_id=interaction_id,
                 raw_response=raw_response,
                 normalized_result=deepcopy(contract),
-                reason_code=SEMANTIC_EMPTY_ANALYSIS_REASON,
+                reason_code=reason_codes[0],
             )
 
     @staticmethod
@@ -1468,6 +1570,20 @@ class CallsAnalyzer:
             interaction.metadata_ = metadata
 
     @staticmethod
+    def _repair_criterion_scores_from_checklist(stage: dict[str, Any]) -> None:
+        """Fill criterion max_score from the approved checklist when LLM omits it."""
+        known_criteria = {
+            criterion["criterion_code"]
+            for checklist_stage in CHECKLIST_DEFINITION["stages"]
+            if checklist_stage["stage_code"] == stage.get("stage_code")
+            for criterion in checklist_stage["criteria"]
+        }
+        for criterion in stage.get("criteria_results") or []:
+            criterion_code = str(criterion.get("criterion_code") or "").strip()
+            if criterion_code in known_criteria and criterion.get("max_score") in (None, ""):
+                criterion["max_score"] = 2
+
+    @staticmethod
     def _populate_stage_scores(stage: dict[str, Any]) -> None:
         """Derive stage-level scores from criterion rows when they are omitted."""
         criteria_results = stage.get("criteria_results") or []
@@ -1526,6 +1642,138 @@ class CallsAnalyzer:
             normalized_item.setdefault("better_phrase", normalized_item.get("recommendation"))
             normalized.append(normalized_item)
         return normalized
+
+    def _enrich_contract_for_reporting(self, contract: dict[str, Any]) -> None:
+        """Derive bounded coaching fields from existing criterion evidence."""
+        if not self._is_sales_relevant_contract(contract):
+            return
+        weak_criteria, strong_criteria = self._collect_reportable_criteria(contract)
+        if weak_criteria and not contract.get("gaps"):
+            contract["gaps"] = [self._gap_from_criterion(weak_criteria[0])]
+        if strong_criteria and not contract.get("strengths"):
+            contract["strengths"] = [self._strength_from_criterion(strong_criteria[0])]
+        if weak_criteria and not contract.get("recommendations"):
+            contract["recommendations"] = [self._recommendation_from_criterion(weak_criteria[0])]
+        if not contract.get("evidence_fragments"):
+            fragments = []
+            if weak_criteria:
+                fragments.append(self._evidence_fragment_from_criterion(weak_criteria[0], "missed_opportunity"))
+            if strong_criteria:
+                fragments.append(self._evidence_fragment_from_criterion(strong_criteria[0], "good_example"))
+            contract["evidence_fragments"] = fragments[:3]
+
+    @staticmethod
+    def _is_sales_relevant_contract(contract: dict[str, Any]) -> bool:
+        classification = dict(contract.get("classification") or {})
+        if classification.get("analysis_eligibility") == "not_eligible":
+            return False
+        return str(classification.get("call_type") or "") in {
+            "sales_primary",
+            "sales_repeat",
+            "mixed",
+        }
+
+    @staticmethod
+    def _collect_reportable_criteria(contract: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        weak: list[dict[str, Any]] = []
+        strong: list[dict[str, Any]] = []
+        for stage in contract.get("score_by_stage") or []:
+            for criterion in stage.get("criteria_results") or []:
+                if not isinstance(criterion, dict):
+                    continue
+                score = int(criterion.get("score") or 0)
+                max_score = int(criterion.get("max_score") or 0)
+                evidence = str(criterion.get("evidence") or "").strip()
+                comment = str(criterion.get("comment") or "").strip()
+                if not max_score or not (evidence or comment):
+                    continue
+                enriched = dict(criterion)
+                enriched["_stage_name"] = stage.get("stage_name")
+                if score < max_score:
+                    weak.append(enriched)
+                elif score == max_score:
+                    strong.append(enriched)
+        weak.sort(key=lambda item: int(item.get("score") or 0))
+        return weak, strong
+
+    @staticmethod
+    def _gap_from_criterion(criterion: dict[str, Any]) -> dict[str, Any]:
+        criterion_name = str(criterion.get("criterion_name") or "Зона роста").strip()
+        comment = str(criterion.get("comment") or "").strip()
+        evidence = str(criterion.get("evidence") or "").strip() or None
+        return {
+            "title": criterion_name,
+            "evidence": evidence,
+            "impact": comment or "Этот момент снижает управляемость следующего шага в разговоре.",
+            "criterion_code": criterion.get("criterion_code"),
+            "criterion_name": criterion_name,
+        }
+
+    @staticmethod
+    def _strength_from_criterion(criterion: dict[str, Any]) -> dict[str, Any]:
+        criterion_name = str(criterion.get("criterion_name") or "Сильная сторона").strip()
+        comment = str(criterion.get("comment") or "").strip()
+        evidence = str(criterion.get("evidence") or "").strip() or None
+        return {
+            "title": criterion_name,
+            "evidence": evidence,
+            "impact": comment or "Этот приём помогает сделать разговор понятнее для клиента.",
+            "criterion_code": criterion.get("criterion_code"),
+            "criterion_name": criterion_name,
+        }
+
+    def _recommendation_from_criterion(self, criterion: dict[str, Any]) -> dict[str, Any]:
+        criterion_name = str(criterion.get("criterion_name") or "Зона роста").strip()
+        comment = str(criterion.get("comment") or "").strip()
+        evidence = str(criterion.get("evidence") or "").strip()
+        return {
+            "priority": "high" if int(criterion.get("score") or 0) == 0 else "medium",
+            "problem": criterion_name,
+            "why_it_matters": comment or "Без этого клиенту сложнее понять ценность и следующий шаг.",
+            "better_phrase": self._better_phrase_for_criterion(criterion),
+            "criterion_code": criterion.get("criterion_code"),
+            "criterion_name": criterion_name,
+            "evidence": evidence or None,
+        }
+
+    @staticmethod
+    def _evidence_fragment_from_criterion(criterion: dict[str, Any], fragment_type: str) -> dict[str, Any]:
+        comment = str(criterion.get("comment") or "").strip()
+        evidence = str(criterion.get("evidence") or "").strip() or None
+        return {
+            "fragment_type": fragment_type,
+            "client_text": None,
+            "manager_text": evidence,
+            "why": comment or str(criterion.get("criterion_name") or "").strip(),
+            "better_variant": None,
+        }
+
+    @staticmethod
+    def _better_phrase_for_criterion(criterion: dict[str, Any]) -> str:
+        criterion_code = str(criterion.get("criterion_code") or "").strip()
+        phrases = {
+            "cs_permission_and_relevance": "Удобно сейчас коротко обсудить вопрос, или лучше вернуться в другое время?",
+            "cs_reason_for_call": "Коротко обозначу, зачем звоню: хочу понять вашу ситуацию и предложить следующий полезный шаг.",
+            "qp_current_process": "Подскажите, как сейчас у вас устроен этот процесс и где чаще всего возникают задержки?",
+            "qp_role_and_scope": "Подскажите, какую роль вы сами играете в этом процессе и кто ещё влияет на решение?",
+            "qp_need_or_trigger": "Что сейчас стало причиной интереса к этому вопросу, и насколько это актуально для вас?",
+            "nd_use_cases": "Какие документы или сценарии для вас самые частые и самые трудоёмкие?",
+            "nd_pain_and_constraints": "Что в текущем процессе больше всего мешает: скорость, контроль, ошибки или согласование?",
+            "nd_priority_and_timing": "Когда вам важно решить этот вопрос и что будет критерием успешного результата?",
+            "nd_decision_context": "Кто ещё участвует в решении, и как обычно принимается такое решение?",
+            "pr_value_linked_to_context": "Если смотреть именно на ваш процесс, основная польза будет в том, что...",
+            "pr_clarity_and_examples": "Покажу на простом примере, как это будет выглядеть для вашей задачи.",
+            "oh_clarify_reason": "Правильно понимаю, главное сомнение сейчас в сроках, стоимости или сложности перехода?",
+            "oh_reframe_with_value": "Понимаю сомнение. Давайте свяжем это с вашей задачей: для вас это может снять...",
+            "oh_check_remaining_concern": "Этот вариант снимает ваш основной вопрос, или осталось ещё что-то важное?",
+            "cn_fixed_next_step": "Давайте зафиксируем следующий шаг: я сделаю ..., а мы вернёмся к разговору ...",
+            "cn_owner_and_deadline": "Кто со стороны клиента будет смотреть этот вопрос и к какому времени удобно вернуться?",
+            "cn_recap_and_confirmation": "Подытожу: договорились о ..., следующий шаг ..., верно?",
+        }
+        return phrases.get(
+            criterion_code,
+            "Давайте уточним этот момент и сразу закрепим понятный следующий шаг.",
+        )
 
     def _populate_checklist_score(self, contract: dict[str, Any]) -> None:
         """Recompute checklist score aggregates from normalized stage rows."""

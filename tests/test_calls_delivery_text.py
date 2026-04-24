@@ -314,6 +314,77 @@ class CallsAnalyzerNormalizationTests(unittest.TestCase):
             "Сначала выяснять текущий процесс.",
         )
 
+    def test_analyzer_enriches_sales_contract_from_criterion_results(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = Interaction(
+            department_id=uuid4(),
+            manager_id=None,
+            type="call",
+            source="onlinepbx",
+            external_id="case-2",
+            duration_sec=300,
+            metadata_={
+                "external_call_code": "case-2",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-04-24 10:00:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        normalized = analyzer._validate_and_normalize_contract(
+            raw_contract={
+                "classification": {
+                    "call_type": "sales_primary",
+                    "scenario_type": "repeat_contact",
+                    "analysis_eligibility": "eligible",
+                },
+                "summary": {"short_summary": "Продажный звонок с зоной роста."},
+                "score_by_stage": [
+                    {
+                        "stage_code": "qualification_primary",
+                        "stage_name": "Квалификация и первичная потребность",
+                        "criteria_results": [
+                            {
+                                "criterion_code": "qp_current_process",
+                                "criterion_name": "Выяснил, как сейчас устроен процесс / документооборот",
+                                "score": 0,
+                                "comment": "Менеджер не выяснил текущий процесс клиента.",
+                                "evidence": "Вопрос о текущем процессе не прозвучал.",
+                            },
+                            {
+                                "criterion_code": "qp_no_early_pitch",
+                                "criterion_name": "Не ушёл в презентацию слишком рано",
+                                "score": 2,
+                                "comment": "Менеджер не перегружал клиента презентацией.",
+                                "evidence": "Менеджер сначала уточнял контекст.",
+                            },
+                        ],
+                    }
+                ],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "evidence_fragments": [],
+            },
+            interaction=interaction,
+            instruction_version="edo_sales_mvp1_call_analysis_v1",
+        )
+
+        first_criterion = normalized["score_by_stage"][0]["criteria_results"][0]
+        self.assertEqual(first_criterion["max_score"], 2)
+        self.assertEqual(normalized["score_by_stage"][0]["max_stage_score"], 4)
+        self.assertEqual(
+            normalized["gaps"][0]["title"],
+            "Выяснил, как сейчас устроен процесс / документооборот",
+        )
+        self.assertEqual(
+            normalized["strengths"][0]["title"],
+            "Не ушёл в презентацию слишком рано",
+        )
+        self.assertIn("процесс", normalized["recommendations"][0]["better_phrase"])
+        self.assertEqual(normalized["evidence_fragments"][0]["fragment_type"], "missed_opportunity")
+
 
 if __name__ == "__main__":
     unittest.main()

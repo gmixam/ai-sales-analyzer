@@ -580,6 +580,99 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertEqual(ctx.exception.normalized_result["score_by_stage"], [])
         self.assertIn('"score_by_stage": []', ctx.exception.raw_response)
 
+    def test_analyzer_repairs_max_score_and_enriches_reporting_fields(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="call-enriched",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=300,
+            metadata_={
+                "external_call_code": "call-enriched",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-04-24 10:00:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        normalized = analyzer._validate_and_normalize_contract(
+            raw_contract={
+                "classification": {
+                    "call_type": "sales_primary",
+                    "scenario_type": "repeat_contact",
+                    "analysis_eligibility": "eligible",
+                },
+                "summary": {"short_summary": "Продажный звонок с зоной роста."},
+                "score_by_stage": [
+                    {
+                        "stage_code": "qualification_primary",
+                        "stage_name": "Квалификация и первичная потребность",
+                        "criteria_results": [
+                            {
+                                "criterion_code": "qp_current_process",
+                                "criterion_name": "Выяснил, как сейчас устроен процесс / документооборот",
+                                "score": 0,
+                                "comment": "Менеджер не выяснил текущий процесс клиента.",
+                                "evidence": "Вопрос о текущем процессе не прозвучал.",
+                            },
+                            {
+                                "criterion_code": "qp_no_early_pitch",
+                                "criterion_name": "Не ушёл в презентацию слишком рано",
+                                "score": 2,
+                                "comment": "Менеджер сначала уточнял контекст.",
+                                "evidence": "Менеджер не перегружал клиента презентацией.",
+                            },
+                        ],
+                    }
+                ],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "evidence_fragments": [],
+            },
+            interaction=interaction,
+            instruction_version="edo_sales_mvp1_call_analysis_v1",
+        )
+
+        first_criterion = normalized["score_by_stage"][0]["criteria_results"][0]
+        self.assertEqual(first_criterion["max_score"], 2)
+        self.assertEqual(normalized["score_by_stage"][0]["max_stage_score"], 4)
+        self.assertEqual(
+            normalized["gaps"][0]["title"],
+            "Выяснил, как сейчас устроен процесс / документооборот",
+        )
+        self.assertEqual(
+            normalized["strengths"][0]["title"],
+            "Не ушёл в презентацию слишком рано",
+        )
+        self.assertIn("процесс", normalized["recommendations"][0]["better_phrase"])
+        self.assertEqual(normalized["evidence_fragments"][0]["fragment_type"], "missed_opportunity")
+
+    def test_analyzer_can_mark_semantic_empty_support_call_as_not_coachable(self) -> None:
+        error = SemanticAnalysisError(
+            "Analyzer returned a semantically empty analysis contract.",
+            interaction_id="support-call",
+            raw_response="{}",
+            normalized_result={"classification": {"call_type": "support"}},
+            reason_code="semantically_empty_analysis",
+        )
+        self.assertTrue(
+            CallsAnalyzer._should_mark_not_coachable(
+                error=error,
+                llm1_first_pass={"classification": {"call_type": "support"}},
+            )
+        )
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        marked = analyzer._mark_not_coachable_result(
+            normalized_result=error.normalized_result,
+            llm1_first_pass={"classification": {"call_type": "support"}},
+        )
+        self.assertEqual(marked["classification"]["analysis_eligibility"], "not_eligible")
+        self.assertEqual(marked["score_by_stage"], [])
+
     def test_persist_analysis_stores_raw_llm_response_separately_from_normalized_result(self) -> None:
         class _FakeQuery:
             def filter(self, *_args, **_kwargs):

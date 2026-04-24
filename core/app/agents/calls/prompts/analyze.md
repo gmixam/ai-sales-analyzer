@@ -29,6 +29,13 @@ Use sources of truth in this exact priority order:
 - Do not mark stages applicable if the transcript does not support them.
 - Keep recommendations actionable and concrete.
 - Extract agreements only when there is a real commitment in the call.
+- For an `eligible` sales-relevant call, do not return a coaching-empty analysis.
+- If the transcript supports any growth issue, return at least one meaningful `gaps` item.
+- If the transcript supports any positive signal, return at least one meaningful `strengths` item.
+- For every eligible sales-relevant call with any `gaps` item, return at least one usable `recommendations` item with `problem`, `why_it_matters`, and `better_phrase`.
+- Populate `evidence_fragments` with usable source-backed moments when the transcript supports them. Prefer real customer phrases in `client_text`; leave `client_text` null rather than inventing a quote.
+- If the call is support-only, internal, technical/operational non-sales, too poor-quality, or otherwise not coachable/reportable, set `classification.analysis_eligibility` to `not_eligible`, set a clear `eligibility_reason`, and keep detailed coaching arrays empty instead of pretending it is a sales analysis.
+- Every criterion result must include `max_score`; for the current checklist each criterion has `max_score: 2`.
 
 ## Language rules
 - Preserve transcript meaning and any direct evidence quotes in the original source language.
