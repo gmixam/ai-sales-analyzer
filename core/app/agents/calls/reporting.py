@@ -2532,11 +2532,8 @@ class CallsManualReportingOrchestrator:
                 }
             ],
             "key_problem_of_day": {
-                "title": "Недостаточно данных для обычного daily report",
-                "description": (
-                    f"Readiness outcome: {status}. Coverage {formatted_coverage}%, ready analyses {ready_analyses} "
-                    f"из {relevant_calls} найденных звонков."
-                ),
+                "title": "Недостаточно данных для итогового разбора",
+                "description": "Отчёт за этот день не собран: звонки найдены, но анализов недостаточно для полноценного daily report.",
             },
             "recommendations": [
                 {
@@ -2549,10 +2546,11 @@ class CallsManualReportingOrchestrator:
                 }
             ],
             "call_outcomes_summary": {
-                "agreed_count": relevant_calls,
-                "rescheduled_count": ready_analyses,
-                "refusal_count": f"{formatted_coverage}%",
-                "open_count": len(reason_codes) or len(missing),
+                "agreed_count": 0,
+                "rescheduled_count": 0,
+                "refusal_count": 0,
+                "open_count": 0,
+                "tech_service_count": 0,
             },
             "score_by_stage": [],
             "call_list": [

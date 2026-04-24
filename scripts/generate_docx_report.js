@@ -57,8 +57,59 @@ function loadVerificationBundle() {
   return readBundleFromFile(process.env.VERIFICATION_BUNDLE_PATH || defaultPath);
 }
 
+function safeNumber(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback !== undefined ? fallback : 0;
+  const n = Number(value);
+  return isNaN(n) ? (fallback !== undefined ? fallback : 0) : n;
+}
+
+function emptyStateData(payload) {
+  const header = payload.header || {};
+  const managerName = header.manager_name || "—";
+  const reportDate = header.report_date || "—";
+  return {
+    manager: managerName,
+    date: reportDate,
+    calls: 0,
+    day_score: 0,
+    outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0 },
+    money_on_table: { body: "Данные за день не накоплены.", highlight_line: "", reason_line: "", note: "" },
+    pipeline: { summary_line: "Нет достаточных данных для pipeline.", counts_line: "", conversion_line: "", average_line: "", contacts: [] },
+    stages: [],
+    situation: {
+      title: "СИТУАЦИЯ ДНЯ",
+      body: "Отчёт за этот день не собран: недостаточно обработанных звонков для итогового разбора.",
+      pattern_count_label: "",
+      client_need: "",
+      manager_task: "",
+      call_example: {},
+      scripts: [],
+      why_it_works: "",
+    },
+    call_breakdown: { client: "—", time: "—", stages: [] },
+    voice_of_customer: [],
+    additional_situations: [],
+    challenge: { goal_line: "", today_line: "", record_line: "", phrase_line: "" },
+    call_tomorrow: [],
+    all_calls: [],
+    morning: {
+      greeting: `Добрый день, ${managerName}!`,
+      summary_line: "Данных за этот день недостаточно для полного отчёта.",
+      financial_line: "",
+      top_contacts: [],
+      challenge: "",
+    },
+  };
+}
+
 function dataFromBundle(bundle) {
   const payload = bundle.payload || {};
+
+  const emptyState = payload.empty_state || payload.meta?.empty_state || {};
+  if (emptyState.enabled === true || emptyState.status === "skip_accumulate" || emptyState.not_deliverable_manager_report === true) {
+    return emptyStateData(payload);
+  }
+
   const report = bundle.report || {};
   const sections = Object.fromEntries((report.sections || []).map((section) => [section.id, section]));
 
@@ -66,7 +117,6 @@ function dataFromBundle(bundle) {
   const daySummary = sections.day_summary || {};
   const moneyOnTable = sections.money_on_table || {};
   const warmPipeline = sections.warm_pipeline || {};
-  const review = sections.review_block || {};
   const situation = sections.main_focus_for_tomorrow || {};
   const callBreakdown = sections.call_breakdown || {};
   const voice = sections.voice_of_customer || {};
@@ -86,15 +136,15 @@ function dataFromBundle(bundle) {
   return {
     manager: reportHeader.manager_name || payload.header?.manager_name || "—",
     date: reportHeader.report_date || payload.header?.report_date || "—",
-    calls: Number(reportHeader.calls_count || payload.kpi_overview?.calls_count || 0),
-    day_score: Number(reportHeader.day_score || 0),
+    calls: safeNumber(reportHeader.calls_count || payload.kpi_overview?.calls_count),
+    day_score: safeNumber(reportHeader.day_score),
     outcomes: {
-      total: Number(outcomeMap["ЗВОНКОВ"] || 0),
-      agreed: Number(outcomeMap["ДОГОВОРЕННОСТЬ"] || 0),
-      rescheduled: Number(outcomeMap["ПЕРЕНОС"] || 0),
-      refusal: Number(outcomeMap["ОТКАЗ"] || 0),
-      open: Number(outcomeMap["ОТКРЫТ"] || 0),
-      tech_service: Number(outcomeMap["ТЕХ/СЕРВИС"] || 0),
+      total: safeNumber(outcomeMap["ЗВОНКОВ"]),
+      agreed: safeNumber(outcomeMap["ДОГОВОРЕННОСТЬ"]),
+      rescheduled: safeNumber(outcomeMap["ПЕРЕНОС"]),
+      refusal: safeNumber(outcomeMap["ОТКАЗ"]),
+      open: safeNumber(outcomeMap["ОТКРЫТ"]),
+      tech_service: safeNumber(outcomeMap["ТЕХ/СЕРВИС"]),
     },
     money_on_table: {
       body: moneyOnTable.body || "",
@@ -113,12 +163,12 @@ function dataFromBundle(bundle) {
       code: stage.funnel_label || stage.stage_code || "—",
       name: `${stage.funnel_label || ""} ${stage.stage_name || ""}`.trim(),
       score10: stage.score ?? null,
-      score5: stage.score === null || stage.score === undefined ? null : Number((Number(stage.score) / 2).toFixed(1)),
+      score5: stage.score === null || stage.score === undefined ? null : safeNumber((safeNumber(stage.score) / 2).toFixed(1), null),
       priority: Boolean(stage.is_priority),
       subs: (stage.criteria_detail || []).map((criterion) => ({
         name: `↳ ${criterion.name || "Критерий"}`,
         score10: criterion.score ?? null,
-        score5: criterion.score === null || criterion.score === undefined ? null : Number((Number(criterion.score) / 2).toFixed(1)),
+        score5: criterion.score === null || criterion.score === undefined ? null : safeNumber((safeNumber(criterion.score) / 2).toFixed(1), null),
       })),
     })),
     situation: {
