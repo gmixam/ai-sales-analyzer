@@ -196,15 +196,18 @@ function dataFromBundle(bundle) {
       quote: `«${String(row[1] || "").replace(/^«|»$/g, "")}»`,
       interpretation: row[2] || "",
     })),
-    additional_situations: (payload.additional_situations?.situations || []).map((item) => ({
-      title: `«${item.title || "Ситуация"}»`,
-      client_said: item.client_said || "",
-      meant: item.meant || "",
-      how_to: item.how_to || "",
-      why: item.why || "",
-      type: item.kind || "gap",
-      signal: item.signal || 0,
-    })),
+    additional_situations: ((sections.additional_situations || {}).situations || [])
+      .filter((item) => item.title || item.client_said || item.how_to)
+      .map((item) => ({
+        title: `«${item.title || "Ситуация"}»`,
+        badge: item.badge || (item.kind === "strength" ? "Сильная сторона" : "Зона роста"),
+        client_said: item.client_said || "",
+        meant: item.meant || "",
+        how_to: item.how_to || "",
+        why: item.why || "",
+        type: item.kind || "gap",
+        signal: safeNumber(item.signal),
+      })),
     challenge: {
       goal_line: challenge.goal_line || "",
       today_line: challenge.today_line || "",
@@ -265,17 +268,19 @@ function progressBar(score5) {
 // ──────────────────────────────────────────────────────────────
 
 const COLORS = {
-  heading:    "1F3864",  // dark blue
-  green:      "2E8B57",
-  red:        "CC3333",
-  orange:     "E87722",
-  gray:       "888888",
-  black:      "000000",
+  heading:    "1F3864",  // dark blue — H1/H2 text, accents
+  green:      "2E8B57",  // status: positive
+  orange:     "E87722",  // status: warning / priority
+  gray:       "888888",  // meta / secondary
+  black:      "1A1A1A",  // body text
   tableHead:  "E8F0F8",
   priorityBg: "FFF3CD",
   white:      "FFFFFF",
   altRow:     "F9F9F9",
 };
+
+// 4-role type scale
+const SZ = { h1: 38, h2: 26, body: 22, meta: 18 };
 
 const BORDER_THIN = {
   top:    { style: BorderStyle.SINGLE, size: 4, color: "CCCCCC" },
@@ -356,7 +361,7 @@ function blockHeading(emoji, title) {
       new TextRun({
         text: `${emoji} ${title}`,
         bold: true,
-        size: 28,
+        size: SZ.h2,
         color: COLORS.heading,
         font: "Arial",
       }),
@@ -366,7 +371,7 @@ function blockHeading(emoji, title) {
 }
 
 function bodyPara(text, opts = {}) {
-  const { bold = false, color = COLORS.black, size = 22, indent = 0 } = opts;
+  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0 } = opts;
   return new Paragraph({
     indent: indent ? { left: indent } : undefined,
     children: [
@@ -376,10 +381,14 @@ function bodyPara(text, opts = {}) {
   });
 }
 
+function metaPara(text) {
+  return bodyPara(text, { color: COLORS.gray, size: SZ.meta });
+}
+
 function subHeading(text) {
   return new Paragraph({
     children: [
-      new TextRun({ text, bold: true, size: 22, color: COLORS.heading, font: "Arial" }),
+      new TextRun({ text, bold: true, size: SZ.body, color: COLORS.heading, font: "Arial" }),
     ],
     spacing: { before: 80, after: 40 },
   });
@@ -401,7 +410,7 @@ function buildShapka() {
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
         text: "ЕЖЕДНЕВНЫЙ ОТЧЁТ МЕНЕДЖЕРА",
-        bold: true, size: 36, color: COLORS.heading, font: "Arial",
+        bold: true, size: SZ.h2, color: COLORS.heading, font: "Arial",
         allCaps: true,
       })],
       spacing: { before: 0, after: 80 },
@@ -410,7 +419,7 @@ function buildShapka() {
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
         text: DATA.manager,
-        bold: true, size: 44, color: COLORS.black, font: "Arial",
+        bold: true, size: SZ.h1, color: COLORS.black, font: "Arial",
       })],
       spacing: { before: 0, after: 80 },
     }),
@@ -418,7 +427,7 @@ function buildShapka() {
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
         text: `${DATA.date}  ·  ${DATA.calls} звонков`,
-        size: 24, color: COLORS.gray, font: "Arial",
+        size: SZ.body, color: COLORS.gray, font: "Arial",
       })],
       spacing: { before: 0, after: 80 },
     }),
@@ -426,7 +435,7 @@ function buildShapka() {
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
         text: `Балл дня: ${DATA.day_score.toFixed(1)} / 5`,
-        bold: true, size: 26, color: COLORS.heading, font: "Arial",
+        bold: true, size: SZ.body, color: COLORS.heading, font: "Arial",
       })],
       spacing: { before: 0, after: DATA.selection_note ? 60 : 160 },
     }),
@@ -434,7 +443,7 @@ function buildShapka() {
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
         text: DATA.selection_note,
-        size: 16, color: COLORS.gray, font: "Arial",
+        size: SZ.meta, color: COLORS.gray, font: "Arial",
       })],
       spacing: { before: 0, after: 140 },
     })] : []),
@@ -457,7 +466,7 @@ function buildSvodnaya() {
       children: [
         new Paragraph({
           alignment: AlignmentType.CENTER,
-          children: [new TextRun({ text: String(num), bold: true, size: 44, color, font: "Arial" })],
+          children: [new TextRun({ text: String(num), bold: true, size: SZ.h1, color, font: "Arial" })],
           spacing: { before: 0, after: 20 },
         }),
         new Paragraph({
@@ -516,7 +525,7 @@ function buildPipeline() {
     bodyPara(DATA.pipeline.average_line, { color: COLORS.gray }),
   ];
   if (!DATA.pipeline.contacts || DATA.pipeline.contacts.length === 0) {
-    blocks.push(bodyPara("Тёплые лиды без обратного звонка не найдены.", { color: COLORS.gray, size: 18 }));
+    blocks.push(bodyPara("Тёплые лиды без обратного звонка не найдены.", { color: COLORS.gray, size: SZ.meta }));
     return blocks;
   }
   blocks.push(
@@ -618,7 +627,7 @@ function buildBally() {
     spacer(4),
     bodyPara(
       "Правило: ситуация дня = первый этап ниже 4 сверху по воронке. Прорабатываем до выравнивания ≥ 4, затем переходим к следующему.",
-      { color: COLORS.gray, size: 18 },
+      { color: COLORS.gray, size: SZ.meta },
     ),
   ];
 }
@@ -711,7 +720,7 @@ function buildGolos() {
   if (!DATA.voice_of_customer || DATA.voice_of_customer.length === 0) {
     return [
       blockHeading("👤", "ГОЛОС КЛИЕНТА"),
-      bodyPara("Клиентские цитаты появятся после накопления материала по звонкам.", { color: COLORS.gray, size: 18 }),
+      bodyPara("Клиентские цитаты появятся после накопления материала по звонкам.", { color: COLORS.gray, size: SZ.meta }),
     ];
   }
   const headerRow = new TableRow({
@@ -736,7 +745,7 @@ function buildGolos() {
     blockHeading("👤", "ГОЛОС КЛИЕНТА"),
     bodyPara(
       "Сгруппированы повторяющиеся клиентские сигналы: один смысл и один способ ответа на несколько похожих цитат.",
-      { color: COLORS.gray, size: 18 },
+      { color: COLORS.gray, size: SZ.meta },
     ),
     spacer(4),
     new Table({
@@ -755,17 +764,17 @@ function buildDopSituatsii() {
   blocks.push(blockHeading("📋", "ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ"));
   blocks.push(bodyPara(
     "Приложение к основному отчёту. Для углублённого разбора с менеджером или самостоятельно.",
-    { color: COLORS.gray, size: 18 },
+    { color: COLORS.gray, size: SZ.meta },
   ));
   if (!DATA.additional_situations || DATA.additional_situations.length === 0) {
-    blocks.push(bodyPara("Дополнительные ситуации появятся после накопления данных по звонкам.", { color: COLORS.gray, size: 18 }));
+    blocks.push(metaPara("Дополнительные ситуации появятся после накопления данных по звонкам."));
     return blocks;
   }
   blocks.push(spacer(4));
 
   for (let i = 0; i < DATA.additional_situations.length; i++) {
     const s = DATA.additional_situations[i];
-    const typeLabel = s.type === "strength" ? "✅ Сильная сторона" : "🔶 Зона роста";
+    const typeLabel = s.badge || (s.type === "strength" ? "✅ Сильная сторона" : "🔶 Зона роста");
     const typeColor = s.type === "strength" ? COLORS.green : COLORS.orange;
 
     blocks.push(new Paragraph({
@@ -912,7 +921,7 @@ function buildSpisokZvonkov() {
     spacer(6),
     bodyPara(
       `Показаны все ${DATA.calls} звонков · полный список в CRM`,
-      { color: COLORS.gray, size: 18 },
+      { color: COLORS.gray, size: SZ.meta },
     ),
   ];
 }

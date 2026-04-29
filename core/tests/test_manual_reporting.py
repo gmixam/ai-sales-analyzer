@@ -888,9 +888,9 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["ready_analyses"], 2)
         self.assertIn("signal_report_ready", result["readiness_reason_codes"])
         self.assertEqual(result["status"], "delivered")
-        self.assertIn("Это сигнальный отчёт", result["preview"]["text"])
-        self.assertIn("найдено 3 звонк", result["preview"]["text"])
-        self.assertIn("в разбор вошло 2", result["preview"]["text"])
+        self.assertIn("Сигнальный отчёт", result["preview"]["text"])
+        self.assertIn("Найдено в телефонии: 3", result["preview"]["text"])
+        self.assertIn("вошло в отчёт: 2", result["preview"]["text"])
 
     def test_signal_report_model_uses_manager_facing_polish_rules(self) -> None:
         manager = _manager()
@@ -937,7 +937,7 @@ class ManualReportingStatusTests(unittest.TestCase):
         report = build_report_render_model(payload)
         sections = {section["id"]: section for section in report["sections"]}
 
-        self.assertIn("Это сигнальный отчёт", sections["report_header"]["selection_note"])
+        self.assertIn("Сигнальный отчёт", sections["report_header"]["selection_note"])
         self.assertIn("/5", sections["main_focus_for_tomorrow"]["situation_title"])
         self.assertNotIn("первый этап ниже", sections["main_focus_for_tomorrow"]["situation_title"])
         self.assertEqual(len(sections["voice_of_customer"]["rows"]), 1)

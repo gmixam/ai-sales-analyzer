@@ -2176,6 +2176,37 @@ def _short_time(value: Any) -> str:
     return text
 
 
+_MONTH_SHORT_RU = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
+def _format_deadline_human(value: str | None) -> str | None:
+    """Convert ISO datetime/date string to a short Russian human-readable form.
+
+    '2026-04-29T11:00:00+00:00' → '29 апр 11:00'
+    '2026-04-29'                → '29 апр'
+    Any other non-empty string  → returned unchanged.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    import re as _re
+    m = _re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})", text)
+    if m:
+        month = int(m.group(2))
+        day = int(m.group(3))
+        hour = int(m.group(4))
+        minute = int(m.group(5))
+        mon = _MONTH_SHORT_RU[month - 1] if 1 <= month <= 12 else str(month)
+        return f"{day} {mon} {hour:02d}:{minute:02d}"
+    m = _re.match(r"(\d{4})-(\d{2})-(\d{2})$", text)
+    if m:
+        month = int(m.group(2))
+        day = int(m.group(3))
+        mon = _MONTH_SHORT_RU[month - 1] if 1 <= month <= 12 else str(month)
+        return f"{day} {mon}"
+    return text
+
+
 def _resolve_manager_day_score(*, payload: dict[str, Any]) -> float | None:
     """Return the visible day score on a 0-5 scale, with optional parity override."""
     verification_overrides = dict(payload.get("verification_overrides") or {})
@@ -2208,39 +2239,57 @@ def _resolve_manager_day_score(*, payload: dict[str, Any]) -> float | None:
 
 
 def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls: int) -> str | None:
-    """Build a compact manager-facing note for signal-report sampling transparency."""
+    """Build a compact manager-facing sampling note for signal and full reports."""
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
-    if readiness.get("readiness_outcome") != "signal_report":
+    outcome = readiness.get("readiness_outcome")
+    if outcome not in {"signal_report", "full_report"}:
         return None
-    found = int(readiness.get("relevant_calls") or total_calls or 0)
-    included = int(readiness.get("ready_analyses") or total_calls or 0)
-    excluded = max(0, found - included)
-    if excluded <= 0:
-        reason = "остальные звонки в этом окне не найдены"
-    else:
-        reason = (
-            "остальные звонки пока не дают надёжной основы для разбора: по ним не хватает готового текста, "
-            "полного анализа или они не подходят для управленческого вывода"
+    found = int(readiness.get("relevant_calls") or 0)
+    ready = int(readiness.get("ready_analyses") or 0)
+    in_report = int(total_calls or 0)
+    window_days = int(readiness.get("window_days_used") or 1)
+
+    parts: list[str] = []
+    if found:
+        parts.append(f"Найдено в телефонии: {found}")
+    if ready and ready != found:
+        parts.append(f"с готовым разбором: {ready}")
+    parts.append(f"вошло в отчёт: {in_report}")
+    line1 = " · ".join(parts)
+
+    excluded = max(0, found - in_report) if found else 0
+    lines = [line1]
+    if excluded > 0:
+        lines.append(
+            f"Не вошло {excluded}: нет готового транскрипта/анализа или звонки не подходят для управленческого вывода."
         )
-    return (
-        f"Это сигнальный отчёт: найдено {found} звонк(ов), в разбор вошло {included}. "
-        f"{reason.capitalize()}."
-    )
+    if window_days > 1:
+        lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
+    if outcome == "signal_report":
+        lines[0] = "Сигнальный отчёт · " + lines[0]
+    return " ".join(lines)
 
 
 def _priority_stage_row(score_by_stage: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the render-ready priority stage row from one source of truth."""
-    return next((row for row in _build_stage_score_rows(score_by_stage) if row.get("is_priority")), None)
+    """Return render-ready priority stage. Uses explicit is_priority flag; falls back to lowest-scoring stage."""
+    rows = _build_stage_score_rows(score_by_stage)
+    explicit = next((row for row in rows if row.get("is_priority")), None)
+    if explicit is not None:
+        return explicit
+    scored = [row for row in rows if row.get("score_float") is not None]
+    if not scored:
+        return None
+    return min(scored, key=lambda r: float(r.get("score_float") or 999))
 
 
 def _build_situation_title(score_by_stage: list[dict[str, Any]]) -> str:
-    """Build СИТУАЦИЯ ДНЯ heading from the priority stage (first below 4.0 in funnel order)."""
+    """Build СИТУАЦИЯ ДНЯ heading from the priority stage."""
     row = _priority_stage_row(score_by_stage)
     if row is not None:
-        name = str(row.get("stage_name") or "приоритетный этап")
+        name = str(row.get("stage_name") or "этап")
         score = str(row.get("score") or "—")
         return f"СИТУАЦИЯ ДНЯ · {name} — {score}/5"
-    return "СИТУАЦИЯ ДНЯ — приоритетный этап не определён"
+    return "СИТУАЦИЯ ДНЯ"
 
 
 def _build_pattern_count_label(key_problem: dict[str, Any]) -> str | None:
@@ -2856,7 +2905,7 @@ def _priority_label_for_contact(status: str) -> str:
 def _deadline_label_for_contact(item: dict[str, Any]) -> str:
     """Return manager-facing timing/reason label for a follow-up row."""
     status = str(item.get("status") or "open")
-    deadline = str(item.get("deadline") or "").strip()
+    deadline = _format_deadline_human(str(item.get("deadline") or "").strip() or None)
     if deadline:
         return f"Срок: {deadline}"
     if status == "rescheduled":
@@ -2879,7 +2928,7 @@ def _call_goal_for_contact(item: dict[str, Any]) -> str:
 def _first_phrase_for_contact(item: dict[str, Any]) -> str:
     """Return a usable first phrase, not a next-step recap."""
     status = str(item.get("status") or "open")
-    deadline = str(item.get("deadline") or "").strip()
+    deadline = _format_deadline_human(str(item.get("deadline") or "").strip() or None)
     if status == "rescheduled" and deadline:
         return f"Добрый день! Договаривались вернуться {deadline}; удобно сейчас коротко продолжить?"
     if status == "rescheduled":
@@ -3127,10 +3176,11 @@ def _call_topic_label(call_type: str | None, scenario_type: str | None) -> str:
 
 def _call_context_label(status: str, deadline: str | None, reason: str | None) -> str:
     """Build short Контекст for a call list row from follow_up outcome data."""
+    dl = _format_deadline_human(deadline) if deadline else None
     if status == "agreed":
-        return f"до {deadline}" if deadline else "—"
+        return f"до {dl}" if dl else "—"
     if status == "rescheduled":
-        return f"→ {deadline}" if deadline else "перезвон"
+        return f"→ {dl}" if dl else "перезвон"
     if reason and status in ("open", "refusal"):
         short = reason[:28].rstrip()
         return short + "…" if len(reason) > 28 else short

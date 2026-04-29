@@ -4312,9 +4312,32 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
     }
 
 
+_MONTH_SHORT_RU_REP = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
+def _format_iso_deadline(value: str | None) -> str | None:
+    """Format ISO datetime/date to short Russian label for manager-facing deadline field."""
+    import re as _re
+    if not value:
+        return None
+    text = str(value).strip()
+    m = _re.match(r"\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})", text)
+    if m:
+        month, day, hour, minute = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        mon = _MONTH_SHORT_RU_REP[month - 1] if 1 <= month <= 12 else str(month)
+        return f"{day} {mon} {hour:02d}:{minute:02d}"
+    m = _re.match(r"\d{4}-(\d{2})-(\d{2})$", text)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        mon = _MONTH_SHORT_RU_REP[month - 1] if 1 <= month <= 12 else str(month)
+        return f"{day} {mon}"
+    return text
+
+
 def _derive_call_status_and_deadline(*, follow_up: dict[str, Any]) -> tuple[str, str | None]:
     """Classify call outcome from follow_up fields."""
-    deadline = str(follow_up.get("due_date_text") or follow_up.get("due_date_iso") or "").strip() or None
+    raw = str(follow_up.get("due_date_text") or follow_up.get("due_date_iso") or "").strip() or None
+    deadline = _format_iso_deadline(raw)
     if follow_up.get("next_step_fixed"):
         return "agreed", deadline
     reason = str(follow_up.get("reason_not_fixed") or "").lower()
