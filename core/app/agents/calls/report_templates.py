@@ -2244,14 +2244,19 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
     outcome = readiness.get("readiness_outcome")
     if outcome not in {"signal_report", "full_report"}:
         return None
+    total_group = int(readiness.get("total_group_calls") or 0)
     found = int(readiness.get("relevant_calls") or 0)
     ready = int(readiness.get("ready_analyses") or 0)
     in_report = int(total_calls or 0)
     window_days = int(readiness.get("window_days_used") or 1)
 
     parts: list[str] = []
-    if found:
-        parts.append(f"Найдено в телефонии: {found}")
+    source = total_group if total_group else found
+    if source:
+        parts.append(f"Найдено в телефонии: {source}")
+    if found and found != source:
+        window_label = "за отчётный день" if window_days == 1 else f"в окне {window_days} раб. дн."
+        parts.append(f"{window_label}: {found}")
     if ready and ready != found:
         parts.append(f"с готовым разбором: {ready}")
     parts.append(f"вошло в отчёт: {in_report}")
@@ -2263,7 +2268,7 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
         lines.append(
             f"Не вошло {excluded}: нет готового транскрипта/анализа или звонки не подходят для управленческого вывода."
         )
-    if window_days > 1:
+    if window_days > 1 and found == source:
         lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
     if outcome == "signal_report":
         lines[0] = "Сигнальный отчёт · " + lines[0]
@@ -2655,15 +2660,20 @@ def _build_situation_client_need(key_problem: dict[str, Any]) -> str:
 
 
 def _build_situation_body(*, key_problem: dict[str, Any], score_by_stage: list[dict[str, Any]]) -> str:
-    """Return a compact non-repetitive intro for СИТУАЦИЯ ДНЯ."""
+    """Return a compact non-repetitive intro for СИТУАЦИЯ ДНЯ.
+
+    Stage (lowest-scoring) and key signal (key_problem.title) are shown separately
+    so that a signal from one stage is never falsely attributed to another.
+    """
     row = _priority_stage_row(score_by_stage)
     title = str(key_problem.get("title") or "").strip()
     if row is not None:
         stage = str(row.get("stage_name") or "приоритетный этап")
         score = str(row.get("score") or "—")
-        if title and title.lower() not in stage.lower():
-            return f"Главный сигнал дня: {title}. Он проявился на этапе «{stage}» ({score}/5)."
-        return f"Главный сигнал дня проявился на этапе «{stage}» ({score}/5)."
+        stage_line = f"Приоритетный этап: «{stage}» — {score}/5."
+        if title:
+            return f"Главный сигнал дня: {title}. {stage_line}"
+        return stage_line
     description = _clean_reader_text(str(key_problem.get("description") or ""))
     if description:
         return description

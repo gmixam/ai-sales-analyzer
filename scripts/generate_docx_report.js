@@ -197,7 +197,7 @@ function dataFromBundle(bundle) {
       interpretation: row[2] || "",
     })),
     additional_situations: ((sections.additional_situations || {}).situations || [])
-      .filter((item) => item.title || item.client_said || item.how_to)
+      .filter((item) => (item.signal || 0) > 0 && (item.title || item.client_said || item.how_to))
       .map((item) => ({
         title: `«${item.title || "Ситуация"}»`,
         badge: item.badge || (item.kind === "strength" ? "Сильная сторона" : "Зона роста"),
@@ -280,7 +280,7 @@ const COLORS = {
 };
 
 // 4-role type scale
-const SZ = { h1: 38, h2: 26, body: 22, meta: 18 };
+const SZ = { h1: 38, h2: 26, accent: 24, body: 22, cell: 20, meta: 18, caption: 16 };
 
 const BORDER_THIN = {
   top:    { style: BorderStyle.SINGLE, size: 4, color: "CCCCCC" },
@@ -342,7 +342,7 @@ function cell(text, opts = {}) {
 function headCell(text, opts = {}) {
   return cell(text, {
     bold: true,
-    size: 18,
+    size: SZ.meta,
     shading: { fill: COLORS.tableHead, type: ShadingType.CLEAR },
     ...opts,
   });
@@ -471,7 +471,7 @@ function buildSvodnaya() {
         }),
         new Paragraph({
           alignment: AlignmentType.CENTER,
-          children: [new TextRun({ text: label.toUpperCase(), size: 16, color: COLORS.gray, font: "Arial" })],
+          children: [new TextRun({ text: label.toUpperCase(), size: SZ.caption, color: COLORS.gray, font: "Arial" })],
           spacing: { before: 0, after: 0 },
         }),
       ],
@@ -592,7 +592,7 @@ function buildBally() {
       cell(st.name, { color: nameColor, bold: st.priority, shading: rowShading }),
       cell(scoreStr, { align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
       cell("—", { align: AlignmentType.CENTER, color: COLORS.gray, shading: rowShading }),
-      cell(bar, { size: 20, shading: rowShading }),
+      cell(bar, { size: SZ.cell, shading: rowShading }),
       cell(prio, { align: AlignmentType.CENTER, color: st.priority ? COLORS.red : COLORS.green, bold: true, shading: rowShading }),
     ];
 
@@ -609,7 +609,7 @@ function buildBally() {
               cell(sub.name, { color: subColor, italic: true, indent: 200 }),
               cell(subScore, { align: AlignmentType.CENTER, color: subColor }),
               cell("—", { align: AlignmentType.CENTER, color: COLORS.gray }),
-              cell(progressBar(sub.score5), { size: 20 }),
+              cell(progressBar(sub.score5), { size: SZ.cell }),
               cell("", {}),
             ],
           })
@@ -642,7 +642,7 @@ function buildSituatsiya() {
     new Paragraph({
       children: [new TextRun({
         text: DATA.situation.title,
-        bold: true, size: 24, color: COLORS.red, font: "Arial",
+        bold: true, size: SZ.accent, color: COLORS.red, font: "Arial",
       })],
       spacing: { before: 0, after: 60 },
     }),
@@ -734,9 +734,9 @@ function buildGolos() {
   const dataRows = DATA.voice_of_customer.map((v, i) =>
     new TableRow({
       children: [
-        cell(v.client, { shading: altShading(i), size: 20 }),
+        cell(v.client, { shading: altShading(i), size: SZ.cell }),
         cell(v.quote,  { shading: altShading(i), italic: true }),
-        cell(v.interpretation, { shading: altShading(i), color: COLORS.heading, size: 20 }),
+        cell(v.interpretation, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
       ],
     })
   );
@@ -779,9 +779,9 @@ function buildDopSituatsii() {
 
     blocks.push(new Paragraph({
       children: [
-        new TextRun({ text: `Ситуация ${i + 1} — `, bold: true, size: 22, font: "Arial" }),
-        new TextRun({ text: s.title, bold: true, size: 22, color: COLORS.heading, font: "Arial" }),
-        new TextRun({ text: `  ${typeLabel}  ·  ${s.signal} зв.`, size: 20, color: typeColor, font: "Arial" }),
+        new TextRun({ text: `Ситуация ${i + 1} — `, bold: true, size: SZ.body, font: "Arial" }),
+        new TextRun({ text: s.title, bold: true, size: SZ.body, color: COLORS.heading, font: "Arial" }),
+        new TextRun({ text: `  ${typeLabel}  ·  ${s.signal} зв.`, size: SZ.cell, color: typeColor, font: "Arial" }),
       ],
       spacing: { before: 100, after: 40 },
     }));
@@ -820,7 +820,7 @@ function buildDopSituatsii() {
 function buildChellendj() {
   return [
     blockHeading("🏆", "ЧЕЛЛЕНДЖ НА ЗАВТРА"),
-    bodyPara(DATA.challenge.goal_line, { bold: true, size: 24 }),
+    bodyPara(DATA.challenge.goal_line, { bold: true, size: SZ.accent }),
     spacer(4),
     bodyPara(DATA.challenge.today_line),
     bodyPara(DATA.challenge.record_line),
@@ -860,9 +860,9 @@ function buildPozvoni() {
       children: [
         cell(`${c.priority} ${c.label}`, { align: AlignmentType.CENTER, color: prioColor, bold: true, shading: altShading(i) }),
         cell(c.client, { shading: altShading(i) }),
-        cell(c.timing, { shading: altShading(i), color: COLORS.gray, size: 20 }),
-        cell(c.goal, { shading: altShading(i), color: COLORS.heading, size: 20 }),
-        cell(c.first_phrase, { shading: altShading(i), italic: true, color: COLORS.heading, size: 20 }),
+        cell(c.timing, { shading: altShading(i), color: COLORS.gray, size: SZ.cell }),
+        cell(c.goal, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
+        cell(c.first_phrase, { shading: altShading(i), italic: true, color: COLORS.heading, size: SZ.cell }),
       ],
     });
   });
@@ -905,8 +905,8 @@ function buildSpisokZvonkov() {
         cell(String(c.n),   { align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
         cell(c.time,        { align: AlignmentType.CENTER, shading: altShading(i) }),
         cell(c.client,      { shading: altShading(i) }),
-        cell(c.topic,       { shading: altShading(i), size: 20, color: COLORS.gray }),
-        cell(c.context,     { shading: altShading(i), size: 20, color: COLORS.gray }),
+        cell(c.topic,       { shading: altShading(i), size: SZ.cell, color: COLORS.gray }),
+        cell(c.context,     { shading: altShading(i), size: SZ.cell, color: COLORS.gray }),
         cell(c.status,      { align: AlignmentType.CENTER, shading: altShading(i), bold: true, color: statusColor(c.status) }),
       ],
     })
@@ -949,28 +949,28 @@ function buildUtrennaya() {
                 new Paragraph({
                   children: [new TextRun({
                     text: `${DATA.morning.greeting} 👋`,
-                    bold: true, size: 26, font: "Arial",
+                    bold: true, size: SZ.h2, font: "Arial",
                   })],
                   spacing: { before: 0, after: 80 },
                 }),
                 new Paragraph({
                   children: [new TextRun({
                     text: `Вчерашний итог: ${DATA.morning.summary_line}`,
-                    size: 22, font: "Arial",
+                    size: SZ.body, font: "Arial",
                   })],
                   spacing: { before: 0, after: 60 },
                 }),
                 new Paragraph({
                   children: [new TextRun({
                     text: `${DATA.morning.financial_line} 📞`,
-                    bold: true, size: 22, color: COLORS.orange, font: "Arial",
+                    bold: true, size: SZ.body, color: COLORS.orange, font: "Arial",
                   })],
                   spacing: { before: 0, after: 80 },
                 }),
                 new Paragraph({
                   children: [new TextRun({
                     text: "Позвони сегодня:",
-                    bold: true, size: 22, font: "Arial",
+                    bold: true, size: SZ.body, font: "Arial",
                   })],
                   spacing: { before: 0, after: 40 },
                 }),
@@ -978,7 +978,7 @@ function buildUtrennaya() {
                   new Paragraph({
                     children: [new TextRun({
                       text: `${i + 1}. ${c.client} — ${c.script}`,
-                      size: 20, font: "Arial",
+                      size: SZ.cell, font: "Arial",
                     })],
                     spacing: { before: 0, after: 40 },
                     indent: { left: 200 },
@@ -988,7 +988,7 @@ function buildUtrennaya() {
                 new Paragraph({
                   children: [new TextRun({
                     text: `🏆 Челлендж: ${DATA.morning.challenge}`,
-                    size: 20, color: COLORS.heading, font: "Arial",
+                    size: SZ.cell, color: COLORS.heading, font: "Arial",
                   })],
                   spacing: { before: 40, after: 0 },
                 }),
@@ -1011,7 +1011,7 @@ async function main() {
     children: [
       new TextRun({
         text: "Конфиденциально · Только для менеджера и РОПа",
-        size: 16,
+        size: SZ.caption,
         color: COLORS.gray,
         font: "Arial",
       }),

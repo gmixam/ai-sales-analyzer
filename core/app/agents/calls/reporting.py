@@ -2120,6 +2120,7 @@ class CallsManualReportingOrchestrator:
             )
             last_readiness = readiness
             if readiness["readiness_outcome"] in {"full_report", "signal_report"} and payload is not None:
+                readiness["total_group_calls"] = len(artifacts)
                 return self._render_and_deliver_report_result(
                     preset=preset,
                     usable=usable,
