@@ -32,9 +32,11 @@ if str(CORE_ROOT) not in sys.path:
 
 from app.agents.calls.reporting import (  # noqa: E402
     CallsManualReportingOrchestrator,
+    MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC,
     ReportArtifact,
     ReportRunFilters,
     _build_selection_model_counters,
+    _classify_meaningful_call,
     build_manager_daily_payload,
     build_rop_weekly_payload,
     render_report_email,
@@ -413,6 +415,160 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(sm["raw_calls_total"], 2)
         self.assertEqual(sm["analyzed_calls_total"], 1)
         self.assertEqual(sm["exclusion_reasons"]["not_enough_analysis"], 1)
+
+    # --- SM-2 acceptance tests ---
+
+    def test_classify_meaningful_call_short_no_speech_excluded(self) -> None:
+        """SM-2 R1/R2: call below floor with no transcript → too_short_or_no_speech."""
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            duration_sec=10,
+            text="",
+        )
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+
+    def test_classify_meaningful_call_zero_duration_no_speech_excluded(self) -> None:
+        """SM-2 R1: zero duration and no transcript → too_short_or_no_speech."""
+        interaction = SimpleNamespace(id=uuid4(), duration_sec=0, text="")
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+
+    def test_classify_meaningful_call_ivr_excluded(self) -> None:
+        """SM-2 R4: call_type=other + analysis_eligibility=not_eligible + no transcript → ivr_or_autoanswer."""
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            duration_sec=30,
+            text="",
+        )
+        analysis = SimpleNamespace(
+            id=uuid4(),
+            scores_detail={
+                "classification": {
+                    "call_type": "other",
+                    "analysis_eligibility": "not_eligible",
+                }
+            },
+            is_failed=False,
+        )
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=analysis,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "ivr_or_autoanswer")
+
+    def test_classify_meaningful_call_with_transcript_is_meaningful(self) -> None:
+        """SM-2 R3: any call with transcript is meaningful regardless of duration or call_type."""
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            duration_sec=10,
+            text="Алло, здравствуйте",
+        )
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+        self.assertTrue(is_meaningful)
+        self.assertIsNone(reason)
+
+    def test_classify_meaningful_call_support_with_transcript_is_meaningful(self) -> None:
+        """SM-2: support call with transcript → meaningful (service call, counted separately)."""
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            duration_sec=300,
+            text="Добрый день, у меня вопрос по договору",
+        )
+        analysis = SimpleNamespace(
+            id=uuid4(),
+            scores_detail={
+                "classification": {
+                    "call_type": "support",
+                    "analysis_eligibility": "not_eligible",
+                }
+            },
+            is_failed=False,
+        )
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=analysis,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+        self.assertTrue(is_meaningful)
+        self.assertIsNone(reason)
+
+    def test_build_selection_model_counters_sm2_too_short_counted(self) -> None:
+        """SM-2: too_short_or_no_speech exclusion reason is populated from real classification."""
+        short_no_speech = ReportArtifact(
+            interaction=SimpleNamespace(id=uuid4(), duration_sec=5, text=""),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        normal = _artifact(82.0, "strong")
+        counters = _build_selection_model_counters(
+            window_artifacts=[short_no_speech, normal],
+            usable_artifacts=[normal],
+        )
+        self.assertEqual(counters["raw_calls_total"], 2)
+        self.assertEqual(counters["meaningful_calls_total"], 1)
+        self.assertEqual(counters["exclusion_reasons"]["too_short_or_no_speech"], 1)
+        self.assertEqual(counters["exclusion_reasons"]["ivr_or_autoanswer"], 0)
+
+    def test_build_selection_model_counters_sm2_ivr_counted(self) -> None:
+        """SM-2: ivr_or_autoanswer exclusion reason is populated from real classification."""
+        ivr_analysis = SimpleNamespace(
+            id=uuid4(),
+            scores_detail={
+                "classification": {"call_type": "other", "analysis_eligibility": "not_eligible"}
+            },
+            is_failed=False,
+        )
+        ivr_artifact = ReportArtifact(
+            interaction=SimpleNamespace(id=uuid4(), duration_sec=30, text=""),
+            analysis=ivr_analysis,
+            manager=_manager(),
+            call_started_at=None,
+        )
+        normal = _artifact(82.0, "strong")
+        counters = _build_selection_model_counters(
+            window_artifacts=[ivr_artifact, normal],
+            usable_artifacts=[normal],
+        )
+        self.assertEqual(counters["raw_calls_total"], 2)
+        self.assertEqual(counters["meaningful_calls_total"], 1)
+        self.assertEqual(counters["exclusion_reasons"]["ivr_or_autoanswer"], 1)
+        self.assertEqual(counters["exclusion_reasons"]["too_short_or_no_speech"], 0)
+
+    def test_build_selection_model_counters_sm2_no_sm1_notes(self) -> None:
+        """SM-2: _sm1_notes proxy key is no longer present in the counters dict."""
+        counters = _build_selection_model_counters(
+            window_artifacts=[_artifact(82.0, "strong")],
+            usable_artifacts=[_artifact(82.0, "strong")],
+        )
+        self.assertNotIn("_sm1_notes", counters)
 
     def test_build_rop_weekly_payload_keeps_crm_placeholder(self) -> None:
         payload = build_rop_weekly_payload(

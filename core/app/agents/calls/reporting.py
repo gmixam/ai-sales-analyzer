@@ -34,6 +34,7 @@ REPORTING_ALLOWED_MODES = {
     "report_from_ready_data_only",
 }
 MANAGER_DAILY_MAX_WINDOW_WORKDAYS = 3
+MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC = 15
 MANAGER_DAILY_FULL_REPORT_MIN_RELEVANT_CALLS = 6
 MANAGER_DAILY_FULL_REPORT_MIN_READY_ANALYSES = 5
 MANAGER_DAILY_FULL_REPORT_MIN_ANALYSIS_COVERAGE = 75.0
@@ -2841,30 +2842,81 @@ def _build_manager_daily_readiness_result(
     }
 
 
+def _classify_meaningful_call(artifact: ReportArtifact) -> tuple[bool, str | None]:
+    """Return (is_meaningful, exclusion_reason) for one call.
+
+    Implements bounded SM-2 rule set. Rules are evaluated in order; first match wins.
+    Exclusion reason codes match the selection_model.exclusion_reasons contract.
+
+    Rule summary (canonical: docs/MANAGER_DAILY_SELECTION_MODEL.md Section B):
+    - R1: no duration data → too_short_or_no_speech
+    - R2: duration < floor AND no transcript → too_short_or_no_speech
+    - R3: has transcript → meaningful (real conversation, regardless of call_type)
+    - R4: call_type=other + analysis_eligibility=not_eligible + no transcript → ivr_or_autoanswer
+    - R5: support/internal with duration >= floor → meaningful (service call, counted separately)
+    - Default: meaningful
+    """
+    duration = artifact.interaction.duration_sec or 0
+    has_transcript = bool(artifact.interaction.text)
+
+    # R1: missing or zero duration with no transcript
+    if duration <= 0 and not has_transcript:
+        return False, "too_short_or_no_speech"
+
+    # R2: below absolute floor and no real speech detected
+    if duration < MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC and not has_transcript:
+        return False, "too_short_or_no_speech"
+
+    # R3: transcript present → real conversation occurred
+    if has_transcript:
+        return True, None
+
+    # R4: analyzer flagged as not_eligible with call_type=other → IVR/autoanswer/beep
+    if artifact.analysis is not None:
+        detail = dict(artifact.analysis.scores_detail or {})
+        classification = detail.get("classification") or {}
+        call_type = str(classification.get("call_type") or "").lower()
+        eligibility = str(classification.get("analysis_eligibility") or "").lower()
+        if call_type == "other" and eligibility == "not_eligible":
+            return False, "ivr_or_autoanswer"
+
+    # R5 / default: call has duration but no transcript yet — treat as meaningful
+    return True, None
+
+
 def _build_selection_model_counters(
     *,
     window_artifacts: list[ReportArtifact],
     usable_artifacts: list[ReportArtifact],
 ) -> dict[str, Any]:
-    """Compute selection model counters for manager_daily payload (SM-1 contract).
+    """Compute selection model counters for manager_daily payload.
 
     window_artifacts = all calls loaded for this report window (before usable split).
     usable_artifacts = calls with ready analysis + transcript (coaching_core candidates).
-
-    SM-1 proxy notes:
-    - meaningful_calls_total = raw_calls_total at this step (SM-2 adds beep/IVR detection).
-    - too_short_or_no_speech and ivr_or_autoanswer = 0 (pre-DB filtering, not available here).
-    - not_selected_for_core_review = 0 (SM-3 will separate call list from coaching core).
     """
     raw_calls_total = len(window_artifacts)
 
+    too_short_count = 0
+    ivr_count = 0
+    meaningful_calls: list[ReportArtifact] = []
     service_calls_total = 0
+
     for artifact in window_artifacts:
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+        if not is_meaningful:
+            if reason == "too_short_or_no_speech":
+                too_short_count += 1
+            elif reason == "ivr_or_autoanswer":
+                ivr_count += 1
+            continue
+        meaningful_calls.append(artifact)
         if artifact.analysis is not None:
             detail = dict(artifact.analysis.scores_detail or {})
             call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
             if call_type in {"support", "internal"}:
                 service_calls_total += 1
+
+    meaningful_calls_total = len(meaningful_calls)
 
     coaching_candidate_calls_total = 0
     for artifact in usable_artifacts:
@@ -2881,21 +2933,17 @@ def _build_selection_model_counters(
 
     return {
         "raw_calls_total": raw_calls_total,
-        "meaningful_calls_total": raw_calls_total,
+        "meaningful_calls_total": meaningful_calls_total,
         "service_calls_total": service_calls_total,
         "coaching_candidate_calls_total": coaching_candidate_calls_total,
         "analyzed_calls_total": len(usable_artifacts),
         "included_in_report_total": len(usable_artifacts),
         "exclusion_reasons": {
-            "too_short_or_no_speech": 0,
-            "ivr_or_autoanswer": 0,
+            "too_short_or_no_speech": too_short_count,
+            "ivr_or_autoanswer": ivr_count,
             "support_internal": service_calls_total,
             "not_enough_analysis": without_analysis + failed_analysis,
             "not_selected_for_core_review": 0,
-        },
-        "_sm1_notes": {
-            "meaningful_calls_proxy": "equals raw_calls_total at SM-1; SM-2 adds beep/IVR filtering",
-            "pre_db_filtered_calls": "not tracked at this layer; counted in source discovery observability",
         },
     }
 
