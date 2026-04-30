@@ -865,6 +865,65 @@ class ManualReportingPayloadTests(unittest.TestCase):
         note = sections["report_header"].get("selection_note")
         self.assertIsNone(note)
 
+    # --- SM-5 acceptance tests ---
+
+    def test_sm5_one_day_window_has_no_extra_window_note(self) -> None:
+        """SM-5: one-day full report does not add noisy coaching-window wording."""
+        coaching = _artifact(82.0, "strong")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": "full_report",
+            "window_days_used": 1,
+            "window_start": "2026-03-25",
+            "window_end": "2026-03-25",
+            "effective_period": {"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            "relevant_calls": 1,
+            "ready_analyses": 1,
+            "total_group_calls": 1,
+        }
+        report = build_report_render_model(payload)
+        sections = {s["id"]: s for s in report["sections"]}
+        note = sections["report_header"].get("selection_note") or ""
+        self.assertNotIn("Коучинговый разбор собран", note)
+        self.assertNotIn("Список звонков ниже", note)
+
+    def test_sm5_expanded_window_note_explains_day_list_and_coaching_base(self) -> None:
+        """SM-5: expanded coaching window is visible without technical rolling-window wording."""
+        coaching = _artifact(82.0, "strong")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-24", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": "signal_report",
+            "window_days_used": 2,
+            "window_start": "2026-03-24",
+            "window_end": "2026-03-25",
+            "effective_period": {"date_from": "2026-03-24", "date_to": "2026-03-25"},
+            "relevant_calls": 2,
+            "ready_analyses": 1,
+            "total_group_calls": 2,
+        }
+        report = build_report_render_model(payload)
+        sections = {s["id"]: s for s in report["sections"]}
+        note = sections["report_header"].get("selection_note") or ""
+        self.assertIn("Список звонков ниже — только за выбранный день", note)
+        self.assertIn("Коучинговый разбор собран по базе за 2 рабочих дня: с 24 мар по 25 мар", note)
+        self.assertNotIn("скользящее окно", note.lower())
+
     def test_build_rop_weekly_payload_keeps_crm_placeholder(self) -> None:
         payload = build_rop_weekly_payload(
             department_id=str(uuid4()),
@@ -1470,6 +1529,8 @@ class ManualReportingStatusTests(unittest.TestCase):
 
         self.assertEqual(result["readiness_outcome"], "signal_report")
         self.assertEqual(result["window_days_used"], 2)
+        self.assertEqual(result["window_start"], "2026-03-24")
+        self.assertEqual(result["window_end"], "2026-03-25")
         self.assertEqual(result["relevant_calls"], 3)
         self.assertEqual(result["ready_analyses"], 2)
         self.assertIn("signal_report_ready", result["readiness_reason_codes"])
@@ -1477,6 +1538,14 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertIn("Сигнальный отчёт", result["preview"]["text"])
         self.assertIn("Найдено в телефонии: 3", result["preview"]["text"])
         self.assertIn("вошло в разбор: 2", result["preview"]["text"])
+        self.assertIn("Список звонков ниже — только за выбранный день", result["preview"]["text"])
+        self.assertIn("Коучинговый разбор собран по базе за 2 рабочих дня", result["preview"]["text"])
+        call_dates = {
+            str(row.get("time") or "")[:10]
+            for row in result["payload"]["call_list"]
+            if row.get("time")
+        }
+        self.assertEqual(call_dates, {"2026-03-25"})
 
     def test_signal_report_model_uses_manager_facing_polish_rules(self) -> None:
         manager = _manager()

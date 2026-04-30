@@ -2261,6 +2261,7 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
 
     sm = dict(payload.get("selection_model") or {})
     window_days = int(readiness.get("window_days_used") or 1)
+    window_note = _build_manager_daily_window_note(readiness=readiness, window_days=window_days)
 
     if sm:
         raw_total = int(sm.get("raw_calls_total") or 0)
@@ -2285,8 +2286,8 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
         lines = [line1]
         if reason_parts:
             lines.append("Не вошло: " + ", ".join(reason_parts) + ".")
-        if window_days > 1:
-            lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
+        if window_note:
+            lines.append(window_note)
     else:
         # Legacy fallback path: no selection_model in payload
         total_group = int(readiness.get("total_group_calls") or 0)
@@ -2312,12 +2313,33 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
             lines.append(
                 f"Не вошло {excluded}: нет готового транскрипта/анализа или звонки не подходят для управленческого вывода."
             )
-        if window_days > 1 and found == source:
-            lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
+        if window_note:
+            lines.append(window_note)
 
     if outcome == "signal_report":
         lines[0] = "Сигнальный отчёт · " + lines[0]
     return " ".join(lines)
+
+
+def _build_manager_daily_window_note(*, readiness: dict[str, Any], window_days: int) -> str | None:
+    """Return manager-facing transparency note when coaching data spans multiple days."""
+    if window_days <= 1:
+        return None
+
+    period = dict(readiness.get("effective_period") or {})
+    window_start = readiness.get("window_start") or period.get("date_from")
+    window_end = readiness.get("window_end") or period.get("date_to")
+    period_label = ""
+    if window_start and window_end:
+        start_label = _format_deadline_human(str(window_start)) or str(window_start)
+        end_label = _format_deadline_human(str(window_end)) or str(window_end)
+        period_label = f": с {start_label} по {end_label}"
+
+    day_word = "рабочий день" if window_days == 1 else "рабочих дня" if window_days in {2, 3, 4} else "рабочих дней"
+    return (
+        f"Список звонков ниже — только за выбранный день. "
+        f"Коучинговый разбор собран по базе за {window_days} {day_word}{period_label}."
+    )
 
 
 def _priority_stage_row(score_by_stage: list[dict[str, Any]]) -> dict[str, Any] | None:

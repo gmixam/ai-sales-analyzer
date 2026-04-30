@@ -2290,6 +2290,8 @@ class CallsManualReportingOrchestrator:
                     "readiness_outcome": readiness["readiness_outcome"],
                     "readiness_reason_codes": list(readiness["readiness_reason_codes"]),
                     "window_days_used": readiness["window_days_used"],
+                    "window_start": readiness.get("window_start"),
+                    "window_end": readiness.get("window_end"),
                     "relevant_calls": readiness["relevant_calls"],
                     "ready_analyses": readiness["ready_analyses"],
                     "analysis_coverage": readiness["analysis_coverage"],
@@ -2398,6 +2400,8 @@ class CallsManualReportingOrchestrator:
             "readiness_outcome": status if status in {"skip_accumulate", "no_data", "missing_artifacts"} else "skip_accumulate",
             "readiness_reason_codes": list(reason_codes),
             "window_days_used": (readiness or {}).get("window_days_used"),
+            "window_start": (readiness or {}).get("window_start"),
+            "window_end": (readiness or {}).get("window_end"),
             "relevant_calls": relevant_calls,
             "ready_analyses": ready_analyses,
             "analysis_coverage": analysis_coverage,
@@ -2829,10 +2833,14 @@ def _build_manager_daily_readiness_result(
     content_signals: dict[str, Any],
 ) -> dict[str, Any]:
     """Return one normalized readiness payload for decision transparency."""
+    window_start = window.period.get("date_from")
+    window_end = window.period.get("date_to")
     return {
         "readiness_outcome": outcome,
         "readiness_reason_codes": reason_codes,
         "window_days_used": window.workdays_used,
+        "window_start": window_start,
+        "window_end": window_end,
         "effective_period": dict(window.period),
         "relevant_calls": relevant_calls,
         "ready_analyses": ready_analyses,
@@ -3144,6 +3152,14 @@ def build_manager_daily_payload(
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
+    all_window_artifacts = window_artifacts if window_artifacts is not None else artifacts
+    operational_day_artifacts = _filter_artifacts_by_period(
+        artifacts=all_window_artifacts,
+        period={
+            "date_from": filters.date_from or period["date_from"],
+            "date_to": filters.date_to or filters.date_from or period["date_to"],
+        },
+    )
 
     payload = {
         "meta": _build_base_meta(
@@ -3221,7 +3237,7 @@ def build_manager_daily_payload(
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
         "call_list": _build_meaningful_call_list(
-            window_artifacts=window_artifacts if window_artifacts is not None else artifacts,
+            window_artifacts=operational_day_artifacts,
         ),
         "focus_criterion_dynamics": focus_dynamics,
         "memo_legend": {
@@ -3239,11 +3255,30 @@ def build_manager_daily_payload(
             ),
         },
         "selection_model": _build_selection_model_counters(
-            window_artifacts=window_artifacts if window_artifacts is not None else artifacts,
+            window_artifacts=all_window_artifacts,
             usable_artifacts=artifacts,
         ),
     }
     return payload
+
+
+def _filter_artifacts_by_period(*, artifacts: list[ReportArtifact], period: dict[str, str]) -> list[ReportArtifact]:
+    """Return artifacts whose call date belongs to the requested operational report period."""
+    try:
+        date_from = date.fromisoformat(period["date_from"])
+        date_to = date.fromisoformat(period["date_to"])
+    except (KeyError, TypeError, ValueError):
+        return artifacts
+
+    selected: list[ReportArtifact] = []
+    for artifact in artifacts:
+        if artifact.call_started_at is None:
+            selected.append(artifact)
+            continue
+        call_day = artifact.call_started_at.date()
+        if date_from <= call_day <= date_to:
+            selected.append(artifact)
+    return selected
 
 
 def build_rop_weekly_payload(
