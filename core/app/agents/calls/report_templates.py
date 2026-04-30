@@ -2238,38 +2238,83 @@ def _resolve_manager_day_score(*, payload: dict[str, Any]) -> float | None:
         return None
 
 
+_EXCLUSION_REASON_LABELS: dict[str, str] = {
+    "too_short_or_no_speech": "слишком короткие / без речи",
+    "ivr_or_autoanswer": "IVR / автоответчик",
+    "support_internal": "тех/сервисные",
+    "not_enough_analysis": "нет готового анализа",
+    "not_selected_for_core_review": "не вошли в коучинговый разбор",
+}
+
+
 def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls: int) -> str | None:
-    """Build a compact manager-facing sampling note for signal and full reports."""
+    """Build a compact manager-facing funnel note for signal and full reports.
+
+    Uses selection_model counters (SM-4) for honest day funnel:
+      Найдено в телефонии · Содержательных · Вошло в разбор
+    Falls back to readiness-derived counts when selection_model absent.
+    """
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     outcome = readiness.get("readiness_outcome")
     if outcome not in {"signal_report", "full_report"}:
         return None
-    total_group = int(readiness.get("total_group_calls") or 0)
-    found = int(readiness.get("relevant_calls") or 0)
-    ready = int(readiness.get("ready_analyses") or 0)
-    in_report = int(total_calls or 0)
+
+    sm = dict(payload.get("selection_model") or {})
     window_days = int(readiness.get("window_days_used") or 1)
 
-    parts: list[str] = []
-    source = total_group if total_group else found
-    if source:
-        parts.append(f"Найдено в телефонии: {source}")
-    if found and found != source:
-        window_label = "за отчётный день" if window_days == 1 else f"в окне {window_days} раб. дн."
-        parts.append(f"{window_label}: {found}")
-    if ready and ready != found:
-        parts.append(f"с готовым разбором: {ready}")
-    parts.append(f"вошло в отчёт: {in_report}")
-    line1 = " · ".join(parts)
+    if sm:
+        raw_total = int(sm.get("raw_calls_total") or 0)
+        meaningful_total = int(sm.get("meaningful_calls_total") or 0)
+        in_report = int(sm.get("included_in_report_total") or 0)
+        exclusion_reasons = dict(sm.get("exclusion_reasons") or {})
 
-    excluded = max(0, found - in_report) if found else 0
-    lines = [line1]
-    if excluded > 0:
-        lines.append(
-            f"Не вошло {excluded}: нет готового транскрипта/анализа или звонки не подходят для управленческого вывода."
-        )
-    if window_days > 1 and found == source:
-        lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
+        parts: list[str] = []
+        if raw_total:
+            parts.append(f"Найдено в телефонии: {raw_total}")
+        if meaningful_total and meaningful_total != raw_total:
+            parts.append(f"содержательных: {meaningful_total}")
+        parts.append(f"вошло в разбор: {in_report}")
+        line1 = " · ".join(parts)
+
+        reason_parts: list[str] = []
+        for code, label in _EXCLUSION_REASON_LABELS.items():
+            count = int(exclusion_reasons.get(code) or 0)
+            if count > 0:
+                reason_parts.append(f"{label}: {count}")
+
+        lines = [line1]
+        if reason_parts:
+            lines.append("Не вошло: " + ", ".join(reason_parts) + ".")
+        if window_days > 1:
+            lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
+    else:
+        # Legacy fallback path: no selection_model in payload
+        total_group = int(readiness.get("total_group_calls") or 0)
+        found = int(readiness.get("relevant_calls") or 0)
+        ready = int(readiness.get("ready_analyses") or 0)
+        in_report = int(total_calls or 0)
+
+        parts = []
+        source = total_group if total_group else found
+        if source:
+            parts.append(f"Найдено в телефонии: {source}")
+        if found and found != source:
+            window_label = "за отчётный день" if window_days == 1 else f"в окне {window_days} раб. дн."
+            parts.append(f"{window_label}: {found}")
+        if ready and ready != found:
+            parts.append(f"с готовым разбором: {ready}")
+        parts.append(f"вошло в отчёт: {in_report}")
+        line1 = " · ".join(parts)
+
+        excluded = max(0, found - in_report) if found else 0
+        lines = [line1]
+        if excluded > 0:
+            lines.append(
+                f"Не вошло {excluded}: нет готового транскрипта/анализа или звонки не подходят для управленческого вывода."
+            )
+        if window_days > 1 and found == source:
+            lines.append(f"Данные за {window_days} раб. дн. (скользящее окно для набора базы).")
+
     if outcome == "signal_report":
         lines[0] = "Сигнальный отчёт · " + lines[0]
     return " ".join(lines)

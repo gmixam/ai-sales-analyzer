@@ -743,6 +743,155 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertNotIn("too_short_or_no_speech", [r.get("call_type") for r in result])
 
+    # --- SM-4 acceptance tests ---
+
+    def _make_payload_with_readiness(self, outcome: str, *, window_artifacts=None) -> dict[str, Any]:
+        """Build a payload with readiness meta for selection_note tests."""
+        coaching = _artifact(82.0, "strong")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=window_artifacts,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": outcome,
+            "window_days_used": 1,
+            "relevant_calls": 3,
+            "ready_analyses": 1,
+            "total_group_calls": 3,
+        }
+        return payload
+
+    def test_sm4_full_report_note_uses_selection_model_funnel(self) -> None:
+        """SM-4: full_report selection_note uses selection_model counters for honest funnel."""
+        coaching = _artifact(82.0, "strong")
+        beep = ReportArtifact(
+            interaction=SimpleNamespace(id=uuid4(), duration_sec=5, text=""),
+            analysis=None,
+            manager=coaching.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T07:00:00").replace(tzinfo=UTC),
+        )
+        all_window = [coaching, beep]
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": "full_report",
+            "window_days_used": 1,
+            "relevant_calls": 2,
+            "ready_analyses": 1,
+            "total_group_calls": 2,
+        }
+        report = build_report_render_model(payload)
+        sections = {s["id"]: s for s in report["sections"]}
+        note = sections["report_header"].get("selection_note") or ""
+        # Funnel from selection_model: 2 raw, 1 meaningful (beep excluded), 1 in report
+        self.assertIn("Найдено в телефонии: 2", note)
+        self.assertIn("содержательных: 1", note)
+        self.assertIn("вошло в разбор: 1", note)
+        # No "Сигнальный отчёт" for full_report
+        self.assertNotIn("Сигнальный отчёт", note)
+        # No raw internal codes exposed
+        self.assertNotIn("too_short_or_no_speech", note)
+        self.assertNotIn("ivr_or_autoanswer", note)
+
+    def test_sm4_signal_report_note_prefixed_and_uses_funnel(self) -> None:
+        """SM-4: signal_report selection_note prefixed with 'Сигнальный отчёт' and shows funnel."""
+        coaching = _artifact(82.0, "strong")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": "signal_report",
+            "window_days_used": 1,
+            "relevant_calls": 1,
+            "ready_analyses": 1,
+            "total_group_calls": 1,
+        }
+        report = build_report_render_model(payload)
+        sections = {s["id"]: s for s in report["sections"]}
+        note = sections["report_header"].get("selection_note") or ""
+        self.assertIn("Сигнальный отчёт", note)
+        self.assertIn("Найдено в телефонии:", note)
+        self.assertIn("вошло в разбор:", note)
+        self.assertNotIn("too_short_or_no_speech", note)
+
+    def test_sm4_note_shows_exclusion_reasons_as_manager_labels(self) -> None:
+        """SM-4: exclusion reasons in note use manager-facing labels, not raw codes."""
+        coaching = _artifact(82.0, "strong")
+        no_analysis = ReportArtifact(
+            interaction=_interaction(),
+            analysis=None,
+            manager=coaching.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T08:00:00").replace(tzinfo=UTC),
+        )
+        all_window = [coaching, no_analysis]
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": "full_report",
+            "window_days_used": 1,
+            "relevant_calls": 2,
+            "ready_analyses": 1,
+            "total_group_calls": 2,
+        }
+        report = build_report_render_model(payload)
+        sections = {s["id"]: s for s in report["sections"]}
+        note = sections["report_header"].get("selection_note") or ""
+        # Manager-facing label, not raw code
+        self.assertIn("нет готового анализа", note)
+        self.assertNotIn("not_enough_analysis", note)
+        self.assertIn("Не вошло:", note)
+
+    def test_sm4_skip_accumulate_has_no_selection_note(self) -> None:
+        """SM-4: skip_accumulate does not produce a selection_note (not a deliverable report)."""
+        coaching = _artifact(82.0, "strong")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload.setdefault("meta", {})["readiness"] = {
+            "readiness_outcome": "skip_accumulate",
+            "window_days_used": 1,
+            "relevant_calls": 1,
+            "ready_analyses": 1,
+        }
+        report = build_report_render_model(payload)
+        sections = {s["id"]: s for s in report["sections"]}
+        note = sections["report_header"].get("selection_note")
+        self.assertIsNone(note)
+
     def test_build_rop_weekly_payload_keeps_crm_placeholder(self) -> None:
         payload = build_rop_weekly_payload(
             department_id=str(uuid4()),
@@ -1257,6 +1406,7 @@ class ManualReportingStatusTests(unittest.TestCase):
                 filters=kwargs["filters"],
                 mode=kwargs["mode"],
                 model_override=kwargs["model_override"],
+                window_artifacts=kwargs.get("window_artifacts"),
             ),
         )
         setattr(
@@ -1353,7 +1503,7 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "delivered")
         self.assertIn("Сигнальный отчёт", result["preview"]["text"])
         self.assertIn("Найдено в телефонии: 3", result["preview"]["text"])
-        self.assertIn("вошло в отчёт: 2", result["preview"]["text"])
+        self.assertIn("вошло в разбор: 2", result["preview"]["text"])
 
     def test_signal_report_model_uses_manager_facing_polish_rules(self) -> None:
         manager = _manager()
