@@ -286,6 +286,44 @@ Signs that the external blocker is still not removed:
 - `rop_weekly` остаётся persisted-only aggregation: weekly path не делает source discovery, не ingest-ит missing calls и не запускает новый audio / `STT` / `LLM-1` / `LLM-2` build;
 - это всё ещё bounded pre-pilot path: допускается only `scheduled_reviewable_reporting` with mandatory review/approve, но здесь нет retries, beat, generic workflow builder, auto-approval или auto-send to business outside operator control.
 
+## `manager_daily` selection model — три слоя данных
+
+Canonical selection model зафиксирован в `docs/MANAGER_DAILY_SELECTION_MODEL.md`.
+Здесь — краткая сводка для context manual reporting pilot.
+
+### Слои данных
+
+| Слой | Что | Где используется |
+|---|---|---|
+| `raw_calls` | Все CDR-записи дня из телефонии | Исходный счётчик |
+| `meaningful_calls` | Содержательные разговоры (без beep/IVR/пустого трафика) | СПИСОК ЗВОНКОВ ДНЯ, итоговая таблица |
+| `coaching_core` | Звонки с ready analysis и coaching-eligibility | Coaching-блоки, readiness decision |
+
+### Принципиальное правило
+
+СПИСОК ЗВОНКОВ ДНЯ строится из `meaningful_calls`, а не из `coaching_core`.
+Менеджер видит весь содержательный рабочий день, а не только аналитическое ядро.
+
+Coaching-блоки (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА и др.) используют только `coaching_core`.
+
+### Service note — воронка счётчиков
+
+```
+Найдено в телефонии: {raw_calls_total}
+Содержательных разговоров: {meaningful_calls_total}
+С готовым разбором: {coaching_candidate_calls_total}
+Вошло в отчёт: {included_in_report_total}
+[причины исключения: too_short_or_no_speech: N · support_internal: N · ...]
+```
+
+### Rolling window и transparency
+
+- Операционный слой дня (`raw_calls`, `meaningful_calls`, СПИСОК ЗВОНКОВ ДНЯ) — всегда только за выбранный день.
+- Rolling window применяется только к `coaching_core` и readiness decision.
+- Если окно > 1 дня, это явно показывается в service note и structured result.
+
+---
+
 ## `manager_daily` readiness policy
 
 `manager_daily` больше не обязан всегда выпускать `full_report`.

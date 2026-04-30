@@ -468,6 +468,21 @@
 - **Scope:** This hardening does not add retries, recovery engine, generic scheduler platform, analyzer-contract change, Business-ready Report Pack, or full report mechanism upgrade.
 - **Date:** 2026-04-15
 
+## ADR-048: `manager_daily` selection model — три слоя данных и разграничение оперативного и коучингового слоёв
+
+- **Decision:** Canonical selection model для `manager_daily` фиксирует три явных слоя данных:
+  - `raw_calls` — все CDR-записи дня из телефонии, полный источник;
+  - `meaningful_calls` — содержательные разговоры дня (после фильтрации beep / IVR / пустого трафика), используются для СПИСОК ЗВОНКОВ ДНЯ и итоговой outcome-таблицы;
+  - `coaching_core` — звонки с готовым анализом и coaching-eligibility, используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА и др.) и для readiness decision.
+- **Decision:** Ежедневный отчёт не должен показывать менеджеру только `coaching_core` как будто это весь рабочий день. СПИСОК ЗВОНКОВ ДНЯ строится из `meaningful_calls`, а не из `coaching_core`.
+- **Decision:** Операционный слой дня (`raw_calls`, `meaningful_calls`, СПИСОК ЗВОНКОВ ДНЯ) всегда только за выбранный день. Rolling window `1 → 2 → 3` рабочих дней применяется только к коучинговому слою (`coaching_core`) для набора аналитической базы readiness decision.
+- **Decision:** Если rolling window применён, это явно отражается в service note отчёта и в structured result (`window_days_used`, `window_start`, `window_end`).
+- **Decision:** Минимальный набор счётчиков, которые должны стать частью payload/report contract: `raw_calls_total`, `meaningful_calls_total`, `service_calls_total`, `coaching_candidate_calls_total`, `analyzed_calls_total`, `included_in_report_total`. Причины исключения: `too_short_or_no_speech`, `ivr_or_autoanswer`, `support_internal`, `not_enough_analysis`, `not_selected_for_core_review`.
+- **Decision:** Canonical source of truth по этому rule set — `docs/MANAGER_DAILY_SELECTION_MODEL.md`.
+- **Reason:** Действующий daily report слишком рано сжимает день до узкого аналитического ядра. Менеджер видит в отчёте только малую часть дня, хотя в фактической выгрузке звонков содержательный слой шире. Это нарушает доверие менеджера к отчёту и скрывает реальную картину рабочего дня.
+- **Scope:** Это doc-only фиксация canonical selection model и report contract. Изменения кода, analyzer contract, readiness thresholds и scheduler в этот шаг не входят.
+- **Date:** 2026-04-30
+
 ## ADR-047: `manager_daily` delivery is docx-first; PDF is a converted artifact, not a separate format source
 - **Decision:** For ordinary `manager_daily` runtime delivery, the canonical report format source of truth is the approved docx generator `scripts/generate_docx_report.js` and the corresponding approved v5 docx structure it emits.
 - **Decision:** `manager_daily_template_v2` delivery must build canonical `.docx` first and then convert that document to `.pdf` server-side before Telegram or business-channel delivery.

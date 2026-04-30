@@ -205,6 +205,136 @@ business-facing morning card.
 
 ---
 
+---
+
+## Selection Model Implementation — Bounded Tasks
+
+Этот раздел фиксирует последовательность bounded implementation tasks для реализации
+canonical selection model из `docs/MANAGER_DAILY_SELECTION_MODEL.md`.
+
+**Doc-only фиксация. Код не меняется в этом шаге.**
+Реализацию начинать строго по одному bounded task.
+
+### Граница
+
+- Scope IN: реализация трёх слоёв данных, счётчиков, исключений, rolling window transparency, report contract alignment.
+- Scope OUT: изменение analyzer contract, readiness thresholds, scheduler, `rop_weekly`, любые LLM-уровневые изменения.
+
+---
+
+### Task SM-1 — Payload / model changes: добавить счётчики и exclusion reasons
+
+**Что:** расширить payload `manager_daily` новыми обязательными полями selection model.
+
+**Поля для добавления:**
+- `raw_calls_total`
+- `meaningful_calls_total`
+- `service_calls_total`
+- `coaching_candidate_calls_total`
+- `analyzed_calls_total`
+- `included_in_report_total`
+- `exclusion_reasons` (structured dict: код → количество)
+
+**Файлы:**
+- `core/app/agents/calls/reporting.py` — payload assembly
+- structured result / observability / diagnostics — добавить эти поля явно
+
+**Acceptance:** все счётчики присутствуют в payload для любого исхода (`full_report`, `signal_report`, `skip_accumulate`, preview-shell); нет магических чисел в service note builder.
+
+---
+
+### Task SM-2 — Meaningful-calls layer: выделить содержательные звонки
+
+**Что:** ввести явную классификацию `meaningful_calls` как промежуточного слоя между `raw_calls` и `coaching_core`.
+
+**Логика:**
+- из `raw_calls` исключаются beep / IVR / no-speech / too-short;
+- `meaningful_calls` = звонки, прошедшие базовую фильтрацию по длине и наличию speech;
+- support/internal звонки с реальным контентом входят в `meaningful_calls` с типом `ТЕХ/СЕРВИС`.
+
+**Файлы:**
+- `core/app/agents/calls/reporting.py` — `_build_manager_daily_group_result()` или аналог
+- `core/app/agents/calls/intake.py` или source discovery path — если фильтрация там
+
+**Acceptance:** `meaningful_calls_total` реально отличается от `included_in_report_total`; beep/IVR попадают в `too_short_or_no_speech` / `ivr_or_autoanswer`; support попадает в `support_internal` счётчик.
+
+---
+
+### Task SM-3 — СПИСОК ЗВОНКОВ ДНЯ: переключить на meaningful_calls
+
+**Что:** СПИСОК ЗВОНКОВ ДНЯ строить из `meaningful_calls`, а не из `coaching_core`.
+
+**Изменения:**
+- вызов для сборки call list читает из `meaningful_calls`, не только из отобранных для report calls;
+- звонки без coaching-анализа (support, short, non-eligible) показываются в списке с типом и без coaching-оценки;
+- coaching-блоки (СИТУАЦИЯ ДНЯ и др.) по-прежнему только из `coaching_core`.
+
+**Файлы:**
+- `core/app/agents/calls/reporting.py` — `_build_daily_call_list()` или аналог
+- `core/app/agents/calls/report_templates.py` — СПИСОК ЗВОНКОВ секция
+
+**Acceptance:** менеджер с 15 звонками за день (8 coaching + 7 service/short) видит в СПИСОК ЗВОНКОВ все 15; coaching-блоки используют только 8.
+
+---
+
+### Task SM-4 — Service note и воронка счётчиков
+
+**Что:** перестроить service note / шапку отчёта по canonical воронке из selection model.
+
+**Новый формат:**
+```
+Найдено в телефонии: {raw_calls_total}
+Содержательных разговоров: {meaningful_calls_total}
+С готовым разбором: {coaching_candidate_calls_total}
+Вошло в отчёт: {included_in_report_total}
+[причины исключения, если есть: too_short_or_no_speech: N · support_internal: N · ...]
+```
+
+**Файлы:**
+- `core/app/agents/calls/reporting.py` — `_build_manager_daily_selection_note()`
+- `core/app/agents/calls/report_templates.py` — service note render
+
+**Acceptance:** service note читается как понятная воронка; нет дублирования одного числа; причины исключения показаны явно.
+
+---
+
+### Task SM-5 — Rolling window transparency
+
+**Что:** если rolling window применён (окно > 1 дня), явно показывать это в отчёте.
+
+**Изменения:**
+- в service note: «Данные за N рабочих дн. (с {window_start} по {window_end})»;
+- в structured result: `window_days_used`, `window_start`, `window_end` — явные поля;
+- СПИСОК ЗВОНКОВ ДНЯ при rolling window **не расширяется** — только за выбранный день.
+
+**Файлы:**
+- `core/app/agents/calls/reporting.py` — readiness/window path
+- `core/app/agents/calls/report_templates.py` — service note render
+- structured result schema
+
+**Acceptance:** при окне 1 день — нет упоминания rolling window в отчёте; при окне 2–3 дня — явное указание в service note и structured result; СПИСОК ЗВОНКОВ всегда только за один день.
+
+---
+
+### Task SM-6 — Acceptance checks на известных кейсах
+
+**Что:** верификация нового selection model на зафиксированных known cases.
+
+**Known cases для проверки:**
+1. День с > 10 звонками, из них 3–4 coaching-eligible → meaningful > coaching_core, список полный.
+2. День с beep/IVR + sales звонками → beep не попадает в список, sales попадает.
+3. День с support + sales → support в списке с типом ТЕХ/СЕРВИС, не в coaching-блоках.
+4. Короткий follow-up (< 2 мин., live разговор) → в meaningful, в coaching_core если есть анализ.
+5. Rolling window: день с 2 eligible → signal_report, window=1; затем добираем ещё 3 из вчера → проверяем window=2.
+
+**Файлы:**
+- `tests/test_manual_reporting.py` — добавить acceptance cases
+- при необходимости — controlled fixtures
+
+**Acceptance:** все 5 кейсов проходят без регрессий на существующих тестах.
+
+---
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract

@@ -66,7 +66,16 @@
 - не перепутать ручной reporting pilot с automation readiness;
 - видеть agreed launch parameters, presets, delivery rules и reuse/recompute policy.
 
-### 10. `docs/mvp1_sources/`
+### 10. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
+Читать, если задача затрагивает отбор звонков для `manager_daily`, report contract, слои данных, rolling window или счётчики / причины исключения.
+
+Зачем читать:
+- понять canonical разграничение `raw_calls` / `meaningful_calls` / `coaching_core`;
+- видеть, что именно должно попадать в список звонков дня vs коучинговые блоки;
+- понять rolling window rule и transparency requirements;
+- получить перечень bounded implementation tasks для реализации этого contract.
+
+### 11. `docs/mvp1_sources/`
 Читать только когда задача затрагивает analyzer contract, checklist, manager card format или source prompt assets.
 
 Минимальный набор source-of-truth файлов:
@@ -81,6 +90,7 @@
 - Universal coder rules: [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
 - Stage-specific Manual Output Validation rules: [docs/MANUAL_OUTPUT_VALIDATION_SPEC.md](docs/MANUAL_OUTPUT_VALIDATION_SPEC.md)
 - Manual Reporting Pilot operating model: [docs/MANUAL_REPORTING_PILOT.md](docs/MANUAL_REPORTING_PILOT.md)
+- **`manager_daily` selection model и report contract (canonical):** [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
 - Prompt policies и prompt/task split: [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
 - Короткий шаблон будущих task-промптов: [docs/TASK_PROMPT_TEMPLATE.md](docs/TASK_PROMPT_TEMPLATE.md)
 
