@@ -1563,7 +1563,7 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertIn("signal_report_ready", result["readiness_reason_codes"])
         self.assertEqual(result["status"], "delivered")
         self.assertIn("Сигнальный отчёт", result["preview"]["text"])
-        self.assertIn("Найдено в телефонии: 3", result["preview"]["text"])
+        self.assertIn("Найдено в телефонии: 2", result["preview"]["text"])
         self.assertIn("вошло в разбор: 2", result["preview"]["text"])
         self.assertIn("Список звонков ниже — только за выбранный день", result["preview"]["text"])
         self.assertIn("Коучинговый разбор собран по базе за 2 рабочих дня", result["preview"]["text"])

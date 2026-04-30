@@ -3255,7 +3255,7 @@ def build_manager_daily_payload(
             ),
         },
         "selection_model": _build_selection_model_counters(
-            window_artifacts=all_window_artifacts,
+            window_artifacts=operational_day_artifacts,
             usable_artifacts=artifacts,
         ),
     }
