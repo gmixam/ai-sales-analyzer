@@ -34,6 +34,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     CallsManualReportingOrchestrator,
     ReportArtifact,
     ReportRunFilters,
+    _build_selection_model_counters,
     build_manager_daily_payload,
     build_rop_weekly_payload,
     render_report_email,
@@ -279,6 +280,139 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["focus_criterion_dynamics"]["focus_criterion_name"], "Фиксация следующего шага")
         self.assertIsNotNone(payload["focus_criterion_dynamics"]["current_period_value"])
         self.assertIn("Повторяемость", payload["key_problem_of_day"]["description"])
+
+    def test_build_manager_daily_payload_contains_selection_model_contract(self) -> None:
+        """SM-1: selection_model section is present with all required counter fields."""
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[_artifact(86.0, "strong"), _artifact(61.0, "basic")],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        sm = payload["selection_model"]
+        required_counters = [
+            "raw_calls_total",
+            "meaningful_calls_total",
+            "service_calls_total",
+            "coaching_candidate_calls_total",
+            "analyzed_calls_total",
+            "included_in_report_total",
+            "exclusion_reasons",
+        ]
+        for field in required_counters:
+            self.assertIn(field, sm, f"selection_model missing field: {field}")
+
+        reasons = sm["exclusion_reasons"]
+        required_reasons = [
+            "too_short_or_no_speech",
+            "ivr_or_autoanswer",
+            "support_internal",
+            "not_enough_analysis",
+            "not_selected_for_core_review",
+        ]
+        for code in required_reasons:
+            self.assertIn(code, reasons, f"exclusion_reasons missing code: {code}")
+
+    def test_build_manager_daily_payload_selection_model_counts_correctly(self) -> None:
+        """SM-1: selection_model counters are consistent with provided artifacts."""
+        usable = [_artifact(86.0, "strong"), _artifact(61.0, "basic")]
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=usable,
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        sm = payload["selection_model"]
+        self.assertEqual(sm["raw_calls_total"], 2)
+        self.assertEqual(sm["meaningful_calls_total"], 2)
+        self.assertEqual(sm["service_calls_total"], 0)
+        self.assertEqual(sm["coaching_candidate_calls_total"], 2)
+        self.assertEqual(sm["analyzed_calls_total"], 2)
+        self.assertEqual(sm["included_in_report_total"], 2)
+        self.assertEqual(sm["exclusion_reasons"]["support_internal"], 0)
+        self.assertEqual(sm["exclusion_reasons"]["not_enough_analysis"], 0)
+
+    def test_build_manager_daily_payload_selection_model_separates_service_calls(self) -> None:
+        """SM-1: service_calls_total counts support/internal calls; coaching_candidate excludes them."""
+        def _support_artifact() -> ReportArtifact:
+            manager = _manager()
+            interaction = _interaction(manager_id=manager.id)
+            analysis = _analysis(50.0, "basic")
+            detail = dict(analysis.scores_detail)
+            detail["classification"] = {"call_type": "support", "scenario_type": "technical"}
+            analysis = SimpleNamespace(
+                id=uuid4(),
+                interaction_id=interaction.id,
+                instruction_version="analysis_v1",
+                score_total=50.0,
+                scores_detail=detail,
+                is_failed=False,
+                fail_reason=None,
+            )
+            return ReportArtifact(
+                interaction=interaction,
+                analysis=analysis,
+                manager=manager,
+                call_started_at=datetime.fromisoformat("2026-03-25T10:00:00").replace(tzinfo=UTC),
+            )
+
+        sales_artifact = _artifact(82.0, "strong")
+        support_artifact = _support_artifact()
+        all_window = [sales_artifact, support_artifact]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[sales_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+
+        sm = payload["selection_model"]
+        self.assertEqual(sm["raw_calls_total"], 2)
+        self.assertEqual(sm["service_calls_total"], 1)
+        self.assertEqual(sm["coaching_candidate_calls_total"], 1)
+        self.assertEqual(sm["analyzed_calls_total"], 1)
+        self.assertEqual(sm["included_in_report_total"], 1)
+        self.assertEqual(sm["exclusion_reasons"]["support_internal"], 1)
+
+    def test_build_manager_daily_payload_selection_model_counts_missing_analyses(self) -> None:
+        """SM-1: not_enough_analysis counts artifacts without analysis."""
+        usable_artifact = _artifact(82.0, "strong")
+        no_analysis_artifact = ReportArtifact(
+            interaction=_interaction(),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        all_window = [usable_artifact, no_analysis_artifact]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[usable_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+
+        sm = payload["selection_model"]
+        self.assertEqual(sm["raw_calls_total"], 2)
+        self.assertEqual(sm["analyzed_calls_total"], 1)
+        self.assertEqual(sm["exclusion_reasons"]["not_enough_analysis"], 1)
 
     def test_build_rop_weekly_payload_keeps_crm_placeholder(self) -> None:
         payload = build_rop_weekly_payload(

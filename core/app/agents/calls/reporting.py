@@ -2111,6 +2111,7 @@ class CallsManualReportingOrchestrator:
                     filters=filters,
                     mode=mode,
                     model_override=model_override,
+                    window_artifacts=window_artifacts,
                 )
             readiness = _evaluate_manager_daily_readiness(
                 artifacts=window_artifacts,
@@ -2212,6 +2213,7 @@ class CallsManualReportingOrchestrator:
             filters=filters,
             mode=mode,
             model_override=model_override,
+            window_artifacts=artifacts,
         )
         return self._render_and_deliver_report_result(
             preset=preset,
@@ -2728,6 +2730,7 @@ class CallsManualReportingOrchestrator:
         filters: ReportRunFilters,
         mode: str,
         model_override: str | None,
+        window_artifacts: list[ReportArtifact] | None = None,
     ) -> dict[str, Any]:
         """Build a normalized preset payload before rendering."""
         department_id = str(getattr(self, "department_id", "unknown-department"))
@@ -2750,6 +2753,7 @@ class CallsManualReportingOrchestrator:
                 filters=filters,
                 mode=mode,
                 model_override=model_override,
+                window_artifacts=window_artifacts,
             )
         return build_rop_weekly_payload(
             department_id=department_id,
@@ -2834,6 +2838,65 @@ def _build_manager_daily_readiness_result(
         "analysis_coverage": analysis_coverage,
         "content_blocks": content_blocks,
         "content_signals": content_signals,
+    }
+
+
+def _build_selection_model_counters(
+    *,
+    window_artifacts: list[ReportArtifact],
+    usable_artifacts: list[ReportArtifact],
+) -> dict[str, Any]:
+    """Compute selection model counters for manager_daily payload (SM-1 contract).
+
+    window_artifacts = all calls loaded for this report window (before usable split).
+    usable_artifacts = calls with ready analysis + transcript (coaching_core candidates).
+
+    SM-1 proxy notes:
+    - meaningful_calls_total = raw_calls_total at this step (SM-2 adds beep/IVR detection).
+    - too_short_or_no_speech and ivr_or_autoanswer = 0 (pre-DB filtering, not available here).
+    - not_selected_for_core_review = 0 (SM-3 will separate call list from coaching core).
+    """
+    raw_calls_total = len(window_artifacts)
+
+    service_calls_total = 0
+    for artifact in window_artifacts:
+        if artifact.analysis is not None:
+            detail = dict(artifact.analysis.scores_detail or {})
+            call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
+            if call_type in {"support", "internal"}:
+                service_calls_total += 1
+
+    coaching_candidate_calls_total = 0
+    for artifact in usable_artifacts:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis else {})
+        call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
+        if call_type not in {"support", "internal"}:
+            coaching_candidate_calls_total += 1
+
+    without_analysis = sum(1 for a in window_artifacts if a.analysis is None)
+    failed_analysis = sum(
+        1 for a in window_artifacts
+        if a.analysis is not None and bool(getattr(a.analysis, "is_failed", False))
+    )
+
+    return {
+        "raw_calls_total": raw_calls_total,
+        "meaningful_calls_total": raw_calls_total,
+        "service_calls_total": service_calls_total,
+        "coaching_candidate_calls_total": coaching_candidate_calls_total,
+        "analyzed_calls_total": len(usable_artifacts),
+        "included_in_report_total": len(usable_artifacts),
+        "exclusion_reasons": {
+            "too_short_or_no_speech": 0,
+            "ivr_or_autoanswer": 0,
+            "support_internal": service_calls_total,
+            "not_enough_analysis": without_analysis + failed_analysis,
+            "not_selected_for_core_review": 0,
+        },
+        "_sm1_notes": {
+            "meaningful_calls_proxy": "equals raw_calls_total at SM-1; SM-2 adds beep/IVR filtering",
+            "pre_db_filtered_calls": "not tracked at this layer; counted in source discovery observability",
+        },
     }
 
 
@@ -3003,6 +3066,7 @@ def build_manager_daily_payload(
     filters: ReportRunFilters,
     mode: str,
     model_override: str | None,
+    window_artifacts: list[ReportArtifact] | None = None,
 ) -> dict[str, Any]:
     """Build the normalized manager_daily payload."""
     manager = artifacts[0].manager
@@ -3124,6 +3188,10 @@ def build_manager_daily_payload(
                 recommendation_cards=recommendation_cards,
             ),
         },
+        "selection_model": _build_selection_model_counters(
+            window_artifacts=window_artifacts if window_artifacts is not None else artifacts,
+            usable_artifacts=artifacts,
+        ),
     }
     return payload
 
