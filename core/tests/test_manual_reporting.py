@@ -35,6 +35,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC,
     ReportArtifact,
     ReportRunFilters,
+    _build_meaningful_call_list,
     _build_selection_model_counters,
     _classify_meaningful_call,
     build_manager_daily_payload,
@@ -569,6 +570,178 @@ class ManualReportingPayloadTests(unittest.TestCase):
             usable_artifacts=[_artifact(82.0, "strong")],
         )
         self.assertNotIn("_sm1_notes", counters)
+
+    # --- SM-3 acceptance tests ---
+
+    def test_sm3_call_list_includes_meaningful_non_coaching_calls(self) -> None:
+        """SM-3: call_list includes meaningful calls beyond coaching_core (wider than usable)."""
+        coaching_artifact = _artifact(82.0, "strong")
+        # A support call with transcript — meaningful but not usable/coaching_core
+        support_interaction = _interaction(manager_id=coaching_artifact.interaction.manager_id, text="Добрый день, помогите с договором")
+        support_analysis = SimpleNamespace(
+            id=uuid4(),
+            score_total=None,
+            scores_detail={
+                "classification": {"call_type": "support", "analysis_eligibility": "not_eligible"},
+                "call": {"contact_name": "Клиент Сервис"},
+                "follow_up": {},
+            },
+            is_failed=False,
+        )
+        support_artifact = ReportArtifact(
+            interaction=support_interaction,
+            analysis=support_analysis,
+            manager=coaching_artifact.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T09:00:00").replace(tzinfo=UTC),
+        )
+        all_window = [coaching_artifact, support_artifact]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+
+        call_list = payload["call_list"]
+        self.assertEqual(len(call_list), 2, "call_list should include both coaching and support meaningful calls")
+
+    def test_sm3_call_list_excludes_beep_and_ivr(self) -> None:
+        """SM-3: call_list does not include IVR/beep/no-speech calls."""
+        coaching_artifact = _artifact(82.0, "strong")
+        ivr_analysis = SimpleNamespace(
+            id=uuid4(),
+            score_total=None,
+            scores_detail={
+                "classification": {"call_type": "other", "analysis_eligibility": "not_eligible"},
+                "call": {},
+                "follow_up": {},
+            },
+            is_failed=False,
+        )
+        ivr_artifact = ReportArtifact(
+            interaction=SimpleNamespace(id=uuid4(), duration_sec=20, text=""),
+            analysis=ivr_analysis,
+            manager=coaching_artifact.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T08:00:00").replace(tzinfo=UTC),
+        )
+        beep_artifact = ReportArtifact(
+            interaction=SimpleNamespace(id=uuid4(), duration_sec=5, text=""),
+            analysis=None,
+            manager=coaching_artifact.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T07:00:00").replace(tzinfo=UTC),
+        )
+        all_window = [coaching_artifact, ivr_artifact, beep_artifact]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+
+        call_list = payload["call_list"]
+        self.assertEqual(len(call_list), 1, "call_list should exclude IVR and beep calls")
+
+    def test_sm3_coaching_blocks_unchanged_when_call_list_widens(self) -> None:
+        """SM-3: coaching-relevant aggregate fields (analysis_worked, analysis_improve) use coaching_core only."""
+        coaching_artifact = _artifact(82.0, "strong")
+        support_interaction = _interaction(manager_id=coaching_artifact.interaction.manager_id, text="Тех. вопрос")
+        support_artifact = ReportArtifact(
+            interaction=support_interaction,
+            analysis=SimpleNamespace(
+                id=uuid4(),
+                score_total=None,
+                scores_detail={
+                    "classification": {"call_type": "support", "analysis_eligibility": "not_eligible"},
+                    "call": {},
+                    "follow_up": {},
+                },
+                is_failed=False,
+            ),
+            manager=coaching_artifact.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T09:30:00").replace(tzinfo=UTC),
+        )
+        all_window = [coaching_artifact, support_artifact]
+
+        payload_with_support = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=all_window,
+        )
+        payload_coaching_only = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        # call_list is wider with support
+        self.assertGreater(len(payload_with_support["call_list"]), len(payload_coaching_only["call_list"]))
+        # coaching aggregate blocks are identical
+        self.assertEqual(payload_with_support["kpi_overview"]["calls_count"], payload_coaching_only["kpi_overview"]["calls_count"])
+        self.assertEqual(payload_with_support["analysis_worked"], payload_coaching_only["analysis_worked"])
+        self.assertEqual(payload_with_support["analysis_improve"], payload_coaching_only["analysis_improve"])
+
+    def test_sm3_call_list_sorted_by_time(self) -> None:
+        """SM-3: call_list rows are sorted by call time ascending."""
+        a1 = _artifact(82.0, "strong", call_date="2026-03-25 11:00:00")
+        a2 = _artifact(70.0, "basic", call_date="2026-03-25 09:00:00")
+        a3 = _artifact(65.0, "basic", call_date="2026-03-25 15:00:00")
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[a1, a2, a3],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        times = [row["time"] for row in payload["call_list"] if row["time"]]
+        self.assertEqual(times, sorted(times), "call_list rows must be sorted by time ascending")
+
+    def test_sm3_build_meaningful_call_list_direct(self) -> None:
+        """SM-3: _build_meaningful_call_list excludes non-meaningful, includes support with transcript."""
+        normal = _artifact(82.0, "strong")
+        support_interaction = _interaction(text="Вопрос по документам")
+        support_artifact = ReportArtifact(
+            interaction=support_interaction,
+            analysis=SimpleNamespace(
+                id=uuid4(),
+                score_total=None,
+                scores_detail={"classification": {"call_type": "support", "analysis_eligibility": "not_eligible"}, "call": {}, "follow_up": {}},
+                is_failed=False,
+            ),
+            manager=normal.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T08:00:00").replace(tzinfo=UTC),
+        )
+        beep = ReportArtifact(
+            interaction=SimpleNamespace(id=uuid4(), duration_sec=3, text=""),
+            analysis=None,
+            manager=normal.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T07:00:00").replace(tzinfo=UTC),
+        )
+        result = _build_meaningful_call_list(window_artifacts=[normal, support_artifact, beep])
+        self.assertEqual(len(result), 2)
+        self.assertNotIn("too_short_or_no_speech", [r.get("call_type") for r in result])
 
     def test_build_rop_weekly_payload_keeps_crm_placeholder(self) -> None:
         payload = build_rop_weekly_payload(

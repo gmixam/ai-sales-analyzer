@@ -3220,7 +3220,9 @@ def build_manager_daily_payload(
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
-        "call_list": [_build_daily_call_row(item) for item in artifacts],
+        "call_list": _build_meaningful_call_list(
+            window_artifacts=window_artifacts if window_artifacts is not None else artifacts,
+        ),
         "focus_criterion_dynamics": focus_dynamics,
         "memo_legend": {
             "call_level_legend": ["strong", "baseline", "problematic"],
@@ -3678,6 +3680,22 @@ def _is_next_step_fixed(analysis: Analysis | None) -> bool:
     detail = dict((analysis.scores_detail or {}) if analysis is not None else {})
     follow_up = dict(detail.get("follow_up") or {})
     return bool(follow_up.get("next_step_fixed"))
+
+
+def _build_meaningful_call_list(*, window_artifacts: list[ReportArtifact]) -> list[dict[str, Any]]:
+    """Build СПИСОК ЗВОНКОВ ДНЯ from meaningful_calls layer (SM-3).
+
+    Includes all calls that pass _classify_meaningful_call — sales, follow-up,
+    and meaningful support/service. Excludes beep, IVR, autoanswer, no-speech noise.
+    Sorted by call time ascending. Coaching blocks are unaffected (use usable/coaching_core).
+    """
+    meaningful: list[ReportArtifact] = []
+    for artifact in window_artifacts:
+        is_meaningful, _ = _classify_meaningful_call(artifact)
+        if is_meaningful:
+            meaningful.append(artifact)
+    meaningful.sort(key=lambda a: a.call_started_at or datetime.min.replace(tzinfo=UTC))
+    return [_build_daily_call_row(item) for item in meaningful]
 
 
 def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
