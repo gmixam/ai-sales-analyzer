@@ -63,6 +63,16 @@ function safeNumber(value, fallback) {
   return isNaN(n) ? (fallback !== undefined ? fallback : 0) : n;
 }
 
+function russianCallWord(count) {
+  const n = Math.abs(Number(count) || 0);
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return "звонков";
+  if (mod10 === 1) return "звонок";
+  if (mod10 >= 2 && mod10 <= 4) return "звонка";
+  return "звонков";
+}
+
 function emptyStateData(payload) {
   const header = payload.header || {};
   const managerName = header.manager_name || "—";
@@ -71,6 +81,7 @@ function emptyStateData(payload) {
     manager: managerName,
     date: reportDate,
     calls: 0,
+    meaningful_calls: 0,
     day_score: 0,
     outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0 },
     money_on_table: { body: "Данные за день не накоплены.", highlight_line: "", reason_line: "", note: "" },
@@ -132,11 +143,22 @@ function dataFromBundle(bundle) {
     refusal: "Отказ",
     open: "Открыт",
   };
+  const allCalls = (callList.rows || []).map((row) => ({
+    n: row[0] || "—",
+    time: row[1] || "—",
+    client: row[2] || "—",
+    topic: row[3] || "—",
+    context: row[4] || "—",
+    status: statusLabelMap[String((payload.call_list || [])[Number(row[0]) - 1]?.status || "").trim()] || row[5] || "—",
+  }));
+  const selectionMeaningfulCalls = safeNumber(payload.selection_model?.meaningful_calls_total, null);
+  const meaningfulCalls = selectionMeaningfulCalls !== null ? selectionMeaningfulCalls : allCalls.length;
 
   return {
     manager: reportHeader.manager_name || payload.header?.manager_name || "—",
     date: reportHeader.report_date || payload.header?.report_date || "—",
     calls: safeNumber(reportHeader.calls_count || payload.kpi_overview?.calls_count),
+    meaningful_calls: meaningfulCalls,
     day_score: safeNumber(reportHeader.day_score),
     selection_note: reportHeader.selection_note || "",
     outcomes: {
@@ -228,14 +250,7 @@ function dataFromBundle(bundle) {
         first_phrase: row[4] || "",
       };
     }),
-    all_calls: (callList.rows || []).map((row) => ({
-      n: row[0] || "—",
-      time: row[1] || "—",
-      client: row[2] || "—",
-      topic: row[3] || "—",
-      context: row[4] || "—",
-      status: statusLabelMap[String((payload.call_list || [])[Number(row[0]) - 1]?.status || "").trim()] || row[5] || "—",
-    })),
+    all_calls: allCalls,
     morning: {
       greeting: morningCard.greeting || "",
       summary_line: morningCard.summary_line || "",
@@ -426,7 +441,7 @@ function buildShapka() {
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
-        text: `${DATA.date}  ·  ${DATA.calls} звонков`,
+        text: `${DATA.date}  ·  ${DATA.meaningful_calls} ${russianCallWord(DATA.meaningful_calls)}`,
         size: SZ.body, color: COLORS.gray, font: "Arial",
       })],
       spacing: { before: 0, after: 80 },
@@ -920,7 +935,7 @@ function buildSpisokZvonkov() {
     }),
     spacer(6),
     bodyPara(
-      `Показаны все ${DATA.calls} звонков · полный список в CRM`,
+      `Показаны все ${DATA.all_calls.length} ${russianCallWord(DATA.all_calls.length)} · полный список в CRM`,
       { color: COLORS.gray, size: SZ.meta },
     ),
   ];
