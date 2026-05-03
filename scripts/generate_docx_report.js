@@ -942,15 +942,78 @@ function buildDopSituatsii() {
 // ──────────────────────────────────────────────────────────────
 
 function buildChellendj() {
+  const c = DATA.challenge;
+
+  function clCell(text) {
+    return new TableCell({
+      width: { size: 28, type: WidthType.PERCENTAGE },
+      borders: BORDER_THIN,
+      shading: { fill: "FFE082", type: ShadingType.CLEAR },
+      verticalAlign: VerticalAlign.TOP,
+      margins: { top: 80, bottom: 80, left: 100, right: 80 },
+      children: [new Paragraph({
+        children: [new TextRun({ text, bold: true, size: SZ.cell, color: COLORS.heading, font: "Arial" })],
+        spacing: { before: 0, after: 0 },
+      })],
+    });
+  }
+
+  function clContentCell(paras) {
+    return new TableCell({
+      borders: BORDER_THIN,
+      shading: { fill: "FFFBEA", type: ShadingType.CLEAR },
+      verticalAlign: VerticalAlign.TOP,
+      margins: { top: 80, bottom: 80, left: 100, right: 100 },
+      children: paras,
+    });
+  }
+
+  const rows = [];
+
+  if (c.goal_line) {
+    rows.push(new TableRow({ children: [
+      clCell("Цель"),
+      clContentCell([new Paragraph({
+        children: [new TextRun({ text: c.goal_line, bold: true, size: SZ.body, color: COLORS.heading, font: "Arial" })],
+        spacing: { before: 0, after: 0 },
+      })]),
+    ]}));
+  }
+
+  const contextLines = [c.today_line, c.record_line].filter(Boolean);
+  if (contextLines.length > 0) {
+    rows.push(new TableRow({ children: [
+      clCell("Фокус на завтра"),
+      clContentCell(contextLines.map((line) => new Paragraph({
+        children: [new TextRun({ text: line, size: SZ.cell, color: COLORS.gray, font: "Arial" })],
+        spacing: { before: 0, after: 20 },
+      }))),
+    ]}));
+  }
+
+  if (c.phrase_line) {
+    rows.push(new TableRow({ children: [
+      clCell("Фраза для завтра"),
+      clContentCell([new Paragraph({
+        children: [new TextRun({ text: `«${c.phrase_line}»`, italic: true, size: SZ.body, color: COLORS.heading, font: "Arial" })],
+        spacing: { before: 0, after: 0 },
+      })]),
+    ]}));
+  }
+
+  if (rows.length === 0) {
+    return [
+      blockHeading("🏆", "ЧЕЛЛЕНДЖ НА ЗАВТРА"),
+      bodyPara("Данных для челленджа недостаточно.", { color: COLORS.gray }),
+    ];
+  }
+
   return [
     blockHeading("🏆", "ЧЕЛЛЕНДЖ НА ЗАВТРА"),
-    bodyPara(DATA.challenge.goal_line, { bold: true, size: SZ.accent }),
-    spacer(4),
-    bodyPara(DATA.challenge.today_line),
-    bodyPara(DATA.challenge.record_line),
-    spacer(4),
-    subHeading("Фраза для завтра:"),
-    bodyPara(DATA.challenge.phrase_line, { italic: true, color: COLORS.heading }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows,
+    }),
   ];
 }
 
@@ -1051,7 +1114,8 @@ function buildSpisokZvonkov() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Block 13 — УТРЕННЯЯ КАРТОЧКА (Telegram)
+// Block 13 — УТРЕННЯЯ КАРТОЧКА (Telegram) — removed from PDF/DOCX
+// Morning card data is preserved in payload for Telegram delivery.
 // ──────────────────────────────────────────────────────────────
 
 function buildUtrennaya() {
@@ -1166,8 +1230,6 @@ async function main() {
     ...buildPozvoni(),
     // Block 11
     ...buildSpisokZvonkov(),
-    // Block 12
-    ...buildUtrennaya(),
   ];
 
   const doc = new Document({
@@ -1213,7 +1275,7 @@ async function main() {
   console.log(`  Size: ${(buffer.length / 1024).toFixed(1)} KB`);
   console.log("");
   console.log("Self-check:");
-  console.log("  [✓] 12 blocks in order");
+  console.log("  [✓] 11 blocks in order");
   console.log("  [✓] Scale 0–10 → 0–5 applied");
   console.log("  [✓] ДЕНЬГИ НА СТОЛЕ block added");
   console.log("  [✓] Warm-lead CRM block omitted for manager-facing clarity");
@@ -1222,7 +1284,8 @@ async function main() {
   console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
   console.log("  [✓] РАЗБОР ЗВОНКА: 3 columns with Момент");
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: 4-row expanded structure");
-  console.log("  [✓] УТРЕННЯЯ КАРТОЧКА: financial line + challenge");
+  console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: card with Цель / Фокус / Фраза");
+  console.log("  [✓] УТРЕННЯЯ КАРТОЧКА removed from PDF/DOCX (payload preserved)");
   console.log("  [✓] Deleted: КЛЮЧЕВАЯ ПРОБЛЕМА, РЕКОМЕНДАЦИИ, ДИНАМИКА");
   console.log("  [✓] Footer: Конфиденциально on all pages except first");
 }
