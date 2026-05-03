@@ -272,7 +272,7 @@ function dataFromBundle(bundle) {
     })),
     situation: {
       title: situation.situation_title || "СИТУАЦИЯ ДНЯ",
-      body: situation.body || "",
+      body: situation.body || situation.text || "",
       pattern_count_label: situation.pattern_count_label || "",
       client_need: situation.client_need || "",
       manager_task: situation.manager_task || "",
@@ -295,16 +295,16 @@ function dataFromBundle(bundle) {
       interpretation: row[2] || "",
     })),
     additional_situations: ((sections.additional_situations || {}).situations || [])
-      .filter((item) => (item.signal || 0) > 0 && (item.title || item.client_said || item.how_to))
+      .filter((item) => item.title || item.client_said || item.how_to)
       .map((item) => ({
         title: `«${item.title || "Ситуация"}»`,
         badge: item.badge || (item.kind === "strength" ? "Сильная сторона" : "Зона роста"),
         client_said: item.client_said || "",
-        meant: item.meant || "",
+        meant: item.meant || item.interpretation || "",
         how_to: item.how_to || "",
         why: item.why || "",
-        type: item.kind || "gap",
-        signal: safeNumber(item.signal),
+        type: item.kind || (item.badge === "Сильная сторона" ? "strength" : "gap"),
+        signal: safeNumber(item.signal) || 0,
       })),
     challenge: {
       goal_line: challenge.goal_line || "",
@@ -351,15 +351,18 @@ const DATA = dataFromBundle(loadVerificationBundle());
 // ──────────────────────────────────────────────────────────────
 
 const COLORS = {
-  heading:    "1F3864",  // dark blue — H1/H2 text, accents
-  green:      "2E8B57",  // status: positive
-  orange:     "E87722",  // status: warning / priority
-  gray:       "888888",  // meta / secondary
-  black:      "1A1A1A",  // body text
-  tableHead:  "E8F0F8",
-  priorityBg: "FFF3CD",
-  white:      "FFFFFF",
-  altRow:     "F9F9F9",
+  heading:     "1F3864",  // dark blue — H1/H2 text, accents
+  green:       "2E8B57",  // status: positive
+  orange:      "E87722",  // status: warning / priority
+  red:         "C0392B",  // priority indicators, situation title
+  gray:        "888888",  // meta / secondary
+  black:       "1A1A1A",  // body text
+  sectionBg:   "1F3864",  // section header background (dark navy)
+  sectionText: "FFFFFF",  // section header text (white on dark)
+  tableHead:   "C8DCF0",  // table header row background (medium-light blue)
+  priorityBg:  "FFF3CD",
+  white:       "FFFFFF",
+  altRow:      "F9F9F9",
 };
 
 // 4-role type scale
@@ -440,16 +443,18 @@ function spacer(sz = 6) {
 
 function blockHeading(emoji, title) {
   return new Paragraph({
+    shading: { fill: COLORS.sectionBg, type: ShadingType.CLEAR },
+    indent: { left: 120, right: 120 },
     children: [
       new TextRun({
         text: `${emoji} ${title}`,
         bold: true,
         size: SZ.h2,
-        color: COLORS.heading,
+        color: COLORS.sectionText,
         font: "Arial",
       }),
     ],
-    spacing: { before: 160, after: 80 },
+    spacing: { before: 200, after: 100 },
   });
 }
 
@@ -481,6 +486,33 @@ function altShading(i) {
   return i % 2 === 1
     ? { fill: COLORS.altRow, type: ShadingType.CLEAR }
     : null;
+}
+
+// Label cell for two-column situation tables (left column: bold label, shaded).
+function labelCell(text) {
+  return new TableCell({
+    width: { size: 30, type: WidthType.PERCENTAGE },
+    borders: BORDER_THIN,
+    shading: { fill: COLORS.tableHead, type: ShadingType.CLEAR },
+    verticalAlign: VerticalAlign.TOP,
+    margins: { top: 60, bottom: 60, left: 80, right: 80 },
+    children: [
+      new Paragraph({
+        children: [new TextRun({ text, bold: true, size: SZ.cell, color: COLORS.heading, font: "Arial" })],
+        spacing: { before: 0, after: 0 },
+      }),
+    ],
+  });
+}
+
+// Right-column cell accepting pre-built Paragraph objects (for numbered lists, etc.).
+function cellMultiPara(paras) {
+  return new TableCell({
+    borders: BORDER_THIN,
+    verticalAlign: VerticalAlign.TOP,
+    margins: { top: 60, bottom: 60, left: 80, right: 80 },
+    children: paras,
+  });
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -668,34 +700,91 @@ function buildBally() {
 // ──────────────────────────────────────────────────────────────
 
 function buildSituatsiya() {
+  const s = DATA.situation;
+  const rows = [];
+
+  const bodyText = [s.body, s.pattern_count_label].filter(Boolean).join("  ");
+  if (bodyText) {
+    rows.push(new TableRow({ children: [
+      labelCell("Главный сигнал дня"),
+      cell(bodyText, { color: COLORS.orange }),
+    ]}));
+  }
+
+  const priorityStage = (DATA.stages || []).find((st) => st.priority);
+  if (priorityStage) {
+    rows.push(new TableRow({ children: [
+      labelCell("Приоритетный этап"),
+      cell(priorityStage.name, { bold: true, color: COLORS.heading }),
+    ]}));
+  }
+
+  if (s.client_need) {
+    rows.push(new TableRow({ children: [
+      labelCell("Что хотел сказать клиент"),
+      cell(s.client_need),
+    ]}));
+  }
+
+  if (s.manager_task) {
+    rows.push(new TableRow({ children: [
+      labelCell("Наша задача"),
+      cell(s.manager_task, { bold: true }),
+    ]}));
+  }
+
+  const ex = s.call_example || {};
+  const exampleText = (ex.time_label || ex.client_label)
+    ? `Звонок ${ex.time_label || "—"} — ${ex.client_label || "Клиент"}. ${ex.reason_short || ""}`.trim()
+    : "";
+  if (exampleText) {
+    rows.push(new TableRow({ children: [
+      labelCell("Пример из сегодня"),
+      cell(exampleText, { color: COLORS.gray }),
+    ]}));
+  }
+
+  if (s.scripts && s.scripts.length > 0) {
+    rows.push(new TableRow({ children: [
+      labelCell("Варианты речёвок"),
+      cellMultiPara(
+        s.scripts.map((script, index) =>
+          new Paragraph({
+            children: [new TextRun({ text: `${index + 1}. ${script}`, size: SZ.body, font: "Arial", color: COLORS.heading })],
+            spacing: { before: 0, after: 40 },
+          })
+        )
+      ),
+    ]}));
+  }
+
+  if (s.why_it_works) {
+    rows.push(new TableRow({ children: [
+      labelCell("Почему работает"),
+      cell(s.why_it_works, { color: COLORS.gray }),
+    ]}));
+  }
+
+  if (rows.length === 0) {
+    return [
+      blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
+      bodyPara(s.body || "Данных за этот день недостаточно.", { color: COLORS.gray }),
+    ];
+  }
+
   return [
     blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
     new Paragraph({
       children: [new TextRun({
-        text: DATA.situation.title,
+        text: s.title,
         bold: true, size: SZ.accent, color: COLORS.red, font: "Arial",
       })],
-      spacing: { before: 0, after: 60 },
+      spacing: { before: 60, after: 60 },
     }),
-    bodyPara(DATA.situation.body, { color: COLORS.orange }),
-    ...(DATA.situation.pattern_count_label ? [bodyPara(DATA.situation.pattern_count_label, { color: COLORS.gray })] : []),
-    spacer(4),
-    subHeading("Что хотел сказать клиент"),
-    bodyPara(DATA.situation.client_need),
-    spacer(4),
-    subHeading("Наша задача"),
-    bodyPara(DATA.situation.manager_task, { bold: true }),
-    spacer(4),
-    subHeading("Пример из сегодня"),
-    bodyPara(
-      `Звонок ${DATA.situation.call_example.time_label || "—"} — ${DATA.situation.call_example.client_label || "Клиент"}. ${DATA.situation.call_example.reason_short || ""}`.trim()
-    ),
-    spacer(4),
-    subHeading("Варианты речёвок"),
-    ...(DATA.situation.scripts || []).map((script, index) => bodyPara(`${index + 1}. ${script}`)),
-    spacer(4),
-    subHeading("Почему работает"),
-    bodyPara(DATA.situation.why_it_works),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows,
+    }),
   ];
 }
 
@@ -817,27 +906,31 @@ function buildDopSituatsii() {
       spacing: { before: 100, after: 40 },
     }));
 
-    blocks.push(new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [
-        new TableRow({ children: [
-          headCell("Что сказал клиент", { width: { size: 28, type: WidthType.PERCENTAGE } }),
-          cell(s.client_said),
-        ]}),
-        new TableRow({ children: [
-          headCell("Что имел в виду"),
-          cell(s.meant, { color: COLORS.heading }),
-        ]}),
-        new TableRow({ children: [
-          headCell("Как надо было"),
-          cell(s.how_to, { color: s.type === "strength" ? COLORS.heading : COLORS.green, italic: true }),
-        ]}),
-        new TableRow({ children: [
-          headCell("Почему так"),
-          cell(s.why, { color: COLORS.gray }),
-        ]}),
-      ],
-    }));
+    const sitRows = [
+      s.client_said ? new TableRow({ children: [
+        headCell("Ситуация / сигнал", { width: { size: 28, type: WidthType.PERCENTAGE } }),
+        cell(s.client_said),
+      ]}) : null,
+      s.meant ? new TableRow({ children: [
+        headCell("Что хотел сказать клиент"),
+        cell(s.meant, { color: COLORS.heading }),
+      ]}) : null,
+      s.how_to ? new TableRow({ children: [
+        headCell("Как лучше ответить / что делать"),
+        cell(s.how_to, { color: s.type === "strength" ? COLORS.heading : COLORS.green, italic: true }),
+      ]}) : null,
+      s.why ? new TableRow({ children: [
+        headCell("Почему это важно"),
+        cell(s.why, { color: COLORS.gray }),
+      ]}) : null,
+    ].filter(Boolean);
+
+    if (sitRows.length > 0) {
+      blocks.push(new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: sitRows,
+      }));
+    }
     blocks.push(spacer(8));
   }
 
