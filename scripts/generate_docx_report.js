@@ -73,6 +73,81 @@ function russianCallWord(count) {
   return "звонков";
 }
 
+function cleanText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = cleanText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function stripOpeningPrefix(value) {
+  return cleanText(value).replace(/^Добрый день!\s*Звоню уточнить детали:\s*/i, "");
+}
+
+function tomorrowSituation(contact, row) {
+  const status = cleanText(contact.status || "");
+  const deadline = firstNonEmpty(contact.deadline, row[2]);
+  const detail = firstNonEmpty(
+    stripOpeningPrefix(contact.opening_script),
+    contact.next_step_text,
+    contact.next_step,
+    contact.reason,
+    contact.context,
+    row[2],
+  );
+  if (status === "agreed") {
+    return detail ? `Договорённость: ${detail}` : "Есть договорённость с клиентом";
+  }
+  if (status === "rescheduled" && deadline) {
+    return `Перезвонить: ${deadline}`;
+  }
+  if (detail) {
+    return detail;
+  }
+  return "Следующий шаг не зафиксирован";
+}
+
+function tomorrowRecommendation(contact, row) {
+  const status = cleanText(contact.status || "");
+  const basis = `${cleanText(contact.reason)} ${cleanText(contact.context)} ${cleanText(row[3])}`.toLowerCase();
+  const hasDeadline = Boolean(firstNonEmpty(contact.deadline, row[2]));
+  if (status === "agreed") return "Подтвердить договорённость и довести до следующего шага";
+  if (basis.includes("возраж")) return "Вернуться с ответом на возражение";
+  if (hasDeadline || status === "rescheduled") return "Перезвонить по указанному поводу";
+  if (status === "open") return "Уточнить актуальность и зафиксировать следующий шаг";
+  return "Уточнить актуальность и договориться о следующем шаге";
+}
+
+function tomorrowFirstPhrase(contact, row) {
+  return firstNonEmpty(
+    contact.opening_script,
+    row[4],
+    "Добрый день! Хочу коротко уточнить актуальность и договориться о следующем шаге.",
+  );
+}
+
+function stageStatus(stage) {
+  if (stage.priority) return "Фокус на завтра";
+  if (stage.score5 !== null && stage.score5 >= 4.0) return "Норма";
+  return "Зона внимания";
+}
+
+function stageMeaning(stage) {
+  const status = stageStatus(stage);
+  if (status === "Фокус на завтра") {
+    return "Этот этап сейчас главный фокус ближайшей отработки.";
+  }
+  if (status === "Норма") {
+    return "Этап в целом отработан стабильно.";
+  }
+  return "Этап требует усиления в ближайших звонках.";
+}
+
 function emptyStateData(payload) {
   const header = payload.header || {};
   const managerName = header.manager_name || "—";
@@ -188,10 +263,11 @@ function dataFromBundle(bundle) {
       score10: stage.score ?? null,
       score5: stage.score === null || stage.score === undefined ? null : safeNumber((safeNumber(stage.score) / 2).toFixed(1), null),
       priority: Boolean(stage.is_priority),
-      subs: (stage.criteria_detail || []).map((criterion) => ({
-        name: `↳ ${criterion.name || "Критерий"}`,
+      subs: (stage.criteria_detail || []).filter(Boolean).map((criterion) => ({
+        name: criterion.name || "Критерий",
         score10: criterion.score ?? null,
         score5: criterion.score === null || criterion.score === undefined ? null : safeNumber((safeNumber(criterion.score) / 2).toFixed(1), null),
+        is_weak: Boolean(criterion.is_weak),
       })),
     })),
     situation: {
@@ -236,20 +312,22 @@ function dataFromBundle(bundle) {
       record_line: challenge.record_line || "",
       phrase_line: challenge.phrase_line || "",
     },
-    call_tomorrow: (callTomorrow.rows || []).map((row) => {
+    call_tomorrow: (callTomorrow.rows || []).map((row, index) => {
       const priorityText = String(row[0] || "");
       const priority = priorityText.split(" ")[0] || "";
       const label = priorityText.replace(`${priority} `, "");
+      const contact = (callTomorrow.contacts || payload.call_tomorrow?.contacts || [])[index] || {};
       return {
         priority,
         label,
-        client: row[1] || "Клиент",
+        client: firstNonEmpty(contact.client_label, row[1], "Клиент"),
         phone: "",
-        timing: row[2] || "",
-        goal: row[3] || "",
-        first_phrase: row[4] || "",
+        status: cleanText(contact.status || ""),
+        situation: tomorrowSituation(contact, row),
+        recommendation: tomorrowRecommendation(contact, row),
+        first_phrase: tomorrowFirstPhrase(contact, row),
       };
-    }),
+    }).filter((item) => item.client && cleanText(item.situation) !== "Следующий шаг не зафиксирован"),
     all_calls: allCalls,
     morning: {
       greeting: morningCard.greeting || "",
@@ -267,16 +345,6 @@ function dataFromBundle(bundle) {
 }
 
 const DATA = dataFromBundle(loadVerificationBundle());
-
-// ──────────────────────────────────────────────────────────────
-// Helper: progress bar
-// ──────────────────────────────────────────────────────────────
-
-function progressBar(score5) {
-  if (score5 === null || score5 === undefined) return "—";
-  const filled = Math.round((score5 / 5) * 20);
-  return "█".repeat(filled) + "░".repeat(20 - filled);
-}
 
 // ──────────────────────────────────────────────────────────────
 // Style helpers
@@ -528,76 +596,29 @@ function buildDengi() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Block 4 — PIPELINE ТЁПЛЫХ ЛИДОВ
-// ──────────────────────────────────────────────────────────────
-
-function buildPipeline() {
-  const blocks = [
-    blockHeading("📊", "PIPELINE ТЁПЛЫХ ЛИДОВ"),
-    bodyPara(DATA.pipeline.summary_line),
-    bodyPara(DATA.pipeline.counts_line),
-    bodyPara(DATA.pipeline.conversion_line, { bold: true }),
-    bodyPara(DATA.pipeline.average_line, { color: COLORS.gray }),
-  ];
-  if (!DATA.pipeline.contacts || DATA.pipeline.contacts.length === 0) {
-    blocks.push(bodyPara("Тёплые лиды без обратного звонка не найдены.", { color: COLORS.gray, size: SZ.meta }));
-    return blocks;
-  }
-  blocks.push(
-    spacer(4),
-    subHeading("Тёплые лиды без обратного звонка:"),
-    new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [
-        new TableRow({
-          children: [
-            headCell("Клиент",  { width: { size: 40, type: WidthType.PERCENTAGE } }),
-            headCell("Телефон", { width: { size: 25, type: WidthType.PERCENTAGE } }),
-            headCell("Статус",  { width: { size: 35, type: WidthType.PERCENTAGE } }),
-          ],
-        }),
-        ...(DATA.pipeline.contacts || []).map((contact) =>
-          new TableRow({
-            children: [
-              cell(contact.client || "Клиент"),
-              cell(contact.phone || "—"),
-              cell(contact.status || "—", { color: COLORS.orange }),
-            ],
-          })
-        ),
-      ],
-    }),
-    spacer(6),
-  );
-  return blocks;
-}
-
-// ──────────────────────────────────────────────────────────────
-// Block 5 — БАЛЛЫ ПО ЭТАПАМ
+// Block 4 — БАЛЛЫ ПО ЭТАПАМ
 // ──────────────────────────────────────────────────────────────
 
 function buildBally() {
   const rows = [];
 
-  // Header
   rows.push(
     new TableRow({
       children: [
-        headCell("Этап",     { width: { size: 30, type: WidthType.PERCENTAGE } }),
-        headCell("Сегодня",  { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Среднее",  { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Шкала",    { width: { size: 36, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Приоритет",{ width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Этап", { width: { size: 34, type: WidthType.PERCENTAGE } }),
+        headCell("Балл", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Статус", { width: { size: 18, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Что это значит", { width: { size: 36, type: WidthType.PERCENTAGE } }),
       ],
     })
   );
 
   for (const st of DATA.stages) {
-    const scoreStr = st.score5 !== null ? st.score5.toFixed(1) : "—";
-    const bar = progressBar(st.score5);
-    const prio = st.priority ? "●" : (st.score5 !== null && st.score5 >= 4.0 ? "✓" : "—");
+    const scoreStr = st.score5 !== null ? st.score5.toFixed(1) : "Нет данных";
+    const status = stageStatus(st);
     const nameColor = st.priority ? COLORS.red : COLORS.black;
     const scoreColor = st.priority ? COLORS.red : COLORS.black;
+    const statusColor = st.priority ? COLORS.red : (status === "Норма" ? COLORS.green : COLORS.orange);
 
     const rowShading = st.priority
       ? { fill: COLORS.priorityBg, type: ShadingType.CLEAR }
@@ -606,32 +627,26 @@ function buildBally() {
     const rowCells = [
       cell(st.name, { color: nameColor, bold: st.priority, shading: rowShading }),
       cell(scoreStr, { align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
-      cell("—", { align: AlignmentType.CENTER, color: COLORS.gray, shading: rowShading }),
-      cell(bar, { size: SZ.cell, shading: rowShading }),
-      cell(prio, { align: AlignmentType.CENTER, color: st.priority ? COLORS.red : COLORS.green, bold: true, shading: rowShading }),
+      cell(status, { align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
+      cell(stageMeaning(st), { shading: rowShading, size: SZ.cell }),
     ];
 
     rows.push(new TableRow({ children: rowCells }));
-
-    // Subcriteria rows for priority stage
-    if (st.priority && st.subs.length > 0) {
-      for (const sub of st.subs) {
-        const subScore = sub.score5 !== null ? sub.score5.toFixed(1) : "—";
-        const subColor = sub.score5 !== null && sub.score5 < 1.5 ? COLORS.red : COLORS.orange;
-        rows.push(
-          new TableRow({
-            children: [
-              cell(sub.name, { color: subColor, italic: true, indent: 200 }),
-              cell(subScore, { align: AlignmentType.CENTER, color: subColor }),
-              cell("—", { align: AlignmentType.CENTER, color: COLORS.gray }),
-              cell(progressBar(sub.score5), { size: SZ.cell }),
-              cell("", {}),
-            ],
-          })
-        );
-      }
-    }
   }
+
+  const priorityStage = DATA.stages.find((stage) => stage.priority);
+  const weakFocusItems = (priorityStage?.subs || [])
+    .filter((item) => item.is_weak || (item.score5 !== null && item.score5 < 2.0))
+    .map((item) => cleanText(item.name))
+    .filter(Boolean)
+    .slice(0, 2);
+  const focusBlock = weakFocusItems.length > 0
+    ? [
+        spacer(6),
+        subHeading("Что просело в фокусном этапе:"),
+        ...weakFocusItems.map((item, index) => bodyPara(`${index + 1}. ${item}`, { size: SZ.cell })),
+      ]
+    : [];
 
   return [
     blockHeading("📈", "БАЛЛЫ ПО ЭТАПАМ"),
@@ -641,9 +656,10 @@ function buildBally() {
     }),
     spacer(4),
     bodyPara(
-      "Правило: ситуация дня = первый этап ниже 4 сверху по воронке. Прорабатываем до выравнивания ≥ 4, затем переходим к следующему.",
+      "Фокус на завтра — этап, который сейчас сильнее всего мешает продвинуть клиента дальше по воронке.",
       { color: COLORS.gray, size: SZ.meta },
     ),
+    ...focusBlock,
   ];
 }
 
@@ -846,23 +862,23 @@ function buildChellendj() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Block 11 — ПОЗВОНИ ЗАВТРА
+// Block 10 — КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА
 // ──────────────────────────────────────────────────────────────
 
 function buildPozvoni() {
   if (!DATA.call_tomorrow || DATA.call_tomorrow.length === 0) {
     return [
-      blockHeading("📞", "ПОЗВОНИ ЗАВТРА"),
-      bodyPara("Нет открытых контактов для перезвона.", { color: COLORS.gray }),
+      blockHeading("📞", "КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА"),
+      bodyPara("На завтра нет обязательных клиентских действий по итогам звонков.", { color: COLORS.gray }),
     ];
   }
   const headerRow = new TableRow({
     children: [
       headCell("Приоритет", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
       headCell("Клиент",    { width: { size: 18, type: WidthType.PERCENTAGE } }),
-      headCell("Срок/повод",  { width: { size: 18, type: WidthType.PERCENTAGE } }),
-      headCell("Цель звонка", { width: { size: 24, type: WidthType.PERCENTAGE } }),
-      headCell("Первая фраза", { width: { size: 28, type: WidthType.PERCENTAGE } }),
+      headCell("Ситуация или договорённость", { width: { size: 26, type: WidthType.PERCENTAGE } }),
+      headCell("Рекомендация", { width: { size: 22, type: WidthType.PERCENTAGE } }),
+      headCell("Первая фраза", { width: { size: 22, type: WidthType.PERCENTAGE } }),
     ],
   });
 
@@ -875,15 +891,15 @@ function buildPozvoni() {
       children: [
         cell(`${c.priority} ${c.label}`, { align: AlignmentType.CENTER, color: prioColor, bold: true, shading: altShading(i) }),
         cell(c.client, { shading: altShading(i) }),
-        cell(c.timing, { shading: altShading(i), color: COLORS.gray, size: SZ.cell }),
-        cell(c.goal, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
+        cell(c.situation, { shading: altShading(i), color: COLORS.gray, size: SZ.cell }),
+        cell(c.recommendation, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
         cell(c.first_phrase, { shading: altShading(i), italic: true, color: COLORS.heading, size: SZ.cell }),
       ],
     });
   });
 
   return [
-    blockHeading("📞", "ПОЗВОНИ ЗАВТРА"),
+    blockHeading("📞", "КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       rows: [headerRow, ...dataRows],
@@ -1042,24 +1058,22 @@ async function main() {
     // Block 3
     ...buildDengi(),
     // Block 4
-    ...buildPipeline(),
-    // Block 5
     ...buildBally(),
-    // Block 6
+    // Block 5
     ...buildSituatsiya(),
-    // Block 7
+    // Block 6
     ...buildRazbor(),
-    // Block 8
+    // Block 7
     ...buildGolos(),
-    // Block 9
+    // Block 8
     ...buildDopSituatsii(),
-    // Block 10
+    // Block 9
     ...buildChellendj(),
-    // Block 11
+    // Block 10
     ...buildPozvoni(),
-    // Block 12
+    // Block 11
     ...buildSpisokZvonkov(),
-    // Block 13
+    // Block 12
     ...buildUtrennaya(),
   ];
 
@@ -1106,14 +1120,13 @@ async function main() {
   console.log(`  Size: ${(buffer.length / 1024).toFixed(1)} KB`);
   console.log("");
   console.log("Self-check:");
-  console.log("  [✓] 13 blocks in order");
+  console.log("  [✓] 12 blocks in order");
   console.log("  [✓] Scale 0–10 → 0–5 applied");
-  console.log("  [✓] Progress bars: round(score/5 × 20) filled █/░");
   console.log("  [✓] ДЕНЬГИ НА СТОЛЕ block added");
-  console.log("  [✓] PIPELINE block added");
+  console.log("  [✓] Warm-lead CRM block omitted for manager-facing clarity");
   console.log("  [✓] СИТУАЦИЯ ДНЯ: interpretation + 3 scripts + why");
   console.log("  [✓] ГОЛОС КЛИЕНТА: 3 columns with Смысл → Как ответить");
-  console.log("  [✓] ПОЗВОНИ ЗАВТРА: priorities 🔴🟡🔵 + scripts");
+  console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
   console.log("  [✓] РАЗБОР ЗВОНКА: 3 columns with Момент");
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: 4-row expanded structure");
   console.log("  [✓] УТРЕННЯЯ КАРТОЧКА: financial line + challenge");
