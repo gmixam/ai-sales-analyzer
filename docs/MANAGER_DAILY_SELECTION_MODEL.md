@@ -59,13 +59,16 @@
 
 **Критерии включения:**
 - реальный голосовой контакт с живым собеседником;
-- длительность выше минимального порога (без конкретного числа — задаётся в конфигурации);
-- наличие распознаваемого speech-контента (не пустой трафик).
+- наличие распознаваемого speech-контента (не пустой трафик);
+- для CDR-only / no-transcript звонков — достаточный source-side сигнал живого разговора: `source_status=answered`, `direction in/out`, `duration >= 90`.
+
+**Transcript-first rule:** если у звонка есть непустой transcript, он считается `meaningful_calls` независимо от того, является ли он sales/follow-up/support/internal. Support/internal с transcript остаётся meaningful, но не становится coaching_core автоматически.
 
 **Критерии исключения:**
 - beep, автоответчик, IVR без живого разговора;
 - звонки без распознаваемого speech (empty/garbage transcript);
-- звонки короче минимального порога длины без содержания;
+- CDR-only / no-transcript звонки без достаточного live-сигнала: не `answered`, не `in/out`, или `duration < 90`;
+- короткие partial contact / routing-like / no-speech звонки без содержания;
 - технические и служебные звонки без клиентской составляющей (зависит от правила — см. Open Questions).
 
 **Назначение в отчёте:**
@@ -76,6 +79,8 @@
 | Класс | Входит в meaningful_calls? |
 |---|---|
 | beep / no speech / IVR | нет |
+| CDR-only answered in/out >= 90с | да, как probable live conversation |
+| CDR-only < 90с / missed / local | нет |
 | support / internal | зависит от правила (см. F) |
 | sales / follow-up | да |
 | coaching-worthy sales call | да |
@@ -216,7 +221,7 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 | Счётчик | Описание |
 |---|---|
 | `raw_calls_total` | Все CDR-записи из телефонии за день |
-| `meaningful_calls_total` | Содержательные звонки дня (после beep/IVR фильтрации) |
+| `meaningful_calls_total` | Содержательные звонки дня: transcript-first calls + CDR-only probable live conversations; без beep/IVR/no-speech/partial contact |
 | `service_calls_total` | Технические / служебные звонки, исключённые из meaningful |
 | `coaching_candidate_calls_total` | Звонки, имеющие transcript + analysis, не помеченные not_eligible |
 | `analyzed_calls_total` | Звонки с готовым анализом (is_failed=false, not semantic-empty) |
@@ -274,6 +279,17 @@ Follow-up calls с короткой длительностью (например
 ### F.4 — Bound на число calls в СПИСОК ЗВОНКОВ ДНЯ
 
 **Текущее решение:** СПИСОК ЗВОНКОВ ДНЯ не имеет жёсткого количественного ограничения (не обрезается произвольно до N).
+
+### F.5 — CDR-only / no-transcript звонки после расширения raw source-day
+
+После снятия hardcoded source-side duration cutoff `raw_calls` снова означает полный CDR-день по manager/extension/date scope.
+
+Чтобы `meaningful_calls` не превращался в список всех коротких answered/no-transcript попыток, для CDR-only звонков действует отдельное deterministic rule:
+- если transcript есть — применяется transcript-first rule, звонок остаётся meaningful;
+- если transcript нет, звонок считается meaningful только как probable live conversation при `source_status=answered`, `direction in/out`, `duration >= 90`;
+- если transcript нет и звонок `missed`, `local`, не `answered`, не `in/out`, или `duration < 90`, он исключается из meaningful как `too_short_or_no_speech`.
+
+Это правило не меняет semantics `raw_calls`: такие звонки остаются в полном source-day счётчике. Оно также не меняет `coaching_core`: coaching-блоки по-прежнему требуют ready analysis и coaching eligibility.
 
 Если звонков очень много (> 20), operator может видеть полный список, а в manager-facing PDF показывается подмножество с явным указанием: «Показано X из Y. Полный список доступен в системе.»
 

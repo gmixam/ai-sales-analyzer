@@ -301,6 +301,9 @@ class OnlinePBXIntake:
                 metadata = {
                     "external_call_code": record.call_id,
                     "direction": record.direction,
+                    "source_status": record.status,
+                    "source_duration_sec": record.duration,
+                    "source_talk_duration_sec": record.talk_duration,
                     "phone": record.phone,
                     "call_date": record.call_date,
                     "extension": record.extension,

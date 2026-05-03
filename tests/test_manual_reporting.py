@@ -33,6 +33,7 @@ if str(CORE_ROOT) not in sys.path:
 from app.agents.calls.reporting import (  # noqa: E402
     CallsManualReportingOrchestrator,
     MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC,
+    MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC,
     ReportArtifact,
     ReportRunFilters,
     _build_meaningful_call_list,
@@ -43,6 +44,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     render_report_email,
     resolve_report_preset,
 )
+from app.agents.calls.schemas import CDRRecord  # noqa: E402
 from app.agents.calls.report_templates import build_report_render_model  # noqa: E402
 from app.agents.calls.verification_report_runner import (  # noqa: E402
     build_canonical_verification_bundle,
@@ -520,6 +522,72 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertTrue(is_meaningful)
         self.assertIsNone(reason)
 
+    def test_classify_meaningful_call_excludes_short_source_only_contact(self) -> None:
+        """Meaningful recalibration: CDR-only partial contacts need stronger talk-time evidence."""
+        artifact = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=60,
+                text="",
+                metadata_={
+                    "source_status": "answered",
+                    "direction": "out",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+
+    def test_classify_meaningful_call_keeps_long_source_only_live_contact(self) -> None:
+        """Meaningful recalibration: long answered CDR-only calls stay in the manager-facing day list."""
+        artifact = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC,
+                text="",
+                metadata_={
+                    "source_status": "answered",
+                    "direction": "in",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+
+        self.assertTrue(is_meaningful)
+        self.assertIsNone(reason)
+
+    def test_classify_meaningful_call_excludes_non_answered_source_only_call(self) -> None:
+        """Meaningful recalibration: missed/local source rows remain raw-only, not meaningful."""
+        artifact = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC + 30,
+                text="",
+                metadata_={
+                    "source_status": "missed",
+                    "direction": "out",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+
     def test_build_selection_model_counters_sm2_too_short_counted(self) -> None:
         """SM-2: too_short_or_no_speech exclusion reason is populated from real classification."""
         short_no_speech = ReportArtifact(
@@ -608,6 +676,150 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         call_list = payload["call_list"]
         self.assertEqual(len(call_list), 2, "call_list should include both coaching and support meaningful calls")
+
+    def test_manager_daily_coaching_core_excludes_support_not_eligible_calls(self) -> None:
+        """Selection bugfix: support/not_eligible can be meaningful, but not coaching_core."""
+        coaching_artifact = _artifact(82.0, "strong")
+        support_interaction = _interaction(
+            manager_id=coaching_artifact.interaction.manager_id,
+            text="Клиент задаёт технический вопрос по документам.",
+        )
+        support_analysis = _analysis(50.0, "basic")
+        support_detail = dict(support_analysis.scores_detail)
+        support_detail["classification"] = {
+            "call_type": "support",
+            "scenario_type": "hot_incoming_contact",
+            "analysis_eligibility": "not_eligible",
+        }
+        support_analysis = SimpleNamespace(
+            id=uuid4(),
+            interaction_id=support_interaction.id,
+            instruction_version="analysis_v1",
+            score_total=50.0,
+            scores_detail=support_detail,
+            is_failed=False,
+            fail_reason=None,
+        )
+        support_artifact = ReportArtifact(
+            interaction=support_interaction,
+            analysis=support_analysis,
+            manager=coaching_artifact.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T09:00:00").replace(tzinfo=UTC),
+        )
+
+        missing, usable = CallsManualReportingOrchestrator._split_usable_artifacts(
+            [coaching_artifact, support_artifact],
+            require_coaching_core_eligible=True,
+        )
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=usable,
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[coaching_artifact, support_artifact],
+        )
+
+        self.assertEqual([item.interaction.id for item in usable], [coaching_artifact.interaction.id])
+        self.assertIn(f"coaching_core_not_eligible:{support_artifact.interaction.id}", missing)
+        self.assertEqual(len(payload["call_list"]), 2)
+        self.assertEqual(payload["selection_model"]["meaningful_calls_total"], 2)
+        self.assertEqual(payload["selection_model"]["included_in_report_total"], 1)
+        self.assertEqual(payload["selection_model"]["service_calls_total"], 1)
+
+    def test_manager_daily_source_filters_do_not_apply_hardcoded_duration_cutoff(self) -> None:
+        """Source scope keeps short calls unless explicit UI duration filters are set."""
+        short_record = CDRRecord(
+            call_id="short-call",
+            call_date="2026-03-25T10:00:00+00:00",
+            duration=45,
+            talk_duration=23,
+            direction="out",
+            status="answered",
+            extension="322",
+            phone="+77070000000",
+        )
+        missed_record = CDRRecord(
+            call_id="missed-call",
+            call_date="2026-03-25T11:00:00+00:00",
+            duration=15,
+            talk_duration=0,
+            direction="out",
+            status="missed",
+            extension="322",
+            phone="+77070000001",
+        )
+
+        self.assertTrue(
+            CallsManualReportingOrchestrator._record_matches_source_scope(
+                record=short_record,
+                source_extensions={"322"},
+            )
+        )
+        self.assertTrue(
+            CallsManualReportingOrchestrator._record_matches_source_filters(
+                record=short_record,
+                filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            )
+        )
+        self.assertFalse(
+            CallsManualReportingOrchestrator._record_matches_source_filters(
+                record=short_record,
+                filters=ReportRunFilters(
+                    date_from="2026-03-25",
+                    date_to="2026-03-25",
+                    min_duration_sec=180,
+                ),
+            )
+        )
+        self.assertTrue(
+            CallsManualReportingOrchestrator._record_matches_source_filters(
+                record=missed_record,
+                filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            )
+        )
+
+    def test_prepare_artifacts_skips_audio_build_for_source_only_calls(self) -> None:
+        """Source-only missed/no-recording calls stay in raw scope without STT failure."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="")
+        interaction.raw_ref = None
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "source_status": "missed",
+            "direction": "out",
+        }
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(
+            process=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+        )
+        orchestrator.analyzer = SimpleNamespace(
+            analyze_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("analyzer should not run"))
+        )
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("persist_analysis should not run"))
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(build_summary["missing_transcripts_before_build"], 1)
+        self.assertEqual(build_summary["transcripts_built"], 0)
+        self.assertEqual(build_summary["transcript_build_failed"], 0)
+        self.assertEqual(build_errors, [])
 
     def test_sm3_call_list_excludes_beep_and_ivr(self) -> None:
         """SM-3: call_list does not include IVR/beep/no-speech calls."""

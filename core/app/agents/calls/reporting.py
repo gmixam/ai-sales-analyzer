@@ -17,6 +17,7 @@ from app.agents.calls.analyzer import (
     SEMANTIC_EMPTY_ANALYSIS_REASON,
 )
 from app.agents.calls.bitrix_readonly import Bitrix24ReadOnlyClient, BitrixReadOnlyError
+from app.agents.calls.config import calls_config
 from app.agents.calls.delivery import CallsDelivery
 from app.agents.calls.extractor import CallsExtractor
 from app.agents.calls.intake import OnlinePBXIntake
@@ -35,6 +36,7 @@ REPORTING_ALLOWED_MODES = {
 }
 MANAGER_DAILY_MAX_WINDOW_WORKDAYS = 3
 MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC = 15
+MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC = 90
 MANAGER_DAILY_FULL_REPORT_MIN_RELEVANT_CALLS = 6
 MANAGER_DAILY_FULL_REPORT_MIN_READY_ANALYSES = 5
 MANAGER_DAILY_FULL_REPORT_MIN_ANALYSIS_COVERAGE = 75.0
@@ -376,6 +378,8 @@ class CallsManualReportingOrchestrator:
             "execution_model": execution_model,
             "days_scanned": max(days_scanned, 0),
             "source_records_total": 0,
+            "source_raw_calls_total": 0,
+            "source_calls_after_ui_filters_total": 0,
             "eligible_source_records_total": 0,
             "targeted_source_records_total": 0,
             "already_persisted_source_records_total": 0,
@@ -430,6 +434,8 @@ class CallsManualReportingOrchestrator:
         source_extensions = self._resolve_source_extensions(filters=filters)
         days_scanned = 0
         records_total = 0
+        source_raw_total = 0
+        source_after_ui_filters_total = 0
         eligible_total = 0
         targeted_total = 0
         already_persisted_total = 0
@@ -441,17 +447,28 @@ class CallsManualReportingOrchestrator:
             days_scanned += 1
             records = self.intake.get_cdr_list(day)
             records_total += len(records)
-            eligible = self.intake.filter_eligible(records)
-            eligible_total += len(eligible)
-            targeted = [
+            source_scoped = [
                 record
-                for record in eligible
-                if self._record_matches_source_filters(
+                for record in records
+                if self._record_matches_source_scope(
                     record=record,
-                    filters=filters,
                     source_extensions=source_extensions,
                 )
             ]
+            source_raw_total += len(source_scoped)
+            targeted = [
+                record
+                for record in source_scoped
+                if self._record_matches_source_filters(
+                    record=record,
+                    filters=filters,
+                )
+            ]
+            source_after_ui_filters_total += len(targeted)
+            source_build_eligible = [
+                record for record in targeted if self._record_is_source_build_eligible(record)
+            ]
+            eligible_total += len(source_build_eligible)
             targeted_total += len(targeted)
             if not targeted:
                 continue
@@ -472,7 +489,7 @@ class CallsManualReportingOrchestrator:
 
             if mode == "build_missing_and_report":
                 for record in targeted:
-                    if not record.record_url:
+                    if self._record_is_source_build_eligible(record) and not record.record_url:
                         record.record_url = self.intake.get_recording_url(record.call_id)
 
             created, skipped = self.intake.save_interactions(targeted)
@@ -482,6 +499,8 @@ class CallsManualReportingOrchestrator:
         return {
             "days_scanned": days_scanned,
             "source_records_total": records_total,
+            "source_raw_calls_total": source_raw_total,
+            "source_calls_after_ui_filters_total": source_after_ui_filters_total,
             "eligible_source_records_total": eligible_total,
             "targeted_source_records_total": targeted_total,
             "already_persisted_source_records_total": already_persisted_total,
@@ -525,21 +544,36 @@ class CallsManualReportingOrchestrator:
         return {item for item in extensions if item}
 
     @staticmethod
+    def _record_matches_source_scope(
+        *,
+        record: Any,
+        source_extensions: set[str],
+    ) -> bool:
+        """Return True when a CDR belongs to the selected source day/manager scope."""
+        if source_extensions and str(record.extension or "").strip() not in source_extensions:
+            return False
+        return True
+
+    @staticmethod
     def _record_matches_source_filters(
         *,
         record: Any,
         filters: ReportRunFilters,
-        source_extensions: set[str],
     ) -> bool:
-        """Return True when the source record matches the selected report filters."""
+        """Return True when the source record matches explicit UI filters."""
         if filters.min_duration_sec is not None and (record.talk_duration or 0) < filters.min_duration_sec:
             return False
         if filters.max_duration_sec is not None and record.talk_duration is not None:
             if record.talk_duration > filters.max_duration_sec:
                 return False
-        if source_extensions and str(record.extension or "").strip() not in source_extensions:
-            return False
         return True
+
+    def _record_is_source_build_eligible(self, record: Any) -> bool:
+        """Return True for source calls that can reasonably enter audio/STT build."""
+        return (
+            record.status in self.intake.config.allowed_statuses
+            and record.direction in self.intake.config.allowed_directions
+        )
 
     def _build_period(self, *, filters: ReportRunFilters, preset: ReportPreset) -> dict[str, str]:
         """Validate and normalize date bounds."""
@@ -668,12 +702,13 @@ class CallsManualReportingOrchestrator:
                     analysis = None
             if self._allows_build_missing(preset=preset, mode=mode):
                 if not interaction.text:
-                    try:
-                        await self.extractor.process(interaction)
-                        built_transcripts += 1
-                    except ASAError as exc:
-                        failed_transcripts += 1
-                        build_errors.append(f"transcript_build_failed:{interaction.id}:{exc}")
+                    if _is_interaction_source_build_eligible(interaction):
+                        try:
+                            await self.extractor.process(interaction)
+                            built_transcripts += 1
+                        except ASAError as exc:
+                            failed_transcripts += 1
+                            build_errors.append(f"transcript_build_failed:{interaction.id}:{exc}")
                 if (
                     analysis is None or not isinstance(analysis.scores_detail, dict) or not analysis.scores_detail
                 ) and interaction.text:
@@ -1020,6 +1055,22 @@ class CallsManualReportingOrchestrator:
             "ready_transcripts_count": build_summary.get("transcripts_reused", 0),
             "ready_analyses_count": build_summary.get("analyses_reused", 0),
             "final_selected_interactions_count": final_selected_interactions_count,
+            "source_funnel": {
+                "source_records_total": source_summary.get("source_records_total", 0),
+                "source_raw_calls_total": source_summary.get("source_raw_calls_total", 0),
+                "source_calls_after_ui_filters_total": source_summary.get(
+                    "source_calls_after_ui_filters_total", 0
+                ),
+                "source_build_eligible_calls_total": source_summary.get(
+                    "eligible_source_records_total", 0
+                ),
+                "selected_interactions_count": selected_interactions_count,
+                "meaningful_calls_total": sum(
+                    int(((report.get("payload") or {}).get("selection_model") or {}).get("meaningful_calls_total") or 0)
+                    for report in reports
+                ),
+                "coaching_core_total": final_selected_interactions_count,
+            },
             "reason_codes": reason_codes,
             "machine_readable_status": overall_status,
             "notes": notes,
@@ -1228,7 +1279,7 @@ class CallsManualReportingOrchestrator:
                 "status": "warn",
                 "summary": (
                     f"Scanned {source_summary.get('days_scanned', 0)} days for {period['date_from']}..{period['date_to']}. "
-                    "No eligible source calls matched the current filters."
+                    "No source calls matched the current manager/UI filters."
                 ),
                 "error": errors[0] if errors else None,
             }
@@ -1239,8 +1290,9 @@ class CallsManualReportingOrchestrator:
             "summary": (
                 f"Scanned {source_summary.get('days_scanned', 0)} days, fetched "
                 f"{source_summary.get('source_records_total', 0)} source calls, "
-                f"{source_summary.get('eligible_source_records_total', 0)} eligible, "
-                f"{source_summary.get('targeted_source_records_total', 0)} matched filters."
+                f"{source_summary.get('source_raw_calls_total', 0)} in manager source scope, "
+                f"{source_summary.get('source_calls_after_ui_filters_total', 0)} after UI filters, "
+                f"{source_summary.get('eligible_source_records_total', 0)} build-eligible."
             ),
             "error": None,
         }
@@ -2103,7 +2155,10 @@ class CallsManualReportingOrchestrator:
                 if item.call_started_at is not None and item.call_started_at.date().isoformat() in window.included_days
             ]
             payload = None
-            missing, usable = self._split_usable_artifacts(window_artifacts)
+            missing, usable = self._split_usable_artifacts(
+                window_artifacts,
+                require_coaching_core_eligible=True,
+            )
             if usable:
                 payload = self._build_payload(
                     preset=preset,
@@ -2180,7 +2235,10 @@ class CallsManualReportingOrchestrator:
         send_email: bool,
     ) -> dict[str, Any]:
         """Build one normalized payload, render it, and optionally deliver it."""
-        missing, usable = self._split_usable_artifacts(artifacts)
+        missing, usable = self._split_usable_artifacts(
+            artifacts,
+            require_coaching_core_eligible=preset.code == "manager_daily",
+        )
 
         if not usable:
             if preset.code == "manager_daily":
@@ -2226,8 +2284,17 @@ class CallsManualReportingOrchestrator:
         )
 
     @staticmethod
-    def _split_usable_artifacts(artifacts: list[ReportArtifact]) -> tuple[list[str], list[ReportArtifact]]:
-        """Separate ready report artifacts from rows missing transcript or analysis."""
+    def _split_usable_artifacts(
+        artifacts: list[ReportArtifact],
+        *,
+        require_coaching_core_eligible: bool = False,
+    ) -> tuple[list[str], list[ReportArtifact]]:
+        """Separate ready report artifacts from rows missing transcript or analysis.
+
+        For manager_daily, "usable" is the coaching_core subset, so not_eligible
+        support/internal calls must stay out of coaching blocks while remaining
+        available in window_artifacts for meaningful call list and counters.
+        """
         missing: list[str] = []
         usable: list[ReportArtifact] = []
         for artifact in artifacts:
@@ -2236,6 +2303,9 @@ class CallsManualReportingOrchestrator:
                 continue
             if not artifact.interaction.text:
                 missing.append(f"transcript_missing:{artifact.interaction.id}")
+                continue
+            if require_coaching_core_eligible and not _is_coaching_core_eligible(artifact):
+                missing.append(f"coaching_core_not_eligible:{artifact.interaction.id}")
                 continue
             usable.append(artifact)
         return missing, usable
@@ -2861,8 +2931,8 @@ def _classify_meaningful_call(artifact: ReportArtifact) -> tuple[bool, str | Non
     - R2: duration < floor AND no transcript → too_short_or_no_speech
     - R3: has transcript → meaningful (real conversation, regardless of call_type)
     - R4: call_type=other + analysis_eligibility=not_eligible + no transcript → ivr_or_autoanswer
-    - R5: support/internal with duration >= floor → meaningful (service call, counted separately)
-    - Default: meaningful
+    - R5: no transcript + weak source signal → too_short_or_no_speech
+    - Default: probable live conversation with enough CDR talk time → meaningful
     """
     duration = artifact.interaction.duration_sec or 0
     has_transcript = bool(artifact.interaction.text)
@@ -2888,7 +2958,17 @@ def _classify_meaningful_call(artifact: ReportArtifact) -> tuple[bool, str | Non
         if call_type == "other" and eligibility == "not_eligible":
             return False, "ivr_or_autoanswer"
 
-    # R5 / default: call has duration but no transcript yet — treat as meaningful
+    metadata = dict(getattr(artifact.interaction, "metadata_", None) or {})
+    source_status = str(metadata.get("source_status") or "").lower()
+    direction = str(metadata.get("direction") or "").lower()
+    if source_status and source_status != "answered":
+        return False, "too_short_or_no_speech"
+    if direction and direction not in {"in", "out"}:
+        return False, "too_short_or_no_speech"
+    if duration < MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC:
+        return False, "too_short_or_no_speech"
+
+    # Default: enough talk time in answered CDR to keep as probable live conversation.
     return True, None
 
 
@@ -3925,6 +4005,35 @@ def _is_analysis_reusable_for_reporting(analysis: Analysis | None) -> tuple[bool
     ):
         return False, SEMANTIC_EMPTY_ANALYSIS_REASON
     return True, "reusable"
+
+
+def _is_coaching_core_eligible(artifact: ReportArtifact) -> bool:
+    """Return whether an artifact may enter manager_daily coaching_core."""
+    detail = getattr(artifact.analysis, "scores_detail", None)
+    if not isinstance(detail, dict):
+        return False
+    classification = dict(detail.get("classification") or {})
+    call_type = str(classification.get("call_type") or "").strip().lower()
+    eligibility = str(classification.get("analysis_eligibility") or "").strip().lower()
+    if eligibility == "not_eligible":
+        return False
+    if call_type in {"support", "internal"} and eligibility == "not_eligible":
+        return False
+    return True
+
+
+def _is_interaction_source_build_eligible(interaction: Interaction) -> bool:
+    """Return True when a persisted source call can enter audio/STT build."""
+    metadata = dict(interaction.metadata_ or {})
+    source_status = str(metadata.get("source_status") or "").strip().lower()
+    direction = str(metadata.get("direction") or "").strip().lower()
+    if source_status and source_status not in calls_config.allowed_statuses:
+        return False
+    if direction and direction not in calls_config.allowed_directions:
+        return False
+    if not interaction.raw_ref:
+        return False
+    return True
 
 
 def _build_focus_of_week(

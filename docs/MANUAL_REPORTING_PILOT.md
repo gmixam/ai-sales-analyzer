@@ -296,13 +296,15 @@ Canonical selection model зафиксирован в `docs/MANAGER_DAILY_SELECT
 | Слой | Что | Где используется |
 |---|---|---|
 | `raw_calls` | Все CDR-записи дня из телефонии | Исходный счётчик |
-| `meaningful_calls` | Содержательные разговоры (без beep/IVR/пустого трафика) | СПИСОК ЗВОНКОВ ДНЯ, итоговая таблица |
+| `meaningful_calls` | Содержательные разговоры: transcript-first calls + CDR-only probable live conversations; без beep/IVR/пустого трафика | СПИСОК ЗВОНКОВ ДНЯ, итоговая таблица |
 | `coaching_core` | Звонки с ready analysis и coaching-eligibility | Coaching-блоки, readiness decision |
 
 ### Принципиальное правило
 
 СПИСОК ЗВОНКОВ ДНЯ строится из `meaningful_calls`, а не из `coaching_core`.
 Менеджер видит весь содержательный рабочий день, а не только аналитическое ядро.
+
+Transcript-first звонки остаются meaningful. CDR-only / no-transcript звонки проходят в `meaningful_calls` только при `source_status=answered`, `direction in/out`, `duration >= 90`; no-transcript partial contact / routing-like / missed/local rows остаются в `raw_calls`, но исключаются из `meaningful_calls` как `too_short_or_no_speech`.
 
 Coaching-блоки (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА и др.) используют только `coaching_core`.
 
