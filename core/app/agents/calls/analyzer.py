@@ -40,6 +40,8 @@ APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
 NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
 ANALYSIS_FORENSICS_ATTR = "_analysis_forensics"
+SALES_RELEVANT_CALL_TYPES = {"sales_primary", "sales_repeat", "mixed"}
+NON_COACHABLE_CALL_TYPES = {"support", "internal", "other"}
 
 CHECKLIST_DEFINITION: dict[str, Any] = {
     "document_code": "edo_sales_mvp1_checklist",
@@ -1435,6 +1437,8 @@ class CallsAnalyzer:
         )
         self._enrich_contract_for_reporting(contract)
         self._populate_checklist_score(contract)
+        self._apply_analysis_eligibility_guardrails(contract)
+        self._enrich_contract_for_reporting(contract)
         self._validate_semantic_completeness(
             contract=contract,
             interaction_id=str(interaction.id),
@@ -1667,11 +1671,89 @@ class CallsAnalyzer:
         classification = dict(contract.get("classification") or {})
         if classification.get("analysis_eligibility") == "not_eligible":
             return False
-        return str(classification.get("call_type") or "") in {
-            "sales_primary",
-            "sales_repeat",
-            "mixed",
-        }
+        return str(classification.get("call_type") or "") in SALES_RELEVANT_CALL_TYPES
+
+    def _apply_analysis_eligibility_guardrails(self, contract: dict[str, Any]) -> None:
+        """Keep post-LLM eligibility consistent with deterministic scoring evidence."""
+        classification = contract.setdefault("classification", {})
+        call_type = str(classification.get("call_type") or "").strip()
+        eligibility = str(classification.get("analysis_eligibility") or "").strip()
+        duration_sec = self._contract_duration_sec(contract)
+
+        if call_type in NON_COACHABLE_CALL_TYPES:
+            classification["analysis_eligibility"] = "not_eligible"
+            classification["eligibility_reason"] = (
+                classification.get("eligibility_reason")
+                or NOT_COACHABLE_ANALYSIS_REASON
+            )
+            self._zero_checklist_score_for_not_eligible(contract)
+            return
+
+        if call_type not in SALES_RELEVANT_CALL_TYPES:
+            return
+
+        has_positive_sales_evidence = self._has_positive_sales_scoring_evidence(contract)
+        if eligibility == "not_eligible":
+            if has_positive_sales_evidence:
+                classification["analysis_eligibility"] = "eligible"
+                classification["eligibility_reason"] = self._eligible_reason_for_duration(duration_sec)
+            else:
+                self._zero_checklist_score_for_not_eligible(contract)
+            return
+
+        if eligibility != "eligible":
+            return
+
+        reason = str(classification.get("eligibility_reason") or "")
+        if "duration_ge_180_sec" in reason and (
+            duration_sec is None or duration_sec < settings.calls_min_duration_sec
+        ):
+            classification["eligibility_reason"] = self._eligible_reason_for_duration(duration_sec)
+
+    @staticmethod
+    def _contract_duration_sec(contract: dict[str, Any]) -> int | None:
+        duration = dict(contract.get("call") or {}).get("duration_sec")
+        try:
+            return int(duration)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _has_positive_sales_scoring_evidence(contract: dict[str, Any]) -> bool:
+        checklist = dict(dict(contract.get("score") or {}).get("checklist_score") or {})
+        try:
+            score_percent = float(checklist.get("score_percent") or 0.0)
+        except (TypeError, ValueError):
+            score_percent = 0.0
+        if score_percent <= 0:
+            return False
+        if contract.get("strengths") or contract.get("gaps") or contract.get("recommendations"):
+            return True
+        if contract.get("evidence_fragments"):
+            return True
+        for stage in contract.get("score_by_stage") or []:
+            for criterion in stage.get("criteria_results") or []:
+                if not isinstance(criterion, dict):
+                    continue
+                if str(criterion.get("comment") or "").strip():
+                    return True
+                if str(criterion.get("evidence") or "").strip():
+                    return True
+        return False
+
+    @staticmethod
+    def _eligible_reason_for_duration(duration_sec: int | None) -> str:
+        if duration_sec is not None and duration_sec >= settings.calls_min_duration_sec:
+            return "duration_ge_180_sec_and_sales_relevant"
+        return "positive_sales_score_with_sales_evidence"
+
+    @staticmethod
+    def _zero_checklist_score_for_not_eligible(contract: dict[str, Any]) -> None:
+        checklist_score = contract.setdefault("score", {}).setdefault("checklist_score", {})
+        checklist_score["total_points"] = 0
+        checklist_score["max_points"] = 0
+        checklist_score["score_percent"] = 0.0
+        checklist_score["level"] = "problematic"
 
     @staticmethod
     def _collect_reportable_criteria(contract: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

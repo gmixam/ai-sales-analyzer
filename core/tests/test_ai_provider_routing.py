@@ -651,6 +651,182 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertIn("процесс", normalized["recommendations"][0]["better_phrase"])
         self.assertEqual(normalized["evidence_fragments"][0]["fragment_type"], "missed_opportunity")
 
+    def test_analyzer_guardrail_repairs_sales_score_not_eligible_conflict(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="call-sales-conflict",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=57,
+            metadata_={
+                "external_call_code": "call-sales-conflict",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-04-28 14:53:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        normalized = analyzer._validate_and_normalize_contract(
+            raw_contract={
+                "classification": {
+                    "call_type": "sales_primary",
+                    "scenario_type": "cold_outbound",
+                    "analysis_eligibility": "not_eligible",
+                    "eligibility_reason": "duration_below_threshold",
+                },
+                "summary": {"short_summary": "Короткий, но содержательный продажный звонок."},
+                "score_by_stage": [
+                    {
+                        "stage_code": "contact_start",
+                        "stage_name": "Первичный контакт",
+                        "criteria_results": [
+                            {
+                                "criterion_code": "cs_intro_and_company",
+                                "criterion_name": "Представился и обозначил компанию",
+                                "score": 2,
+                                "comment": "Менеджер понятно представился.",
+                                "evidence": "Добрый день, это менеджер Dogovor24.",
+                            },
+                            {
+                                "criterion_code": "cs_permission_and_relevance",
+                                "criterion_name": "Проверил уместность разговора / возможность говорить",
+                                "score": 2,
+                                "comment": "Менеджер уточнил, удобно ли говорить.",
+                                "evidence": "Вам удобно сейчас коротко обсудить?",
+                            },
+                            {
+                                "criterion_code": "cs_reason_for_call",
+                                "criterion_name": "Понятно обозначил причину звонка",
+                                "score": 1,
+                                "comment": "Причина звонка обозначена кратко.",
+                                "evidence": "Звоню по вопросу электронного документооборота.",
+                            },
+                            {
+                                "criterion_code": "cs_tone_and_clarity",
+                                "criterion_name": "Сохранил нейтральный, вежливый и понятный тон",
+                                "score": 1,
+                                "comment": "Тон был корректным.",
+                                "evidence": "Менеджер говорил спокойно.",
+                            },
+                        ],
+                    }
+                ],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "evidence_fragments": [],
+            },
+            interaction=interaction,
+            instruction_version="edo_sales_mvp1_call_analysis_v1",
+        )
+
+        self.assertEqual(normalized["classification"]["analysis_eligibility"], "eligible")
+        self.assertEqual(
+            normalized["classification"]["eligibility_reason"],
+            "positive_sales_score_with_sales_evidence",
+        )
+        self.assertEqual(normalized["score"]["checklist_score"]["score_percent"], 75.0)
+
+    def test_analyzer_guardrail_keeps_support_not_eligible_without_score(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="call-support",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=240,
+            metadata_={
+                "external_call_code": "call-support",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-04-28 15:10:00",
+                "direction": "in",
+                "phone": "+77070000000",
+            },
+        )
+
+        with self.assertRaises(SemanticAnalysisError) as ctx:
+            analyzer._validate_and_normalize_contract(
+                raw_contract={
+                    "classification": {
+                        "call_type": "support",
+                        "scenario_type": "hot_incoming_contact",
+                        "analysis_eligibility": "not_eligible",
+                        "eligibility_reason": "support_only_interaction",
+                    },
+                    "summary": {"short_summary": "Технический вопрос клиента."},
+                    "score_by_stage": [],
+                    "strengths": [],
+                    "gaps": [],
+                    "recommendations": [],
+                    "evidence_fragments": [],
+                },
+                interaction=interaction,
+                instruction_version="edo_sales_mvp1_call_analysis_v1",
+            )
+
+        normalized = ctx.exception.normalized_result
+        self.assertEqual(normalized["classification"]["analysis_eligibility"], "not_eligible")
+        self.assertEqual(normalized["score"]["checklist_score"]["score_percent"], 0.0)
+        self.assertEqual(ctx.exception.reason_code, "not_coachable_or_reportable")
+
+    def test_analyzer_guardrail_repairs_duration_ge_reason_for_short_call(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="call-short-reason",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=112,
+            metadata_={
+                "external_call_code": "call-short-reason",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-04-28 15:20:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        normalized = analyzer._validate_and_normalize_contract(
+            raw_contract={
+                "classification": {
+                    "call_type": "sales_primary",
+                    "scenario_type": "cold_outbound",
+                    "analysis_eligibility": "eligible",
+                    "eligibility_reason": "duration_ge_180_sec_and_sales_relevant",
+                },
+                "summary": {"short_summary": "Продажный звонок с оценкой."},
+                "score_by_stage": [
+                    {
+                        "stage_code": "contact_start",
+                        "stage_name": "Первичный контакт",
+                        "criteria_results": [
+                            {
+                                "criterion_code": "cs_intro_and_company",
+                                "criterion_name": "Представился и обозначил компанию",
+                                "score": 2,
+                                "comment": "Менеджер представился.",
+                                "evidence": "Меня зовут ...",
+                            }
+                        ],
+                    }
+                ],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "evidence_fragments": [],
+            },
+            interaction=interaction,
+            instruction_version="edo_sales_mvp1_call_analysis_v1",
+        )
+
+        self.assertEqual(normalized["classification"]["analysis_eligibility"], "eligible")
+        self.assertNotIn("duration_ge_180_sec", normalized["classification"]["eligibility_reason"])
+
     def test_analyzer_can_mark_semantic_empty_support_call_as_not_coachable(self) -> None:
         error = SemanticAnalysisError(
             "Analyzer returned a semantically empty analysis contract.",
