@@ -243,6 +243,70 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("effective_versions", payload["meta"])
         self.assertIn("reuse", payload["meta"])
 
+    def test_manager_daily_payload_enriches_stage_problem_summaries(self) -> None:
+        artifact = _artifact(55.0, "problematic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "cs_role_scope",
+                        "criterion_name": "Уточнение роли и масштаба",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Менеджер не уточнил роль собеседника и масштаб задачи.",
+                    }
+                ],
+            },
+            {
+                "stage_code": "needs_discovery",
+                "stage_name": "Выявление детальных потребностей",
+                "stage_score": 1,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "nd_depth",
+                        "criterion_name": "Глубина выявления потребности",
+                        "score": 1,
+                        "max_score": 2,
+                    }
+                ],
+            },
+        ]
+        artifact.analysis.scores_detail["gaps"] = [
+            {
+                "criterion_code": "nd_depth",
+                "title": "Потребность раскрыта поверхностно",
+                "comment": "Потребность клиента раскрыта поверхностно.",
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        stages = {item["stage_code"]: item for item in payload["score_by_stage"]}
+        self.assertEqual(
+            stages["contact_start"]["problem_summary"],
+            "Менеджер не уточнил роль собеседника и масштаб задачи.",
+        )
+        self.assertEqual(stages["contact_start"]["problem_source"], "criteria_comment")
+        self.assertEqual(
+            stages["needs_discovery"]["problem_summary"],
+            "Потребность клиента раскрыта поверхностно.",
+        )
+        self.assertEqual(stages["needs_discovery"]["problem_source"], "gap")
+        self.assertNotIn("nd_depth", stages["needs_discovery"]["problem_summary"])
+
     def test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics(self) -> None:
         manager = _manager()
         payload = build_manager_daily_payload(

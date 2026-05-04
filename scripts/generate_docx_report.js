@@ -152,13 +152,20 @@ function stageStatus(stage) {
 
 function stageProblem(stage) {
   if (stage.priority) {
-    return DATA.key_problem?.title || "Этот этап сейчас главный фокус ближайшей отработки.";
+    return firstNonEmpty(
+      stage.problem_summary,
+      DATA.key_problem?.title,
+      "Этот этап сейчас главный фокус ближайшей отработки.",
+    );
   }
-  return "Недостаточно данных для конкретного вывода по этапу.";
+  return firstNonEmpty(stage.problem_summary, "Недостаточно данных для конкретного вывода по этапу.");
 }
 
 function criterionToProblem(name) {
-  return "Не " + name.charAt(0).toLowerCase() + name.slice(1);
+  const text = cleanText(name);
+  if (!text) return "";
+  if (/^не\s+/i.test(text)) return text.charAt(0).toUpperCase() + text.slice(1);
+  return "Не " + text.charAt(0).toLowerCase() + text.slice(1);
 }
 
 function emptyStateData(payload) {
@@ -329,6 +336,8 @@ function dataFromBundle(bundle) {
       score10: stage.score ?? null,
       score5: stage.score === null || stage.score === undefined ? null : safeNumber((safeNumber(stage.score) / 2).toFixed(1), null),
       priority: Boolean(stage.is_priority),
+      problem_summary: stage.problem_summary || "",
+      problem_source: stage.problem_source || "",
       subs: (stage.criteria_detail || []).filter(Boolean).map((criterion) => ({
         name: criterion.name || "Критерий",
         score10: criterion.score ?? null,

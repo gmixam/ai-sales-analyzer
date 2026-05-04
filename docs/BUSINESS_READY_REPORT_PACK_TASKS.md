@@ -215,7 +215,7 @@ business-facing morning card.
 
 | Желаемое поле | Текущий source | Статус | Можно рендерить сейчас | Нужно менять механизм |
 |---|---|---|---|---|
-| `stage_problem_summary_by_stage` (non-priority stages) | `criteria_results[].comment + evidence` per stage в DB; `criterion_code` prefix = stage_code | **PARTIAL** — data в DB, не в payload | НЕТ | ДА — `_aggregate_stage_scores()` в reporting.py (не нужен analyzer change) |
+| `stage_problem_summary_by_stage` (non-priority stages) | `criteria_results[].comment + evidence` per stage в DB; `criterion_code` prefix = stage_code | **IMPLEMENTED 2026-05-04 (Step 2)** — `score_by_stage[].problem_summary` + `problem_source` в payload | ДА | СДЕЛАНО — `_aggregate_stage_scores()` в reporting.py (без analyzer change) |
 | `focus_stage_deep_dive` (что пошло не так / почему / что исправить / минимум) | `criteria_detail` (priority stage) + `key_problem_of_day.description` + `recommendations[0]` | **PARTIAL** — все sub-items частично доступны, но recommendations не привязаны к stage | ЧАСТИЧНО — можно собрать из существующих полей без гарантии stage-specificity | ЧАСТИЧНО — stage-linked rec нужен механизм; общий совет — renderer-only |
 | `situation_day_what_happened` | `situation.body` / `key_problem.description` | **AVAILABLE** (реализовано) | ДА | НЕТ |
 | `situation_day_evidence_quote` | `evidence_fragments[].client_text` (non-null = реальная цитата) связан с `criterion_code` | **PARTIAL/UNSAFE** — данные в DB (confirmed real quotes), но не surfaced в payload как stage-linked evidence | НЕТ (только через voice_of_customer, не привязан к ситуации дня) | ДА — `situation_evidence_quote` field в payload; matching по criterion_code prefix к priority stage; null-safe |
@@ -233,9 +233,25 @@ business-facing morning card.
 - Focus block negation → `criterionToProblem(weakCriterion)`
 
 **Что требует механизма (reporting.py changes, no analyzer change):**
-1. `_aggregate_stage_scores()` — добавить `stage_problem_summary` per non-priority stage из худшего критерия (min score criterion's `comment` + `evidence`)
-2. `_aggregate_finding_items()` / stage aggregation — сохранить `criterion_code` в aggregated gaps; матчить к stage по prefix для stage-linked gaps
-3. `build_manager_daily_payload()` — добавить `situation_evidence_quote` field: первый non-null `evidence_fragments.client_text` matching priority stage criterion_code prefix
+1. `[DONE 2026-05-04]` `_aggregate_stage_scores()` — добавлен `problem_summary` / `problem_source` per stage из худшего stage-linked issue (`criteria_results.comment`, затем `gaps`, затем `evidence_fragments`)
+2. `[DONE 2026-05-04]` `_aggregate_finding_items()` / stage aggregation — `criterion_code` сохраняется в aggregated gaps; stage matching работает по prefix без analyzer change
+3. `[TODO Step 3+]` `build_manager_daily_payload()` — добавить `situation_evidence_quote` field: первый non-null `evidence_fragments.client_text` matching priority stage criterion_code prefix
+
+### Manager_daily Content Enrichment — Step 2 Closure
+
+**Дата:** 2026-05-04
+
+**Реализовано:**
+- `score_by_stage[].problem_summary`
+- `score_by_stage[].problem_source`
+- DOCX/PDF renderer column `Основная проблема` prefers `problem_summary`; fallback remains only when stage data is absent.
+
+**Verified Tolegen 2026-04-27 ready-only case:**
+- `raw_calls_total = 67`
+- `meaningful_calls_total = 16`
+- `included_in_report_total / coaching_core = 9`
+- stage summaries surfaced for: Э1 `contact_start`, Э2 `qualification_primary`, Э3 `needs_discovery`, Э4 `presentation`, Э6 `completion_next_step`
+- technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent)
 
 **Что требует нового LLM step:**
 - Ничего из перечисленного выше. Все данные уже в DB.

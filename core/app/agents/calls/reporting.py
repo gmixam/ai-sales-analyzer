@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
@@ -3568,6 +3569,55 @@ _STAGE_FUNNEL_ORDER: list[tuple[str, str, str]] = [
     ("cross_stage_transition", "Сквозной", "Сквозной критерий"),
 ]
 
+_CRITERION_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("cs_", "contact_start"),
+    ("qp_", "qualification_primary"),
+    ("nd_", "needs_discovery"),
+    ("pr_", "presentation"),
+    ("oh_", "objection_handling"),
+    ("ns_", "completion_next_step"),
+    ("cn_", "completion_next_step"),
+    ("completion_", "completion_next_step"),
+    ("cross_", "cross_stage_transition"),
+)
+
+
+def _stage_code_from_criterion_code(criterion_code: str) -> str | None:
+    """Resolve analyzer criterion_code prefix to report stage_code."""
+    code = str(criterion_code or "").strip().lower()
+    if not code:
+        return None
+    for prefix, stage_code in _CRITERION_STAGE_PREFIXES:
+        if code.startswith(prefix):
+            return stage_code
+    return None
+
+
+def _first_sentence(value: str, *, limit: int = 180) -> str:
+    """Return one short manager-facing sentence without exposing raw codes."""
+    text = re.sub(r"`[^`]+`", "", str(value or ""))
+    text = re.sub(r"\b[a-z]{2,}_[a-z0-9_]+\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" -–—:;")
+    if not text:
+        return ""
+    sentence_end = re.search(r"(?<=[.!?])\s+", text)
+    if sentence_end:
+        text = text[: sentence_end.start()].strip()
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].strip()
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def _stage_problem_text_from_issue(issue: dict[str, Any]) -> str:
+    """Build one bounded stage problem sentence from already persisted analysis data."""
+    for key in ("comment", "interpretation", "impact", "evidence", "title", "criterion_name"):
+        text = _first_sentence(str(issue.get(key) or ""))
+        if text:
+            return text
+    return ""
+
 
 def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str, Any]]:
     """Average per-call stage scores across all artifacts, ordered by funnel.
@@ -3579,6 +3629,7 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
     stage_buckets: dict[str, list[float]] = {}
     crit_stage: dict[str, dict[str, list[float]]] = {}
     crit_names: dict[str, str] = {}
+    stage_problem_candidates: dict[str, list[dict[str, Any]]] = {}
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for stage in detail.get("score_by_stage") or []:
@@ -3593,10 +3644,51 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                 cscore = int(crit.get("score") or 0)
                 cmax = int(crit.get("max_score") or 0)
                 if ccode and cmax > 0:
-                    crit_stage.setdefault(code, {}).setdefault(ccode, []).append(round(cscore / cmax * 10, 1))
+                    normalized = round(cscore / cmax * 10, 1)
+                    crit_stage.setdefault(code, {}).setdefault(ccode, []).append(normalized)
                     crit_names.setdefault(ccode, cname)
+                    candidate_text = _stage_problem_text_from_issue(dict(crit))
+                    if candidate_text:
+                        stage_problem_candidates.setdefault(code, []).append(
+                            {
+                                "source": "criteria_comment",
+                                "score": normalized,
+                                "text": candidate_text,
+                                "criterion_code": ccode,
+                                "criterion_name": cname,
+                            }
+                        )
+        for item in detail.get("gaps") or []:
+            item_code = str(item.get("criterion_code") or "").strip()
+            stage_code = _stage_code_from_criterion_code(item_code)
+            candidate_text = _stage_problem_text_from_issue(dict(item))
+            if stage_code and candidate_text:
+                stage_problem_candidates.setdefault(stage_code, []).append(
+                    {
+                        "source": "gap",
+                        "score": 0.0,
+                        "text": candidate_text,
+                        "criterion_code": item_code,
+                        "criterion_name": str(item.get("criterion_name") or item.get("title") or "").strip(),
+                    }
+                )
+        for item in detail.get("evidence_fragments") or []:
+            item_code = str(item.get("criterion_code") or "").strip()
+            stage_code = _stage_code_from_criterion_code(item_code)
+            candidate_text = _stage_problem_text_from_issue(dict(item))
+            if stage_code and candidate_text:
+                stage_problem_candidates.setdefault(stage_code, []).append(
+                    {
+                        "source": "evidence",
+                        "score": 5.0,
+                        "text": candidate_text,
+                        "criterion_code": item_code,
+                        "criterion_name": "",
+                    }
+                )
     rows: list[dict[str, Any]] = []
     priority_found = False
+    source_rank = {"criteria_comment": 0, "gap": 1, "evidence": 2, "fallback": 3}
     for stage_code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
         scores = stage_buckets.get(stage_code)
         if not scores:
@@ -3617,6 +3709,23 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                 })
             crits.sort(key=lambda x: x["score"])
             criteria_detail = crits[:5]
+        problem_candidates = [
+            item
+            for item in stage_problem_candidates.get(stage_code, [])
+            if str(item.get("text") or "").strip()
+        ]
+        problem_summary = None
+        problem_source = None
+        if problem_candidates:
+            problem_candidates.sort(
+                key=lambda item: (
+                    float(item.get("score") if item.get("score") is not None else 10.0),
+                    source_rank.get(str(item.get("source") or ""), 9),
+                )
+            )
+            best_problem = problem_candidates[0]
+            problem_summary = str(best_problem.get("text") or "").strip() or None
+            problem_source = str(best_problem.get("source") or "").strip() or None
         rows.append({
             "stage_code": stage_code,
             "funnel_label": funnel_label,
@@ -3624,6 +3733,8 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             "score": avg,
             "is_priority": is_priority,
             "criteria_detail": criteria_detail,
+            "problem_summary": problem_summary,
+            "problem_source": problem_source,
         })
     return rows
 
@@ -3682,6 +3793,7 @@ def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> li
             {
                 "label": label,
                 "signal": len(items),
+                "criterion_code": str(first.get("criterion_code") or "").strip() or None,
                 "interpretation": str(
                     first.get("impact")
                     or first.get("comment")
