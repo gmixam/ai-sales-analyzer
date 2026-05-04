@@ -375,15 +375,36 @@ function dataFromBundle(bundle) {
     rescheduled: "Перенос",
     refusal: "Отказ",
     open: "Открыт",
+    tech_service: "Тех/сервис",
   };
-  const allCalls = (callList.rows || []).map((row) => ({
-    n: row[0] || "—",
-    time: row[1] || "—",
-    client: row[2] || "—",
-    topic: row[3] || "—",
-    context: row[4] || "—",
-    status: statusLabelMap[String((payload.call_list || [])[Number(row[0]) - 1]?.status || "").trim()] || row[5] || "—",
-  }));
+  const allCalls = (callList.rows || []).map((row) => {
+    const payloadCall = (payload.call_list || [])[Number(row[0]) - 1];
+    let status;
+    if (payloadCall) {
+      const ct = (payloadCall.call_type || "").toLowerCase();
+      const st = (payloadCall.status || "").toLowerCase();
+      if (ct === "support" || ct === "internal") {
+        status = "Тех/сервис";
+      } else {
+        status = statusLabelMap[st] || "Не классифицировано";
+      }
+    } else {
+      // Fallback to pre-rendered section row for forward/backward compatibility
+      status = row[5] || "Не классифицировано";
+    }
+    const rawContext = row[4] || "—";
+    const context = (status === "Не классифицировано" && rawContext === "—")
+      ? "Нет готового разбора"
+      : rawContext;
+    return {
+      n: row[0] || "—",
+      time: row[1] || "—",
+      client: row[2] || "—",
+      topic: row[3] || "—",
+      context,
+      status,
+    };
+  });
   const selectionMeaningfulCalls = safeNumber(payload.selection_model?.meaningful_calls_total, null);
   const meaningfulCalls = selectionMeaningfulCalls !== null ? selectionMeaningfulCalls : allCalls.length;
 
@@ -785,12 +806,13 @@ function buildCoachingWindowNote() {
   const w = DATA.coaching_window;
 
   if (w && w.window_days > 1) {
-    // Rolling window: explain the multi-day coaching base
+    // Rolling window: explain the multi-day coaching base and that day list is report-day-only
     const dayWord = w.window_days <= 4 ? "рабочих дня" : "рабочих дней";
     let note = `Коучинговый разбор собран по расширенной базе за ${w.window_days} ${dayWord}.`;
     if (inReport !== null) {
       note += ` В разбор вошло ${inReport} ${russianCallWord(inReport)}.`;
     }
+    note += " В список ниже включены только звонки отчётного дня.";
     return note;
   }
 

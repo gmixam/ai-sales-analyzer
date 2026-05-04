@@ -3264,8 +3264,10 @@ def _call_topic_label(call_type: str | None, scenario_type: str | None) -> str:
     return type_label or scenario_label or "—"
 
 
-def _call_context_label(status: str, deadline: str | None, reason: str | None) -> str:
+def _call_context_label(status: str | None, deadline: str | None, reason: str | None) -> str:
     """Build short Контекст for a call list row from follow_up outcome data."""
+    if not status:
+        return "Нет готового разбора"
     dl = _format_deadline_human(deadline) if deadline else None
     if status == "agreed":
         return f"до {dl}" if dl else "—"
@@ -3281,12 +3283,13 @@ def _call_status_label(value: Any) -> str:
     """Map internal call status to reader-facing Russian label."""
     mapping = {
         "agreed": "Договорённость",
-        "rescheduled": "Перенесли",
+        "rescheduled": "Перенос",
         "refusal": "Отказ",
         "open": "Открыт",
+        "tech_service": "Тех/сервис",
     }
-    text = _manager_reader_value(value, "Статус не определён")
-    return mapping.get(text, text)
+    raw = str(value or "").strip()
+    return mapping.get(raw, "Не классифицировано")
 
 
 def _call_level_label(value: Any) -> str:
@@ -3311,7 +3314,7 @@ def _manager_status_class(value: Any) -> str:
         return "refusal"
     if "открыт" in text:
         return "open"
-    return "open"
+    return "neutral"
 
 
 def _manager_status_fill(value: Any) -> tuple[int, int, int]:
@@ -3321,8 +3324,9 @@ def _manager_status_fill(value: Any) -> tuple[int, int, int]:
         "rescheduled": (239, 226, 185),
         "refusal": (244, 221, 221),
         "open": (246, 223, 207),
+        "neutral": (240, 240, 240),
     }
-    return mapping[_manager_status_class(value)]
+    return mapping.get(_manager_status_class(value), (240, 240, 240))
 
 
 def _manager_status_text_color(

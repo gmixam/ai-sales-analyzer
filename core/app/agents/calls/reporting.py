@@ -4504,12 +4504,22 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     call = dict(detail.get("call") or {})
     follow_up = dict(detail.get("follow_up") or {})
     classification = dict(detail.get("classification") or {})
-    status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
+    call_type = classification.get("call_type")
+    if artifact.analysis is None:
+        # No analysis available — outcome unknown; report as unclassified, not "open"
+        status = None
+        deadline = None
+    elif str(call_type or "").lower() in ("support", "internal"):
+        # Service/internal calls — not a sales outcome
+        status = "tech_service"
+        deadline = None
+    else:
+        status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
     return {
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
         "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
         "duration_sec": artifact.interaction.duration_sec,
-        "call_type": classification.get("call_type"),
+        "call_type": call_type,
         "scenario_type": classification.get("scenario_type"),
         "status": status,
         "next_step": follow_up.get("next_step_text"),

@@ -434,6 +434,53 @@ business-facing morning card.
 - compact dialogue excerpt per situation — requires same call_id + evidence_fragment linkage;
 - stage linkage per situation — `criterion_code` prefix in `gaps` / `improve_items` could enable this without analyzer change, similar to Steps 2–3 mechanism.
 
+### Manager_daily Content Enrichment — Step 8 Closure
+
+**Дата:** 2026-05-04
+
+**Scope:** only `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` status taxonomy in `scripts/generate_docx_report.js`, plus supporting Python functions in `report_templates.py` and `reporting.py`. No changes to analyzer, prompts, LLM/STT, scoring, eligibility, selection model, rolling window logic, readiness, delivery, `rop_weekly`, or other report blocks.
+
+**Реализовано:**
+
+`reporting.py` — `_build_daily_call_row()`:
+- `artifact.analysis is None` → `status=None, deadline=None` (previously defaulted to `"open"` via `_derive_call_status_and_deadline({})`);
+- `call_type in {support, internal}` → `status="tech_service", deadline=None`;
+- `_derive_call_status_and_deadline()` called only for analyzed non-support/internal calls.
+
+`report_templates.py`:
+- `_call_status_label()` rewritten as clean mapping dict: `None/unknown → "Не классифицировано"`, `"rescheduled" → "Перенос"` (was `"Перенесли"`), `"tech_service" → "Тех/сервис"` added;
+- `_call_context_label()`: `status=None → "Нет готового разбора"`;
+- `_manager_status_class()` fallback changed from `"open"` to `"neutral"`;
+- `_manager_status_fill()`: added `"neutral": (240, 240, 240)`, fallback changed from `mapping[...]` to `mapping.get(..., (240, 240, 240))`.
+
+`scripts/generate_docx_report.js`:
+- `allCalls` mapping in `dataFromBundle()` reads `payload.call_list[i]` by row number, checks `call_type in {support, internal} → "Тех/сервис"`, else `statusLabelMap[st] || "Не классифицировано"`; fallback to `row[5]` if no payload entry;
+- context fallback: status `"Не классифицировано"` + raw context `"—"` → `"Нет готового разбора"`;
+- `buildCoachingWindowNote()` for rolling window (`window_days > 1`) appends `"В список ниже включены только звонки отчётного дня."`.
+
+**Verified Толеген 2026-04-27 bundle:**
+- Row 1 (call_type=support, status=open) → rendered `"Тех/сервис"` ✓
+- Row 2 (call_type=sales_primary, status=agreed) → `"Договорённость"` ✓
+- Row 3 (call_type=support, status=open) → rendered `"Тех/сервис"` ✓
+- Row 4 (call_type=sales_primary, status=open) → `"Открыт"` ✓
+- Row 5 (call_type=sales_primary, status=agreed) → `"Договорённость"` ✓
+
+**Live DB verification (Толеген 2026-04-27):**
+- `type=None, status=None: 12` (was `open: 12`) ✓
+- `type=support, status=tech_service: 1` (was `open: 1`) ✓
+- `type=sales_primary, status=agreed: 2` ✓
+- `type=sales_primary, status=open: 1` ✓
+
+**Tests:** 84 passed (`tests/test_manual_reporting.py`); `node --check scripts/generate_docx_report.js` passed.
+
+**Architecture gap (documented, not fixed, out of scope):**
+`call_outcomes_summary` uses coaching_core window (multi-day, 9 calls for Tolegen 27-Apr) while `call_list` uses report-day meaningful calls only (5 for Tolegen bundle, 16 live). This means dashboard НЕ КЛАСС. count ≠ call list НЕ КЛАСС. count after fix. Not a bug introduced here — pre-existing structural split. Fix would require aligning `_build_call_outcomes_summary()` or `call_list` source period; out of scope per task boundary.
+
+**Future task — call_outcomes_summary report-day alignment:**
+Align `call_outcomes_summary` to use report-day meaningful calls (not coaching_core window) so that status counts in the day-summary table match the counts in the call list below. Change scope: `reporting.py` `_build_call_outcomes_summary()` — pass report-day artifacts only, not rolling window core. Requires test update for the 9→5/16 count change in outcome summary.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
