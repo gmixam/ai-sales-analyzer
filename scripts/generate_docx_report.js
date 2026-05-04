@@ -154,6 +154,28 @@ function buildFocusStageDeepDiveElements(dive) {
   ];
 }
 
+function hasFocusStageRecommendation(rec) {
+  return Boolean(
+    rec
+    && (cleanText(rec.recommendation) || (Array.isArray(rec.checklist) && rec.checklist.some((item) => cleanText(item))))
+  );
+}
+
+function buildFocusStageRecommendationElements(rec, dive) {
+  if (!hasFocusStageRecommendation(rec)) return [];
+  const recommendation = cleanText(rec.recommendation);
+  const alreadyShown = recommendation && recommendation === cleanText(dive?.what_to_fix);
+  const checklist = (rec.checklist || []).map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
+  const elements = [subHeading("Что сделать в следующих звонках:")];
+  if (recommendation && !alreadyShown) {
+    elements.push(bodyPara(recommendation, { bold: true, color: COLORS.heading }));
+  }
+  if (checklist.length > 0) {
+    elements.push(...checklist.map((item, index) => bodyPara(`${index + 1}. ${item}`, { size: SZ.cell })));
+  }
+  return elements;
+}
+
 function tomorrowSituation(contact, row) {
   const status = cleanText(contact.status || "");
   const deadline = firstNonEmpty(contact.deadline, row[2]);
@@ -247,6 +269,7 @@ function emptyStateData(payload) {
       call_example: {},
       evidence_quote: null,
       focus_stage_deep_dive: null,
+      focus_stage_recommendation: null,
       scripts: [],
       why_it_works: "",
     },
@@ -408,6 +431,7 @@ function dataFromBundle(bundle) {
       call_example: situation.call_example || {},
       evidence_quote: payload.situation_evidence_quote || null,
       focus_stage_deep_dive: payload.focus_stage_deep_dive || null,
+      focus_stage_recommendation: payload.focus_stage_recommendation || null,
       scripts: situation.scripts || [],
       why_it_works: situation.why_it_works || "",
     },
@@ -1060,11 +1084,13 @@ function buildSituatsiya() {
         subHeading("Фрагмент диалога:"),
         bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
         ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),
+        ...buildFocusStageRecommendationElements(s.focus_stage_recommendation, s.focus_stage_deep_dive),
       ]
     : [
         subHeading("Фрагмент диалога:"),
         bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
         ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),
+        ...buildFocusStageRecommendationElements(s.focus_stage_recommendation, s.focus_stage_deep_dive),
       ];
 
   return [

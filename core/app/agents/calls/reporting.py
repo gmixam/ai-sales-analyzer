@@ -3240,6 +3240,10 @@ def build_manager_daily_payload(
         key_problem=key_problem,
         recommendations=recommendation_cards,
     )
+    focus_stage_recommendation = _build_focus_stage_recommendation(
+        focus_stage_deep_dive=focus_stage_deep_dive,
+        recommendations=recommendation_cards,
+    )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -3329,6 +3333,7 @@ def build_manager_daily_payload(
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
         "focus_stage_deep_dive": focus_stage_deep_dive,
+        "focus_stage_recommendation": focus_stage_recommendation,
         "call_list": _build_meaningful_call_list(
             window_artifacts=operational_day_artifacts,
         ),
@@ -3859,6 +3864,54 @@ _FOCUS_STAGE_MINIMUM_FALLBACKS: dict[str, str] = {
     "cross_stage_transition": "В каждом подходящем sales-звонке делать короткий итог перед переходом к следующему этапу.",
 }
 
+_FOCUS_STAGE_RECOMMENDATION_FALLBACKS: dict[str, str] = {
+    "contact_start": "Начни звонок с причины контакта, проверки удобства разговора и уточнения роли собеседника.",
+    "qualification_primary": "Перед презентацией уточни роль собеседника, текущий процесс и следующий шаг.",
+    "needs_discovery": "До предложения уточни боль клиента, ограничение текущего процесса и главный приоритет.",
+    "presentation": "Покажи продукт через задачу клиента и проверь, видит ли он ценность предложения.",
+    "objection_handling": "Разбери причину возражения, ответь по сути и проверь, снято ли сомнение клиента.",
+    "completion_next_step": "Закрой разговор конкретным следующим шагом, сроком и ответственным.",
+    "cross_stage_transition": "Связывай этапы коротким итогом и согласованием следующего шага разговора.",
+}
+
+_FOCUS_STAGE_CHECKLIST_FALLBACKS: dict[str, list[str]] = {
+    "contact_start": [
+        "Назвать причину звонка",
+        "Проверить удобство разговора",
+        "Уточнить роль собеседника",
+    ],
+    "qualification_primary": [
+        "Уточнить роль собеседника",
+        "Понять текущий процесс",
+        "Зафиксировать следующий шаг",
+    ],
+    "needs_discovery": [
+        "Уточнить боль или ограничение текущего процесса",
+        "Понять приоритет клиента",
+        "Связать предложение с выявленной задачей",
+    ],
+    "presentation": [
+        "Назвать задачу клиента",
+        "Связать продукт с этой задачей",
+        "Проверить, попали ли в потребность",
+    ],
+    "objection_handling": [
+        "Уточнить причину возражения",
+        "Ответить по сути сомнения",
+        "Проверить, снято ли возражение",
+    ],
+    "completion_next_step": [
+        "Назвать конкретный следующий шаг",
+        "Зафиксировать срок",
+        "Подтвердить ответственного",
+    ],
+    "cross_stage_transition": [
+        "Коротко подвести итог этапа",
+        "Согласовать переход к следующей теме",
+        "Проверить понимание клиента",
+    ],
+}
+
 
 def _focus_stage_generic_text(stage_name: str, *, kind: str) -> str:
     """Return compact manager-facing fallback for unknown focus stage codes."""
@@ -3955,6 +4008,53 @@ def _build_focus_stage_deep_dive(
         "why_it_matters": why_it_matters,
         "what_to_fix": what_to_fix,
         "minimum_for_tomorrow": minimum_for_tomorrow,
+    }
+
+
+def _build_focus_stage_recommendation(
+    *,
+    focus_stage_deep_dive: dict[str, Any] | None,
+    recommendations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build stage-linked next-call recommendation from the already assembled focus stage."""
+    if not focus_stage_deep_dive:
+        return None
+
+    stage_code = str(focus_stage_deep_dive.get("stage_code") or "").strip()
+    stage_name = str(focus_stage_deep_dive.get("stage_name") or "").strip()
+    if not stage_code and not stage_name:
+        return None
+
+    problem = _first_sentence(str(focus_stage_deep_dive.get("what_went_wrong") or ""))
+    recommendation = _first_sentence(str(focus_stage_deep_dive.get("what_to_fix") or ""), limit=220)
+    source = "focus_stage_deep_dive" if recommendation else "stage_fallback"
+
+    if not recommendation:
+        stage_recommendation = next((item for item in recommendations if _is_meaningful_recommendation(item)), None)
+        recommendation = _first_sentence(str((stage_recommendation or {}).get("better_phrasing") or ""), limit=220)
+        source = "recommendations" if recommendation else "stage_fallback"
+
+    if not recommendation:
+        recommendation = _FOCUS_STAGE_RECOMMENDATION_FALLBACKS.get(
+            stage_code,
+            _focus_stage_generic_text(stage_name, kind="fix"),
+        )
+
+    checklist = _FOCUS_STAGE_CHECKLIST_FALLBACKS.get(stage_code)
+    if checklist is None:
+        checklist = [
+            f"Уточнить ключевой вопрос этапа «{stage_name or 'фокусный этап'}»",
+            "Связать ответ клиента с предложением",
+            "Зафиксировать следующий шаг",
+        ]
+
+    return {
+        "stage_code": stage_code,
+        "stage_name": stage_name,
+        "problem": problem,
+        "recommendation": recommendation,
+        "checklist": checklist[:3],
+        "source": source,
     }
 
 

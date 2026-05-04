@@ -391,6 +391,21 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "В каждом подходящем sales-звонке зафиксировать роль собеседника, текущий процесс и следующий шаг.",
         )
         self.assertNotIn("qp_role_scope", " ".join(str(value) for value in deep_dive.values()))
+        focus_rec = payload["focus_stage_recommendation"]
+        self.assertIsNotNone(focus_rec)
+        self.assertEqual(focus_rec["stage_code"], "qualification_primary")
+        self.assertEqual(focus_rec["problem"], "Роль собеседника не была уточнена.")
+        self.assertEqual(focus_rec["recommendation"], deep_dive["what_to_fix"])
+        self.assertEqual(
+            focus_rec["checklist"],
+            [
+                "Уточнить роль собеседника",
+                "Понять текущий процесс",
+                "Зафиксировать следующий шаг",
+            ],
+        )
+        self.assertEqual(focus_rec["source"], "focus_stage_deep_dive")
+        self.assertNotIn("qp_role_scope", " ".join(str(value) for value in focus_rec.values()))
 
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -467,6 +482,17 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "В каждом подходящем sales-звонке зафиксировать конкретный следующий шаг, срок и ответственного.",
         )
         self.assertIn("конкретный следующий шаг", deep_dive["what_to_fix"])
+        focus_rec = payload["focus_stage_recommendation"]
+        self.assertIsNotNone(focus_rec)
+        self.assertEqual(
+            focus_rec["checklist"],
+            [
+                "Назвать конкретный следующий шаг",
+                "Зафиксировать срок",
+                "Подтвердить ответственного",
+            ],
+        )
+        self.assertEqual(focus_rec["source"], "focus_stage_deep_dive")
 
     def test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics(self) -> None:
         manager = _manager()

@@ -189,6 +189,7 @@ business-facing morning card.
 | СИТУАЦИЯ ДНЯ: evidence quote linked to priority stage | Data exists: `evidence_fragments[i].client_text` is real verbatim text when non-null, linked by `criterion_code` to stage. Requires new `situation_evidence_quote` field in payload built from evidence_fragments where criterion_code starts with priority stage prefix and client_text is not null. |
 | БАЛЛЫ ПО ЭТАПАМ: stage-linked gaps / Основная проблема via criterion_code | `gaps` items in DB have `criterion_code` with stage prefix — stage linkage is possible without analyzer change. Requires `_aggregate_finding_items()` to preserve `criterion_code` and `_aggregate_stage_scores()` to match gaps to stages by prefix. |
 | РАЗБОР ЗВОНКА: verbatim evidence от реального клиента | `evidence_fragments.client_text` может быть реальной цитатой (non-null); сейчас `call_breakdown.rows` используют LLM-written `evidence_text`. Requires renderer to prefer non-null `client_text` over `evidence_text` when building РАЗБОР ЗВОНКА rows. |
+| СИТУАЦИЯ ДНЯ: stage-linked recommendation / checklist | `focus_stage_deep_dive` + priority stage + deterministic stage checklist. | **IMPLEMENTED 2026-05-04 (Step 5)** — `focus_stage_recommendation` surfaced in payload and rendered as `Что сделать в следующих звонках` | ДА | СДЕЛАНО — bounded assembly, no analyzer/LLM change |
 
 Это bounded second-stage layer. Не блокирует пилот.
 
@@ -289,6 +290,25 @@ business-facing morning card.
 - `why_it_matters`: `Без понимания роли, процесса и задачи клиента презентация звучит общей и не привязана к реальной потребности.`
 - `what_to_fix`: `До презентации задать 2–3 уточняющих вопроса и только потом связывать продукт с задачей клиента.`
 - `minimum_for_tomorrow`: `В каждом подходящем sales-звонке зафиксировать роль собеседника, текущий процесс и следующий шаг.`
+- technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent)
+
+### Manager_daily Content Enrichment — Step 5 Closure
+
+**Дата:** 2026-05-04
+
+**Реализовано:**
+- `focus_stage_recommendation`
+- DOCX/PDF renderer block `СИТУАЦИЯ ДНЯ → Что сделать в следующих звонках`
+- deterministic stage checklist with 2–3 manager actions.
+
+**Verified Tolegen 2026-04-27 ready-only case:**
+- `raw_calls_total = 67`
+- `meaningful_calls_total = 16`
+- `included_in_report_total / coaching_core = 9`
+- focus stage: `qualification_primary`
+- recommendation source: `focus_stage_deep_dive`
+- recommendation: `До презентации задать 2–3 уточняющих вопроса и только потом связывать продукт с задачей клиента.`
+- checklist: `Уточнить роль собеседника`; `Понять текущий процесс`; `Зафиксировать следующий шаг`
 - technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent)
 
 **Что требует нового LLM step:**
