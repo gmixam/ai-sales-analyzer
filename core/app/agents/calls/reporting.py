@@ -3798,12 +3798,17 @@ def _build_situation_evidence_quote(
                 or ""
             ).strip() or None
             call_meta = dict(detail.get("call") or {})
-            client_label = str(
-                call_meta.get("contact_name") or call_meta.get("contact_phone")
+            client_phone = str(
+                call_meta.get("contact_phone")
                 or (artifact.interaction.metadata_ or {}).get("contact_phone")
+                or ""
+            ).strip() or None
+            client_label = str(
+                call_meta.get("contact_name") or client_phone
                 or "Клиент"
             ).strip()
             time_label = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+            date_label = artifact.call_started_at.date().isoformat() if artifact.call_started_at else None
             rank = 2
             if key_problem_code and criterion_code == key_problem_code:
                 rank = 0
@@ -3823,6 +3828,8 @@ def _build_situation_evidence_quote(
                         "source": "evidence_fragments",
                         "call_id": str(artifact.interaction.id),
                         "client_label": client_label,
+                        "client_phone": client_phone,
+                        "date_label": date_label,
                         "time_label": time_label,
                     },
                 )

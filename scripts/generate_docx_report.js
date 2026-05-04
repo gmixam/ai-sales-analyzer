@@ -109,13 +109,62 @@ function shortQuote(value, limit = 320) {
   return `${text.slice(0, limit).replace(/\s+\S*$/, "")}…`;
 }
 
+function isPhoneLike(value) {
+  const text = cleanText(value);
+  const digits = text.replace(/\D/g, "");
+  return digits.length >= 7;
+}
+
+function buildCallReference(quote) {
+  if (!quote) return "";
+  const dateText = formatRussianDate(firstNonEmpty(quote.date_label, DATA.report_day, DATA.date));
+  const timeText = cleanText(quote.time_label);
+  const clientLabel = cleanText(quote.client_label);
+  const phone = cleanText(quote.client_phone);
+  const parts = [];
+  if (dateText && dateText !== "—") parts.push(dateText);
+  if (timeText && timeText !== "—") {
+    if (parts.length > 0) parts[0] = `${parts[0]}, ${timeText}`;
+    else parts.push(timeText);
+  }
+  if (clientLabel && !isPhoneLike(clientLabel)) parts.push(clientLabel);
+  if (phone) parts.push(phone);
+  else if (clientLabel && isPhoneLike(clientLabel)) parts.push(clientLabel);
+  return parts.length > 0 ? `Звонок: ${parts.join(" · ")}` : "";
+}
+
+function buildWhatHappenedText(s) {
+  const quote = s.evidence_quote;
+  const dive = s.focus_stage_deep_dive || {};
+  const callRef = buildCallReference(quote);
+  const clientText = shortQuote(quote?.client_text, 220);
+  const problem = cleanText(dive.what_went_wrong);
+  const why = cleanText(dive.why_it_matters);
+  if (clientText) {
+    const quoteText = clientText.replace(/^«|»$/g, "").replace(/[.!?]+$/, "");
+    const fragments = [];
+    if (callRef) fragments.push(callRef + ".");
+    fragments.push(`Клиент сказал: «${quoteText}».`);
+    if (problem || why) {
+      fragments.push(`Проблема: ${[problem, why].filter(Boolean).join(" ")}`);
+    }
+    return fragments.join(" ");
+  }
+  if (problem) {
+    return `В одном из звонков по фокусному этапу проявилась проблема: ${problem}`;
+  }
+  return "";
+}
+
 function buildDialogueFragmentText(quote) {
   if (!quote || !cleanText(quote.client_text)) {
     return "Фрагмент диалога в текущем payload не передан.";
   }
   const lines = [];
+  const callRef = buildCallReference(quote);
   const managerText = shortQuote(quote.manager_text, 260);
   const clientText = shortQuote(quote.client_text, 320);
+  if (callRef) lines.push(callRef);
   if (managerText) lines.push(`Менеджер: ${managerText}`);
   lines.push(`Клиент: ${clientText}`);
   return lines.join("\n");
@@ -910,10 +959,9 @@ function buildDengi() {
   // Table header
   const hdrRow = new TableRow({
     children: [
-      headCell("Категория",   { width: { size: 40, type: WidthType.PERCENTAGE } }),
-      headCell("Кол-во",      { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Средний чек", { width: { size: 25, type: WidthType.PERCENTAGE }, align: AlignmentType.RIGHT }),
-      headCell("Потенциал",   { width: { size: 20, type: WidthType.PERCENTAGE }, align: AlignmentType.RIGHT }),
+      headCell("Категория", { width: { size: 45, type: WidthType.PERCENTAGE } }),
+      headCell("Кол-во", { width: { size: 20, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Потенциал", { width: { size: 35, type: WidthType.PERCENTAGE }, align: AlignmentType.RIGHT }),
     ],
   });
 
@@ -922,7 +970,6 @@ function buildDengi() {
       children: [
         cell(r.label, { shading: altShading(i) }),
         cell(String(r.count), { align: AlignmentType.CENTER, shading: altShading(i) }),
-        cell(formatMoney(AVG_CHECK), { align: AlignmentType.RIGHT, shading: altShading(i), color: COLORS.gray }),
         cell(formatMoney(r.count * AVG_CHECK), { align: AlignmentType.RIGHT, shading: altShading(i), bold: true, color: COLORS.green }),
       ],
     })
@@ -932,7 +979,6 @@ function buildDengi() {
     children: [
       cell("Итого", { bold: true }),
       cell(String(totalCount), { align: AlignmentType.CENTER, bold: true }),
-      cell("—", { align: AlignmentType.RIGHT, color: COLORS.gray }),
       cell(formatMoney(totalPotential), { align: AlignmentType.RIGHT, bold: true, color: COLORS.green }),
     ],
   });
@@ -945,7 +991,7 @@ function buildDengi() {
     }),
     spacer(4),
     bodyPara(
-      `Предварительная оценка: пока используется средний чек ${formatMoney(AVG_CHECK)}. После подключения CRM сумма будет считаться по сделкам.`,
+      `Предварительная оценка: пока используется средний чек ${AVG_CHECK.toLocaleString("ru-RU")} тенге на один потенциальный контакт. После подключения CRM сумма будет считаться по сделкам.`,
       { color: COLORS.gray, size: SZ.meta },
     ),
   ];
@@ -990,20 +1036,6 @@ function buildBally() {
     rows.push(new TableRow({ children: rowCells }));
   }
 
-  const priorityStage = DATA.stages.find((stage) => stage.priority);
-  const weakFocusItems = (priorityStage?.subs || [])
-    .filter((item) => item.is_weak || (item.score5 !== null && item.score5 < 2.0))
-    .map((item) => cleanText(item.name))
-    .filter(Boolean)
-    .slice(0, 2);
-  const focusBlock = weakFocusItems.length > 0
-    ? [
-        spacer(6),
-        subHeading(`Фокус на завтра: ${priorityStage?.name}:`),
-        ...weakFocusItems.map((item, index) => bodyPara(`${index + 1}. ${criterionToProblem(item)}`, { size: SZ.cell })),
-      ]
-    : [];
-
   return [
     blockHeading("📈", "БАЛЛЫ ПО ЭТАПАМ"),
     new Table({
@@ -1015,7 +1047,6 @@ function buildBally() {
       "Фокус на завтра — этап, который сейчас сильнее всего мешает продвинуть клиента дальше по воронке.",
       { color: COLORS.gray, size: SZ.meta },
     ),
-    ...focusBlock,
   ];
 }
 
@@ -1027,12 +1058,17 @@ function buildSituatsiya() {
   const s = DATA.situation;
   const rows = [];
 
-  const bodyText = [s.body, s.pattern_count_label].filter(Boolean).join("  ");
+  const whatHappenedText = buildWhatHappenedText(s);
+  const managerError = firstNonEmpty(
+    s.focus_stage_deep_dive?.what_went_wrong,
+    DATA.stages.find((stage) => stage.priority)?.problem_summary,
+    DATA.key_problem?.title,
+  );
 
-  if (DATA.key_problem?.title) {
+  if (managerError) {
     rows.push(new TableRow({ children: [
       labelCell("Ошибка менеджера"),
-      cell(DATA.key_problem.title, { bold: true, color: COLORS.red }),
+      cell(managerError, { bold: true, color: COLORS.red }),
     ]}));
   }
 
@@ -1043,44 +1079,16 @@ function buildSituatsiya() {
     ]}));
   }
 
-  if (s.manager_task) {
-    rows.push(new TableRow({ children: [
-      labelCell("Что делать в следующий раз"),
-      cell(s.manager_task, { bold: true }),
-    ]}));
-  }
-
-  if (s.scripts && s.scripts.length > 0) {
-    rows.push(new TableRow({ children: [
-      labelCell("Варианты речёвок"),
-      cellMultiPara(
-        s.scripts.map((script, index) =>
-          new Paragraph({
-            children: [new TextRun({ text: `${index + 1}. ${script}`, size: SZ.body, font: "Arial", color: COLORS.heading })],
-            spacing: { before: 0, after: 40 },
-          })
-        )
-      ),
-    ]}));
-  }
-
-  if (s.why_it_works) {
-    rows.push(new TableRow({ children: [
-      labelCell("Почему работает"),
-      cell(s.why_it_works, { color: COLORS.gray }),
-    ]}));
-  }
-
   if (rows.length === 0) {
     return [
       blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
-      bodyPara(bodyText || "Данных за этот день недостаточно.", { color: COLORS.gray }),
+      bodyPara(whatHappenedText || "Данных за этот день недостаточно.", { color: COLORS.gray }),
     ];
   }
 
-  const preTableElements = bodyText
+  const preTableElements = whatHappenedText
     ? [
-        bodyPara(`Что произошло: ${bodyText}`, { color: COLORS.orange }),
+        bodyPara(`Что произошло: ${whatHappenedText}`, { color: COLORS.orange }),
         subHeading("Фрагмент диалога:"),
         bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
         ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),

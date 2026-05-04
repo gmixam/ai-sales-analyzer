@@ -311,6 +311,32 @@ business-facing morning card.
 - checklist: `Уточнить роль собеседника`; `Понять текущий процесс`; `Зафиксировать следующий шаг`
 - technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent)
 
+### Manager_daily Content Enrichment — Step 6A Closure
+
+**Дата:** 2026-05-04
+
+**Scope:** only top blocks through `СИТУАЦИЯ ДНЯ` inclusive.
+
+**Реализовано:**
+- removed old `БАЛЛЫ ПО ЭТАПАМ → Фокус на завтра: ...` weak-criteria sub-block;
+- introduced unified call reference in situation evidence rendering: `Звонок: {дата}, {время} · {имя} · {телефон}`;
+- rewrote `Что произошло` from concrete quote + focus-stage problem instead of meta signal text;
+- simplified `СИТУАЦИЯ ДНЯ` table to `Ошибка менеджера` and `Что это значит`;
+- removed non-stage-specific scripts/placeholders from this top section;
+- removed `Средний чек` column from `ДЕНЬГИ НА СТОЛЕ`; explanatory text now uses `80 000 тенге`.
+
+**Verified Tolegen 2026-04-27 ready-only case:**
+- `raw_calls_total = 67`
+- `meaningful_calls_total = 16`
+- `included_in_report_total / coaching_core = 9`
+- old focus sub-block absent;
+- call reference rendered as `Звонок: 27 апреля 2026, 11:17 · Азамат · +77082934767`;
+- `Что произошло` no longer contains `Главный сигнал дня`, `Приоритетный этап`, or `Паттерн повторился`;
+- `Фрагмент диалога` includes call metadata before real `client_text`;
+- `Ошибка менеджера`: `Роль собеседника не была уточнена.`;
+- `Средний чек` column absent; `80 000 тенге` wording present;
+- technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent).
+
 **Что требует нового LLM step:**
 - Ничего из перечисленного выше. Все данные уже в DB.
 - Для более глубоких coaching scripts, pattern detection across many calls — нужен bounded LLM step (задокументировано в "Делать после пилота" basket)
