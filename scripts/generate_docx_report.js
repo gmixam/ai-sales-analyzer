@@ -512,9 +512,17 @@ function dataFromBundle(bundle) {
       interpretation: row[2] || "",
     })),
     additional_situations: ((sections.additional_situations || {}).situations || [])
-      .filter((item) => item.title || item.client_said || item.how_to)
+      .filter((item) => {
+        const sig = safeNumber(item.signal) || 0;
+        const title = (item.title || "").trim();
+        if (sig <= 0) return false;
+        if (!title || title === "Без названия") return false;
+        if (/^(cs_|qp_|nd_|ep_|cl_)/.test(title)) return false;
+        return true;
+      })
+      .slice(0, 3)
       .map((item) => ({
-        title: `«${item.title || "Ситуация"}»`,
+        title: (item.title || "").trim(),
         badge: item.badge || (item.kind === "strength" ? "Сильная сторона" : "Зона роста"),
         client_said: item.client_said || "",
         meant: item.meant || item.interpretation || "",
@@ -1198,46 +1206,54 @@ function buildGolos() {
 
 function buildDopSituatsii() {
   const blocks = [];
-  blocks.push(blockHeading("📋", "ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ"));
+  const situations = DATA.additional_situations || [];
+
+  if (situations.length === 0) {
+    blocks.push(blockHeading("📋", "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ"));
+    blocks.push(metaPara("Дополнительные ситуации появятся после накопления данных по звонкам."));
+    return blocks;
+  }
+
+  const headingText = situations.length === 1
+    ? "ДОПОЛНИТЕЛЬНАЯ СИТУАЦИЯ"
+    : "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ";
+  blocks.push(blockHeading("📋", headingText));
   blocks.push(bodyPara(
     "Приложение к основному отчёту. Для углублённого разбора с менеджером или самостоятельно.",
     { color: COLORS.gray, size: SZ.meta },
   ));
-  if (!DATA.additional_situations || DATA.additional_situations.length === 0) {
-    blocks.push(metaPara("Дополнительные ситуации появятся после накопления данных по звонкам."));
-    return blocks;
-  }
   blocks.push(spacer(4));
 
-  for (let i = 0; i < DATA.additional_situations.length; i++) {
-    const s = DATA.additional_situations[i];
-    const typeLabel = s.badge || (s.type === "strength" ? "✅ Сильная сторона" : "🔶 Зона роста");
+  for (let i = 0; i < situations.length; i++) {
+    const s = situations[i];
+    const typeLabel = s.type === "strength" ? "Сильная сторона" : "Зона роста";
     const typeColor = s.type === "strength" ? COLORS.green : COLORS.orange;
+    const signalSuffix = s.signal > 0 ? `  ·  ${s.signal} зв.` : "";
 
     blocks.push(new Paragraph({
       children: [
         new TextRun({ text: `Ситуация ${i + 1} — `, bold: true, size: SZ.body, font: "Arial" }),
         new TextRun({ text: s.title, bold: true, size: SZ.body, color: COLORS.heading, font: "Arial" }),
-        new TextRun({ text: `  ${typeLabel}  ·  ${s.signal} зв.`, size: SZ.cell, color: typeColor, font: "Arial" }),
+        new TextRun({ text: `  ${typeLabel}${signalSuffix}`, size: SZ.cell, color: typeColor, font: "Arial" }),
       ],
       spacing: { before: 100, after: 40 },
     }));
 
     const sitRows = [
       s.client_said ? new TableRow({ children: [
-        headCell("Ситуация / сигнал", { width: { size: 28, type: WidthType.PERCENTAGE } }),
+        headCell("Что произошло", { width: { size: 28, type: WidthType.PERCENTAGE } }),
         cell(s.client_said),
       ]}) : null,
       s.meant ? new TableRow({ children: [
-        headCell("Что хотел сказать клиент"),
+        headCell("Что это значит"),
         cell(s.meant, { color: COLORS.heading }),
       ]}) : null,
       s.how_to ? new TableRow({ children: [
-        headCell("Как лучше ответить / что делать"),
+        headCell("Что делать в следующий раз"),
         cell(s.how_to, { color: s.type === "strength" ? COLORS.heading : COLORS.green, italic: true }),
       ]}) : null,
       s.why ? new TableRow({ children: [
-        headCell("Почему это важно"),
+        headCell("Почему это сработает"),
         cell(s.why, { color: COLORS.gray }),
       ]}) : null,
     ].filter(Boolean);
@@ -1600,7 +1616,7 @@ async function main() {
   console.log("  [✓] ГОЛОС КЛИЕНТА: 3 columns with Смысл → Как ответить");
   console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
   console.log("  [✓] РАЗБОР ЗВОНКА: 3 columns with Момент");
-  console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: 4-row expanded structure");
+  console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: filtered valid only, dynamic heading, reference-style cards");
   console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: card with Цель / Фокус / Фраза");
   console.log("  [✓] УТРЕННЯЯ КАРТОЧКА removed from PDF/DOCX (payload preserved)");
   console.log("  [✓] Deleted: КЛЮЧЕВАЯ ПРОБЛЕМА, РЕКОМЕНДАЦИИ, ДИНАМИКА");

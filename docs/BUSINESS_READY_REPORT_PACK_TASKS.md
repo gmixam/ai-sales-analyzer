@@ -181,7 +181,7 @@ business-facing morning card.
 | СИТУАЦИЯ ДНЯ: конкретный пример с именем и временем | Richer payload из `call_list` + `evidence_fragments` |
 | РАЗБОР ЗВОНКА (поминутная таблица конкретного звонка) | Richer assembly из `evidence_fragments` |
 | ГОЛОС КЛИЕНТА (3 клиентских ситуации) | Bounded report-composer над `evidence_fragments` |
-| ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ | Bounded report-composer над `gaps` + `evidence_fragments` |
+| ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ (enrichment) | Renderer cleanup DONE 2026-05-04 (Step 7). Remaining: call reference + dialogue excerpt + stage linkage per situation — require `call_id` in `additional_situations` items |
 | ПОЗВОНИ ЗАВТРА: список + opening scripts | Richer `follow_up` use + bounded LLM |
 | СПИСОК ЗВОНКОВ: колонка «Контекст» (ситуация per call) | `follow_up.next_step_text` или bounded LLM |
 | БАЛЛЫ ПО ЭТАПАМ: детализация критериев внутри этапа | Richer распаковка `criteria_results` |
@@ -405,6 +405,34 @@ business-facing morning card.
 - `Ошибка менеджера` is absent in the Situation Day slice;
 - `Что не хватило в разговоре` and 3 qualification scripts are present;
 - placeholders and technical criterion codes are not rendered in Situation Day.
+
+### Manager_daily Content Enrichment — Step 7 Closure
+
+**Дата:** 2026-05-04
+
+**Scope:** only `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` block renderer in `scripts/generate_docx_report.js`. No changes to `report_templates.py`, `reporting.py`, analyzer, LLM, scoring, eligibility, or selection model.
+
+**Реализовано:**
+- `dataFromBundle()` additional_situations filter: `signal > 0` AND non-empty title AND title ≠ `Без названия` AND title does not start with `cs_/qp_/nd_/ep_/cl_`; `.slice(0, 3)` enforces max 3; no more wrapping missing title in `«Ситуация»`;
+- `buildDopSituatsii()` rewritten: empty-state if no valid situations after filter; dynamic heading: 1 situation → `ДОПОЛНИТЕЛЬНАЯ СИТУАЦИЯ`, 2–3 → `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`; heading not emitted before validity check;
+- row labels renamed: `Ситуация / сигнал` → `Что произошло`; `Что хотел сказать клиент` → `Что это значит`; `Как лучше ответить / что делать` → `Что делать в следующий раз`; `Почему это важно` → `Почему это сработает`;
+- type label: removed emoji prefixes `✅`/`🔶`, now plain `Сильная сторона` / `Зона роста`;
+- signal suffix: `{N} зв.` rendered only when `signal > 0`; `0 зв.` never shown.
+
+**Verified Эльмира 2026-04-06 case:**
+- 3 valid situations pass filter: signal=5,3,6; titles: `Не фиксирует конкретный следующий шаг`, `Не проверяет, удобно ли говорить`, `Чётко представляется и называет компанию`;
+- heading: `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`;
+- type labels: `Зона роста`, `Зона роста`, `Сильная сторона`;
+- signal suffix shown: `5 зв.`, `3 зв.`, `6 зв.`; no `0 зв.`;
+- row labels renamed as specified above.
+
+**Verified Толеген 2026-04-27 case (signal report):**
+- `additional_situations` empty after filter → empty-state renders without error.
+
+**Future tasks for deeper additional situations enrichment:**
+- call reference per situation (specific call_id, date, time, contact name) — requires `additional_situations` items to carry `call_id` linkage; currently not in payload;
+- compact dialogue excerpt per situation — requires same call_id + evidence_fragment linkage;
+- stage linkage per situation — `criterion_code` prefix in `gaps` / `improve_items` could enable this without analyzer change, similar to Steps 2–3 mechanism.
 
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
