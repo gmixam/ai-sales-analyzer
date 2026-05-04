@@ -377,6 +377,35 @@ business-facing morning card.
 - persist reliable transcript turns with `turn_id`, `speaker`, `text`, `timestamp`, `call_id`;
 - once speaker roles are reliable, `situation_dialogue_excerpt` can switch from partial `unknown` surrounding turns to full manager/client turns without changing analyzer prompts.
 
+### Manager_daily Content Enrichment — Step 6C Closure
+
+**Дата:** 2026-05-04
+
+**Scope:** only `СИТУАЦИЯ ДНЯ`.
+
+**Реализовано:**
+- added nullable `payload.situation_day_coaching_view`;
+- `situation_day_coaching_view` is deterministic assembly from existing `focus_stage_deep_dive`, `focus_stage_recommendation`, `situation_evidence_quote`, `situation_dialogue_excerpt`, and `score_by_stage`;
+- renderer title changed from technical stage/score title to business-facing pattern title;
+- focus stage and score moved to a separate meta line;
+- `Фрагмент диалога` renamed to `Фрагмент звонка`;
+- `Ошибка менеджера` replaced by coaching label `Что не хватило в разговоре`;
+- Situation Day review table now uses reference-style rows: `Что это значит`, `Что не хватило в разговоре`, `Что делать в следующий раз`, `Варианты речёвок`;
+- deterministic stage-specific scripts are included for `qualification_primary`, `needs_discovery`, `completion_next_step`, and safe fallbacks for other known stages.
+
+**Verified Tolegen 2026-04-27 ready-only case:**
+- `raw_calls_total = 67`
+- `meaningful_calls_total = 16`
+- `included_in_report_total / coaching_core = 9`
+- rendered title: `СИТУАЦИЯ ДНЯ · Клиент спрашивает про формат работы, но контекст не уточнён`
+- rendered focus meta: `Фокусный этап: Квалификация и первичная потребность — 1.9/5`
+- call reference is a separate line;
+- `Что произошло` starts from the concrete document-flow question and then gives the coaching conclusion;
+- partial call fragment is explicit: `Фрагмент звонка передан частично: роли участников определены не полностью.`;
+- `Ошибка менеджера` is absent in the Situation Day slice;
+- `Что не хватило в разговоре` and 3 qualification scripts are present;
+- placeholders and technical criterion codes are not rendered in Situation Day.
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

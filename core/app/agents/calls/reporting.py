@@ -3248,6 +3248,13 @@ def build_manager_daily_payload(
         focus_stage_deep_dive=focus_stage_deep_dive,
         recommendations=recommendation_cards,
     )
+    situation_day_coaching_view = _build_situation_day_coaching_view(
+        score_by_stage=score_by_stage,
+        situation_evidence_quote=situation_evidence_quote,
+        situation_dialogue_excerpt=situation_dialogue_excerpt,
+        focus_stage_deep_dive=focus_stage_deep_dive,
+        focus_stage_recommendation=focus_stage_recommendation,
+    )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -3339,6 +3346,7 @@ def build_manager_daily_payload(
         "situation_dialogue_excerpt": situation_dialogue_excerpt,
         "focus_stage_deep_dive": focus_stage_deep_dive,
         "focus_stage_recommendation": focus_stage_recommendation,
+        "situation_day_coaching_view": situation_day_coaching_view,
         "call_list": _build_meaningful_call_list(
             window_artifacts=operational_day_artifacts,
         ),
@@ -4004,6 +4012,44 @@ _FOCUS_STAGE_CHECKLIST_FALLBACKS: dict[str, list[str]] = {
     ],
 }
 
+_SITUATION_STAGE_SCRIPT_FALLBACKS: dict[str, list[str]] = {
+    "contact_start": [
+        "Подскажите, удобно сейчас коротко обсудить вопрос по документам?",
+        "Вы сами занимаетесь этим процессом или лучше подключить коллегу, который принимает решение?",
+        "Чтобы не тратить ваше время, уточню пару деталей и скажу, есть ли смысл смотреть решение дальше.",
+    ],
+    "qualification_primary": [
+        "Подскажите, вы сами будете принимать решение по подключению или нужно будет согласовать с руководителем?",
+        "Как сейчас у вас проходит работа с документами: бумага, email, WhatsApp или уже есть ЭДО?",
+        "Что для вас сейчас важнее: ускорить подписание, навести порядок в документах или снизить риски при проверках?",
+    ],
+    "needs_discovery": [
+        "Что сейчас больше всего тормозит процесс работы с документами?",
+        "Где чаще всего возникают ошибки или задержки?",
+        "Что будет самым важным результатом после внедрения: скорость, контроль, безопасность или экономия времени?",
+    ],
+    "presentation": [
+        "Покажу только то, что связано с вашей задачей, чтобы не уходить в общую презентацию.",
+        "Если ваша цель — ускорить работу с документами, здесь важны вот эти два сценария.",
+        "Правильно понимаю, что эта функция закрывает тот вопрос, который вы описали?",
+    ],
+    "objection_handling": [
+        "Подскажите, что именно вызывает сомнение: цена, сроки, процесс подключения или согласование внутри?",
+        "Давайте разберём этот риск отдельно, чтобы было понятно, что изменится на практике.",
+        "Если этот вопрос закрываем, что ещё останется важным перед решением?",
+    ],
+    "completion_next_step": [
+        "Давайте зафиксируем следующий шаг: я отправляю информацию, а мы созваниваемся в согласованное время. Подойдёт?",
+        "Кто ещё должен посмотреть информацию перед решением?",
+        "Когда лучше вернуться к обсуждению, чтобы не потерять вопрос?",
+    ],
+    "cross_stage_transition": [
+        "Я коротко подытожу, что понял, и дальше покажу только релевантную часть.",
+        "Перед тем как перейти дальше, правильно ли я понял вашу задачу?",
+        "Если этот пункт понятен, следующий шаг — уточнить, как у вас сейчас устроен процесс.",
+    ],
+}
+
 
 def _focus_stage_generic_text(stage_name: str, *, kind: str) -> str:
     """Return compact manager-facing fallback for unknown focus stage codes."""
@@ -4147,6 +4193,122 @@ def _build_focus_stage_recommendation(
         "recommendation": recommendation,
         "checklist": checklist[:3],
         "source": source,
+    }
+
+
+def _stage_score_label(score_by_stage: list[dict[str, Any]], stage_code: str) -> str | None:
+    stage = next((item for item in score_by_stage if str(item.get("stage_code") or "") == stage_code), None)
+    if stage is None:
+        return None
+    score = stage.get("score")
+    if score is None:
+        return None
+    try:
+        return f"{float(score) / 2:.1f}/5"
+    except (TypeError, ValueError):
+        return None
+
+
+def _situation_pattern_title(
+    *,
+    stage_code: str,
+    stage_name: str,
+    what_went_wrong: str,
+    client_text: str,
+) -> str:
+    text = f"{client_text} {what_went_wrong}".lower()
+    if stage_code == "qualification_primary":
+        if any(marker in text for marker in ("бумаг", "электрон", "почт", "документ")):
+            return "Клиент спрашивает про формат работы, но контекст не уточнён"
+        return "Клиент проявил интерес, но квалификация не раскрыта"
+    if stage_code == "needs_discovery":
+        return "Потребность клиента обозначена, но не раскрыта глубже"
+    if stage_code == "completion_next_step":
+        return "Разговор дошёл до интереса, но следующий шаг не закреплён"
+    if stage_code == "contact_start":
+        return "Контакт начался, но роль и контекст не зафиксированы"
+    if stage_code == "presentation":
+        return "Предложение прозвучало раньше, чем была понятна задача клиента"
+    if stage_code == "objection_handling":
+        return "Сомнение клиента прозвучало, но причина не разобрана"
+    return f"Фокус на этапе «{stage_name or 'воронки'}»"
+
+
+def _situation_fact_from_quote(client_text: str) -> str:
+    value = str(client_text or "").strip()
+    lower = value.lower()
+    if any(marker in lower for marker in ("бумаг", "электрон", "почт")):
+        return "Клиент уточнял, как будет работать документооборот: на бумаге или по электронной почте."
+    if value:
+        return f"Клиент сказал: «{_dialogue_turn_text(value, limit=180)}»."
+    return ""
+
+
+def _coaching_missing_text(what_went_wrong: str, stage_code: str) -> str:
+    value = _first_sentence(str(what_went_wrong or ""), limit=220)
+    if stage_code == "qualification_primary" and "роль" in value.lower():
+        return "Менеджер не уточнил роль собеседника и текущий процесс клиента."
+    return value
+
+
+def _build_situation_day_coaching_view(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    situation_evidence_quote: dict[str, Any] | None,
+    situation_dialogue_excerpt: dict[str, Any] | None,
+    focus_stage_deep_dive: dict[str, Any] | None,
+    focus_stage_recommendation: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build a reference-style coaching view for Situation Day from existing deterministic fields."""
+    if not focus_stage_deep_dive:
+        return None
+
+    stage_code = str(focus_stage_deep_dive.get("stage_code") or "").strip()
+    stage_name = str(focus_stage_deep_dive.get("stage_name") or "").strip()
+    if not stage_code and not stage_name:
+        return None
+
+    client_text = str((situation_evidence_quote or {}).get("client_text") or "").strip()
+    what_went_wrong = _first_sentence(str(focus_stage_deep_dive.get("what_went_wrong") or ""), limit=220)
+    meaning = _first_sentence(str(focus_stage_deep_dive.get("why_it_matters") or ""), limit=260)
+    what_was_missing = _coaching_missing_text(what_went_wrong, stage_code)
+    next_time_action = _first_sentence(str(focus_stage_deep_dive.get("what_to_fix") or ""), limit=240)
+
+    fact = _situation_fact_from_quote(client_text)
+    if fact and what_was_missing:
+        what_happened = f"{fact} В разговоре не хватило квалификации: {what_was_missing}"
+    elif what_was_missing:
+        what_happened = f"В звонке проявилась проблема фокусного этапа: {what_was_missing}"
+    else:
+        what_happened = ""
+
+    scripts = _SITUATION_STAGE_SCRIPT_FALLBACKS.get(stage_code)
+    if scripts is None and focus_stage_recommendation:
+        scripts = list(focus_stage_recommendation.get("checklist") or [])
+    if scripts is None:
+        scripts = [
+            "Уточните, кто принимает решение и какой процесс у клиента сейчас.",
+            "Свяжите предложение с тем, что клиент уже сказал в разговоре.",
+            "Зафиксируйте конкретный следующий шаг и срок.",
+        ]
+
+    return {
+        "pattern_title": _situation_pattern_title(
+            stage_code=stage_code,
+            stage_name=stage_name,
+            what_went_wrong=what_went_wrong,
+            client_text=client_text,
+        ),
+        "stage_code": stage_code,
+        "stage_label": stage_name,
+        "stage_score_label": _stage_score_label(score_by_stage, stage_code),
+        "what_happened": what_happened,
+        "meaning": meaning,
+        "what_was_missing": what_was_missing,
+        "next_time_action": next_time_action,
+        "scripts": scripts[:3],
+        "source": "deterministic_assembly",
+        "dialogue_is_partial": bool((situation_dialogue_excerpt or {}).get("is_partial")),
     }
 
 

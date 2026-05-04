@@ -140,11 +140,43 @@ function dialogueSpeakerLabel(speaker) {
   return "Реплика";
 }
 
+function primaryStageForSituation(s) {
+  const stageCode = cleanText(s.coaching_view?.stage_code || s.focus_stage_deep_dive?.stage_code || s.focus_stage_recommendation?.stage_code);
+  return DATA.stages.find((stage) => stage.priority)
+    || DATA.stages.find((stage) => cleanText(stage.code) === stageCode)
+    || null;
+}
+
+function buildSituationPatternTitle(s) {
+  const viewTitle = cleanText(s.coaching_view?.pattern_title);
+  if (viewTitle) return viewTitle;
+  const clientText = cleanText(s.evidence_quote?.client_text).toLowerCase();
+  if (/бумаг|электрон|почт|документ/.test(clientText)) {
+    return "Клиент спрашивает про формат работы, но контекст не уточнён";
+  }
+  if (cleanText(s.focus_stage_deep_dive?.stage_code) === "qualification_primary") {
+    return "Клиент проявил интерес, но квалификация не раскрыта";
+  }
+  return "Фокус на квалификации клиента";
+}
+
+function buildSituationStageMeta(s) {
+  const stage = primaryStageForSituation(s);
+  const stageName = firstNonEmpty(s.coaching_view?.stage_label, s.focus_stage_deep_dive?.stage_name, stage?.name);
+  const score = firstNonEmpty(
+    s.coaching_view?.stage_score_label,
+    stage?.score5 === null || stage?.score5 === undefined ? "" : `${stage.score5.toFixed(1)}/5`,
+  );
+  if (stageName && score) return `Фокусный этап: ${stageName} — ${score}`;
+  if (stageName) return `Фокусный этап: ${stageName}`;
+  return "";
+}
+
 function buildWhatHappenedText(s) {
+  const coachingText = cleanText(s.coaching_view?.what_happened);
+  if (coachingText) return coachingText;
   const dive = s.focus_stage_deep_dive || {};
   const problem = cleanText(dive.what_went_wrong);
-  const why = cleanText(dive.why_it_matters);
-  if (problem && why) return `${problem} ${why}`;
   if (problem) {
     return `В одном из звонков по фокусному этапу проявилась проблема: ${problem}`;
   }
@@ -158,11 +190,15 @@ function buildDialogueParagraphs(excerpt, quote) {
     turns.push({ speaker: "client", text: quote.client_text });
   }
   if (turns.length === 0) {
-    return [bodyPara("Фрагмент диалога в текущем payload не передан.", { color: COLORS.gray, size: SZ.cell })];
+    return [bodyPara("Фрагмент звонка в текущем payload не передан.", { color: COLORS.gray, size: SZ.cell })];
   }
   const partial = source?.is_partial !== false;
+  const reason = cleanText(source?.partial_reason);
+  const partialText = reason === "speaker_roles_unavailable"
+    ? "Фрагмент звонка передан частично: роли участников определены не полностью."
+    : "Фрагмент звонка передан частично.";
   const paras = partial
-    ? [bodyPara("Фрагмент диалога передан частично.", { color: COLORS.gray, size: SZ.cell, italic: true })]
+    ? [bodyPara(partialText, { color: COLORS.gray, size: SZ.cell, italic: true })]
     : [];
   for (const turn of turns) {
     paras.push(bodyPara(`${dialogueSpeakerLabel(turn.speaker)}: ${shortQuote(turn.text, 320)}`, { size: SZ.cell }));
@@ -172,16 +208,15 @@ function buildDialogueParagraphs(excerpt, quote) {
 
 function buildSituationReviewRows(s) {
   const dive = s.focus_stage_deep_dive || {};
-  const rec = s.focus_stage_recommendation || {};
-  const checklist = (rec.checklist || []).map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
+  const view = s.coaching_view || {};
+  const scripts = (view.scripts || []).map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
   const rowSpecs = [
-    ["Ошибка менеджера", dive.what_went_wrong],
-    ["Почему это важно", dive.why_it_matters],
-    ["Что исправить", dive.what_to_fix],
-    ["Минимум на завтра", dive.minimum_for_tomorrow],
+    ["Что это значит", firstNonEmpty(view.meaning, dive.why_it_matters)],
+    ["Что не хватило в разговоре", firstNonEmpty(view.what_was_missing, dive.what_went_wrong)],
+    ["Что делать в следующий раз", firstNonEmpty(view.next_time_action, dive.what_to_fix)],
   ].filter(([, value]) => cleanText(value));
-  if (checklist.length > 0) {
-    rowSpecs.push(["Что сделать в следующих звонках", checklist.map((item, index) => `${index + 1}. ${item}`).join("\n")]);
+  if (scripts.length > 0) {
+    rowSpecs.push(["Варианты речёвок", scripts.map((item, index) => `${index + 1}. ${item}`).join("\n")]);
   }
   return rowSpecs.map(([label, value]) => {
     const lines = String(value).split("\n").map((line) => cleanText(line)).filter(Boolean);
@@ -290,6 +325,7 @@ function emptyStateData(payload) {
       dialogue_excerpt: null,
       focus_stage_deep_dive: null,
       focus_stage_recommendation: null,
+      coaching_view: null,
       scripts: [],
       why_it_works: "",
     },
@@ -453,6 +489,7 @@ function dataFromBundle(bundle) {
       dialogue_excerpt: payload.situation_dialogue_excerpt || null,
       focus_stage_deep_dive: payload.focus_stage_deep_dive || null,
       focus_stage_recommendation: payload.focus_stage_recommendation || null,
+      coaching_view: payload.situation_day_coaching_view || null,
       scripts: situation.scripts || [],
       why_it_works: situation.why_it_works || "",
     },
@@ -1032,6 +1069,8 @@ function buildSituatsiya() {
   const whatHappenedText = buildWhatHappenedText(s);
   const reviewRows = buildSituationReviewRows(s);
   const hasDialogue = Boolean(s.dialogue_excerpt || s.evidence_quote);
+  const patternTitle = buildSituationPatternTitle(s);
+  const stageMeta = buildSituationStageMeta(s);
 
   if (!whatHappenedText && reviewRows.length === 0 && !hasDialogue) {
     return [
@@ -1041,15 +1080,13 @@ function buildSituatsiya() {
   }
 
   const result = [
-    blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
-    new Paragraph({
-      children: [new TextRun({
-        text: s.title,
-        bold: true, size: SZ.accent, color: COLORS.red, font: "Arial",
-      })],
-      spacing: { before: 60, after: 60 },
-    }),
+    blockHeading("🎯", `СИТУАЦИЯ ДНЯ · ${patternTitle}`),
   ];
+  if (stageMeta) {
+    result.push(bodyPara(stageMeta, { bold: true, color: COLORS.heading }));
+  } else if (s.title) {
+    result.push(bodyPara(cleanText(s.title), { bold: true, color: COLORS.heading }));
+  }
   if (callRef) {
     result.push(bodyPara(callRef, { bold: true, color: COLORS.heading }));
   }
@@ -1057,10 +1094,9 @@ function buildSituatsiya() {
     result.push(subHeading("Что произошло"));
     result.push(bodyPara(whatHappenedText, { color: COLORS.orange }));
   }
-  result.push(subHeading("Фрагмент диалога"));
+  result.push(subHeading("Фрагмент звонка"));
   result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.evidence_quote));
   if (reviewRows.length > 0) {
-    result.push(subHeading("Разбор ситуации"));
     result.push(new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       rows: reviewRows,

@@ -419,6 +419,27 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertEqual(focus_rec["source"], "focus_stage_deep_dive")
         self.assertNotIn("qp_role_scope", " ".join(str(value) for value in focus_rec.values()))
+        coaching_view = payload["situation_day_coaching_view"]
+        self.assertIsNotNone(coaching_view)
+        self.assertEqual(coaching_view["source"], "deterministic_assembly")
+        self.assertEqual(coaching_view["stage_code"], "qualification_primary")
+        self.assertEqual(coaching_view["stage_label"], "Квалификация и первичная потребность")
+        self.assertEqual(coaching_view["stage_score_label"], "0.0/5")
+        self.assertEqual(coaching_view["pattern_title"], "Клиент проявил интерес, но квалификация не раскрыта")
+        self.assertIn("Клиент сказал", coaching_view["what_happened"])
+        self.assertIn("Менеджер не уточнил роль собеседника", coaching_view["what_was_missing"])
+        self.assertEqual(coaching_view["meaning"], deep_dive["why_it_matters"])
+        self.assertEqual(coaching_view["next_time_action"], deep_dive["what_to_fix"])
+        self.assertEqual(
+            coaching_view["scripts"],
+            [
+                "Подскажите, вы сами будете принимать решение по подключению или нужно будет согласовать с руководителем?",
+                "Как сейчас у вас проходит работа с документами: бумага, email, WhatsApp или уже есть ЭДО?",
+                "Что для вас сейчас важнее: ускорить подписание, навести порядок в документах или снизить риски при проверках?",
+            ],
+        )
+        self.assertNotIn("[конкретная задача клиента]", " ".join(coaching_view["scripts"]))
+        self.assertNotIn("qp_role_scope", " ".join(str(value) for value in coaching_view.values()))
 
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -550,6 +571,14 @@ class ManualReportingPayloadTests(unittest.TestCase):
                 {"speaker": "unknown", "text": "смотрите, я у вас базовый пакет покупаю, надо 180 тысяч"},
             ],
         )
+        coaching_view = payload["situation_day_coaching_view"]
+        self.assertIsNotNone(coaching_view)
+        self.assertEqual(
+            coaching_view["pattern_title"],
+            "Клиент спрашивает про формат работы, но контекст не уточнён",
+        )
+        self.assertIn("документооборот", coaching_view["what_happened"])
+        self.assertTrue(coaching_view["dialogue_is_partial"])
 
     def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
         artifact = _artifact(50.0, "problematic")
