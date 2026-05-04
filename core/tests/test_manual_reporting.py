@@ -376,6 +376,21 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(quote["criterion_code"], "qp_role_scope")
         self.assertEqual(quote["client_label"], "Анжелика")
         self.assertIn("сама решение не принимаю", quote["client_text"])
+        deep_dive = payload["focus_stage_deep_dive"]
+        self.assertIsNotNone(deep_dive)
+        self.assertEqual(deep_dive["stage_code"], "qualification_primary")
+        self.assertEqual(deep_dive["stage_name"], "Квалификация и первичная потребность")
+        self.assertEqual(deep_dive["what_went_wrong"], "Роль собеседника не была уточнена.")
+        self.assertIn("Без понимания роли", deep_dive["why_it_matters"])
+        self.assertEqual(
+            deep_dive["what_to_fix"],
+            "До презентации задать 2–3 уточняющих вопроса и только потом связывать продукт с задачей клиента.",
+        )
+        self.assertEqual(
+            deep_dive["minimum_for_tomorrow"],
+            "В каждом подходящем sales-звонке зафиксировать роль собеседника, текущий процесс и следующий шаг.",
+        )
+        self.assertNotIn("qp_role_scope", " ".join(str(value) for value in deep_dive.values()))
 
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -413,6 +428,45 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         self.assertIsNone(payload["situation_evidence_quote"])
+
+    def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
+        artifact = _artifact(50.0, "problematic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "completion_next_step",
+                "stage_name": "Завершение и договорённости",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "completion_next_step",
+                        "criterion_name": "Фиксация следующего шага",
+                        "score": 0,
+                        "max_score": 2,
+                    }
+                ],
+            }
+        ]
+        artifact.analysis.scores_detail["gaps"] = []
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        deep_dive = payload["focus_stage_deep_dive"]
+        self.assertIsNotNone(deep_dive)
+        self.assertEqual(deep_dive["stage_code"], "completion_next_step")
+        self.assertEqual(deep_dive["what_went_wrong"], "Фиксация следующего шага.")
+        self.assertEqual(
+            deep_dive["minimum_for_tomorrow"],
+            "В каждом подходящем sales-звонке зафиксировать конкретный следующий шаг, срок и ответственного.",
+        )
+        self.assertIn("конкретный следующий шаг", deep_dive["what_to_fix"])
 
     def test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics(self) -> None:
         manager = _manager()

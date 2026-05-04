@@ -121,6 +121,39 @@ function buildDialogueFragmentText(quote) {
   return lines.join("\n");
 }
 
+function hasFocusStageDeepDive(dive) {
+  return Boolean(
+    dive
+    && cleanText(dive.what_went_wrong)
+    && cleanText(dive.why_it_matters)
+    && cleanText(dive.what_to_fix)
+    && cleanText(dive.minimum_for_tomorrow)
+  );
+}
+
+function buildFocusStageDeepDiveElements(dive) {
+  if (!hasFocusStageDeepDive(dive)) return [];
+  const rows = [
+    ["Что пошло не так", dive.what_went_wrong],
+    ["Почему это проблема", dive.why_it_matters],
+    ["Что исправить", dive.what_to_fix],
+    ["Минимум на завтра", dive.minimum_for_tomorrow],
+  ].map(([label, value]) => new TableRow({
+    children: [
+      labelCell(label),
+      cell(value, { size: SZ.cell }),
+    ],
+  }));
+  return [
+    subHeading("Разбор фокусного этапа:"),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows,
+    }),
+    spacer(4),
+  ];
+}
+
 function tomorrowSituation(contact, row) {
   const status = cleanText(contact.status || "");
   const deadline = firstNonEmpty(contact.deadline, row[2]);
@@ -213,6 +246,7 @@ function emptyStateData(payload) {
       manager_task: "",
       call_example: {},
       evidence_quote: null,
+      focus_stage_deep_dive: null,
       scripts: [],
       why_it_works: "",
     },
@@ -373,6 +407,7 @@ function dataFromBundle(bundle) {
       manager_task: situation.manager_task || "",
       call_example: situation.call_example || {},
       evidence_quote: payload.situation_evidence_quote || null,
+      focus_stage_deep_dive: payload.focus_stage_deep_dive || null,
       scripts: situation.scripts || [],
       why_it_works: situation.why_it_works || "",
     },
@@ -1024,10 +1059,12 @@ function buildSituatsiya() {
         bodyPara(`Что произошло: ${bodyText}`, { color: COLORS.orange }),
         subHeading("Фрагмент диалога:"),
         bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
+        ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),
       ]
     : [
         subHeading("Фрагмент диалога:"),
         bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
+        ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),
       ];
 
   return [

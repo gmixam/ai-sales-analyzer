@@ -3235,6 +3235,11 @@ def build_manager_daily_payload(
         score_by_stage=score_by_stage,
         improve_items=improve_items,
     )
+    focus_stage_deep_dive = _build_focus_stage_deep_dive(
+        score_by_stage=score_by_stage,
+        key_problem=key_problem,
+        recommendations=recommendation_cards,
+    )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -3323,6 +3328,7 @@ def build_manager_daily_payload(
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
+        "focus_stage_deep_dive": focus_stage_deep_dive,
         "call_list": _build_meaningful_call_list(
             window_artifacts=operational_day_artifacts,
         ),
@@ -3821,6 +3827,135 @@ def _build_situation_evidence_quote(
         return None
     candidates.sort(key=lambda item: (item[0], item[1], item[2]))
     return candidates[0][3]
+
+
+_FOCUS_STAGE_WHY_FALLBACKS: dict[str, str] = {
+    "contact_start": "Если старт разговора не создаёт контекст и разрешение на диалог, клиент отвечает формально и быстрее выходит из контакта.",
+    "qualification_primary": "Без понимания роли, процесса и задачи клиента презентация звучит общей и не привязана к реальной потребности.",
+    "needs_discovery": "Если боль и ограничения текущего процесса не раскрыты, менеджер не может показать ценность продукта под задачу клиента.",
+    "presentation": "Когда предложение не связано с контекстом клиента, продукт воспринимается как общая презентация, а не как решение его задачи.",
+    "objection_handling": "Если возражение не разобрано по причине, клиент остаётся при сомнении и разговор не двигается к договорённости.",
+    "completion_next_step": "Без конкретного следующего шага разговор остаётся открытым, а вероятность продолжения снижается.",
+    "cross_stage_transition": "Если переходы между этапами не связаны, клиент теряет логику разговора и сложнее соглашается на следующий шаг.",
+}
+
+_FOCUS_STAGE_FIX_FALLBACKS: dict[str, str] = {
+    "contact_start": "В начале звонка коротко обозначить причину контакта, проверить уместность разговора и роль собеседника.",
+    "qualification_primary": "До презентации задать 2–3 уточняющих вопроса и только потом связывать продукт с задачей клиента.",
+    "needs_discovery": "Уточнить текущий процесс, боль, ограничения и приоритет клиента перед переходом к предложению.",
+    "presentation": "Связать 1–2 возможности продукта с уже названной задачей клиента и проверить, попали ли в потребность.",
+    "objection_handling": "Сначала уточнить причину сомнения клиента, затем ответить по сути и проверить, снято ли возражение.",
+    "completion_next_step": "В конце звонка зафиксировать конкретный следующий шаг, срок, формат контакта и ответственного.",
+    "cross_stage_transition": "Перед сменой темы коротко подвести итог и согласовать с клиентом следующий логический шаг разговора.",
+}
+
+_FOCUS_STAGE_MINIMUM_FALLBACKS: dict[str, str] = {
+    "contact_start": "В каждом подходящем sales-звонке проверить уместность разговора и роль собеседника до перехода к теме.",
+    "qualification_primary": "В каждом подходящем sales-звонке зафиксировать роль собеседника, текущий процесс и следующий шаг.",
+    "needs_discovery": "В каждом подходящем sales-звонке уточнить боль, ограничение текущего процесса и приоритет клиента.",
+    "presentation": "В каждом подходящем sales-звонке связать предложение минимум с одной конкретной задачей клиента.",
+    "objection_handling": "В каждом подходящем sales-звонке уточнить причину ключевого возражения и проверить, снято ли сомнение.",
+    "completion_next_step": "В каждом подходящем sales-звонке зафиксировать конкретный следующий шаг, срок и ответственного.",
+    "cross_stage_transition": "В каждом подходящем sales-звонке делать короткий итог перед переходом к следующему этапу.",
+}
+
+
+def _focus_stage_generic_text(stage_name: str, *, kind: str) -> str:
+    """Return compact manager-facing fallback for unknown focus stage codes."""
+    stage = stage_name or "фокусный этап"
+    if kind == "wrong":
+        return f"На этапе «{stage}» менеджеру не хватило конкретики, чтобы продвинуть клиента дальше."
+    if kind == "why":
+        return f"Когда этап «{stage}» проседает, клиенту сложнее понять ценность предложения и согласиться на следующий шаг."
+    if kind == "fix":
+        return f"Усилить этап «{stage}»: задать уточняющий вопрос, связать ответ с предложением и зафиксировать следующий шаг."
+    return f"В каждом подходящем sales-звонке выполнить минимум по этапу «{stage}» и проверить следующий шаг."
+
+
+def _is_manager_facing_explanation(text: str) -> bool:
+    """Return True when text explains business impact rather than restating the symptom."""
+    value = str(text or "").strip().lower()
+    if not value:
+        return False
+    explanation_markers = (
+        "без ",
+        "потому",
+        "поэтому",
+        "мешает",
+        "снижает",
+        "риск",
+        "клиент",
+        "презентац",
+        "потребност",
+        "ценност",
+        "договор",
+        "следующ",
+    )
+    return any(marker in value for marker in explanation_markers)
+
+
+def _build_focus_stage_deep_dive(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    key_problem: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build a compact deterministic deep-dive for the priority stage from existing payload data."""
+    priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
+    if priority_stage is None:
+        return None
+
+    stage_code = str(priority_stage.get("stage_code") or "").strip()
+    stage_name = str(priority_stage.get("stage_name") or "").strip()
+    if not stage_code and not stage_name:
+        return None
+
+    problem_summary = _first_sentence(str(priority_stage.get("problem_summary") or ""))
+    key_title = (
+        _first_sentence(str(key_problem.get("title") or ""))
+        if _is_meaningful_key_problem(key_problem)
+        else ""
+    )
+    what_went_wrong = problem_summary or key_title or _focus_stage_generic_text(stage_name, kind="wrong")
+
+    key_description = (
+        _first_sentence(str(key_problem.get("description") or ""), limit=220)
+        if _is_meaningful_key_problem(key_problem)
+        else ""
+    )
+    if (
+        key_description
+        and (
+            key_description.strip().lower() == what_went_wrong.strip().lower()
+            or not _is_manager_facing_explanation(key_description)
+        )
+    ):
+        key_description = ""
+    why_it_matters = key_description or _FOCUS_STAGE_WHY_FALLBACKS.get(
+        stage_code,
+        _focus_stage_generic_text(stage_name, kind="why"),
+    )
+
+    what_to_fix = _FOCUS_STAGE_FIX_FALLBACKS.get(stage_code, _focus_stage_generic_text(stage_name, kind="fix"))
+    if not what_to_fix:
+        recommendation = next((item for item in recommendations if _is_meaningful_recommendation(item)), None)
+        what_to_fix = _first_sentence(str((recommendation or {}).get("better_phrasing") or ""))
+    if not what_to_fix:
+        what_to_fix = _focus_stage_generic_text(stage_name, kind="fix")
+
+    minimum_for_tomorrow = _FOCUS_STAGE_MINIMUM_FALLBACKS.get(
+        stage_code,
+        _focus_stage_generic_text(stage_name, kind="minimum"),
+    )
+
+    return {
+        "stage_code": stage_code,
+        "stage_name": stage_name,
+        "what_went_wrong": what_went_wrong,
+        "why_it_matters": why_it_matters,
+        "what_to_fix": what_to_fix,
+        "minimum_for_tomorrow": minimum_for_tomorrow,
+    }
 
 
 def _extract_score_percent(analysis: Analysis | None) -> float:

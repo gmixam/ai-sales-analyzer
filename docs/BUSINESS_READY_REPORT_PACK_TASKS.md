@@ -216,7 +216,7 @@ business-facing morning card.
 | Желаемое поле | Текущий source | Статус | Можно рендерить сейчас | Нужно менять механизм |
 |---|---|---|---|---|
 | `stage_problem_summary_by_stage` (non-priority stages) | `criteria_results[].comment + evidence` per stage в DB; `criterion_code` prefix = stage_code | **IMPLEMENTED 2026-05-04 (Step 2)** — `score_by_stage[].problem_summary` + `problem_source` в payload | ДА | СДЕЛАНО — `_aggregate_stage_scores()` в reporting.py (без analyzer change) |
-| `focus_stage_deep_dive` (что пошло не так / почему / что исправить / минимум) | `criteria_detail` (priority stage) + `key_problem_of_day.description` + `recommendations[0]` | **PARTIAL** — все sub-items частично доступны, но recommendations не привязаны к stage | ЧАСТИЧНО — можно собрать из существующих полей без гарантии stage-specificity | ЧАСТИЧНО — stage-linked rec нужен механизм; общий совет — renderer-only |
+| `focus_stage_deep_dive` (что пошло не так / почему / что исправить / минимум) | priority stage + `score_by_stage[].problem_summary` + `key_problem_of_day` + stage-specific deterministic fallbacks | **IMPLEMENTED 2026-05-04 (Step 4)** — `focus_stage_deep_dive` surfaced in payload and rendered in `СИТУАЦИЯ ДНЯ` | ДА | СДЕЛАНО — bounded assembly, no analyzer/LLM change |
 | `situation_day_what_happened` | `situation.body` / `key_problem.description` | **AVAILABLE** (реализовано) | ДА | НЕТ |
 | `situation_day_evidence_quote` | `evidence_fragments[].client_text` (non-null = реальная цитата) связан с `criterion_code` | **IMPLEMENTED 2026-05-04 (Step 3)** — `situation_evidence_quote` surfaced в payload только при stage-linked match | ДА | СДЕЛАНО — matching по criterion_code prefix к priority stage; null-safe |
 | `manager_error_summary` | `key_problem_of_day.title` | **AVAILABLE** (реализовано) | ДА | НЕТ |
@@ -269,6 +269,26 @@ business-facing morning card.
 - quote found: yes
 - quote source: `evidence_fragments`, `stage_code=qualification_primary`, `criterion_code=qp_current_process`
 - rendered quote: `Клиент: На бумаге или просто по электронной почте.`
+- technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent)
+
+### Manager_daily Content Enrichment — Step 4 Closure
+
+**Дата:** 2026-05-04
+
+**Реализовано:**
+- `focus_stage_deep_dive`
+- DOCX/PDF renderer block `СИТУАЦИЯ ДНЯ → Разбор фокусного этапа`
+- 4 compact rows: `Что пошло не так`, `Почему это проблема`, `Что исправить`, `Минимум на завтра`.
+
+**Verified Tolegen 2026-04-27 ready-only case:**
+- `raw_calls_total = 67`
+- `meaningful_calls_total = 16`
+- `included_in_report_total / coaching_core = 9`
+- focus stage: `qualification_primary`
+- `what_went_wrong`: `Роль собеседника не была уточнена.`
+- `why_it_matters`: `Без понимания роли, процесса и задачи клиента презентация звучит общей и не привязана к реальной потребности.`
+- `what_to_fix`: `До презентации задать 2–3 уточняющих вопроса и только потом связывать продукт с задачей клиента.`
+- `minimum_for_tomorrow`: `В каждом подходящем sales-звонке зафиксировать роль собеседника, текущий процесс и следующий шаг.`
 - technical criterion codes are not rendered in DOCX (`cs_` / `qp_` / `nd_` absent)
 
 **Что требует нового LLM step:**
