@@ -185,11 +185,69 @@ business-facing morning card.
 | ПОЗВОНИ ЗАВТРА: список + opening scripts | Richer `follow_up` use + bounded LLM |
 | СПИСОК ЗВОНКОВ: колонка «Контекст» (ситуация per call) | `follow_up.next_step_text` или bounded LLM |
 | БАЛЛЫ ПО ЭТАПАМ: детализация критериев внутри этапа | Richer распаковка `criteria_results` |
-| БАЛЛЫ ПО ЭТАПАМ: Основная проблема для non-priority stages | Требует поля `stage_problem_summary` per-stage в payload; сейчас `criteria_detail` только у priority stage |
-| РАЗБОР ЗВОНКА: verbatim transcript evidence | Требует `evidence_fragments` с `call_id` + timestamp из STT; сейчас `call_breakdown.rows` — LLM summaries |
-| БАЛЛЫ ПО ЭТАПАМ: stage-linked analysis_improve | Требует `stage_code` тэгирования в `analysis_improve` items; сейчас aggregated, не per-stage |
+| БАЛЛЫ ПО ЭТАПАМ: Основная проблема для non-priority stages | Data exists: `criteria_results[].comment + evidence` per stage in DB; `criterion_code` prefix maps to stage_code (`cs_→contact_start`, `qp_→qualification_primary`, `nd_→needs_discovery`). Requires `_aggregate_stage_scores()` in reporting.py to surface worst criterion comment+evidence per stage. No analyzer change needed. |
+| СИТУАЦИЯ ДНЯ: evidence quote linked to priority stage | Data exists: `evidence_fragments[i].client_text` is real verbatim text when non-null, linked by `criterion_code` to stage. Requires new `situation_evidence_quote` field in payload built from evidence_fragments where criterion_code starts with priority stage prefix and client_text is not null. |
+| БАЛЛЫ ПО ЭТАПАМ: stage-linked gaps / Основная проблема via criterion_code | `gaps` items in DB have `criterion_code` with stage prefix — stage linkage is possible without analyzer change. Requires `_aggregate_finding_items()` to preserve `criterion_code` and `_aggregate_stage_scores()` to match gaps to stages by prefix. |
+| РАЗБОР ЗВОНКА: verbatim evidence от реального клиента | `evidence_fragments.client_text` может быть реальной цитатой (non-null); сейчас `call_breakdown.rows` используют LLM-written `evidence_text`. Requires renderer to prefer non-null `client_text` over `evidence_text` when building РАЗБОР ЗВОНКА rows. |
 
 Это bounded second-stage layer. Не блокирует пилот.
+
+---
+
+## Manager_daily Content Enrichment — Feasibility Audit Results
+
+**Дата аудита:** 2026-05-04
+**Scope:** БАЛЛЫ ПО ЭТАПАМ + СИТУАЦИЯ ДНЯ content enrichment
+**Верифицировано на:** Толеген Жангазиев / 2026-04-27 (67→16→9 case: 67 raw, 16 meaningful, 9 eligible coaching в 2-дневном окне 27.04+24.04)
+
+### Ключевое открытие: criterion_code как stage-linkage mechanism
+
+В DB `evidence_fragments` и `gaps` items имеют поле `criterion_code` с stage-prefix:
+- `cs_*` → `contact_start`
+- `qp_*` → `qualification_primary`
+- `nd_*` → `needs_discovery`
+- Аналогично для других этапов
+
+Это de facto stage-linkage механизм, существующий в данных, но **не используемый** текущей агрегацией.
+Это означает, что per-stage problem и stage-linked evidence quotes можно получить **без изменения analyzer contract** — только через изменение агрегации в `reporting.py`.
+
+### Payload Feasibility Matrix
+
+| Желаемое поле | Текущий source | Статус | Можно рендерить сейчас | Нужно менять механизм |
+|---|---|---|---|---|
+| `stage_problem_summary_by_stage` (non-priority stages) | `criteria_results[].comment + evidence` per stage в DB; `criterion_code` prefix = stage_code | **PARTIAL** — data в DB, не в payload | НЕТ | ДА — `_aggregate_stage_scores()` в reporting.py (не нужен analyzer change) |
+| `focus_stage_deep_dive` (что пошло не так / почему / что исправить / минимум) | `criteria_detail` (priority stage) + `key_problem_of_day.description` + `recommendations[0]` | **PARTIAL** — все sub-items частично доступны, но recommendations не привязаны к stage | ЧАСТИЧНО — можно собрать из существующих полей без гарантии stage-specificity | ЧАСТИЧНО — stage-linked rec нужен механизм; общий совет — renderer-only |
+| `situation_day_what_happened` | `situation.body` / `key_problem.description` | **AVAILABLE** (реализовано) | ДА | НЕТ |
+| `situation_day_evidence_quote` | `evidence_fragments[].client_text` (non-null = реальная цитата) связан с `criterion_code` | **PARTIAL/UNSAFE** — данные в DB (confirmed real quotes), но не surfaced в payload как stage-linked evidence | НЕТ (только через voice_of_customer, не привязан к ситуации дня) | ДА — `situation_evidence_quote` field в payload; matching по criterion_code prefix к priority stage; null-safe |
+| `manager_error_summary` | `key_problem_of_day.title` | **AVAILABLE** (реализовано) | ДА | НЕТ |
+| `next_time_action_advice` | `situation.manager_task` | **AVAILABLE** (реализовано) | ДА | НЕТ |
+
+### Current Mechanism Verdict
+
+**Renderer-only (уже сделано):**
+- `situation_day_what_happened` → "Что произошло: {body}"
+- `manager_error_summary` → "Ошибка менеджера: {key_problem.title}"
+- `next_time_action_advice` → "Что делать в следующий раз: {manager_task}"
+- Priority stage "Основная проблема" → `key_problem_of_day.title`
+- Non-priority stage fallback → "Недостаточно данных..."
+- Focus block negation → `criterionToProblem(weakCriterion)`
+
+**Что требует механизма (reporting.py changes, no analyzer change):**
+1. `_aggregate_stage_scores()` — добавить `stage_problem_summary` per non-priority stage из худшего критерия (min score criterion's `comment` + `evidence`)
+2. `_aggregate_finding_items()` / stage aggregation — сохранить `criterion_code` в aggregated gaps; матчить к stage по prefix для stage-linked gaps
+3. `build_manager_daily_payload()` — добавить `situation_evidence_quote` field: первый non-null `evidence_fragments.client_text` matching priority stage criterion_code prefix
+
+**Что требует нового LLM step:**
+- Ничего из перечисленного выше. Все данные уже в DB.
+- Для более глубоких coaching scripts, pattern detection across many calls — нужен bounded LLM step (задокументировано в "Делать после пилота" basket)
+
+### Verified Tolegen 2026-04-27 (67→16→9) State
+
+- `raw_calls = 67` (interactions table, 2026-04-27) ✅
+- `meaningful_calls = 16` (из PROGRESS.md; runtime rule: transcript OR CDR answered/in-out/≥90s) ✅
+- `coaching_core = 9` (3 eligible на 27.04 + 6 eligible на 24.04, 2-дневный rolling window) ✅
+- Структура data в DB: `criterion_code` (stage-prefix), `client_text` (real quotes в 7 из 16 fragments), `evidence_text` (LLM-written), `criteria_results` per stage (все stages, не только priority)
+- Реальные клиентские цитаты найдены: "Я вот хотел поинтересоваться...", "На бумаге или просто по электронной почте.", "Просто мы оказываем услуги, с государственными организациями работаем..."
 
 ---
 
