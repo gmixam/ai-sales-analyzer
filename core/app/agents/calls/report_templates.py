@@ -340,6 +340,13 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {"label": "ОТКРЫТ", "value": _manager_reader_value(call_outcomes.get("open_count"), "0"), "tone": "warning"},
         {"label": "ТЕХ/СЕРВИС", "value": _manager_reader_value(call_outcomes.get("tech_service_count"), "0"), "tone": "neutral"},
     ]
+    readiness = dict((payload.get("meta") or {}).get("readiness") or {})
+    _readiness_outcome = readiness.get("readiness_outcome") or ""
+    _report_type_label = (
+        "Сигнальный отчёт" if _readiness_outcome == "signal_report"
+        else "Полный отчёт" if _readiness_outcome == "full_report"
+        else None
+    )
     sections = [
         {
             **_section_meta(template, "report_header"),
@@ -348,6 +355,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             "calls_count": total_calls,
             "day_score": _manager_reader_value(_resolve_manager_day_score(payload=payload), "Нет базы"),
             "selection_note": selection_note,
+            "report_type": _report_type_label,
         },
         {
             **_section_meta(template, "day_summary"),
@@ -2642,27 +2650,32 @@ def _build_money_on_table_data(
             "reason_line": str(override.get("reason_line") or ""),
             "note": str(override.get("note") or ""),
         }
-    open_rows = [row for row in call_list_raw if str(row.get("status") or "") == "open"]
-    open_count = int(call_outcomes.get("open_count") or len(open_rows) or 0)
-    if open_rows:
-        first_open = open_rows[0]
-        client = _manager_reader_value(first_open.get("client_or_phone"), "клиент")
-        context = _call_context_label(
-            str(first_open.get("status") or ""),
-            first_open.get("deadline"),
-            first_open.get("reason"),
-        )
+    AVG_CHECK = 80_000  # ₸ per contact, preliminary estimate until CRM integration
+    agreed_count = int(call_outcomes.get("agreed_count") or 0)
+    open_count = int(call_outcomes.get("open_count") or 0)
+    rescheduled_count = int(call_outcomes.get("rescheduled_count") or 0)
+    qualifying = agreed_count + open_count + rescheduled_count
+    if qualifying > 0:
+        total_potential = qualifying * AVG_CHECK
+        rows_text = []
+        if agreed_count:
+            rows_text.append(f"Договорённость: {agreed_count} × {AVG_CHECK:,} ₸ = {agreed_count * AVG_CHECK:,} ₸".replace(",", " "))
+        if open_count:
+            rows_text.append(f"Открыт: {open_count} × {AVG_CHECK:,} ₸ = {open_count * AVG_CHECK:,} ₸".replace(",", " "))
+        if rescheduled_count:
+            rows_text.append(f"Перенос: {rescheduled_count} × {AVG_CHECK:,} ₸ = {rescheduled_count * AVG_CHECK:,} ₸".replace(",", " "))
+        body = "  |  ".join(rows_text)
         return {
-            "body": f"{open_count} открытых звонк(ов). Ближайшая незакрытая возможность: {client}.",
-            "highlight_line": "Потенциал в деньгах не определён текущим runtime contract и требует внешней CRM/прайсинговой логики.",
-            "reason_line": f"Причина: звонок остался без зафиксированного следующего шага. Контекст: {context}.",
-            "note": "Блок сохранён в формате v5; при отсутствии revenue-данных runtime честно показывает structural fallback.",
+            "body": body,
+            "highlight_line": f"Итого потенциал: {total_potential:,} ₸".replace(",", " "),
+            "reason_line": "",
+            "note": f"Предварительная оценка: пока используется средний чек {AVG_CHECK:,} ₸. После подключения CRM сумма будет считаться по сделкам.".replace(",", " "),
         }
     return {
-        "body": "Открытых возможностей на выбранной выборке не найдено.",
-        "highlight_line": "Денежный потенциал не зафиксирован.",
-        "reason_line": "Причина: все звонки либо доведены до статуса, либо не содержат открытого follow-up.",
-        "note": "При появлении CRM/pricing-данных сюда будет подставляться сумма без изменения формата блока.",
+        "body": "Данных для данного раздела недостаточно.",
+        "highlight_line": "",
+        "reason_line": "",
+        "note": "",
     }
 
 

@@ -63,6 +63,19 @@ function safeNumber(value, fallback) {
   return isNaN(n) ? (fallback !== undefined ? fallback : 0) : n;
 }
 
+function formatRussianDate(dateStr) {
+  const months = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+  const s = String(dateStr || "");
+  // If range "2026-04-24..2026-04-27" — take the last (report) date
+  const single = s.includes("..") ? s.split("..").pop() : s;
+  const parts = single.split("-");
+  if (parts.length !== 3) return s;
+  const [year, month, day] = parts;
+  const m = parseInt(month, 10);
+  if (m < 1 || m > 12) return s;
+  return `${parseInt(day, 10)} ${months[m - 1]} ${year}`;
+}
+
 function russianCallWord(count) {
   const n = Math.abs(Number(count) || 0);
   const mod100 = n % 100;
@@ -155,9 +168,13 @@ function emptyStateData(payload) {
   return {
     manager: managerName,
     date: reportDate,
+    report_day: reportDate,
+    report_type: null,
     calls: 0,
     meaningful_calls: 0,
     day_score: 0,
+    day_funnel: null,
+    coaching_window: null,
     outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0 },
     money_on_table: { body: "Данные за день не накоплены.", highlight_line: "", reason_line: "", note: "" },
     pipeline: { summary_line: "Нет достаточных данных для pipeline.", counts_line: "", conversion_line: "", average_line: "", contacts: [] },
@@ -229,20 +246,68 @@ function dataFromBundle(bundle) {
   const selectionMeaningfulCalls = safeNumber(payload.selection_model?.meaningful_calls_total, null);
   const meaningfulCalls = selectionMeaningfulCalls !== null ? selectionMeaningfulCalls : allCalls.length;
 
+  // Derive the single report day (window_end or period.date_to, not multi-day range)
+  const readiness = (payload.meta || {}).readiness || {};
+  const metaPeriod = (payload.meta || {}).period || {};
+  const rawDate = reportHeader.report_date || payload.header?.report_date || "";
+  const reportDay = readiness.window_end || metaPeriod.date_to || (rawDate.includes("..") ? rawDate.split("..").pop() : rawDate) || rawDate;
+
+  // Report type badge from readiness outcome (signal_report / full_report)
+  const readinessOutcome = readiness.readiness_outcome || reportHeader.report_type || "";
+  let reportType = null;
+  if (readinessOutcome === "signal_report") reportType = "Сигнальный отчёт";
+  else if (readinessOutcome === "full_report") reportType = "Полный отчёт";
+  // Fallback: try to parse from selection_note prefix
+  else if ((reportHeader.selection_note || "").startsWith("Сигнальный отчёт")) reportType = "Сигнальный отчёт";
+  else if ((reportHeader.selection_note || "").startsWith("Полный отчёт")) reportType = "Полный отчёт";
+
+  // Day funnel from selection_model
+  const sm = payload.selection_model || {};
+  const rawTotal = safeNumber(sm.raw_calls_total, null);
+  const smMeaningful = safeNumber(sm.meaningful_calls_total, null);
+  const includedInReport = safeNumber(sm.included_in_report_total, null);
+  const exclusionReasons = sm.exclusion_reasons || {};
+  const dayFunnel = rawTotal !== null ? {
+    raw: rawTotal,
+    meaningful: smMeaningful !== null ? smMeaningful : meaningfulCalls,
+    excluded: rawTotal - (smMeaningful !== null ? smMeaningful : meaningfulCalls),
+    in_report: includedInReport !== null ? includedInReport : null,
+    reasons: exclusionReasons,
+  } : null;
+
+  // Coaching window note
+  const windowDays = safeNumber(readiness.window_days_used, 1);
+  const coachingWindow = windowDays > 1 ? {
+    window_days: windowDays,
+    window_start: readiness.window_start || "",
+    window_end: readiness.window_end || "",
+    in_report: includedInReport,
+  } : null;
+
+  const agreed   = safeNumber(outcomeMap["ДОГОВОРЕННОСТЬ"]);
+  const rescheduled = safeNumber(outcomeMap["ПЕРЕНОС"]);
+  const refusal  = safeNumber(outcomeMap["ОТКАЗ"]);
+  const open     = safeNumber(outcomeMap["ОТКРЫТ"]);
+  const techSvc  = safeNumber(outcomeMap["ТЕХ/СЕРВИС"]);
+
   return {
     manager: reportHeader.manager_name || payload.header?.manager_name || "—",
-    date: reportHeader.report_date || payload.header?.report_date || "—",
+    date: rawDate,
+    report_day: reportDay,
+    report_type: reportType,
     calls: safeNumber(reportHeader.calls_count || payload.kpi_overview?.calls_count),
     meaningful_calls: meaningfulCalls,
     day_score: safeNumber(reportHeader.day_score),
     selection_note: reportHeader.selection_note || "",
+    day_funnel: dayFunnel,
+    coaching_window: coachingWindow,
     outcomes: {
-      total: safeNumber(outcomeMap["ЗВОНКОВ"]),
-      agreed: safeNumber(outcomeMap["ДОГОВОРЕННОСТЬ"]),
-      rescheduled: safeNumber(outcomeMap["ПЕРЕНОС"]),
-      refusal: safeNumber(outcomeMap["ОТКАЗ"]),
-      open: safeNumber(outcomeMap["ОТКРЫТ"]),
-      tech_service: safeNumber(outcomeMap["ТЕХ/СЕРВИС"]),
+      total: meaningfulCalls,
+      agreed,
+      rescheduled,
+      refusal,
+      open,
+      tech_service: techSvc,
     },
     money_on_table: {
       body: moneyOnTable.body || "",
@@ -519,8 +584,73 @@ function cellMultiPara(paras) {
 // Block 1 — ШАПКА
 // ──────────────────────────────────────────────────────────────
 
+function buildDayFunnelNote() {
+  // A: day funnel line
+  const f = DATA.day_funnel;
+  if (!f || f.raw === null) return null;
+  const excluded = f.raw - f.meaningful;
+  const parts = [];
+  parts.push(`найдено в телефонии — ${f.raw}`);
+  // Show meaningful count only when it differs from raw (i.e. some calls excluded)
+  if (f.meaningful !== null && excluded > 0) {
+    parts.push(`содержательных — ${f.meaningful}`);
+    parts.push(`исключено из списка дня — ${excluded}`);
+  }
+  const line = "Воронка дня: " + parts.join("; ") + ".";
+
+  // Exclusion reasons (only if they sum ≤ excluded and non-zero)
+  const reasonLabels = {
+    too_short_or_no_speech: "слишком короткие / без речи",
+    ivr_or_autoanswer: "IVR / автоответчик",
+    support_internal: "служебные / внутренние",
+    not_enough_analysis: "нет готового разбора",
+    not_selected_for_core_review: "не вошли в коучинговый отбор",
+  };
+  const reasons = f.reasons || {};
+  const reasonParts = Object.entries(reasonLabels)
+    .map(([code, label]) => ({ label, count: safeNumber(reasons[code], 0) }))
+    .filter((r) => r.count > 0);
+  const reasonSum = reasonParts.reduce((s, r) => s + r.count, 0);
+  let reasonLine = null;
+  if (reasonParts.length > 0 && reasonSum <= excluded + 1) {
+    reasonLine = "Почему исключено: " + reasonParts.map((r) => `${r.label} — ${r.count}`).join(", ") + ".";
+  }
+
+  return { line, reasonLine };
+}
+
+function buildCoachingWindowNote() {
+  const f = DATA.day_funnel;
+  const inReport = f ? f.in_report : null;
+  const w = DATA.coaching_window;
+
+  if (w && w.window_days > 1) {
+    // Rolling window: explain the multi-day coaching base
+    const dayWord = w.window_days <= 4 ? "рабочих дня" : "рабочих дней";
+    let note = `Коучинговый разбор собран по расширенной базе за ${w.window_days} ${dayWord}.`;
+    if (inReport !== null) {
+      note += ` В разбор вошло ${inReport} ${russianCallWord(inReport)}.`;
+    }
+    return note;
+  }
+
+  // Single-day window: show coaching core count if it differs from meaningful_calls
+  if (inReport !== null && inReport < DATA.meaningful_calls) {
+    return `В коучинговый разбор вошло ${inReport} из ${DATA.meaningful_calls} звонков дня.`;
+  }
+
+  return null;
+}
+
 function buildShapka() {
-  return [
+  const formattedDate = formatRussianDate(DATA.report_day);
+  const callCount = DATA.meaningful_calls;
+  const callLine = `${formattedDate}  ·  ${callCount} содержательных ${russianCallWord(callCount)}`;
+
+  const funnelData = buildDayFunnelNote();
+  const coachingNote = buildCoachingWindowNote();
+
+  const paras = [
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
@@ -536,33 +666,65 @@ function buildShapka() {
         text: DATA.manager,
         bold: true, size: SZ.h1, color: COLORS.black, font: "Arial",
       })],
-      spacing: { before: 0, after: 80 },
+      spacing: { before: 0, after: 60 },
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [new TextRun({
-        text: `${DATA.date}  ·  ${DATA.meaningful_calls} ${russianCallWord(DATA.meaningful_calls)}`,
+        text: callLine,
         size: SZ.body, color: COLORS.gray, font: "Arial",
       })],
-      spacing: { before: 0, after: 80 },
+      spacing: { before: 0, after: DATA.report_type ? 60 : 80 },
     }),
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({
-        text: `Балл дня: ${DATA.day_score.toFixed(1)} / 5`,
-        bold: true, size: SZ.body, color: COLORS.heading, font: "Arial",
-      })],
-      spacing: { before: 0, after: DATA.selection_note ? 60 : 160 },
-    }),
-    ...(DATA.selection_note ? [new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({
-        text: DATA.selection_note,
-        size: SZ.meta, color: COLORS.gray, font: "Arial",
-      })],
-      spacing: { before: 0, after: 140 },
-    })] : []),
   ];
+
+  // Report type badge
+  if (DATA.report_type) {
+    paras.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({
+        text: DATA.report_type,
+        bold: true, size: SZ.cell, color: COLORS.orange, font: "Arial",
+      })],
+      spacing: { before: 0, after: 60 },
+    }));
+  }
+
+  paras.push(new Paragraph({
+    alignment: AlignmentType.CENTER,
+    children: [new TextRun({
+      text: `Балл дня: ${DATA.day_score.toFixed(1)} / 5`,
+      bold: true, size: SZ.body, color: COLORS.heading, font: "Arial",
+    })],
+    spacing: { before: 0, after: funnelData || coachingNote ? 60 : 160 },
+  }));
+
+  // Day funnel note
+  if (funnelData) {
+    paras.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ text: funnelData.line, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
+      spacing: { before: 0, after: funnelData.reasonLine ? 20 : (coachingNote ? 20 : 100) },
+    }));
+    if (funnelData.reasonLine) {
+      paras.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: funnelData.reasonLine, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
+        spacing: { before: 0, after: coachingNote ? 20 : 100 },
+      }));
+    }
+  }
+
+  // Coaching window note
+  if (coachingNote) {
+    paras.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ text: coachingNote, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
+      spacing: { before: 0, after: 100 },
+    }));
+  }
+
+  return paras;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -570,8 +732,10 @@ function buildShapka() {
 // ──────────────────────────────────────────────────────────────
 
 function buildSvodnaya() {
-  const { total, agreed, rescheduled, refusal, open, tech_service } = DATA.outcomes;
-  const w = { size: 1000, type: WidthType.DXA };
+  const { agreed, rescheduled, refusal, open, tech_service } = DATA.outcomes;
+  const dayTotal = DATA.meaningful_calls; // total = all meaningful calls of the day
+  const knownSum = agreed + rescheduled + refusal + open + tech_service;
+  const unclassified = Math.max(0, dayTotal - knownSum);
 
   function outCell(num, label, color) {
     return new TableCell({
@@ -593,23 +757,29 @@ function buildSvodnaya() {
     });
   }
 
+  const cells = [
+    outCell(dayTotal,      "Итог дня",       COLORS.heading),
+    outCell(agreed,        "Договорённость",  COLORS.green),
+    outCell(rescheduled,   "Перенос",         COLORS.orange),
+    outCell(refusal,       "Отказ",           COLORS.red),
+    outCell(open,          "Открыт",          COLORS.gray),
+    outCell(tech_service,  "Тех/Сервис",      COLORS.gray),
+  ];
+  if (unclassified > 0) {
+    cells.push(outCell(unclassified, "Не класс.", COLORS.gray));
+  }
+
   return [
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [
-        new TableRow({
-          children: [
-            outCell(total,        "Звонков",    COLORS.heading),
-            outCell(agreed,       "Договорённость",    COLORS.green),
-            outCell(rescheduled,  "Перенос",    COLORS.orange),
-            outCell(refusal,      "Отказ",      COLORS.red),
-            outCell(open,         "Открыт",     COLORS.gray),
-            outCell(tech_service, "Тех/Сервис", COLORS.gray),
-          ],
-        }),
-      ],
+      rows: [new TableRow({ children: cells })],
     }),
-    spacer(8),
+    spacer(4),
+    bodyPara(
+      "Итог дня — все содержательные звонки отчётного дня; коучинговый разбор ведётся по отдельной базе.",
+      { color: COLORS.gray, size: SZ.meta },
+    ),
+    spacer(4),
   ];
 }
 
@@ -617,13 +787,73 @@ function buildSvodnaya() {
 // Block 3 — ДЕНЬГИ НА СТОЛЕ
 // ──────────────────────────────────────────────────────────────
 
+function formatMoney(amount) {
+  return `${amount.toLocaleString("ru-RU")} ₸`;
+}
+
 function buildDengi() {
+  const AVG_CHECK = 80000; // ₸ per contact, preliminary estimate
+  const { agreed, open, rescheduled } = DATA.outcomes;
+
+  // Categories that represent money on the table
+  const moneyRows = [
+    { label: "Договорённость", count: agreed },
+    { label: "Открыт",        count: open },
+    { label: "Перенос",       count: rescheduled },
+  ].filter((r) => r.count > 0);
+
+  const totalCount = moneyRows.reduce((s, r) => s + r.count, 0);
+
+  if (totalCount === 0) {
+    return [
+      blockHeading("💰", "ДЕНЬГИ НА СТОЛЕ"),
+      bodyPara("Данных для данного раздела недостаточно.", { color: COLORS.gray }),
+    ];
+  }
+
+  const totalPotential = totalCount * AVG_CHECK;
+
+  // Table header
+  const hdrRow = new TableRow({
+    children: [
+      headCell("Категория",   { width: { size: 40, type: WidthType.PERCENTAGE } }),
+      headCell("Кол-во",      { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Средний чек", { width: { size: 25, type: WidthType.PERCENTAGE }, align: AlignmentType.RIGHT }),
+      headCell("Потенциал",   { width: { size: 20, type: WidthType.PERCENTAGE }, align: AlignmentType.RIGHT }),
+    ],
+  });
+
+  const dataRows = moneyRows.map((r, i) =>
+    new TableRow({
+      children: [
+        cell(r.label, { shading: altShading(i) }),
+        cell(String(r.count), { align: AlignmentType.CENTER, shading: altShading(i) }),
+        cell(formatMoney(AVG_CHECK), { align: AlignmentType.RIGHT, shading: altShading(i), color: COLORS.gray }),
+        cell(formatMoney(r.count * AVG_CHECK), { align: AlignmentType.RIGHT, shading: altShading(i), bold: true, color: COLORS.green }),
+      ],
+    })
+  );
+
+  const totalRow = new TableRow({
+    children: [
+      cell("Итого", { bold: true }),
+      cell(String(totalCount), { align: AlignmentType.CENTER, bold: true }),
+      cell("—", { align: AlignmentType.RIGHT, color: COLORS.gray }),
+      cell(formatMoney(totalPotential), { align: AlignmentType.RIGHT, bold: true, color: COLORS.green }),
+    ],
+  });
+
   return [
     blockHeading("💰", "ДЕНЬГИ НА СТОЛЕ"),
-    bodyPara(DATA.money_on_table.body),
-    bodyPara(DATA.money_on_table.highlight_line),
-    bodyPara(DATA.money_on_table.reason_line, { color: COLORS.orange }),
-    bodyPara(DATA.money_on_table.note, { color: COLORS.gray }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [hdrRow, ...dataRows, totalRow],
+    }),
+    spacer(4),
+    bodyPara(
+      `Предварительная оценка: пока используется средний чек ${formatMoney(AVG_CHECK)}. После подключения CRM сумма будет считаться по сделкам.`,
+      { color: COLORS.gray, size: SZ.meta },
+    ),
   ];
 }
 

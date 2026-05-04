@@ -1,0 +1,329 @@
+{
+  "case": {
+    "date": "2026-04-27",
+    "manager_name": "Толеген Жангазиев",
+    "manager_extension": "325",
+    "manager_id": "d42e8246-772e-4a04-bbe7-2b88f45db695",
+    "department_id": "472cda28-ce71-494c-9068-25d3ffbf7399"
+  },
+  "payload": {
+    "header": {
+      "report_title": "Ежедневный разбор звонков",
+      "manager_name": "Толеген Жангазиев",
+      "report_date": "2026-04-27",
+      "department_name": "[ЭДО] Отдел Продаж",
+      "department_id": "472cda28-ce71-494c-9068-25d3ffbf7399",
+      "product_or_business_context": null
+    },
+    "meta": {
+      "preset": "manager_daily",
+      "period": {
+        "date_from": "2026-04-27",
+        "date_to": "2026-04-27"
+      },
+      "readiness": {
+        "readiness_outcome": "signal_report",
+        "window_days_used": 1,
+        "window_start": "2026-04-27",
+        "window_end": "2026-04-27"
+      }
+    },
+    "kpi_overview": {
+      "calls_count": 4,
+      "average_score": null,
+      "strong_calls_pct": 50.0,
+      "baseline_calls_pct": 0.0,
+      "problematic_calls_pct": 50.0,
+      "score_vs_period_avg": null,
+      "delta_vs_period_avg": null,
+      "interpretation_label": "зона внимания"
+    },
+    "selection_model": {
+      "raw_calls_total": 5,
+      "meaningful_calls_total": 5,
+      "analyzed_calls_total": 4,
+      "coaching_candidate_calls_total": 3,
+      "included_in_report_total": 4,
+      "service_calls_total": 1,
+      "exclusion_reasons": {
+        "too_short_or_no_speech": 0,
+        "ivr_or_autoanswer": 0,
+        "support_internal": 1,
+        "not_enough_analysis": 1,
+        "not_selected_for_core_review": 0
+      }
+    },
+    "call_outcomes_summary": {
+      "agreed_count": 2,
+      "rescheduled_count": 0,
+      "refusal_count": 0,
+      "open_count": 3,
+      "tech_service_count": 0,
+      "source_note": "derived_from_meaningful_calls"
+    },
+    "call_list": [
+      {
+        "time": "2026-04-27T07:39:17+06:00",
+        "client_or_phone": "+77089089101",
+        "duration_sec": 377,
+        "call_type": "support",
+        "scenario_type": "hot_incoming_contact",
+        "status": "open",
+        "next_step": null,
+        "deadline": null,
+        "reason": "Тех. вопрос — без следующего шага",
+        "score_percent": null
+      },
+      {
+        "time": "2026-04-27T09:34:32+06:00",
+        "client_or_phone": "+77021010277",
+        "duration_sec": 251,
+        "call_type": "sales_primary",
+        "scenario_type": "warm_webinar_or_lead",
+        "status": "agreed",
+        "next_step": "Отправить коммерческое предложение.",
+        "deadline": "2026-04-28",
+        "reason": null,
+        "score_percent": 72.0
+      },
+      {
+        "time": "2026-04-27T10:12:26+06:00",
+        "client_or_phone": "Ирина",
+        "duration_sec": 246,
+        "call_type": "support",
+        "scenario_type": "mixed_scenario",
+        "status": "open",
+        "next_step": null,
+        "deadline": null,
+        "reason": "Служебный — не подлежит разбору",
+        "score_percent": null
+      },
+      {
+        "time": "2026-04-27T10:57:00+06:00",
+        "client_or_phone": "Анжелика",
+        "duration_sec": 312,
+        "call_type": "sales_primary",
+        "scenario_type": "warm_webinar_or_lead",
+        "status": "open",
+        "next_step": "Ожидать ответа после согласования.",
+        "deadline": null,
+        "reason": null,
+        "score_percent": 58.0
+      },
+      {
+        "time": "2026-04-27T11:17:00+06:00",
+        "client_or_phone": "Азамат",
+        "duration_sec": 285,
+        "call_type": "sales_primary",
+        "scenario_type": "warm_webinar_or_lead",
+        "status": "agreed",
+        "next_step": "Выслать реквизиты для оплаты.",
+        "deadline": "2026-04-28",
+        "reason": null,
+        "score_percent": 80.0
+      }
+    ],
+    "score_by_stage": [],
+    "key_problem_of_day": {},
+    "call_breakdown": {},
+    "voice_of_customer": {},
+    "additional_situations": {},
+    "call_tomorrow": {},
+    "recommendations": [],
+    "focus_of_week": {},
+    "narrative_day_conclusion": "",
+    "signal_of_day": "",
+    "main_focus_for_tomorrow": {},
+    "analysis_worked": [],
+    "analysis_improve": [],
+    "call_outcomes_summary_raw": {},
+    "delivery_meta": {},
+    "editorial_recommendations": {},
+    "verification_overrides": {}
+  },
+  "report": {
+    "sections": [
+      {
+        "id": "report_header",
+        "label": "ШАПКА",
+        "kind": "header_card",
+        "manager_name": "Толеген Жангазиев",
+        "report_date": "2026-04-27",
+        "calls_count": 4,
+        "day_score": "3.2",
+        "selection_note": "Сигнальный отчёт · Найдено в телефонии: 5 · содержательных: 5 · вошло в разбор: 4. Не вошло: служебные / внутренние: 1, нет готового разбора: 1.",
+        "report_type": "Сигнальный отчёт"
+      },
+      {
+        "id": "day_summary",
+        "label": "СВОДНАЯ ТАБЛИЦА ЗВОНКОВ",
+        "kind": "outcome_table",
+        "outcome_cols": [
+          {
+            "label": "ЗВОНКОВ",
+            "value": 4,
+            "tone": "neutral"
+          },
+          {
+            "label": "ДОГОВОРЕННОСТЬ",
+            "value": 2,
+            "tone": "positive"
+          },
+          {
+            "label": "ПЕРЕНОС",
+            "value": 0,
+            "tone": "focus"
+          },
+          {
+            "label": "ОТКАЗ",
+            "value": 0,
+            "tone": "problem"
+          },
+          {
+            "label": "ОТКРЫТ",
+            "value": 3,
+            "tone": "warning"
+          },
+          {
+            "label": "ТЕХ/СЕРВИС",
+            "value": 0,
+            "tone": "neutral"
+          }
+        ]
+      },
+      {
+        "id": "money_on_table",
+        "label": "ДЕНЬГИ НА СТОЛЕ",
+        "kind": "money_focus",
+        "body": "",
+        "highlight_line": "",
+        "reason_line": "",
+        "note": ""
+      },
+      {
+        "id": "warm_pipeline",
+        "label": "PIPELINE ТЁПЛЫХ ЛИДОВ",
+        "kind": "pipeline",
+        "summary_line": "",
+        "counts_line": "",
+        "conversion_line": "",
+        "average_line": "",
+        "contacts": []
+      },
+      {
+        "id": "main_focus_for_tomorrow",
+        "label": "СИТУАЦИЯ ДНЯ",
+        "kind": "situation",
+        "situation_title": "СИТУАЦИЯ ДНЯ",
+        "body": "Сигнальный отчёт: полный набор coached ситуаций недоступен. Используйте данные о звонках для оперативного разбора.",
+        "pattern_count_label": "",
+        "client_need": "",
+        "manager_task": "",
+        "call_example": {},
+        "scripts": [],
+        "why_it_works": ""
+      },
+      {
+        "id": "call_breakdown",
+        "label": "РАЗБОР ЗВОНКА",
+        "kind": "call_breakdown",
+        "rows": []
+      },
+      {
+        "id": "voice_of_customer",
+        "label": "ГОЛОС КЛИЕНТА",
+        "kind": "voice",
+        "rows": []
+      },
+      {
+        "id": "additional_situations",
+        "label": "ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ",
+        "kind": "additional",
+        "situations": []
+      },
+      {
+        "id": "challenge",
+        "label": "ЧЕЛЛЕНДЖ НА ЗАВТРА",
+        "kind": "challenge",
+        "goal_line": "2 договорённости завтра",
+        "today_line": "Сегодня: 2 договорённости.",
+        "record_line": "",
+        "phrase_line": "Добрый день! Готов обсудить следующий шаг по вашему запросу."
+      },
+      {
+        "id": "call_tomorrow",
+        "label": "КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА",
+        "kind": "call_tomorrow",
+        "rows": [],
+        "contacts": []
+      },
+      {
+        "id": "call_list",
+        "label": "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ",
+        "kind": "call_list",
+        "columns": [
+          "#",
+          "Время",
+          "Клиент",
+          "Тема",
+          "Контекст",
+          "Статус"
+        ],
+        "rows": [
+          [
+            "1",
+            "07:39",
+            "+77089089101",
+            "Тех/Сервис",
+            "Тех. вопрос — без следующего шага",
+            "Открыт"
+          ],
+          [
+            "2",
+            "09:34",
+            "+77021010277",
+            "Продажа (тёплый лид)",
+            "Договор. Отправить КП до 28.04",
+            "Договорённость"
+          ],
+          [
+            "3",
+            "10:12",
+            "Ирина",
+            "Тех/Сервис",
+            "Служебный — не подлежит разбору",
+            "Открыт"
+          ],
+          [
+            "4",
+            "10:57",
+            "Анжелика",
+            "Продажа (тёплый лид)",
+            "Ожидает согласования",
+            "Открыт"
+          ],
+          [
+            "5",
+            "11:17",
+            "Азамат",
+            "Продажа (тёплый лид)",
+            "Договор. Выслать реквизиты до 28.04",
+            "Договорённость"
+          ]
+        ],
+        "note": "Показаны все 5 звонков дня."
+      },
+      {
+        "id": "morning_card",
+        "label": "УТРЕННЯЯ КАРТОЧКА",
+        "kind": "morning_card",
+        "greeting": "Добрый день, Толеген!",
+        "summary_line": "2 договорённости из 5 содержательных звонков.",
+        "open_calls": 3,
+        "financial_line": "",
+        "challenge": "2 договорённости завтра",
+        "call_tomorrow_contacts": []
+      }
+    ]
+  }
+}
