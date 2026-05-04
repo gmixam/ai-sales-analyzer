@@ -307,6 +307,115 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(stages["needs_discovery"]["problem_source"], "gap")
         self.assertNotIn("nd_depth", stages["needs_discovery"]["problem_summary"])
 
+    def test_manager_daily_payload_adds_situation_evidence_quote_for_priority_stage(self) -> None:
+        artifact = _artifact(50.0, "problematic")
+        artifact.analysis.scores_detail["call"]["contact_name"] = "Анжелика"
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "stage_score": 2,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "cs_permission",
+                        "criterion_name": "Проверка уместности",
+                        "score": 2,
+                        "max_score": 2,
+                    }
+                ],
+            },
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_role_scope",
+                        "criterion_name": "Роль и масштаб",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Роль собеседника не была уточнена.",
+                    }
+                ],
+            },
+        ]
+        artifact.analysis.scores_detail["gaps"] = [
+            {
+                "criterion_code": "qp_role_scope",
+                "title": "Роль собеседника не была уточнена",
+                "comment": "Роль собеседника не была уточнена.",
+            }
+        ]
+        artifact.analysis.scores_detail["evidence_fragments"] = [
+            {
+                "criterion_code": "nd_depth",
+                "client_text": "У нас несколько филиалов, но пока не понимаю условия.",
+                "manager_text": "Расскажу про продукт.",
+            },
+            {
+                "criterion_code": "qp_role_scope",
+                "client_text": "Я просто уточняю для руководителя, сама решение не принимаю.",
+                "manager_text": "Тогда я вам сейчас расскажу по тарифам.",
+            },
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        quote = payload["situation_evidence_quote"]
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote["source"], "evidence_fragments")
+        self.assertEqual(quote["stage_code"], "qualification_primary")
+        self.assertEqual(quote["criterion_code"], "qp_role_scope")
+        self.assertEqual(quote["client_label"], "Анжелика")
+        self.assertIn("сама решение не принимаю", quote["client_text"])
+
+    def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
+        artifact = _artifact(50.0, "problematic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_role_scope",
+                        "criterion_name": "Роль и масштаб",
+                        "score": 0,
+                        "max_score": 2,
+                    }
+                ],
+            }
+        ]
+        artifact.analysis.scores_detail["evidence_fragments"] = [
+            {
+                "criterion_code": "nd_depth",
+                "client_text": "Эта цитата относится к другому этапу.",
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertIsNone(payload["situation_evidence_quote"])
+
     def test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics(self) -> None:
         manager = _manager()
         payload = build_manager_daily_payload(

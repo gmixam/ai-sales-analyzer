@@ -3230,6 +3230,11 @@ def build_manager_daily_payload(
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
+    situation_evidence_quote = _build_situation_evidence_quote(
+        artifacts=artifacts,
+        score_by_stage=score_by_stage,
+        improve_items=improve_items,
+    )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -3317,6 +3322,7 @@ def build_manager_daily_payload(
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
+        "situation_evidence_quote": situation_evidence_quote,
         "call_list": _build_meaningful_call_list(
             window_artifacts=operational_day_artifacts,
         ),
@@ -3737,6 +3743,84 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             "problem_source": problem_source,
         })
     return rows
+
+
+def _build_situation_evidence_quote(
+    *,
+    artifacts: list[ReportArtifact],
+    score_by_stage: list[dict[str, Any]],
+    improve_items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Select one real dialogue fragment linked to the situation day's priority stage."""
+    priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
+    priority_stage_code = str((priority_stage or {}).get("stage_code") or "").strip()
+    if not priority_stage_code:
+        return None
+
+    key_problem_code = str((improve_items[0] if improve_items else {}).get("criterion_code") or "").strip()
+    weak_criterion_codes: set[str] = set()
+    candidates: list[tuple[int, float, datetime, dict[str, Any]]] = []
+
+    for artifact in artifacts:
+        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        for stage in detail.get("score_by_stage") or []:
+            if str(stage.get("stage_code") or "").strip() != priority_stage_code:
+                continue
+            for crit in stage.get("criteria_results") or []:
+                ccode = str(crit.get("criterion_code") or "").strip()
+                cscore = int(crit.get("score") or 0)
+                cmax = int(crit.get("max_score") or 0)
+                if ccode and cmax > 0 and round(cscore / cmax * 10, 1) < 5.0:
+                    weak_criterion_codes.add(ccode)
+
+        for frag in detail.get("evidence_fragments") or []:
+            criterion_code = str(frag.get("criterion_code") or "").strip()
+            stage_code = _stage_code_from_criterion_code(criterion_code)
+            client_text = str(frag.get("client_text") or "").strip()
+            if stage_code != priority_stage_code or len(client_text) < 5:
+                continue
+
+            manager_text = str(
+                frag.get("manager_text")
+                or frag.get("manager_phrase")
+                or frag.get("manager")
+                or ""
+            ).strip() or None
+            call_meta = dict(detail.get("call") or {})
+            client_label = str(
+                call_meta.get("contact_name") or call_meta.get("contact_phone")
+                or (artifact.interaction.metadata_ or {}).get("contact_phone")
+                or "Клиент"
+            ).strip()
+            time_label = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+            rank = 2
+            if key_problem_code and criterion_code == key_problem_code:
+                rank = 0
+            elif criterion_code in weak_criterion_codes:
+                rank = 1
+            score = _extract_score_percent(artifact.analysis)
+            candidates.append(
+                (
+                    rank,
+                    score,
+                    artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+                    {
+                        "client_text": client_text,
+                        "manager_text": manager_text,
+                        "criterion_code": criterion_code,
+                        "stage_code": stage_code,
+                        "source": "evidence_fragments",
+                        "call_id": str(artifact.interaction.id),
+                        "client_label": client_label,
+                        "time_label": time_label,
+                    },
+                )
+            )
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    return candidates[0][3]
 
 
 def _extract_score_percent(analysis: Analysis | None) -> float:

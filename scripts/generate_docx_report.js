@@ -102,6 +102,25 @@ function stripOpeningPrefix(value) {
   return cleanText(value).replace(/^Добрый день!\s*Звоню уточнить детали:\s*/i, "");
 }
 
+function shortQuote(value, limit = 320) {
+  const text = cleanText(value);
+  if (!text) return "";
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit).replace(/\s+\S*$/, "")}…`;
+}
+
+function buildDialogueFragmentText(quote) {
+  if (!quote || !cleanText(quote.client_text)) {
+    return "Фрагмент диалога в текущем payload не передан.";
+  }
+  const lines = [];
+  const managerText = shortQuote(quote.manager_text, 260);
+  const clientText = shortQuote(quote.client_text, 320);
+  if (managerText) lines.push(`Менеджер: ${managerText}`);
+  lines.push(`Клиент: ${clientText}`);
+  return lines.join("\n");
+}
+
 function tomorrowSituation(contact, row) {
   const status = cleanText(contact.status || "");
   const deadline = firstNonEmpty(contact.deadline, row[2]);
@@ -193,6 +212,7 @@ function emptyStateData(payload) {
       client_need: "",
       manager_task: "",
       call_example: {},
+      evidence_quote: null,
       scripts: [],
       why_it_works: "",
     },
@@ -352,6 +372,7 @@ function dataFromBundle(bundle) {
       client_need: situation.client_need || "",
       manager_task: situation.manager_task || "",
       call_example: situation.call_example || {},
+      evidence_quote: payload.situation_evidence_quote || null,
       scripts: situation.scripts || [],
       why_it_works: situation.why_it_works || "",
     },
@@ -999,8 +1020,15 @@ function buildSituatsiya() {
   }
 
   const preTableElements = bodyText
-    ? [bodyPara(`Что произошло: ${bodyText}`, { color: COLORS.orange })]
-    : [];
+    ? [
+        bodyPara(`Что произошло: ${bodyText}`, { color: COLORS.orange }),
+        subHeading("Фрагмент диалога:"),
+        bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
+      ]
+    : [
+        subHeading("Фрагмент диалога:"),
+        bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
+      ];
 
   return [
     blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
