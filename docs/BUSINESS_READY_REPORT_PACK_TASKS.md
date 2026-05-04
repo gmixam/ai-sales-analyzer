@@ -185,6 +185,9 @@ business-facing morning card.
 | ПОЗВОНИ ЗАВТРА: список + opening scripts | Richer `follow_up` use + bounded LLM |
 | СПИСОК ЗВОНКОВ: колонка «Контекст» (ситуация per call) | `follow_up.next_step_text` или bounded LLM |
 | БАЛЛЫ ПО ЭТАПАМ: детализация критериев внутри этапа | Richer распаковка `criteria_results` |
+| БАЛЛЫ ПО ЭТАПАМ: Основная проблема для non-priority stages | Требует поля `stage_problem_summary` per-stage в payload; сейчас `criteria_detail` только у priority stage |
+| РАЗБОР ЗВОНКА: verbatim transcript evidence | Требует `evidence_fragments` с `call_id` + timestamp из STT; сейчас `call_breakdown.rows` — LLM summaries |
+| БАЛЛЫ ПО ЭТАПАМ: stage-linked analysis_improve | Требует `stage_code` тэгирования в `analysis_improve` items; сейчас aggregated, не per-stage |
 
 Это bounded second-stage layer. Не блокирует пилот.
 

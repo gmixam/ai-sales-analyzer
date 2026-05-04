@@ -150,15 +150,15 @@ function stageStatus(stage) {
   return "Зона внимания";
 }
 
-function stageMeaning(stage) {
-  const status = stageStatus(stage);
-  if (status === "Фокус на завтра") {
-    return "Этот этап сейчас главный фокус ближайшей отработки.";
+function stageProblem(stage) {
+  if (stage.priority) {
+    return DATA.key_problem?.title || "Этот этап сейчас главный фокус ближайшей отработки.";
   }
-  if (status === "Норма") {
-    return "Этап в целом отработан стабильно.";
-  }
-  return "Этап требует усиления в ближайших звонках.";
+  return "Недостаточно данных для конкретного вывода по этапу.";
+}
+
+function criterionToProblem(name) {
+  return "Не " + name.charAt(0).toLowerCase() + name.slice(1);
 }
 
 function emptyStateData(payload) {
@@ -192,6 +192,7 @@ function emptyStateData(payload) {
     call_breakdown: { client: "—", time: "—", stages: [] },
     voice_of_customer: [],
     additional_situations: [],
+    key_problem: { title: "", description: "" },
     challenge: { goal_line: "", today_line: "", record_line: "", phrase_line: "" },
     call_tomorrow: [],
     all_calls: [],
@@ -344,6 +345,10 @@ function dataFromBundle(bundle) {
       call_example: situation.call_example || {},
       scripts: situation.scripts || [],
       why_it_works: situation.why_it_works || "",
+    },
+    key_problem: {
+      title: payload.key_problem_of_day?.title || "",
+      description: payload.key_problem_of_day?.description || "",
     },
     call_breakdown: {
       client: payload.call_breakdown?.client_label || "Клиент",
@@ -870,7 +875,7 @@ function buildBally() {
         headCell("Этап", { width: { size: 34, type: WidthType.PERCENTAGE } }),
         headCell("Балл", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
         headCell("Статус", { width: { size: 18, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Что это значит", { width: { size: 36, type: WidthType.PERCENTAGE } }),
+        headCell("Основная проблема", { width: { size: 36, type: WidthType.PERCENTAGE } }),
       ],
     })
   );
@@ -890,7 +895,7 @@ function buildBally() {
       cell(st.name, { color: nameColor, bold: st.priority, shading: rowShading }),
       cell(scoreStr, { align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
       cell(status, { align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
-      cell(stageMeaning(st), { shading: rowShading, size: SZ.cell }),
+      cell(stageProblem(st), { shading: rowShading, size: SZ.cell }),
     ];
 
     rows.push(new TableRow({ children: rowCells }));
@@ -905,8 +910,8 @@ function buildBally() {
   const focusBlock = weakFocusItems.length > 0
     ? [
         spacer(6),
-        subHeading("Что просело в фокусном этапе:"),
-        ...weakFocusItems.map((item, index) => bodyPara(`${index + 1}. ${item}`, { size: SZ.cell })),
+        subHeading(`Фокус на завтра: ${priorityStage?.name}:`),
+        ...weakFocusItems.map((item, index) => bodyPara(`${index + 1}. ${criterionToProblem(item)}`, { size: SZ.cell })),
       ]
     : [];
 
@@ -934,43 +939,25 @@ function buildSituatsiya() {
   const rows = [];
 
   const bodyText = [s.body, s.pattern_count_label].filter(Boolean).join("  ");
-  if (bodyText) {
-    rows.push(new TableRow({ children: [
-      labelCell("Главный сигнал дня"),
-      cell(bodyText, { color: COLORS.orange }),
-    ]}));
-  }
 
-  const priorityStage = (DATA.stages || []).find((st) => st.priority);
-  if (priorityStage) {
+  if (DATA.key_problem?.title) {
     rows.push(new TableRow({ children: [
-      labelCell("Приоритетный этап"),
-      cell(priorityStage.name, { bold: true, color: COLORS.heading }),
+      labelCell("Ошибка менеджера"),
+      cell(DATA.key_problem.title, { bold: true, color: COLORS.red }),
     ]}));
   }
 
   if (s.client_need) {
     rows.push(new TableRow({ children: [
-      labelCell("Что хотел сказать клиент"),
+      labelCell("Что это значит"),
       cell(s.client_need),
     ]}));
   }
 
   if (s.manager_task) {
     rows.push(new TableRow({ children: [
-      labelCell("Наша задача"),
+      labelCell("Что делать в следующий раз"),
       cell(s.manager_task, { bold: true }),
-    ]}));
-  }
-
-  const ex = s.call_example || {};
-  const exampleText = (ex.time_label || ex.client_label)
-    ? `Звонок ${ex.time_label || "—"} — ${ex.client_label || "Клиент"}. ${ex.reason_short || ""}`.trim()
-    : "";
-  if (exampleText) {
-    rows.push(new TableRow({ children: [
-      labelCell("Пример из сегодня"),
-      cell(exampleText, { color: COLORS.gray }),
     ]}));
   }
 
@@ -998,9 +985,13 @@ function buildSituatsiya() {
   if (rows.length === 0) {
     return [
       blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
-      bodyPara(s.body || "Данных за этот день недостаточно.", { color: COLORS.gray }),
+      bodyPara(bodyText || "Данных за этот день недостаточно.", { color: COLORS.gray }),
     ];
   }
+
+  const preTableElements = bodyText
+    ? [bodyPara(`Что произошло: ${bodyText}`, { color: COLORS.orange })]
+    : [];
 
   return [
     blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
@@ -1011,6 +1002,7 @@ function buildSituatsiya() {
       })],
       spacing: { before: 60, after: 60 },
     }),
+    ...preTableElements,
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       rows,
