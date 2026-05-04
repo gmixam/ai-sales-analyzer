@@ -378,6 +378,17 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(quote["criterion_code"], "qp_role_scope")
         self.assertEqual(quote["client_label"], "Анжелика")
         self.assertIn("сама решение не принимаю", quote["client_text"])
+        excerpt = payload["situation_dialogue_excerpt"]
+        self.assertIsNotNone(excerpt)
+        self.assertEqual(excerpt["source"], "evidence_fragments")
+        self.assertTrue(excerpt["is_partial"])
+        self.assertEqual(
+            excerpt["turns"],
+            [
+                {"speaker": "manager", "text": "Тогда я вам сейчас расскажу по тарифам."},
+                {"speaker": "client", "text": "Я просто уточняю для руководителя, сама решение не принимаю."},
+            ],
+        )
         deep_dive = payload["focus_stage_deep_dive"]
         self.assertIsNotNone(deep_dive)
         self.assertEqual(deep_dive["stage_code"], "qualification_primary")
@@ -445,6 +456,100 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         self.assertIsNone(payload["situation_evidence_quote"])
+
+    def test_manager_daily_payload_dialogue_excerpt_is_partial_with_client_text_only(self) -> None:
+        artifact = _artifact(50.0, "problematic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                    }
+                ],
+            }
+        ]
+        artifact.analysis.scores_detail["evidence_fragments"] = [
+            {
+                "criterion_code": "qp_current_process",
+                "client_text": "На бумаге или просто по электронной почте.",
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        excerpt = payload["situation_dialogue_excerpt"]
+        self.assertIsNotNone(excerpt)
+        self.assertTrue(excerpt["is_partial"])
+        self.assertEqual(excerpt["turns"], [{"speaker": "client", "text": "На бумаге или просто по электронной почте."}])
+
+    def test_manager_daily_payload_dialogue_excerpt_uses_transcript_segments_when_available(self) -> None:
+        artifact = _artifact(50.0, "problematic")
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "обороты устраиваем?"},
+            {"speaker": "A", "text": "На бумаге или просто по электронной почте."},
+            {"speaker": "A", "text": "смотрите, я у вас базовый пакет покупаю, надо 180 тысяч"},
+        ]
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                    }
+                ],
+            }
+        ]
+        artifact.analysis.scores_detail["evidence_fragments"] = [
+            {
+                "criterion_code": "qp_current_process",
+                "client_text": "На бумаге или просто по электронной почте.",
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        excerpt = payload["situation_dialogue_excerpt"]
+        self.assertIsNotNone(excerpt)
+        self.assertEqual(excerpt["source"], "transcript_turns")
+        self.assertTrue(excerpt["is_partial"])
+        self.assertEqual(excerpt["partial_reason"], "speaker_roles_unavailable")
+        self.assertEqual(
+            excerpt["turns"],
+            [
+                {"speaker": "unknown", "text": "обороты устраиваем?"},
+                {"speaker": "client", "text": "На бумаге или просто по электронной почте."},
+                {"speaker": "unknown", "text": "смотрите, я у вас базовый пакет покупаю, надо 180 тысяч"},
+            ],
+        )
 
     def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
         artifact = _artifact(50.0, "problematic")

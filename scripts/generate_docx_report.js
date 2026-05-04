@@ -119,7 +119,7 @@ function buildCallReference(quote) {
   if (!quote) return "";
   const dateText = formatRussianDate(firstNonEmpty(quote.date_label, DATA.report_day, DATA.date));
   const timeText = cleanText(quote.time_label);
-  const clientLabel = cleanText(quote.client_label);
+  const clientLabel = cleanText(firstNonEmpty(quote.client_name, quote.client_label));
   const phone = cleanText(quote.client_phone);
   const parts = [];
   if (dateText && dateText !== "—") parts.push(dateText);
@@ -133,96 +133,66 @@ function buildCallReference(quote) {
   return parts.length > 0 ? `Звонок: ${parts.join(" · ")}` : "";
 }
 
+function dialogueSpeakerLabel(speaker) {
+  const value = cleanText(speaker).toLowerCase();
+  if (value === "manager") return "Менеджер";
+  if (value === "client") return "Клиент";
+  return "Реплика";
+}
+
 function buildWhatHappenedText(s) {
-  const quote = s.evidence_quote;
   const dive = s.focus_stage_deep_dive || {};
-  const callRef = buildCallReference(quote);
-  const clientText = shortQuote(quote?.client_text, 220);
   const problem = cleanText(dive.what_went_wrong);
   const why = cleanText(dive.why_it_matters);
-  if (clientText) {
-    const quoteText = clientText.replace(/^«|»$/g, "").replace(/[.!?]+$/, "");
-    const fragments = [];
-    if (callRef) fragments.push(callRef + ".");
-    fragments.push(`Клиент сказал: «${quoteText}».`);
-    if (problem || why) {
-      fragments.push(`Проблема: ${[problem, why].filter(Boolean).join(" ")}`);
-    }
-    return fragments.join(" ");
-  }
+  if (problem && why) return `${problem} ${why}`;
   if (problem) {
     return `В одном из звонков по фокусному этапу проявилась проблема: ${problem}`;
   }
   return "";
 }
 
-function buildDialogueFragmentText(quote) {
-  if (!quote || !cleanText(quote.client_text)) {
-    return "Фрагмент диалога в текущем payload не передан.";
+function buildDialogueParagraphs(excerpt, quote) {
+  const source = excerpt || null;
+  const turns = (source?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 4);
+  if (turns.length === 0 && quote && cleanText(quote.client_text)) {
+    turns.push({ speaker: "client", text: quote.client_text });
   }
-  const lines = [];
-  const callRef = buildCallReference(quote);
-  const managerText = shortQuote(quote.manager_text, 260);
-  const clientText = shortQuote(quote.client_text, 320);
-  if (callRef) lines.push(callRef);
-  if (managerText) lines.push(`Менеджер: ${managerText}`);
-  lines.push(`Клиент: ${clientText}`);
-  return lines.join("\n");
+  if (turns.length === 0) {
+    return [bodyPara("Фрагмент диалога в текущем payload не передан.", { color: COLORS.gray, size: SZ.cell })];
+  }
+  const partial = source?.is_partial !== false;
+  const paras = partial
+    ? [bodyPara("Фрагмент диалога передан частично.", { color: COLORS.gray, size: SZ.cell, italic: true })]
+    : [];
+  for (const turn of turns) {
+    paras.push(bodyPara(`${dialogueSpeakerLabel(turn.speaker)}: ${shortQuote(turn.text, 320)}`, { size: SZ.cell }));
+  }
+  return paras;
 }
 
-function hasFocusStageDeepDive(dive) {
-  return Boolean(
-    dive
-    && cleanText(dive.what_went_wrong)
-    && cleanText(dive.why_it_matters)
-    && cleanText(dive.what_to_fix)
-    && cleanText(dive.minimum_for_tomorrow)
-  );
-}
-
-function buildFocusStageDeepDiveElements(dive) {
-  if (!hasFocusStageDeepDive(dive)) return [];
-  const rows = [
-    ["Что пошло не так", dive.what_went_wrong],
-    ["Почему это проблема", dive.why_it_matters],
+function buildSituationReviewRows(s) {
+  const dive = s.focus_stage_deep_dive || {};
+  const rec = s.focus_stage_recommendation || {};
+  const checklist = (rec.checklist || []).map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
+  const rowSpecs = [
+    ["Ошибка менеджера", dive.what_went_wrong],
+    ["Почему это важно", dive.why_it_matters],
     ["Что исправить", dive.what_to_fix],
     ["Минимум на завтра", dive.minimum_for_tomorrow],
-  ].map(([label, value]) => new TableRow({
-    children: [
-      labelCell(label),
-      cell(value, { size: SZ.cell }),
-    ],
-  }));
-  return [
-    subHeading("Разбор фокусного этапа:"),
-    new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows,
-    }),
-    spacer(4),
-  ];
-}
-
-function hasFocusStageRecommendation(rec) {
-  return Boolean(
-    rec
-    && (cleanText(rec.recommendation) || (Array.isArray(rec.checklist) && rec.checklist.some((item) => cleanText(item))))
-  );
-}
-
-function buildFocusStageRecommendationElements(rec, dive) {
-  if (!hasFocusStageRecommendation(rec)) return [];
-  const recommendation = cleanText(rec.recommendation);
-  const alreadyShown = recommendation && recommendation === cleanText(dive?.what_to_fix);
-  const checklist = (rec.checklist || []).map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
-  const elements = [subHeading("Что сделать в следующих звонках:")];
-  if (recommendation && !alreadyShown) {
-    elements.push(bodyPara(recommendation, { bold: true, color: COLORS.heading }));
-  }
+  ].filter(([, value]) => cleanText(value));
   if (checklist.length > 0) {
-    elements.push(...checklist.map((item, index) => bodyPara(`${index + 1}. ${item}`, { size: SZ.cell })));
+    rowSpecs.push(["Что сделать в следующих звонках", checklist.map((item, index) => `${index + 1}. ${item}`).join("\n")]);
   }
-  return elements;
+  return rowSpecs.map(([label, value]) => {
+    const lines = String(value).split("\n").map((line) => cleanText(line)).filter(Boolean);
+    const contentCell = lines.length > 1
+      ? cellMultiPara(lines.map((line) => new Paragraph({
+          children: [new TextRun({ text: line, size: SZ.cell, font: "Arial", color: COLORS.black })],
+          spacing: { before: 0, after: 40 },
+        })))
+      : cell(value, { size: SZ.cell });
+    return new TableRow({ children: [labelCell(label), contentCell] });
+  });
 }
 
 function tomorrowSituation(contact, row) {
@@ -317,6 +287,7 @@ function emptyStateData(payload) {
       manager_task: "",
       call_example: {},
       evidence_quote: null,
+      dialogue_excerpt: null,
       focus_stage_deep_dive: null,
       focus_stage_recommendation: null,
       scripts: [],
@@ -479,6 +450,7 @@ function dataFromBundle(bundle) {
       manager_task: situation.manager_task || "",
       call_example: situation.call_example || {},
       evidence_quote: payload.situation_evidence_quote || null,
+      dialogue_excerpt: payload.situation_dialogue_excerpt || null,
       focus_stage_deep_dive: payload.focus_stage_deep_dive || null,
       focus_stage_recommendation: payload.focus_stage_recommendation || null,
       scripts: situation.scripts || [],
@@ -667,11 +639,11 @@ function blockHeading(emoji, title) {
 }
 
 function bodyPara(text, opts = {}) {
-  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0 } = opts;
+  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0, italic = false } = opts;
   return new Paragraph({
     indent: indent ? { left: indent } : undefined,
     children: [
-      new TextRun({ text, bold, color, size, font: "Arial" }),
+      new TextRun({ text, bold, color, size, font: "Arial", italics: italic }),
     ],
     spacing: { before: 0, after: 60 },
   });
@@ -1056,52 +1028,19 @@ function buildBally() {
 
 function buildSituatsiya() {
   const s = DATA.situation;
-  const rows = [];
-
+  const callRef = buildCallReference(s.dialogue_excerpt || s.evidence_quote);
   const whatHappenedText = buildWhatHappenedText(s);
-  const managerError = firstNonEmpty(
-    s.focus_stage_deep_dive?.what_went_wrong,
-    DATA.stages.find((stage) => stage.priority)?.problem_summary,
-    DATA.key_problem?.title,
-  );
+  const reviewRows = buildSituationReviewRows(s);
+  const hasDialogue = Boolean(s.dialogue_excerpt || s.evidence_quote);
 
-  if (managerError) {
-    rows.push(new TableRow({ children: [
-      labelCell("Ошибка менеджера"),
-      cell(managerError, { bold: true, color: COLORS.red }),
-    ]}));
-  }
-
-  if (s.client_need) {
-    rows.push(new TableRow({ children: [
-      labelCell("Что это значит"),
-      cell(s.client_need),
-    ]}));
-  }
-
-  if (rows.length === 0) {
+  if (!whatHappenedText && reviewRows.length === 0 && !hasDialogue) {
     return [
       blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
-      bodyPara(whatHappenedText || "Данных за этот день недостаточно.", { color: COLORS.gray }),
+      bodyPara("Данных за этот день недостаточно.", { color: COLORS.gray }),
     ];
   }
 
-  const preTableElements = whatHappenedText
-    ? [
-        bodyPara(`Что произошло: ${whatHappenedText}`, { color: COLORS.orange }),
-        subHeading("Фрагмент диалога:"),
-        bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
-        ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),
-        ...buildFocusStageRecommendationElements(s.focus_stage_recommendation, s.focus_stage_deep_dive),
-      ]
-    : [
-        subHeading("Фрагмент диалога:"),
-        bodyPara(buildDialogueFragmentText(s.evidence_quote), { color: COLORS.gray, size: SZ.cell }),
-        ...buildFocusStageDeepDiveElements(s.focus_stage_deep_dive),
-        ...buildFocusStageRecommendationElements(s.focus_stage_recommendation, s.focus_stage_deep_dive),
-      ];
-
-  return [
+  const result = [
     blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
     new Paragraph({
       children: [new TextRun({
@@ -1110,12 +1049,24 @@ function buildSituatsiya() {
       })],
       spacing: { before: 60, after: 60 },
     }),
-    ...preTableElements,
-    new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows,
-    }),
   ];
+  if (callRef) {
+    result.push(bodyPara(callRef, { bold: true, color: COLORS.heading }));
+  }
+  if (whatHappenedText) {
+    result.push(subHeading("Что произошло"));
+    result.push(bodyPara(whatHappenedText, { color: COLORS.orange }));
+  }
+  result.push(subHeading("Фрагмент диалога"));
+  result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.evidence_quote));
+  if (reviewRows.length > 0) {
+    result.push(subHeading("Разбор ситуации"));
+    result.push(new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: reviewRows,
+    }));
+  }
+  return result;
 }
 
 // ──────────────────────────────────────────────────────────────

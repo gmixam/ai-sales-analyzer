@@ -341,6 +341,42 @@ business-facing morning card.
 - Ничего из перечисленного выше. Все данные уже в DB.
 - Для более глубоких coaching scripts, pattern detection across many calls — нужен bounded LLM step (задокументировано в "Делать после пилота" basket)
 
+### Manager_daily Content Enrichment — Step 6B Closure
+
+**Дата:** 2026-05-04
+
+**Scope:** only `СИТУАЦИЯ ДНЯ`.
+
+**Реализовано:**
+- added nullable `payload.situation_dialogue_excerpt`;
+- `situation_dialogue_excerpt` is built only from persisted transcript segments or existing `evidence_fragments.manager_text/client_text`;
+- exact normalized quote matching is used to locate `situation_evidence_quote.client_text` in persisted transcript segments;
+- no `voice_of_customer` substitution, no generated quotes, no STT/LLM rerun;
+- `СИТУАЦИЯ ДНЯ` renderer is now a single compact flow: call reference, `Что произошло`, line-by-line dialogue fragment, unified `Разбор ситуации` table;
+- removed old standalone renderer pieces inside this block: `Разбор фокусного этапа`, standalone `Что сделать в следующих звонках`, and the lower `Ошибка менеджера / Что это значит` table.
+
+**Feasibility result:**
+- surrounding transcript segments are available in persisted `interaction.metadata_.segments`;
+- reliable speaker roles are not available for the verified case: segments carry generic `speaker=A`, so manager/client attribution cannot be inferred safely;
+- for now, surrounding transcript context is rendered as partial dialogue with `speaker=unknown` (`Реплика`) around the matched real client quote;
+- if only `evidence_fragments.client_text` is available, the excerpt stays `is_partial=true` and contains only the client line.
+
+**Verified Tolegen 2026-04-27 ready-only case:**
+- `raw_calls_total = 67`
+- `meaningful_calls_total = 16`
+- `included_in_report_total / coaching_core = 9`
+- `situation_dialogue_excerpt.source = transcript_turns`
+- `is_partial = true`, `partial_reason = speaker_roles_unavailable`
+- rendered call reference: `Звонок: 27 апреля 2026, 11:17 · Азамат · +77082934767`
+- rendered dialogue: `Реплика: обороты устраиваем?`; `Клиент: На бумаге или просто по электронной почте.`; `Реплика: смотрите, я у вас базовый пакет покупаю, надо 180 тысяч`
+- unified table `Разбор ситуации` is present;
+- old standalone headings are absent;
+- `Что это значит`, placeholders and technical criterion codes are not rendered in DOCX.
+
+**Future gap for full non-partial dialogue excerpt:**
+- persist reliable transcript turns with `turn_id`, `speaker`, `text`, `timestamp`, `call_id`;
+- once speaker roles are reliable, `situation_dialogue_excerpt` can switch from partial `unknown` surrounding turns to full manager/client turns without changing analyzer prompts.
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

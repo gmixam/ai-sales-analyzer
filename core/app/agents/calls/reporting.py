@@ -3235,6 +3235,10 @@ def build_manager_daily_payload(
         score_by_stage=score_by_stage,
         improve_items=improve_items,
     )
+    situation_dialogue_excerpt = _build_situation_dialogue_excerpt(
+        artifacts=artifacts,
+        situation_evidence_quote=situation_evidence_quote,
+    )
     focus_stage_deep_dive = _build_focus_stage_deep_dive(
         score_by_stage=score_by_stage,
         key_problem=key_problem,
@@ -3332,6 +3336,7 @@ def build_manager_daily_payload(
         "call_outcomes_summary": call_outcomes_summary,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
+        "situation_dialogue_excerpt": situation_dialogue_excerpt,
         "focus_stage_deep_dive": focus_stage_deep_dive,
         "focus_stage_recommendation": focus_stage_recommendation,
         "call_list": _build_meaningful_call_list(
@@ -3839,6 +3844,86 @@ def _build_situation_evidence_quote(
         return None
     candidates.sort(key=lambda item: (item[0], item[1], item[2]))
     return candidates[0][3]
+
+
+def _dialogue_norm(value: str) -> str:
+    """Normalize text for safe quote matching without semantic guessing."""
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _dialogue_turn_text(value: str, *, limit: int = 320) -> str:
+    """Keep a bounded dialogue line."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].strip() + "…"
+
+
+def _build_situation_dialogue_excerpt(
+    *,
+    artifacts: list[ReportArtifact],
+    situation_evidence_quote: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build a bounded dialogue excerpt around the situation quote when persisted data supports it."""
+    if not situation_evidence_quote:
+        return None
+
+    call_id = str(situation_evidence_quote.get("call_id") or "").strip()
+    client_text = str(situation_evidence_quote.get("client_text") or "").strip()
+    if not call_id or not client_text:
+        return None
+
+    base = {
+        "call_id": call_id,
+        "client_name": (
+            str(situation_evidence_quote.get("client_label") or "").strip()
+            if not re.sub(r"\D", "", str(situation_evidence_quote.get("client_label") or "")).strip()
+            else None
+        ),
+        "client_phone": situation_evidence_quote.get("client_phone"),
+        "date_label": situation_evidence_quote.get("date_label"),
+        "time_label": situation_evidence_quote.get("time_label"),
+    }
+
+    artifact = next((item for item in artifacts if str(item.interaction.id) == call_id), None)
+    segments = list(((artifact.interaction.metadata_ or {}).get("segments") or []) if artifact is not None else [])
+    quote_norm = _dialogue_norm(client_text)
+    matched_index = None
+    for index, segment in enumerate(segments):
+        segment_text = str((segment or {}).get("text") or "")
+        if quote_norm and quote_norm in _dialogue_norm(segment_text):
+            matched_index = index
+            break
+
+    if matched_index is not None:
+        turns: list[dict[str, str]] = []
+        for idx in range(max(0, matched_index - 1), min(len(segments), matched_index + 2)):
+            segment_text = _dialogue_turn_text(str((segments[idx] or {}).get("text") or ""))
+            if not segment_text:
+                continue
+            speaker = "client" if idx == matched_index else "unknown"
+            turns.append({"speaker": speaker, "text": client_text if idx == matched_index else segment_text})
+        if turns:
+            return {
+                **base,
+                "source": "transcript_turns",
+                "is_partial": True,
+                "partial_reason": "speaker_roles_unavailable",
+                "turns": turns[:3],
+            }
+
+    manager_text = str(situation_evidence_quote.get("manager_text") or "").strip()
+    turns = []
+    if manager_text:
+        turns.append({"speaker": "manager", "text": _dialogue_turn_text(manager_text)})
+    turns.append({"speaker": "client", "text": _dialogue_turn_text(client_text)})
+    return {
+        **base,
+        "source": "evidence_fragments",
+        "is_partial": True,
+        "partial_reason": "surrounding_transcript_turns_unavailable",
+        "turns": turns,
+    }
 
 
 _FOCUS_STAGE_WHY_FALLBACKS: dict[str, str] = {
