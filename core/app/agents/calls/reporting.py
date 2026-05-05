@@ -22,10 +22,13 @@ from app.agents.calls.config import calls_config
 from app.agents.calls.delivery import CallsDelivery
 from app.agents.calls.extractor import CallsExtractor
 from app.agents.calls.intake import OnlinePBXIntake
-from app.agents.calls.orchestrator import CallsManualPilotOrchestrator
+from app.agents.calls.orchestrator import (
+    CallsManualPilotOrchestrator,
+    analysis_contract_failure_reason,
+)
 from app.agents.calls.report_templates import get_active_template_version, render_report_artifact
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
-from app.core_shared.exceptions import ASAError, DeliveryError, SemanticAnalysisError
+from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError, SemanticAnalysisError
 
 REPORTING_SCHEMA_VERSION = "manual_reporting_pilot_v1"
 REPORTING_LOGIC_VERSION = "manual_reporting_logic_v1"
@@ -964,11 +967,24 @@ class CallsManualReportingOrchestrator:
                             built_analyses += 1
                         except SemanticAnalysisError as exc:
                             failed_analyses += 1
-                            self.call_orchestrator.persist_failed_analysis(
+                            original_analysis = self.call_orchestrator.persist_failed_analysis(
                                 interaction=interaction,
                                 error=exc,
                             )
+                            analysis_reuse_reason = str(original_analysis.fail_reason or exc)
                             build_errors.append(f"analysis_build_failed:{interaction.id}:{exc}")
+                        except LLMResponseError as exc:
+                            failed_analyses += 1
+                            fail_reason = analysis_contract_failure_reason(exc)
+                            original_analysis = self.call_orchestrator.persist_failed_analysis(
+                                interaction=interaction,
+                                error=exc,
+                                fail_reason=fail_reason,
+                            )
+                            analysis_reuse_reason = str(original_analysis.fail_reason or fail_reason)
+                            build_errors.append(
+                                f"analysis_build_failed:{interaction.id}:{fail_reason}"
+                            )
                         except ASAError as exc:
                             failed_analyses += 1
                             provider_error = classify_provider_error(exc)

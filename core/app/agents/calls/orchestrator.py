@@ -18,7 +18,14 @@ from app.agents.calls.intake import OnlinePBXIntake
 from app.agents.calls.schemas import CDRRecord
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Agreement, Analysis, Insight, Interaction
-from app.core_shared.exceptions import ASAError, DatabaseError, DeliveryError, SemanticAnalysisError
+from app.core_shared.exceptions import ASAError, DatabaseError, DeliveryError, LLMResponseError, SemanticAnalysisError
+
+ANALYSIS_FAILED_CONTRACT_REASON = "analysis_failed_contract"
+
+
+def analysis_contract_failure_reason(error: LLMResponseError) -> str:
+    """Return a stable non-reusable reason for contract/parser/schema failures."""
+    return f"{ANALYSIS_FAILED_CONTRACT_REASON}:{error}"
 
 
 def _normalize_insight_quote(value: Any) -> str | None:
@@ -207,6 +214,17 @@ class CallsManualPilotOrchestrator:
             interaction.error_message = str(exc)
             self.db.commit()
             raise
+        except LLMResponseError as exc:
+            analysis_row = self.persist_failed_analysis(
+                interaction=interaction,
+                error=exc,
+                fail_reason=analysis_contract_failure_reason(exc),
+            )
+            interaction.analyzed_at = datetime.now(UTC)
+            interaction.status = "FAILED"
+            interaction.error_message = str(exc)
+            self.db.commit()
+            raise
 
         delivery_result: dict[str, Any] | None = None
         if send_notification:
@@ -321,10 +339,20 @@ class CallsManualPilotOrchestrator:
         self.db.refresh(analysis)
         return analysis
 
-    def persist_failed_analysis(self, *, interaction: Interaction, error: SemanticAnalysisError) -> Analysis:
-        """Persist a semantically invalid analysis attempt for bounded forensic debugging."""
+    def persist_failed_analysis(
+        self,
+        *,
+        interaction: Interaction,
+        error: LLMResponseError,
+        fail_reason: str | None = None,
+    ) -> Analysis:
+        """Persist a non-reusable failed analysis attempt for bounded forensics."""
         forensics = CallsAnalyzer.consume_analysis_forensics(interaction)
-        normalized_result = dict(error.normalized_result or forensics.get("normalized_result") or {})
+        normalized_result = dict(
+            getattr(error, "normalized_result", None)
+            or forensics.get("normalized_result")
+            or {}
+        )
         instruction_version = str(
             normalized_result.get("instruction_version")
             or APPROVED_INSTRUCTION_VERSION
@@ -344,7 +372,7 @@ class CallsManualPilotOrchestrator:
         analysis.call_topic = summary.get("call_goal") or summary.get("short_summary")
         analysis.topics = list(normalized_result.get("analytics_tags") or [])
         analysis.is_failed = True
-        analysis.fail_reason = error.reason_code or str(error)
+        analysis.fail_reason = fail_reason or getattr(error, "reason_code", None) or str(error)
         analysis.raw_llm_response = str(forensics.get("raw_llm_response") or error.raw_response or "")
 
         self._replace_agreements(interaction=interaction, agreements=[])

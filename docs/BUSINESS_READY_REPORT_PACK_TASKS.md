@@ -885,7 +885,45 @@ Evidence:
 
 **Follow-up:**
 - No new source-audio recovery follow-up is needed for these 8 calls.
-- Add a bounded technical task for analysis contract-validation failures: ensure contract/parser validation errors either persist a technical failed analysis (`analysis_failed_contract` / `Ошибка анализа`) or provide an explicit operator retry path, so they do not remain an unexplained `Без анализа`.
+- Step 8N follow-up opened for analysis contract-validation failures: ensure contract/parser validation errors either persist a technical failed analysis (`analysis_failed_contract` / `Ошибка анализа`) or provide an explicit operator retry path, so they do not remain an unexplained `Без анализа`.
+- Delivery semantics (`--no-delivery` vs Telegram test delivery) remains a separate known follow-up.
+
+---
+
+### Manager_daily Content Enrichment — Step 8N Closure: Persist / Surface Analysis Contract-Validation Failures
+
+**Дата:** 2026-05-05
+
+**Scope:** bounded technical failure persistence in the existing analysis build path. No Step 8I gate changes, no Step 8L source-audio changes, no analyzer prompt/STT/LLM provider/scoring/eligibility/selection/rolling/renderer/`rop_weekly`/scheduler/delivery changes.
+
+**Implemented:**
+- `_prepare_artifacts(..., mode="build_missing_and_report")` now handles analyzer `LLMResponseError` separately from provider/runtime `ASAError`.
+- Contract/parser/schema validation failures are persisted through `persist_failed_analysis(..., fail_reason="analysis_failed_contract:<error>")`.
+- Persisted contract failures remain non-reusable for coaching and are classified by the existing Step 8I bucket logic as `Ошибка анализа`, not `Не подходит для разбора` and not unexplained `Без анализа`.
+- The manual live persistence helper now accepts `LLMResponseError` failed attempts as well as `SemanticAnalysisError`.
+
+**Controlled rebuild result for Тимур blockers:**
+- Selected exact IDs only:
+  - `ec9cfc47-4a0e-4a4d-95f9-781286f0f2b7` (`09:19`, `+77072801616`)
+  - `489676d0-0fc8-4457-819d-9167de42425b` (`09:22`, `+77768305005`)
+- Full report runner/render/delivery was not called; business email and Telegram were not sent.
+- Both calls reused existing transcripts and refreshed audio; `transcripts_built=0`, `transcripts_reused=2`.
+- Both calls attempted analysis and persisted failed analyses after retry as `not_coachable_or_reportable`; `analysis_build_failed=2`, `analyses_built=0`, `quota_blocker=null`, `skipped_due_to_quota=0`.
+- This followed the acceptable Step 8N outcome: the calls no longer remain unexplained `Без анализа`; they resolved to allowed `Не подходит для разбора`.
+
+**Final Тимур 2026-05-04 ready-only snapshot:**
+- normal/non-blocking `6`
+- `Не подходит для разбора=9`
+- `Без транскрипта=0`
+- `Без анализа=0`
+- `Ошибка анализа=0`
+- `Ошибка провайдера=0`
+- gate `passed`
+- `call_list_dates=["2026-05-04"]`
+
+**Follow-up:**
+- Step 8M contract-validation persistence follow-up is closed.
+- No new analysis-contract follow-up is needed from this controlled rebuild.
 - Delivery semantics (`--no-delivery` vs Telegram test delivery) remains a separate known follow-up.
 
 ---

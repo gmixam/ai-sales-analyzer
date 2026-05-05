@@ -63,7 +63,7 @@ from app.agents.calls.scheduled_reporting import (  # noqa: E402
     extract_editable_blocks,
 )
 from app.core_shared.api.main import app  # noqa: E402
-from app.core_shared.exceptions import ASAError, DeliveryError  # noqa: E402
+from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError  # noqa: E402
 
 try:
     from fastapi.testclient import TestClient  # noqa: E402
@@ -1782,6 +1782,56 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(build_summary["analysis_build_failed"], 1)
         self.assertEqual(build_summary["skipped_due_to_quota"], 1)
         self.assertTrue(any(item.startswith("quota_blocked_current_run:") for item in build_errors))
+
+    def test_prepare_artifacts_persists_contract_validation_failure_as_analysis_error(self) -> None:
+        """Step 8N: contract validation failures are persisted and surfaced as Ошибка анализа."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="Готовый транскрипт", call_date="2026-03-25 10:00:00")
+        persisted: list[SimpleNamespace] = []
+
+        def _raise_contract_error(item):
+            raise LLMResponseError(
+                "Criterion cs_intro_and_company in stage contact_start is missing required fields: comment",
+                interaction_id=str(item.id),
+                raw_response='{"score_by_stage":[]}',
+            )
+
+        def _persist_failed_analysis(**kwargs):
+            failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+            failed.is_failed = True
+            failed.fail_reason = kwargs.get("fail_reason") or str(kwargs["error"])
+            failed.scores_detail = None
+            persisted.append(failed)
+            return failed
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(process=lambda *_args, **_kwargs: None)
+        orchestrator.analyzer = SimpleNamespace(analyze_call=_raise_contract_error)
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda *_args, **_kwargs: None,
+            persist_failed_analysis=_persist_failed_analysis,
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+        rows = _build_meaningful_call_list(window_artifacts=artifacts)
+
+        self.assertEqual(build_summary["analysis_build_failed"], 1)
+        self.assertEqual(len(persisted), 1)
+        self.assertTrue(persisted[0].fail_reason.startswith("analysis_failed_contract:"))
+        self.assertTrue(any("analysis_failed_contract:" in item for item in build_errors))
+        self.assertEqual(rows[0]["unclassified_reason_code"], "analysis_failed_contract")
+        self.assertEqual(rows[0]["unclassified_status_label"], "Ошибка анализа")
 
     def test_prepare_artifacts_non_quota_error_does_not_trip_circuit_breaker(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
