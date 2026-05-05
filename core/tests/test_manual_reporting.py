@@ -666,7 +666,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         self.assertFalse(payload["focus_of_week"]["is_placeholder"])
-        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 2)
+        # call_outcomes_summary uses report-day (2026-03-25) only; one call from 2026-03-24 is excluded
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 1)
         self.assertEqual(payload["focus_criterion_dynamics"]["focus_criterion_name"], "Фиксация следующего шага")
         self.assertIsNotNone(payload["focus_criterion_dynamics"]["current_period_value"])
         self.assertIn("Повторяемость", payload["key_problem_of_day"]["description"])

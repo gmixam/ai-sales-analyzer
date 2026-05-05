@@ -3228,7 +3228,6 @@ def build_manager_daily_payload(
     )
     call_tomorrow = _build_call_tomorrow(artifacts=artifacts)
     focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
-    call_outcomes_summary = _build_call_outcomes_summary(artifacts=artifacts)
     score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
     situation_evidence_quote = _build_situation_evidence_quote(
         artifacts=artifacts,
@@ -3266,6 +3265,12 @@ def build_manager_daily_payload(
             "date_to": filters.date_to or filters.date_from or period["date_to"],
         },
     )
+    # Outcomes summary uses report-day meaningful calls (same source as call_list), not coaching_core.
+    # This aligns ИТОГ ДНЯ and ДЕНЬГИ НА СТОЛЕ with the call list totals.
+    operational_meaningful_artifacts = [
+        a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
+    ]
+    call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
 
     payload = {
         "meta": _build_base_meta(
@@ -5254,14 +5259,22 @@ def _average_criterion_score(artifacts: list[ReportArtifact], criterion_name: st
 
 
 def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
-    """Build richer outcome counters from follow_up metadata and call classification."""
+    """Build richer outcome counters from follow_up metadata and call classification.
+
+    Counts only report-day meaningful artifacts. Calls without analysis are counted as
+    unclassified (not as "open") to avoid inflating the open bucket with unanalyzed calls.
+    """
     agreed = 0
     rescheduled = 0
     refusal = 0
     open_count = 0
     tech_service = 0
+    unclassified = 0
     for artifact in artifacts:
-        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        if artifact.analysis is None:
+            unclassified += 1
+            continue
+        detail = dict(artifact.analysis.scores_detail or {})
         call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
         if call_type in {"support", "internal"}:
             tech_service += 1
@@ -5282,6 +5295,7 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
         "refusal_count": refusal,
         "open_count": open_count,
         "tech_service_count": tech_service,
+        "unclassified_count": unclassified,
         "source_note": "derived_from_follow_up_and_classification",
     }
 

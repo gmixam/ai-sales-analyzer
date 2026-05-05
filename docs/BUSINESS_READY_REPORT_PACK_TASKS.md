@@ -473,11 +473,46 @@ business-facing morning card.
 
 **Tests:** 84 passed (`tests/test_manual_reporting.py`); `node --check scripts/generate_docx_report.js` passed.
 
-**Architecture gap (documented, not fixed, out of scope):**
-`call_outcomes_summary` uses coaching_core window (multi-day, 9 calls for Tolegen 27-Apr) while `call_list` uses report-day meaningful calls only (5 for Tolegen bundle, 16 live). This means dashboard НЕ КЛАСС. count ≠ call list НЕ КЛАСС. count after fix. Not a bug introduced here — pre-existing structural split. Fix would require aligning `_build_call_outcomes_summary()` or `call_list` source period; out of scope per task boundary.
+**Architecture gap (documented, fixed in Step 8B):**
+`call_outcomes_summary` previously used coaching_core window (multi-day), while `call_list` used report-day meaningful calls only. Fixed in Step 8B — see closure section below.
 
-**Future task — call_outcomes_summary report-day alignment:**
-Align `call_outcomes_summary` to use report-day meaningful calls (not coaching_core window) so that status counts in the day-summary table match the counts in the call list below. Change scope: `reporting.py` `_build_call_outcomes_summary()` — pass report-day artifacts only, not rolling window core. Requires test update for the 9→5/16 count change in outcome summary.
+---
+
+### Manager_daily Content Enrichment — Step 8B Closure
+
+**Дата:** 2026-05-05
+
+**Scope:** only `reporting.py` and `report_templates.py`. No changes to `scripts/generate_docx_report.js`, analyzer, prompts, LLM/STT, scoring, eligibility, rolling window, coaching_core selection logic, delivery, `rop_weekly`, or scheduler.
+
+**Root cause:**
+`_build_call_outcomes_summary()` received `artifacts` (coaching_core, rolling multi-day window), while `call_list` was built from `operational_day_artifacts` (report-day meaningful only). The mismatch caused ИТОГ ДНЯ to show totals from a different population than the list below it.
+
+**Реализовано:**
+
+`reporting.py` — `_build_call_outcomes_summary()`:
+- Now explicitly counts `artifact.analysis is None` as `unclassified += 1` instead of routing through `_derive_call_status_and_deadline({})` which returned `"open"`;
+- Added `unclassified_count` to the return dict.
+
+`reporting.py` — `build_manager_daily_payload()`:
+- `call_outcomes_summary` computation moved to after `operational_day_artifacts` is built;
+- New `operational_meaningful_artifacts = [a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]]` — same source as `call_list`;
+- `call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)`.
+
+`report_templates.py` — `_build_manager_daily_model()`:
+- `total_calls` now reads `selection_model.meaningful_calls_total` (falls back to `kpi.calls_count` for older payloads);
+- `outcome_cols` appends `{"label": "НЕ КЛАСС.", "value": unclassified_count, "tone": "neutral"}` when `unclassified_count > 0`.
+
+**Coaching blocks unchanged:** `artifacts` (coaching_core) still used for `kpi_overview.calls_count`, `level_counts`, `average_score`, and all coaching-layer blocks.
+
+**Verified (live ready-only rebuilds 2026-05-04):**
+- Толеген: meaningful=6, outcomes sum=6 (1 agreed + 5 unclass), coaching_core=8 (3-day window) ✓
+- Тимур: meaningful=15, outcomes sum=15 (15 unclass), coaching_core=2 (3-day window) ✓
+- Эльмира: meaningful=12, outcomes sum=12 (12 unclass), coaching_core=4 (3-day window) ✓
+
+All: `categories_sum == meaningful_calls_total: True`; coaching blocks confirmed separate.
+
+**Tests:** `pytest tests/test_manual_reporting.py tests/test_ai_provider_routing.py` — 106 passed.
+One test updated: `call_outcomes_summary["agreed_count"]` changed from `2` to `1` in `test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics` — correct, only report-day calls count (1 call on 2026-03-25, not 2 calls from 2-day window).
 
 ---
 

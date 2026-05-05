@@ -309,7 +309,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     empty_state = dict(payload.get("empty_state") or {})
     editorial_recommendations = dict(payload.get("editorial_recommendations") or {})
     verification_overrides = dict(payload.get("verification_overrides") or {})
-    total_calls = int(kpi.get("calls_count") or 0)
+    sm = dict(payload.get("selection_model") or {})
+    # Use meaningful_calls_total (report-day operational layer) for the ЗВОНКОВ column.
+    # Falls back to kpi.calls_count for backward compatibility with older payloads.
+    total_calls = int(sm.get("meaningful_calls_total") or kpi.get("calls_count") or 0)
     narrative = _build_manager_daily_narrative_block(payload)
     call_outcomes = dict(payload.get("call_outcomes_summary") or {})
     call_list_raw = list(payload.get("call_list") or [])
@@ -332,6 +335,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         key_problem=dict(payload.get("key_problem_of_day") or {}),
         total_calls=total_calls,
     )
+    _unclassified_count = int(call_outcomes.get("unclassified_count") or 0)
     outcome_cols = [
         {"label": "ЗВОНКОВ", "value": total_calls, "tone": "neutral"},
         {"label": "ДОГОВОРЕННОСТЬ", "value": _manager_reader_value(call_outcomes.get("agreed_count"), "0"), "tone": "positive"},
@@ -340,6 +344,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {"label": "ОТКРЫТ", "value": _manager_reader_value(call_outcomes.get("open_count"), "0"), "tone": "warning"},
         {"label": "ТЕХ/СЕРВИС", "value": _manager_reader_value(call_outcomes.get("tech_service_count"), "0"), "tone": "neutral"},
     ]
+    if _unclassified_count > 0:
+        outcome_cols.append({"label": "НЕ КЛАСС.", "value": _unclassified_count, "tone": "neutral"})
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     _readiness_outcome = readiness.get("readiness_outcome") or ""
     _report_type_label = (

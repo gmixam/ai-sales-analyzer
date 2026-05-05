@@ -175,9 +175,19 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 
 ### Счётчики в итоговом блоке ИТОГ ДНЯ
 
-Итоговая таблица (ЗВОНКОВ / ДОГОВОРЁННОСТЬ / ПЕРЕНОС / ОТКАЗ / ОТКРЫТ / ТЕХ/СЕРВИС) считается по **`meaningful_calls`**, а не только по `coaching_core`.
+Итоговая таблица (ЗВОНКОВ / ДОГОВОРЁННОСТЬ / ПЕРЕНОС / ОТКАЗ / ОТКРЫТ / ТЕХ/СЕРВИС / НЕ КЛАСС.) считается по **`meaningful_calls`** report-day, а не по `coaching_core`.
 
 Это позволяет показать реальный операционный результат дня, а не только аналитическое подмножество.
+
+**Источник данных в коде:**
+- `payload.call_outcomes_summary` строится из `operational_meaningful_artifacts` — report-day meaningful calls (тот же источник, что и `call_list`).
+- Звонки без анализа (`analysis is None`) считаются как `unclassified_count`, а не как `open`.
+- Колонка `НЕ КЛАСС.` показывается только если `unclassified_count > 0`.
+- Сумма всех категорий (включая НЕ КЛАСС.) обязана равняться `meaningful_calls_total`.
+
+**`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
+
+**`ДЕНЬГИ НА СТОЛЕ`** использует тот же `call_outcomes_summary` (agreed + open + rescheduled из report-day meaningful). Если все три = 0, показывается `Данных для данного раздела недостаточно.`.
 
 ---
 
