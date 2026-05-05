@@ -79,6 +79,15 @@ class ReportRunFilters:
     date_to: str = ""
     min_duration_sec: int | None = None
     max_duration_sec: int | None = None
+    force_retry_quota_blocked: bool = False
+
+
+@dataclass(slots=True)
+class ProviderErrorInfo:
+    """Audit-safe provider error classification for build_missing guardrails."""
+
+    error_class: str
+    raw_message: str
 
 
 @dataclass(slots=True)
@@ -101,6 +110,56 @@ class ReportArtifact:
     call_started_at: datetime | None
     original_analysis: Analysis | None = None
     analysis_reuse_reason: str | None = None
+
+
+def classify_provider_error(error: BaseException | str) -> ProviderErrorInfo:
+    """Classify provider-facing errors without exposing secrets."""
+    raw = str(error or "").strip()
+    text = raw.lower()
+    if "insufficient_quota" in text or ("429" in text and "quota" in text):
+        return ProviderErrorInfo(error_class="quota_insufficient", raw_message=raw)
+    if "rate_limit" in text or "rate limited" in text or ("429" in text and "quota" not in text):
+        return ProviderErrorInfo(error_class="rate_limited", raw_message=raw)
+    if any(token in text for token in ("401", "403", "unauthorized", "forbidden", "invalid_api_key", "incorrect api key")):
+        return ProviderErrorInfo(error_class="auth_error", raw_message=raw)
+    if any(token in text for token in ("timeout", "timed out", "readtimeout", "connecttimeout")):
+        return ProviderErrorInfo(error_class="provider_timeout", raw_message=raw)
+    if re.search(r"\b5\d\d\b", text) or any(token in text for token in ("server error", "bad gateway", "service unavailable")):
+        return ProviderErrorInfo(error_class="provider_5xx", raw_message=raw)
+    return ProviderErrorInfo(error_class="unknown_provider_error", raw_message=raw)
+
+
+def _previous_quota_blocker(interaction: Interaction) -> dict[str, Any] | None:
+    """Return previous quota failure marker for an interaction, if any."""
+    metadata = dict(getattr(interaction, "metadata_", None) or {})
+    failure = metadata.get("last_provider_failure")
+    if not isinstance(failure, dict):
+        return None
+    if failure.get("type") == "quota_blocked" or failure.get("error_class") == "quota_insufficient":
+        return dict(failure)
+    return None
+
+
+def _extract_quota_blocker(*, build_summary: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
+    """Return the structured quota blocker from a run summary/errors."""
+    blocker = build_summary.get("quota_blocker")
+    if isinstance(blocker, dict) and blocker:
+        return dict(blocker)
+    if any(item.startswith("quota_blocked_previous_run:") for item in errors):
+        return {
+            "type": "quota_blocked",
+            "stage": "provider",
+            "error_class": "quota_insufficient",
+            "message": "Previous provider insufficient_quota marker blocked automatic retry.",
+        }
+    if any("insufficient_quota" in item for item in errors):
+        return {
+            "type": "quota_blocked",
+            "stage": "provider",
+            "error_class": "quota_insufficient",
+            "message": "Provider returned insufficient_quota. Further billable calls were stopped.",
+        }
+    return None
 
 
 @dataclass(slots=True, frozen=True)
@@ -266,6 +325,7 @@ class CallsManualReportingOrchestrator:
             interactions=interactions,
             preset=preset,
             mode=normalized_mode,
+            force_retry_quota_blocked=filters.force_retry_quota_blocked,
         )
 
         reports = self._group_and_build_reports(
@@ -312,8 +372,8 @@ class CallsManualReportingOrchestrator:
         source_period: dict[str, str],
         diagnostics_context: dict[str, Any],
         filters: ReportRunFilters,
-        source_summary: dict[str, int],
-        build_summary: dict[str, int],
+        source_summary: dict[str, Any],
+        build_summary: dict[str, Any],
         reports: list[dict[str, Any]],
         selected_interactions_count: int,
         final_selected_interactions_count: int,
@@ -323,6 +383,7 @@ class CallsManualReportingOrchestrator:
         artifacts: list[ReportArtifact] | None = None,
     ) -> dict[str, Any]:
         """Build the final structured run response for success and blocked outcomes."""
+        quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=errors or [])
         return {
             "status": overall_status,
             "preset": preset.code,
@@ -330,6 +391,13 @@ class CallsManualReportingOrchestrator:
             "period": period,
             "selected_interactions": selected_interactions_count,
             "prepared_artifacts": build_summary,
+            "blocker": quota_blocker,
+            "processed": {
+                "transcripts_built": build_summary.get("transcripts_built", 0),
+                "analyses_built": build_summary.get("analyses_built", 0),
+                "skipped_due_to_quota": build_summary.get("skipped_due_to_quota", 0),
+                "quota_blocked_previous_run": build_summary.get("quota_blocked_previous_run", 0),
+            },
             "reports": reports,
             "errors": list(errors or []),
             "observability": self._build_run_observability(
@@ -437,6 +505,9 @@ class CallsManualReportingOrchestrator:
             "missing_analyses_before_build": 0,
             "transcript_build_failed": 0,
             "analysis_build_failed": 0,
+            "skipped_due_to_quota": 0,
+            "quota_blocked_previous_run": 0,
+            "quota_blocker": None,
         }
 
     def _discover_and_persist_source_calls(
@@ -679,7 +750,8 @@ class CallsManualReportingOrchestrator:
         interactions: list[Interaction],
         preset: ReportPreset,
         mode: str,
-    ) -> tuple[list[ReportArtifact], dict[str, int], list[str]]:
+        force_retry_quota_blocked: bool = False,
+    ) -> tuple[list[ReportArtifact], dict[str, Any], list[str]]:
         """Reuse persisted artifacts and optionally build only missing ones."""
         analyses_by_interaction = self._load_latest_analyses_by_interaction(interactions=interactions)
         managers_by_id = self._load_managers_by_id(interactions=interactions)
@@ -693,6 +765,9 @@ class CallsManualReportingOrchestrator:
         missing_analyses_before_build = 0
         failed_transcripts = 0
         failed_analyses = 0
+        skipped_due_to_quota = 0
+        quota_blocked_previous_run = 0
+        quota_blocker: dict[str, Any] | None = None
         build_errors: list[str] = []
         artifacts: list[ReportArtifact] = []
         for interaction in interactions:
@@ -721,32 +796,106 @@ class CallsManualReportingOrchestrator:
             if self._allows_build_missing(preset=preset, mode=mode):
                 if not interaction.text:
                     if _is_interaction_source_build_eligible(interaction):
-                        try:
-                            await self.extractor.process(interaction)
-                            built_transcripts += 1
-                        except ASAError as exc:
-                            failed_transcripts += 1
-                            build_errors.append(f"transcript_build_failed:{interaction.id}:{exc}")
+                        previous_blocker = _previous_quota_blocker(interaction)
+                        if previous_blocker and not force_retry_quota_blocked:
+                            quota_blocked_previous_run += 1
+                            skipped_due_to_quota += 1
+                            build_errors.append(
+                                f"quota_blocked_previous_run:{interaction.id}:{previous_blocker.get('stage') or 'provider'}"
+                            )
+                        elif quota_blocker is not None:
+                            skipped_due_to_quota += 1
+                            self._record_provider_failure(
+                                interaction=interaction,
+                                blocker=quota_blocker,
+                                error_message="skipped_due_to_quota_current_run",
+                            )
+                            build_errors.append(
+                                f"quota_blocked_current_run:{interaction.id}:{quota_blocker.get('stage') or 'provider'}"
+                            )
+                        else:
+                            provider_context = self._provider_context_for_layer(
+                                layer="stt",
+                                interaction_id=str(interaction.id),
+                            )
+                            try:
+                                await self.extractor.process(interaction)
+                                built_transcripts += 1
+                            except ASAError as exc:
+                                failed_transcripts += 1
+                                provider_error = classify_provider_error(exc)
+                                if provider_error.error_class == "quota_insufficient":
+                                    quota_blocker = self._build_quota_blocker(
+                                        stage="stt",
+                                        provider_context=provider_context,
+                                        error_info=provider_error,
+                                    )
+                                    self._record_provider_failure(
+                                        interaction=interaction,
+                                        blocker=quota_blocker,
+                                        error_message=str(exc),
+                                    )
+                                build_errors.append(f"transcript_build_failed:{interaction.id}:{exc}")
                 if (
                     analysis is None or not isinstance(analysis.scores_detail, dict) or not analysis.scores_detail
                 ) and interaction.text:
-                    try:
-                        result = self.analyzer.analyze_call(interaction)
-                        analysis = self.call_orchestrator.persist_analysis(
-                            interaction=interaction,
-                            result=result,
+                    previous_blocker = _previous_quota_blocker(interaction)
+                    if previous_blocker and not force_retry_quota_blocked:
+                        quota_blocked_previous_run += 1
+                        skipped_due_to_quota += 1
+                        build_errors.append(
+                            f"quota_blocked_previous_run:{interaction.id}:{previous_blocker.get('stage') or 'provider'}"
                         )
-                        built_analyses += 1
-                    except SemanticAnalysisError as exc:
-                        failed_analyses += 1
-                        self.call_orchestrator.persist_failed_analysis(
+                    elif quota_blocker is not None:
+                        skipped_due_to_quota += 1
+                        self._record_provider_failure(
                             interaction=interaction,
-                            error=exc,
+                            blocker=quota_blocker,
+                            error_message="skipped_due_to_quota_current_run",
                         )
-                        build_errors.append(f"analysis_build_failed:{interaction.id}:{exc}")
-                    except ASAError as exc:
-                        failed_analyses += 1
-                        build_errors.append(f"analysis_build_failed:{interaction.id}:{exc}")
+                        build_errors.append(
+                            f"quota_blocked_current_run:{interaction.id}:{quota_blocker.get('stage') or 'provider'}"
+                        )
+                    else:
+                        provider_context = self._provider_context_for_layer(
+                            layer="llm1",
+                            interaction_id=str(interaction.id),
+                        )
+                        try:
+                            result = self.analyzer.analyze_call(interaction)
+                            analysis = self.call_orchestrator.persist_analysis(
+                                interaction=interaction,
+                                result=result,
+                            )
+                            built_analyses += 1
+                        except SemanticAnalysisError as exc:
+                            failed_analyses += 1
+                            self.call_orchestrator.persist_failed_analysis(
+                                interaction=interaction,
+                                error=exc,
+                            )
+                            build_errors.append(f"analysis_build_failed:{interaction.id}:{exc}")
+                        except ASAError as exc:
+                            failed_analyses += 1
+                            provider_error = classify_provider_error(exc)
+                            if provider_error.error_class == "quota_insufficient":
+                                stage = "llm2" if "llm-2" in str(exc).lower() else "llm1"
+                                if stage != "llm1":
+                                    provider_context = self._provider_context_for_layer(
+                                        layer=stage,
+                                        interaction_id=str(interaction.id),
+                                    )
+                                quota_blocker = self._build_quota_blocker(
+                                    stage=stage,
+                                    provider_context=provider_context,
+                                    error_info=provider_error,
+                                )
+                                self._record_provider_failure(
+                                    interaction=interaction,
+                                    blocker=quota_blocker,
+                                    error_message=str(exc),
+                                )
+                            build_errors.append(f"analysis_build_failed:{interaction.id}:{exc}")
             artifacts.append(
                 ReportArtifact(
                     interaction=interaction,
@@ -769,9 +918,81 @@ class CallsManualReportingOrchestrator:
                 "missing_analyses_before_build": missing_analyses_before_build,
                 "transcript_build_failed": failed_transcripts,
                 "analysis_build_failed": failed_analyses,
+                "skipped_due_to_quota": skipped_due_to_quota,
+                "quota_blocked_previous_run": quota_blocked_previous_run,
+                "quota_blocker": quota_blocker,
             },
             build_errors,
         )
+
+    def _provider_context_for_layer(self, *, layer: str, interaction_id: str) -> dict[str, Any]:
+        """Return audit-safe configured provider context for one AI layer."""
+        router = getattr(getattr(self, "extractor", None), "ai_router", None)
+        if layer in {"llm1", "llm2"}:
+            router = getattr(getattr(self, "analyzer", None), "ai_router", router)
+        try:
+            route_plan = router.build_route_plan(layer=layer, subject_key=interaction_id)
+            candidate = route_plan.current_candidate()
+        except Exception:
+            return {"stage": layer}
+        return {
+            "stage": layer,
+            "provider": candidate.provider,
+            "account_alias": candidate.account_alias,
+            "model": candidate.model,
+            "api_key_env": candidate.api_key_env,
+            "max_retries_for_this_provider": candidate.max_retries_for_this_provider,
+        }
+
+    @staticmethod
+    def _build_quota_blocker(
+        *,
+        stage: str,
+        provider_context: dict[str, Any],
+        error_info: ProviderErrorInfo,
+    ) -> dict[str, Any]:
+        """Build a structured quota blocker without secret values."""
+        return {
+            "type": "quota_blocked",
+            "stage": stage,
+            "provider": provider_context.get("provider"),
+            "account_alias": provider_context.get("account_alias"),
+            "model": provider_context.get("model"),
+            "api_key_env": provider_context.get("api_key_env"),
+            "error_class": error_info.error_class,
+            "message": "Provider returned insufficient_quota. Further billable calls were stopped.",
+        }
+
+    def _record_provider_failure(
+        self,
+        *,
+        interaction: Interaction,
+        blocker: dict[str, Any],
+        error_message: str,
+    ) -> None:
+        """Persist the last quota failure marker on an interaction for retry guard."""
+        metadata = dict(interaction.metadata_ or {})
+        failure = {
+            "type": blocker.get("type"),
+            "stage": blocker.get("stage"),
+            "provider": blocker.get("provider"),
+            "account_alias": blocker.get("account_alias"),
+            "model": blocker.get("model"),
+            "api_key_env": blocker.get("api_key_env"),
+            "error_class": blocker.get("error_class"),
+            "failed_at": datetime.now(UTC).isoformat(),
+            "message": blocker.get("message"),
+        }
+        metadata["last_provider_failure"] = failure
+        history = list(metadata.get("provider_failure_history") or [])
+        history.append(failure)
+        metadata["provider_failure_history"] = history[-5:]
+        interaction.metadata_ = metadata
+        if not getattr(interaction, "error_message", None):
+            interaction.error_message = error_message
+        db = getattr(self, "db", None)
+        if db is not None:
+            db.commit()
 
     def _build_run_observability(
         self,
@@ -800,6 +1021,7 @@ class CallsManualReportingOrchestrator:
         all_errors = [*stage_errors, *report_errors]
         delivery_summary = self._build_delivery_summary(reports=reports, send_email=send_email)
         ai_costs = self._build_ai_costs(build_summary=build_summary, reports=reports)
+        quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=all_errors)
         return {
             "run_state": self._map_run_state(overall_status),
             "stages": [
@@ -854,6 +1076,9 @@ class CallsManualReportingOrchestrator:
                 "reused_analyses_count": build_summary.get("analyses_reused", 0),
                 "rebuilt_analyses_count": build_summary.get("analyses_built", 0),
                 "final_report_status": overall_status,
+                "blocker": quota_blocker,
+                "skipped_due_to_quota": build_summary.get("skipped_due_to_quota", 0),
+                "quota_blocked_previous_run": build_summary.get("quota_blocked_previous_run", 0),
                 "template_version": next(
                     (
                         ((report.get("artifact") or {}).get("template_version"))
@@ -1215,6 +1440,10 @@ class CallsManualReportingOrchestrator:
             reason_codes.append("analysis_build_failed")
         if any(item.startswith("analysis_reuse_rejected:") for item in errors):
             reason_codes.append("analysis_reuse_rejected")
+        if build_summary.get("quota_blocker") or any(item.startswith("quota_blocked_") for item in errors):
+            reason_codes.append("quota_blocked")
+        if build_summary.get("quota_blocked_previous_run", 0):
+            reason_codes.append("quota_blocked_previous_run")
         if diagnostics_context.get("period_only_interactions_count", 0) == 0:
             reason_codes.append("date_range_has_no_persisted_calls")
         if (
@@ -1473,6 +1702,18 @@ class CallsManualReportingOrchestrator:
                 "summary": "Ready-only mode does not run STT for missing calls.",
                 "error": None,
             }
+        quota_error = next((item for item in errors if item.startswith("quota_blocked_") or "insufficient_quota" in item), None)
+        if quota_error:
+            return {
+                "code": "stt",
+                "label": "STT",
+                "status": "blocked",
+                "summary": (
+                    "STT/provider quota blocked this run; remaining billable calls were stopped "
+                    f"or skipped ({build_summary.get('skipped_due_to_quota', 0)} skipped)."
+                ),
+                "error": quota_error,
+            }
         stt_error = next(
             (
                 item
@@ -1525,6 +1766,18 @@ class CallsManualReportingOrchestrator:
                 "status": "skipped",
                 "summary": "Ready-only mode does not run new analysis for missing calls.",
                 "error": None,
+            }
+        quota_error = next((item for item in errors if item.startswith("quota_blocked_") or "insufficient_quota" in item), None)
+        if quota_error:
+            return {
+                "code": "analysis",
+                "label": "analysis",
+                "status": "blocked",
+                "summary": (
+                    "Provider quota blocked analysis/build continuation; remaining billable calls were stopped "
+                    f"or skipped ({build_summary.get('skipped_due_to_quota', 0)} skipped)."
+                ),
+                "error": quota_error,
             }
         analysis_error = next((item for item in errors if item.startswith("analysis_build_failed:")), None)
         if analysis_error:

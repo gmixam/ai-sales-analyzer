@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manager-extension", action="append", dest="manager_extensions")
     parser.add_argument("--min-duration-sec", type=int, default=None)
     parser.add_argument("--max-duration-sec", type=int, default=None)
+    parser.add_argument(
+        "--force-retry-quota-blocked",
+        action="store_true",
+        help="Explicitly retry calls previously marked quota_insufficient.",
+    )
     parser.add_argument("--model", help="Optional report-composer model selection placeholder")
     parser.add_argument(
         "--no-delivery",
@@ -54,6 +59,7 @@ async def _run(args: argparse.Namespace) -> dict:
             date_to=args.date_to or args.date_from,
             min_duration_sec=args.min_duration_sec,
             max_duration_sec=args.max_duration_sec,
+            force_retry_quota_blocked=args.force_retry_quota_blocked,
         )
         return await orchestrator.run_report(
             preset_code=args.preset,

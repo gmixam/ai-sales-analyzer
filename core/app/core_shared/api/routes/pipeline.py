@@ -120,6 +120,7 @@ class RunManualReportRequest(BaseModel):
     max_duration_sec: int | None = None
     model: str | None = None
     send_email: bool = True
+    force_retry_quota_blocked: bool = False
 
 
 class SyncReportManagersRequest(BaseModel):
@@ -178,6 +179,7 @@ def _build_report_filters(request: RunManualReportRequest) -> ReportRunFilters:
         date_to=request.date_to or request.date_from,
         min_duration_sec=request.min_duration_sec,
         max_duration_sec=request.max_duration_sec,
+        force_retry_quota_blocked=request.force_retry_quota_blocked,
     )
 
 
@@ -515,6 +517,7 @@ async def run_calls_report_manual(request: RunManualReportRequest) -> dict:
                     date_to=request.date_to or request.date_from,
                     min_duration_sec=request.min_duration_sec,
                     max_duration_sec=request.max_duration_sec,
+                    force_retry_quota_blocked=request.force_retry_quota_blocked,
                 ),
                 model_override=request.model,
                 send_email=request.send_email,

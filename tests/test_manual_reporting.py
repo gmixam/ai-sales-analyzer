@@ -39,6 +39,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     _build_meaningful_call_list,
     _build_selection_model_counters,
     _classify_meaningful_call,
+    classify_provider_error,
     build_manager_daily_payload,
     build_rop_weekly_payload,
     render_report_email,
@@ -1328,6 +1329,195 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(build_summary["transcripts_built"], 0)
         self.assertEqual(build_summary["transcript_build_failed"], 0)
         self.assertEqual(build_errors, [])
+
+    def test_provider_error_classifier_detects_openai_insufficient_quota(self) -> None:
+        error = (
+            "Whisper STT failed: Error code: 429 - {'error': {'message': 'You exceeded your current quota', "
+            "'type': 'insufficient_quota', 'code': 'insufficient_quota'}}"
+        )
+
+        classified = classify_provider_error(error)
+
+        self.assertEqual(classified.error_class, "quota_insufficient")
+
+    def test_provider_error_classifier_separates_non_quota_rate_limit(self) -> None:
+        classified = classify_provider_error("Error code: 429 - rate_limit_exceeded")
+
+        self.assertEqual(classified.error_class, "rate_limited")
+
+    def test_prepare_artifacts_stops_stt_after_quota_and_marks_remaining(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        first = _interaction(text="", call_date="2026-03-25 10:00:00")
+        second = _interaction(text="", call_date="2026-03-25 10:05:00")
+        for item in (first, second):
+            item.raw_ref = "https://example.test/audio.mp3"
+            item.metadata_ = {
+                **dict(item.metadata_ or {}),
+                "source_status": "answered",
+                "direction": "out",
+            }
+        calls: list[str] = []
+
+        class FakeExtractor:
+            async def process(self, interaction):
+                calls.append(str(interaction.id))
+                raise ASAError("Whisper STT failed: Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[first, second],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(build_summary["transcript_build_failed"], 1)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 1)
+        self.assertEqual(build_summary["quota_blocker"]["type"], "quota_blocked")
+        self.assertTrue(any(item.startswith("quota_blocked_current_run:") for item in build_errors))
+        self.assertEqual(second.metadata_["last_provider_failure"]["error_class"], "quota_insufficient")
+
+    def test_prepare_artifacts_stops_llm_after_quota_and_keeps_transcript(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        first = _interaction(text="Готовый транскрипт", call_date="2026-03-25 10:00:00")
+        second = _interaction(text="Второй транскрипт", call_date="2026-03-25 10:05:00")
+        calls: list[str] = []
+
+        def _raise_quota(interaction):
+            calls.append(str(interaction.id))
+            raise ASAError("LLM-1 request failed: Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(process=lambda *_args, **_kwargs: None)
+        orchestrator.analyzer = SimpleNamespace(analyze_call=_raise_quota)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[first, second],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first.text, "Готовый транскрипт")
+        self.assertEqual(build_summary["analysis_build_failed"], 1)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 1)
+        self.assertTrue(any(item.startswith("quota_blocked_current_run:") for item in build_errors))
+
+    def test_prepare_artifacts_non_quota_error_does_not_trip_circuit_breaker(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        first = _interaction(text="", call_date="2026-03-25 10:00:00")
+        second = _interaction(text="", call_date="2026-03-25 10:05:00")
+        for item in (first, second):
+            item.raw_ref = "https://example.test/audio.mp3"
+            item.metadata_ = {
+                **dict(item.metadata_ or {}),
+                "source_status": "answered",
+                "direction": "out",
+            }
+        calls: list[str] = []
+
+        class FakeExtractor:
+            async def process(self, interaction):
+                calls.append(str(interaction.id))
+                raise ASAError("temporary provider timeout")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[first, second],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, _build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(build_summary["transcript_build_failed"], 2)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 0)
+        self.assertIsNone(build_summary["quota_blocker"])
+
+    def test_prepare_artifacts_skips_previous_quota_failure_without_force(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
+        interaction.raw_ref = "https://example.test/audio.mp3"
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "source_status": "answered",
+            "direction": "out",
+            "last_provider_failure": {
+                "type": "quota_blocked",
+                "stage": "stt",
+                "error_class": "quota_insufficient",
+            },
+        }
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(
+            process=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("quota-blocked call should not retry"))
+        )
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(build_summary["quota_blocked_previous_run"], 1)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 1)
+        self.assertTrue(any(item.startswith("quota_blocked_previous_run:") for item in build_errors))
+
+    def test_quota_blocker_response_has_no_secret_value(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        blocker = CallsManualReportingOrchestrator._build_quota_blocker(
+            stage="stt",
+            provider_context={
+                "provider": "openai",
+                "account_alias": "stt_main",
+                "model": "whisper-1",
+                "api_key_env": "OPENAI_API_KEY_STT_MAIN",
+            },
+            error_info=classify_provider_error("429 insufficient_quota"),
+        )
+
+        text = str(blocker)
+        self.assertIn("OPENAI_API_KEY_STT_MAIN", text)
+        self.assertNotIn("sk-", text)
+        self.assertNotIn("test-key", text)
 
     def test_sm3_call_list_excludes_beep_and_ivr(self) -> None:
         """SM-3: call_list does not include IVR/beep/no-speech calls."""

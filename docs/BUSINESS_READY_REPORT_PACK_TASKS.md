@@ -619,6 +619,74 @@ If business review confirms the current words are misleading, rename manager-fac
 
 ---
 
+### Manager_daily Content Enrichment — Step 8E Closure: Provider Quota Circuit Breaker
+
+**Дата:** 2026-05-05
+
+**Scope:** `build_missing_and_report` provider error handling and operator response only. No changes to analyzer prompts, STT/LLM execution logic, scoring, eligibility, selection model, meaningful/coaching_core rules, Situation Day, Additional Situations, Challenge, Who to work tomorrow, `rop_weekly`, or scheduler.
+
+**Root cause in code:**
+
+`_prepare_artifacts()` in `core/app/agents/calls/reporting.py` caught STT and analysis `ASAError` as ordinary per-item failures and continued the interaction loop. As a result, OpenAI `429 insufficient_quota` became `transcript_build_failed:*` / `analysis_build_failed:*`, while the run still attempted billable provider calls for the remaining missing items.
+
+**Implemented:**
+
+- Added deterministic provider error classifier: `quota_insufficient`, `rate_limited`, `auth_error`, `provider_timeout`, `provider_5xx`, `unknown_provider_error`.
+- OpenAI `429 insufficient_quota` maps to `quota_insufficient`.
+- Added run-level quota blocker. After the first `quota_insufficient`, the current run stops further billable STT/LLM calls and marks remaining eligible items as `quota_blocked_current_run`.
+- Added structured response fields:
+
+```json
+{
+  "blocker": {
+    "type": "quota_blocked",
+    "stage": "stt",
+    "provider": "openai",
+    "account_alias": "stt_main",
+    "model": "whisper-1",
+    "api_key_env": "OPENAI_API_KEY_STT_MAIN",
+    "error_class": "quota_insufficient",
+    "message": "Provider returned insufficient_quota. Further billable calls were stopped."
+  },
+  "processed": {
+    "transcripts_built": 0,
+    "analyses_built": 0,
+    "skipped_due_to_quota": 23,
+    "quota_blocked_previous_run": 0
+  }
+}
+```
+
+- Added retry/idempotency guard: `metadata_.last_provider_failure` and bounded `metadata_.provider_failure_history` are saved on quota-blocked interactions.
+- A later `build_missing_and_report` skips previously quota-blocked calls as `quota_blocked_previous_run` unless the operator explicitly passes `force_retry_quota_blocked=true`.
+- CLI operator override added: `--force-retry-quota-blocked`.
+- API request override added: `force_retry_quota_blocked`.
+
+**Provider/account visibility:**
+
+- STT visibility: `stage=stt`, `provider=openai`, `account_alias=stt_main`, `api_key_env=OPENAI_API_KEY_STT_MAIN`, `model=whisper-1`.
+- LLM-1 visibility: `stage=llm1`, `provider=openai`, `account_alias=llm1_main`, `api_key_env=OPENAI_API_KEY_LLM1_MAIN`, configured model from AI routing.
+- Secret values/API keys are not included in the blocker, observability, or tests.
+
+**Runtime behavior:**
+
+- STT quota: first `quota_insufficient` records blocker and stops further STT/LLM billing in the run.
+- LLM quota: transcript remains saved/reused; first `quota_insufficient` records blocker and stops further analysis billing in the run.
+- Non-quota transient errors do not trip the quota circuit breaker and keep existing retry/failure behavior.
+- Run status remains non-success when build errors/blocker exist (`partial` when a report artifact is still produced, otherwise `blocked`).
+
+**Tests:**
+
+- `pytest -q tests/test_manual_reporting.py -k 'quota or unclassified or call_outcomes or call_list or meaningful or selection_model'` — 18 passed.
+- `pytest -q tests/test_manual_reporting.py tests/test_ai_provider_routing.py` — 120 passed.
+- `node --check scripts/generate_docx_report.js` — passed.
+
+**Recommendation after fix:**
+
+Do not restart a mass `build_missing_and_report` immediately. After quota is replenished, run a controlled smoke on one manager and one or two calls first. Use normal mode to confirm the guard no longer repeats previously blocked calls automatically; use `force_retry_quota_blocked=true` only for explicitly selected calls once the operator confirms quota is available.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
