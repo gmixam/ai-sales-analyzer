@@ -516,6 +516,35 @@ One test updated: `call_outcomes_summary["agreed_count"]` changed from `2` to `1
 
 ---
 
+### Manager_daily Content Enrichment — Step 8C Closure
+
+**Дата:** 2026-05-05
+
+**Scope:** only `core/app/agents/calls/orchestrator.py` and `core/tests/test_manual_reporting.py`. No changes to analyzer, prompts, LLM/STT, scoring, eligibility, selection model, Step 8B outcome logic, coaching blocks, report templates, `rop_weekly`, or scheduler.
+
+**Root cause:**
+`_replace_insights()` in `orchestrator.py` passed `item.get("evidence")` / `item.get("quote")` directly as `Insight.quote` (mapped to `TEXT` column). The LLM contract returns `evidence` as `list[dict]` transcript segments (`[{start_ms, end_ms, text}]`). psycopg2 cannot serialize `list` or `dict` to `TEXT` → `ProgrammingError: can't adapt type 'dict'`. Error was silent for calls with `evidence=[]` (no INSERT rows), but crashed on the first call with non-empty segments (Тимур Жуматаев, segments=6, stages=3). Two UI-run attempts (05:31 and 07:37 UTC, 2026-05-05) both returned HTTP 500.
+
+**Реализовано:**
+
+`orchestrator.py`:
+- New module-level function `_normalize_insight_quote(value: Any) -> str | None` added before `PilotTargetConfig`;
+- Rules: `None → None`; `str → stripped or None`; `list[dict] → join item["text"]`; `list[str] → join non-empty`; `empty list → None`; `dict → dict["text"] or json.dumps`; `unknown → str() or None`;
+- All three quote assignment sites in `_replace_insights()` updated: strengths/gaps `evidence` (lines 406, 417) and product_signals `quote` (line 428).
+
+`test_manual_reporting.py`:
+- New test class `InsightQuoteNormalizerTests` — 14 tests covering: None, empty string, whitespace, plain string, list[dict] single/multi, empty list, list with empty text, list[str], dict with text, dict without text, any-type-returns-str-or-none, crash reproducer.
+
+**Live verification:**
+- `build_missing_and_report` run on `date_from=2026-05-04` triggered after fix;
+- Interaction `fc630809` (segments=118, stages=3) — the type that previously triggered the crash — completed LLM + persist without `ProgrammingError`;
+- Run continued processing further interactions without error (confirmed in API logs at 08:28–08:29 UTC);
+- No `ProgrammingError` appeared in logs after fix was applied.
+
+**Tests:** `pytest tests/test_manual_reporting.py` — 98 passed (14 new + 84 existing).
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

@@ -21,6 +21,42 @@ from app.core_shared.db.models import Agreement, Analysis, Insight, Interaction
 from app.core_shared.exceptions import ASAError, DatabaseError, DeliveryError, SemanticAnalysisError
 
 
+def _normalize_insight_quote(value: Any) -> str | None:
+    """Normalize any LLM-produced quote/evidence value to plain text for DB storage.
+
+    The LLM contract may return evidence as a list of transcript segment dicts
+    ({start_ms, end_ms, text}), a plain string, an empty list, or None.
+    The DB column insights.quote is TEXT — only scalars are accepted by psycopg2.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        if not value:
+            return None
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+            elif isinstance(item, str):
+                text = item.strip()
+            else:
+                text = str(item).strip()
+            if text:
+                parts.append(text)
+        return " ".join(parts) or None
+    if isinstance(value, dict):
+        text = str(value.get("text") or "").strip()
+        if text:
+            return text
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return str(value).strip() or None
+
+
 @dataclass(slots=True)
 class PilotTargetConfig:
     """Explicit manual pilot selection filters."""
@@ -403,7 +439,7 @@ class CallsManualPilotOrchestrator:
                     interaction_id=interaction.id,
                     category="strength",
                     topic=item.get("title"),
-                    quote=item.get("evidence"),
+                    quote=_normalize_insight_quote(item.get("evidence")),
                 )
             )
         for item in result.get("gaps") or []:
@@ -414,7 +450,7 @@ class CallsManualPilotOrchestrator:
                     interaction_id=interaction.id,
                     category="gap",
                     topic=item.get("title"),
-                    quote=item.get("evidence"),
+                    quote=_normalize_insight_quote(item.get("evidence")),
                 )
             )
         for item in result.get("product_signals") or []:
@@ -425,7 +461,7 @@ class CallsManualPilotOrchestrator:
                     interaction_id=interaction.id,
                     category=item.get("signal_type"),
                     topic=item.get("topic"),
-                    quote=item.get("quote"),
+                    quote=_normalize_insight_quote(item.get("quote")),
                 )
             )
 

@@ -3370,5 +3370,72 @@ class ScheduledReviewableReportingApiTests(unittest.TestCase):
         self.assertTrue(payload["schedule"]["deleted"])
 
 
+class InsightQuoteNormalizerTests(unittest.TestCase):
+    """Unit tests for _normalize_insight_quote — covers all input variants from the LLM contract."""
+
+    def setUp(self):
+        from app.agents.calls.orchestrator import _normalize_insight_quote
+        self._normalize = _normalize_insight_quote
+
+    def test_none_returns_none(self):
+        self.assertIsNone(self._normalize(None))
+
+    def test_empty_string_returns_none(self):
+        self.assertIsNone(self._normalize(""))
+
+    def test_whitespace_only_string_returns_none(self):
+        self.assertIsNone(self._normalize("   "))
+
+    def test_plain_string_is_returned_stripped(self):
+        self.assertEqual(self._normalize("  Добрый день.  "), "Добрый день.")
+
+    def test_list_of_dicts_with_text_joined(self):
+        evidence = [
+            {"start_ms": 0, "end_ms": 26520, "text": "Меня Тимур зовут с компании Договор24."},
+            {"start_ms": 26520, "end_ms": 30000, "text": "Вы оставляли заявку."},
+        ]
+        result = self._normalize(evidence)
+        self.assertEqual(result, "Меня Тимур зовут с компании Договор24. Вы оставляли заявку.")
+
+    def test_list_of_dicts_single_item(self):
+        evidence = [{"start_ms": 0, "end_ms": 5000, "text": "Алло, это Договор24."}]
+        self.assertEqual(self._normalize(evidence), "Алло, это Договор24.")
+
+    def test_empty_list_returns_none(self):
+        self.assertIsNone(self._normalize([]))
+
+    def test_list_of_dicts_all_empty_text_returns_none(self):
+        self.assertIsNone(self._normalize([{"start_ms": 0, "end_ms": 0, "text": ""}, {"start_ms": 0, "end_ms": 0, "text": "   "}]))
+
+    def test_list_of_strings_joined(self):
+        self.assertEqual(self._normalize(["Первое.", "Второе."]), "Первое. Второе.")
+
+    def test_list_of_strings_skips_empty(self):
+        self.assertEqual(self._normalize(["Первое.", "", "Второе."]), "Первое. Второе.")
+
+    def test_dict_with_text_field(self):
+        self.assertEqual(self._normalize({"text": "Клиент отказал."}), "Клиент отказал.")
+
+    def test_dict_without_text_fallback_to_json(self):
+        result = self._normalize({"key": "value"})
+        self.assertIsNotNone(result)
+        self.assertIn("key", result)
+
+    def test_result_is_always_str_or_none(self):
+        cases = [
+            None, "", "text", [], ["a"], [{"text": "x"}], {}, {"text": "y"}, 42, 3.14,
+        ]
+        for case in cases:
+            result = self._normalize(case)
+            self.assertIsInstance(result, (str, type(None)), f"Expected str|None for input {case!r}, got {type(result)}")
+
+    def test_no_can_adapt_type_dict_error(self):
+        """The exact value that triggered the production crash must produce a plain str."""
+        crash_value = [{"start_ms": 0, "end_ms": 26520, "text": "Меня Тимур зовут с компании Договор24."}]
+        result = self._normalize(crash_value)
+        self.assertIsInstance(result, str)
+        self.assertIn("Тимур", result)
+
+
 if __name__ == "__main__":
     unittest.main()
