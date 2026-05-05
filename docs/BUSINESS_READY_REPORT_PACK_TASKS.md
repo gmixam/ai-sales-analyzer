@@ -777,6 +777,39 @@ Artifacts generated locally without delivery:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8J Closure: Controlled Completeness Build
+
+**Дата:** 2026-05-05
+
+**Scope:** runtime controlled build/verification only. No code, prompt, STT/LLM, scoring, eligibility, selection model, rolling window, renderer, `rop_weekly`, scheduler, or delivery semantics changes.
+
+**Execution mode:**
+- Used an internal CLI verification path in the `api` container.
+- Called `_prepare_artifacts(..., mode="build_missing_and_report")` only for exact selected `interaction_id` batches.
+- Did not invoke report runner delivery; business email and Telegram delivery were not sent.
+
+**Result:**
+
+| Manager | Before gate | Batch selected | Built transcripts | Built analyses | After gate | Main blocker |
+|---|---|---:|---:|---:|---|---|
+| Эльмира | `review_required` (`Без транскрипта=4`) | 4 | 0 | 0 | `review_required` | OnlinePBX audio download 404 |
+| Тимур | `review_required` (`Без транскрипта=5`) | 5 | 0 | 0 | `review_required` | OnlinePBX audio download 404 |
+| Толеген | `review_required` (`Без анализа=1`) | 1 | 0 reused | 1 | `passed` | closed |
+
+**Findings:**
+- Quota remained stable: no `429`, no `quota_blocked`, no `skipped_due_to_quota`.
+- Эльмира/Тимур no-transcript calls had `raw_ref`, but all selected audio downloads failed before STT with `404` from OnlinePBX recording download URLs.
+- Толеген's remaining `Без анализа` call built reusable analysis and moved to `tech_service`, so manager-facing completeness gate passed for Толеген.
+- `call_list_dates=["2026-05-04"]` for all verified managers; rolling-window calls did not enter the report-day call list.
+
+**Follow-up task:**
+- Add a bounded source-audio availability/retention recovery decision before expecting remaining `Без транскрипта` calls to close:
+  - refresh/re-resolve expired OnlinePBX recording URLs if possible;
+  - or persist a technical source-audio-unavailable marker;
+  - or define an operator-facing unrecoverable bucket that still blocks business-ready delivery until reviewed.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
