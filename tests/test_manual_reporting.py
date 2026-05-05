@@ -1064,6 +1064,127 @@ class ManualReportingPayloadTests(unittest.TestCase):
         call_list = payload["call_list"]
         self.assertEqual(len(call_list), 2, "call_list should include both coaching and support meaningful calls")
 
+    def test_unclassified_breakdown_counts_report_day_meaningful_calls_only(self) -> None:
+        """Step 8C: unclassified diagnostics use report-day meaningful calls, not coaching window."""
+        manager = _manager()
+        coaching_artifact = _artifact_for_manager(
+            manager,
+            score_percent=82.0,
+            level="strong",
+            call_date="2026-03-24 10:00:00",
+        )
+        report_day_ready = _artifact_for_manager(
+            manager,
+            score_percent=78.0,
+            level="basic",
+            call_date="2026-03-25 09:00:00",
+        )
+        report_day_missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=manager.id,
+                text="Клиент спрашивает про договор.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        previous_day_missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=manager.id,
+                text="Предыдущий день, тоже без анализа.",
+                call_date="2026-03-24 12:00:00",
+            ),
+            analysis=None,
+            manager=manager,
+            call_started_at=datetime.fromisoformat("2026-03-24T12:00:00").replace(tzinfo=UTC),
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching_artifact, report_day_ready],
+            period={"date_from": "2026-03-24", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[coaching_artifact, report_day_ready, report_day_missing, previous_day_missing],
+        )
+
+        self.assertEqual(payload["unclassified_breakdown"]["total"], 1)
+        self.assertEqual(payload["unclassified_breakdown"]["by_reason"], {"no_analysis": 1})
+        self.assertEqual(payload["call_outcomes_summary"]["unclassified_count"], 1)
+
+    def test_call_list_adds_unclassified_reason_for_no_analysis(self) -> None:
+        """Step 8C: unclassified call_list rows explain why status is unavailable."""
+        ready = _artifact(82.0, "strong")
+        missing_analysis = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет готового анализа.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, missing_analysis])
+        unclassified = [row for row in rows if row["status"] is None]
+
+        self.assertEqual(len(unclassified), 1)
+        self.assertEqual(unclassified[0]["unclassified_reason_code"], "no_analysis")
+        self.assertEqual(unclassified[0]["unclassified_reason_label"], "Нет готового анализа")
+
+    def test_call_list_adds_cdr_only_reason_for_probable_live_without_audio(self) -> None:
+        """Step 8C: CDR-only probable live calls are separated from generic no_analysis."""
+        ready = _artifact(82.0, "strong")
+        interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        interaction.duration_sec = 180
+        interaction.metadata_["source_status"] = "answered"
+        interaction.metadata_["direction"] = "out"
+        cdr_only = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, cdr_only])
+        unclassified = [row for row in rows if row["status"] is None]
+
+        self.assertEqual(unclassified[0]["unclassified_reason_code"], "cdr_only_probable_live")
+        self.assertEqual(unclassified[0]["unclassified_reason_label"], "CDR-only: вероятный живой разговор")
+
+    def test_call_list_adds_analysis_not_reusable_reason(self) -> None:
+        """Step 8C: rejected persisted analysis is visible as diagnostic reason."""
+        ready = _artifact(82.0, "strong")
+        rejected = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        rejected.scores_detail = {"classification": {}, "follow_up": {}}
+        interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="Транскрипт есть, но persisted analysis старого формата.",
+            call_date="2026-03-25 12:00:00",
+        )
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+            original_analysis=rejected,
+            analysis_reuse_reason="missing_required_keys:score,score_by_stage",
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, artifact])
+        unclassified = [row for row in rows if row["status"] is None]
+
+        self.assertEqual(unclassified[0]["unclassified_reason_code"], "analysis_not_reusable")
+        self.assertEqual(unclassified[0]["unclassified_reason_label"], "Анализ не проходит reuse-проверку")
+
     def test_manager_daily_coaching_core_excludes_support_not_eligible_calls(self) -> None:
         """Selection bugfix: support/not_eligible can be meaningful, but not coaching_core."""
         coaching_artifact = _artifact(82.0, "strong")

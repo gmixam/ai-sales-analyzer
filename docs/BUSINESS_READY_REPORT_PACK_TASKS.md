@@ -545,6 +545,80 @@ One test updated: `call_outcomes_summary["agreed_count"]` changed from `2` to `1
 
 ---
 
+### Manager_daily Content Enrichment — Step 8C Diagnostics Addendum: Unclassified Reason Breakdown
+
+**Дата:** 2026-05-05
+
+**Scope:** only manager_daily payload diagnostics and tests. No changes to analyzer prompts, LLM/STT logic, scoring, eligibility, selection rules, rolling window, coaching_core, Situation Day, Additional Situations, Challenge, Who to work tomorrow, `rop_weekly`, scheduler, or PDF labels.
+
+**Root cause summary:**
+
+The high `НЕ КЛАСС.` count is not a visual renderer bug and not a Step 8B reconciliation bug. It is a coverage gap between the wider report-day `meaningful_calls` layer and ready reusable analysis:
+- report-day meaningful includes no-transcript source-side probable live conversations (`answered`, `in/out`, duration >= 90s);
+- many of those calls have no reusable transcript and therefore no reusable analysis;
+- fresh `build_missing_and_report` tried to fill the gap but STT/LLM-1 calls hit the external `429 insufficient_quota` blocker;
+- therefore the list correctly shows meaningful calls, but many of them still have no ready breakdown.
+
+**Payload changes:**
+- Added nullable/backward-compatible `payload.unclassified_breakdown`.
+- Added `unclassified_reason_code` / `unclassified_reason_label` to `payload.call_list[]` rows where `status is None`.
+- Added forensic fields to `ReportArtifact`: `original_analysis` and `analysis_reuse_reason`, so diagnostics can distinguish missing, failed, and non-reusable analyses after `_prepare_artifacts` clears non-ready `analysis`.
+
+Example:
+
+```json
+"unclassified_breakdown": {
+  "total": 14,
+  "by_reason": {
+    "no_analysis": 1,
+    "no_transcript": 13
+  },
+  "sample_calls": [
+    {
+      "time": "04:47",
+      "client": "+77476836968",
+      "reason_code": "no_analysis",
+      "reason_label": "Нет готового анализа"
+    }
+  ]
+}
+```
+
+**Reason codes supported:**
+`no_transcript`, `no_analysis`, `analysis_failed`, `analysis_not_reusable`, `not_eligible`, `not_coachable_or_reportable`, `no_follow_up_outcome`, `cdr_only_probable_live`, `missing_classification`, `support_or_internal`, `unknown`.
+
+**Fresh verification on 2026-05-04 after build_missing_and_report:**
+
+| Manager | raw | meaningful | analyzed | unclassified | no_transcript | no_analysis | analysis_failed | not_eligible | no_outcome | cdr_only | unknown |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| manager 304 pattern (`ext=203`; no local manager row for `304`) | 24 | 6 | 0 | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Толеген (`ext=325`) | 54 | 6 | 1 | 5 | 5 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Тимур (`ext=311`) | 57 | 15 | 1 | 14 | 13 | 1 | 0 | 0 | 0 | 0 | 0 |
+| Эльмира (`ext=322`) | 41 | 12 | 0 | 12 | 12 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Runtime note: extension `304` itself had `raw=0` on 2026-05-04 in the local DB after source discovery. The acceptance pattern `6 meaningful / 6 unclassified` matches extension `203`, which has no mirrored manager row; this mapping should be clarified operationally before naming it manager-facing.
+
+**build_missing verification:**
+- `ext=203`: `transcripts_built=0`, `analyses_built=0`, `transcript_build_failed=17`, `analysis_build_failed=1`.
+- Толеген: `transcripts_built=0`, `analyses_built=0`, `transcript_build_failed=23`, `analysis_build_failed=4`.
+- Тимур: `transcripts_built=0`, `analyses_built=0`, `transcript_build_failed=30`, `analysis_build_failed=6`.
+- Эльмира: `transcripts_built=0`, `analyses_built=0`, `transcript_build_failed=25`, `analysis_build_failed=4`.
+
+All four runs returned `partial` because billable STT/LLM-1 attempts failed with `429 insufficient_quota`. No new successful analyses were created in this verification pass. This points to expected low analysis coverage under the current external quota blocker, not to a build_missing logic bug.
+
+**Future task: terminology**
+
+If business review confirms the current words are misleading, rename manager-facing wording in a later step:
+- `meaningful_calls` → live conversations / звонки в списке дня;
+- `Не классифицировано` → Без разбора / Нет готового разбора.
+
+**Tests:**
+- `pytest -q tests/test_manual_reporting.py -k 'unclassified or call_outcomes or call_list or meaningful or selection_model'` — 18 passed.
+- `pytest -q tests/test_manual_reporting.py tests/test_ai_provider_routing.py` — 120 passed.
+- `node --check scripts/generate_docx_report.js` — passed.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

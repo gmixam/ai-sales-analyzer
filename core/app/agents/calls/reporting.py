@@ -54,6 +54,19 @@ REPORTING_REQUIRED_ANALYSIS_KEYS = (
     "recommendations",
     "follow_up",
 )
+UNCLASSIFIED_REASON_LABELS = {
+    "no_transcript": "Нет транскрипта",
+    "no_analysis": "Нет готового анализа",
+    "analysis_failed": "Анализ завершился ошибкой",
+    "analysis_not_reusable": "Анализ не проходит reuse-проверку",
+    "not_eligible": "Звонок не подходит для разбора",
+    "not_coachable_or_reportable": "Не coaching/reporting-звонок",
+    "no_follow_up_outcome": "Нет результата follow-up",
+    "cdr_only_probable_live": "CDR-only: вероятный живой разговор",
+    "missing_classification": "Нет классификации в анализе",
+    "support_or_internal": "Тех/сервис или внутренний звонок",
+    "unknown": "Причина не определена",
+}
 
 
 @dataclass(slots=True)
@@ -86,6 +99,8 @@ class ReportArtifact:
     analysis: Analysis | None
     manager: Manager | None
     call_started_at: datetime | None
+    original_analysis: Analysis | None = None
+    analysis_reuse_reason: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -682,6 +697,8 @@ class CallsManualReportingOrchestrator:
         artifacts: list[ReportArtifact] = []
         for interaction in interactions:
             analysis = analyses_by_interaction.get(interaction.id)
+            original_analysis = analysis
+            analysis_reuse_reason: str | None = None
             if interaction.text:
                 reused_transcripts += 1
             else:
@@ -736,6 +753,8 @@ class CallsManualReportingOrchestrator:
                     analysis=analysis,
                     manager=managers_by_id.get(interaction.manager_id) if interaction.manager_id else None,
                     call_started_at=parse_call_started_at(dict(interaction.metadata_ or {})),
+                    original_analysis=original_analysis,
+                    analysis_reuse_reason=analysis_reuse_reason,
                 )
             )
         return (
@@ -3271,6 +3290,7 @@ def build_manager_daily_payload(
         a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
     ]
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
+    unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
 
     payload = {
         "meta": _build_base_meta(
@@ -3346,6 +3366,7 @@ def build_manager_daily_payload(
         "call_tomorrow": call_tomorrow,
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
+        "unclassified_breakdown": unclassified_breakdown,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
         "situation_dialogue_excerpt": situation_dialogue_excerpt,
@@ -4503,6 +4524,112 @@ def _build_meaningful_call_list(*, window_artifacts: list[ReportArtifact]) -> li
     return [_build_daily_call_row(item) for item in meaningful]
 
 
+def _reason_label(reason_code: str | None) -> str | None:
+    """Return diagnostic Russian label for an unclassified reason code."""
+    if not reason_code:
+        return None
+    return UNCLASSIFIED_REASON_LABELS.get(reason_code, UNCLASSIFIED_REASON_LABELS["unknown"])
+
+
+def _is_cdr_only_probable_live(artifact: ReportArtifact) -> bool:
+    """Return True when a no-transcript row entered meaningful via source-side live signal."""
+    if artifact.interaction.text:
+        return False
+    metadata = dict(getattr(artifact.interaction, "metadata_", None) or {})
+    source_status = str(metadata.get("source_status") or "").strip().lower()
+    direction = str(metadata.get("direction") or "").strip().lower()
+    duration = artifact.interaction.duration_sec or 0
+    return (
+        (not source_status or source_status == "answered")
+        and (not direction or direction in {"in", "out"})
+        and duration >= MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC
+    )
+
+
+def _derive_unclassified_reason(artifact: ReportArtifact) -> tuple[str | None, str | None]:
+    """Explain why a meaningful call has no manager-facing classification."""
+    if artifact.analysis is not None:
+        detail = dict(artifact.analysis.scores_detail or {})
+        classification = dict(detail.get("classification") or {})
+        call_type = str(classification.get("call_type") or "").strip().lower()
+        eligibility = str(classification.get("analysis_eligibility") or "").strip().lower()
+        follow_up = detail.get("follow_up")
+        if not classification or not call_type:
+            reason_code = "missing_classification"
+        elif call_type in {"support", "internal"}:
+            reason_code = "support_or_internal"
+        elif eligibility == "not_eligible":
+            reason_code = "not_eligible"
+        elif eligibility in {"not_coachable", "not_reportable", "not_coachable_or_reportable"}:
+            reason_code = "not_coachable_or_reportable"
+        elif not isinstance(follow_up, dict) or not follow_up:
+            reason_code = "no_follow_up_outcome"
+        else:
+            reason_code = None
+        return reason_code, _reason_label(reason_code)
+
+    original_analysis = artifact.original_analysis
+    reuse_reason = str(artifact.analysis_reuse_reason or "").strip()
+    if original_analysis is not None:
+        if bool(getattr(original_analysis, "is_failed", False)):
+            reason_code = "analysis_failed"
+        elif reuse_reason and reuse_reason not in {"missing_analysis", "reusable"}:
+            reason_code = "analysis_not_reusable"
+        else:
+            reason_code = "no_analysis"
+        return reason_code, _reason_label(reason_code)
+
+    if not artifact.interaction.text:
+        reason_code = "no_transcript" if getattr(artifact.interaction, "raw_ref", None) else "cdr_only_probable_live"
+        if not _is_cdr_only_probable_live(artifact):
+            reason_code = "no_transcript"
+        return reason_code, _reason_label(reason_code)
+
+    return "no_analysis", _reason_label("no_analysis")
+
+
+def _build_unclassified_breakdown(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
+    """Build structured diagnostics for report-day meaningful calls without classification."""
+    by_reason: dict[str, int] = {}
+    sample_calls: list[dict[str, Any]] = []
+    total = 0
+    for artifact in sorted(artifacts, key=lambda a: a.call_started_at or datetime.min.replace(tzinfo=UTC)):
+        row = _build_daily_call_row(artifact)
+        if row.get("status") is not None:
+            continue
+        reason_code = row.get("unclassified_reason_code") or "unknown"
+        reason_label = row.get("unclassified_reason_label") or UNCLASSIFIED_REASON_LABELS["unknown"]
+        total += 1
+        by_reason[reason_code] = by_reason.get(reason_code, 0) + 1
+        if len(sample_calls) < 10:
+            sample_calls.append(
+                {
+                    "time": _short_time_label(row.get("time")),
+                    "client": row.get("client_or_phone"),
+                    "reason_code": reason_code,
+                    "reason_label": reason_label,
+                }
+            )
+    return {
+        "total": total,
+        "by_reason": by_reason,
+        "sample_calls": sample_calls,
+    }
+
+
+def _short_time_label(value: Any) -> str | None:
+    """Return HH:MM from an ISO datetime-ish value for diagnostics samples."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%H:%M")
+    except ValueError:
+        if len(raw) >= 16 and raw[10] in {"T", " "}:
+            return raw[11:16]
+        return raw
+
+
 def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     """Build one short daily call row."""
     detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
@@ -4520,6 +4647,10 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         deadline = None
     else:
         status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
+    unclassified_reason_code = None
+    unclassified_reason_label = None
+    if status is None:
+        unclassified_reason_code, unclassified_reason_label = _derive_unclassified_reason(artifact)
     return {
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
         "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
@@ -4531,6 +4662,8 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         "deadline": deadline,
         "reason": str(follow_up.get("reason_not_fixed") or "").strip() or None,
         "score_percent": _extract_score_percent(artifact.analysis),
+        "unclassified_reason_code": unclassified_reason_code,
+        "unclassified_reason_label": unclassified_reason_label,
     }
 
 
