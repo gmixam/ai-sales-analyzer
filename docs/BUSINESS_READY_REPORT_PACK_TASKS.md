@@ -866,6 +866,30 @@ Evidence:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8M Closure: Controlled Source-Audio Recovery Build
+
+**Дата:** 2026-05-05
+
+**Scope:** operational exact-ID build for the remaining recoverable source-audio calls. No code changes; no full report runner, rendering, business email, or Telegram delivery.
+
+**Result:**
+- All 8 remaining source-audio calls refreshed successfully through Step 8L and built transcripts.
+- `source_audio_unavailable=0`, `quota_blocker=null`, `skipped_due_to_quota=0`.
+- Эльмира: 3/3 calls moved from `Без транскрипта` to `Не подходит для разбора`; final gate `passed`.
+- Тимур: 5/5 calls moved out of `Без транскрипта`; 3 calls moved to `Не подходит для разбора`, 2 calls remain blocking `Без анализа` after LLM contract validation errors did not persist a failed analysis row.
+
+**Final 2026-05-04 manager-facing completeness snapshot:**
+- Эльмира: normal `3`, `Не подходит для разбора=9`, blocking buckets all `0`, gate `passed`.
+- Тимур: normal `6`, `Не подходит для разбора=7`, `Без анализа=2`, `Без транскрипта=0`, gate `review_required`.
+- `call_list_dates=["2026-05-04"]` for both managers; rolling-window calls did not enter the report-day call list.
+
+**Follow-up:**
+- No new source-audio recovery follow-up is needed for these 8 calls.
+- Add a bounded technical task for analysis contract-validation failures: ensure contract/parser validation errors either persist a technical failed analysis (`analysis_failed_contract` / `Ошибка анализа`) or provide an explicit operator retry path, so they do not remain an unexplained `Без анализа`.
+- Delivery semantics (`--no-delivery` vs Telegram test delivery) remains a separate known follow-up.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
