@@ -1586,6 +1586,111 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(build_summary["transcript_build_failed"], 0)
         self.assertEqual(build_errors, [])
 
+    def test_prepare_artifacts_refreshes_onlinepbx_audio_url_before_stt(self) -> None:
+        """Step 8L: selected OnlinePBX calls refresh expired direct URLs before STT."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
+        interaction.source = "onlinepbx"
+        interaction.external_id = "98aa9872-5406-4eef-9c0b-30f44175b3a9"
+        interaction.raw_ref = "https://api2.onlinepbx.ru/calls-records/download/expired/rec.mp3"
+        interaction.error_message = "Failed to download audio artifact: status=404 KEY_IS_EXPIRED"
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "external_call_code": interaction.external_id,
+            "source_status": "answered",
+            "direction": "out",
+        }
+        commits: list[bool] = []
+        processed: list[str] = []
+
+        class FakeExtractor:
+            async def process(self, item):
+                processed.append(item.raw_ref)
+                item.text = "Расшифрованный звонок"
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.db = SimpleNamespace(commit=lambda: commits.append(True))
+        orchestrator.intake = SimpleNamespace(
+            get_recording_url=lambda call_id: f"https://fresh.example.test/{call_id}/rec.mp3"
+        )
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: _analysis(80.0, "strong"))
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda **kwargs: kwargs["result"]
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(processed, [f"https://fresh.example.test/{interaction.external_id}/rec.mp3"])
+        self.assertEqual(build_summary["transcripts_built"], 1)
+        self.assertEqual(build_summary["analyses_built"], 1)
+        self.assertEqual(build_errors, [])
+        self.assertGreaterEqual(len(commits), 1)
+        self.assertEqual(interaction.metadata_["source_audio_url_refresh"]["status"], "refreshed")
+        self.assertIsNone(interaction.error_message)
+
+    def test_prepare_artifacts_records_source_audio_unavailable_when_refresh_fails(self) -> None:
+        """Step 8L: refresh failure becomes an operator diagnostic and STT is skipped."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
+        interaction.source = "onlinepbx"
+        interaction.external_id = "98aa9872-5406-4eef-9c0b-30f44175b3a9"
+        interaction.raw_ref = None
+        interaction.error_message = None
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "external_call_code": interaction.external_id,
+            "source_status": "answered",
+            "direction": "out",
+        }
+
+        class FakeExtractor:
+            async def process(self, _item):
+                raise AssertionError("STT should not run when audio refresh fails")
+
+        def _raise_refresh_error(_call_id):
+            raise ASAError("OnlinePBX recording lookup failed: KEY_IS_EXPIRED")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.db = SimpleNamespace(commit=lambda: None)
+        orchestrator.intake = SimpleNamespace(get_recording_url=_raise_refresh_error)
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(build_summary["transcripts_built"], 0)
+        self.assertEqual(build_summary["transcript_build_failed"], 1)
+        self.assertTrue(any(item.startswith("source_audio_unavailable:") for item in build_errors))
+        self.assertEqual(
+            interaction.metadata_["source_audio_unavailable"]["reason"],
+            "recording_url_refresh_failed",
+        )
+        self.assertEqual(interaction.error_message, "source_audio_unavailable:recording_url_refresh_failed")
+
     def test_provider_error_classifier_detects_openai_insufficient_quota(self) -> None:
         error = (
             "Whisper STT failed: Error code: 429 - {'error': {'message': 'You exceeded your current quota', "

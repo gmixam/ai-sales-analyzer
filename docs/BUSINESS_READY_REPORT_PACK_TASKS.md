@@ -841,6 +841,31 @@ Evidence:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8L Closure: Bounded Source Audio URL Refresh
+
+**Дата:** 2026-05-05
+
+**Scope:** implementation inside controlled `manager_daily` build_missing path. No Step 8I gate changes, no analyzer prompt/STT/LLM provider/scoring/eligibility/selection/rolling/renderer/delivery/`rop_weekly`/scheduler changes.
+
+**Implemented:**
+- `_prepare_artifacts()` refreshes a selected OnlinePBX audio URL before billable STT when the interaction has no transcript and is source-build-eligible.
+- Canonical OnlinePBX uuid resolution order: `interaction.external_id`, then `interaction.metadata_.external_call_code`.
+- Successful refresh persists fresh `interaction.raw_ref`, writes `metadata.source_audio_url_refresh`, and clears stale source-audio download errors.
+- Failed refresh writes operator-facing `metadata.source_audio_unavailable` / `last_audio_source_failure`, returns `source_audio_unavailable:<interaction_id>:<reason>`, skips STT, and leaves the existing completeness gate blocking through `Без транскрипта`.
+- `_is_interaction_source_build_eligible()` now allows recoverable OnlinePBX rows with canonical uuid even when direct `raw_ref` is missing.
+
+**1-call verification:**
+- Target: Эльмира, ext `322`, `2026-05-04T05:09`, interaction `fba9e2df-5e69-4da5-ae2b-e3f17362c6e0`, OnlinePBX uuid `98aa9872-5406-4eef-9c0b-30f44175b3a9`, duration `156`.
+- Execution: internal `_prepare_artifacts()` on the exact interaction only; no report rendering, no business email, no Telegram delivery.
+- Result: refresh succeeded, audio downloaded, transcript built (`transcripts_built=1`), analysis attempt persisted `not_coachable_or_reportable` failed analysis (`7273f82e-c392-4d13-b524-6eaa34d05e0a`), final bucket changed from `Без транскрипта` to `Не подходит для разбора`.
+- Gate impact: Эльмира remains `review_required`, but `Без транскрипта` improved `4 -> 3`.
+
+**Next controlled task:**
+- Process the remaining 8 recoverable source-audio calls in small exact-ID/duration batches (Эльмира 3, Тимур 5).
+- Do not run a mass `build_missing_and_report`; keep delivery path isolated until Telegram/no-delivery semantics are fixed separately.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

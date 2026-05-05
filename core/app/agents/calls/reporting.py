@@ -35,6 +35,7 @@ REPORTING_ALLOWED_MODES = {
     "build_missing_and_report",
     "report_from_ready_data_only",
 }
+SOURCE_AUDIO_UNAVAILABLE_REASON = "source_audio_unavailable"
 MANAGER_DAILY_MAX_WINDOW_WORKDAYS = 3
 MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC = 15
 MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC = 90
@@ -188,6 +189,42 @@ def _previous_quota_blocker(interaction: Interaction) -> dict[str, Any] | None:
     if failure.get("type") == "quota_blocked" or failure.get("error_class") == "quota_insufficient":
         return dict(failure)
     return None
+
+
+def _onlinepbx_canonical_call_id(interaction: Interaction) -> str | None:
+    """Return a persisted OnlinePBX call uuid that can refresh recording URLs."""
+    source = str(getattr(interaction, "source", "") or "").strip().lower()
+    metadata = dict(getattr(interaction, "metadata_", None) or {})
+    external_id = str(getattr(interaction, "external_id", "") or "").strip()
+    external_call_code = str(metadata.get("external_call_code") or "").strip()
+    has_onlinepbx_metadata = bool(external_call_code) or source == "onlinepbx"
+    if source and source != "onlinepbx" and not has_onlinepbx_metadata:
+        return None
+    return external_id or external_call_code or None
+
+
+def _should_refresh_onlinepbx_audio_url(interaction: Interaction) -> bool:
+    """Return whether build_missing should refresh a bounded OnlinePBX audio URL."""
+    if not _onlinepbx_canonical_call_id(interaction):
+        return False
+    raw_ref = str(getattr(interaction, "raw_ref", "") or "")
+    if not raw_ref:
+        return True
+    raw_lower = raw_ref.lower()
+    metadata = dict(getattr(interaction, "metadata_", None) or {})
+    diagnostic_text = " ".join(
+        str(value or "")
+        for value in (
+            getattr(interaction, "error_message", None),
+            metadata.get(SOURCE_AUDIO_UNAVAILABLE_REASON),
+            metadata.get("last_audio_source_failure"),
+        )
+    ).lower()
+    if "key_is_expired" in diagnostic_text:
+        return True
+    if "api2.onlinepbx" in raw_lower and "/calls-records/download/" in raw_lower:
+        return True
+    return False
 
 
 def _extract_quota_blocker(*, build_summary: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
@@ -864,28 +901,35 @@ class CallsManualReportingOrchestrator:
                                 f"quota_blocked_current_run:{interaction.id}:{quota_blocker.get('stage') or 'provider'}"
                             )
                         else:
-                            provider_context = self._provider_context_for_layer(
-                                layer="stt",
-                                interaction_id=str(interaction.id),
+                            refresh_error = self._refresh_source_audio_url_before_transcript_build(
+                                interaction=interaction
                             )
-                            try:
-                                await self.extractor.process(interaction)
-                                built_transcripts += 1
-                            except ASAError as exc:
+                            if refresh_error is not None:
                                 failed_transcripts += 1
-                                provider_error = classify_provider_error(exc)
-                                if provider_error.error_class == "quota_insufficient":
-                                    quota_blocker = self._build_quota_blocker(
-                                        stage="stt",
-                                        provider_context=provider_context,
-                                        error_info=provider_error,
-                                    )
-                                    self._record_provider_failure(
-                                        interaction=interaction,
-                                        blocker=quota_blocker,
-                                        error_message=str(exc),
-                                    )
-                                build_errors.append(f"transcript_build_failed:{interaction.id}:{exc}")
+                                build_errors.append(refresh_error)
+                            else:
+                                provider_context = self._provider_context_for_layer(
+                                    layer="stt",
+                                    interaction_id=str(interaction.id),
+                                )
+                                try:
+                                    await self.extractor.process(interaction)
+                                    built_transcripts += 1
+                                except ASAError as exc:
+                                    failed_transcripts += 1
+                                    provider_error = classify_provider_error(exc)
+                                    if provider_error.error_class == "quota_insufficient":
+                                        quota_blocker = self._build_quota_blocker(
+                                            stage="stt",
+                                            provider_context=provider_context,
+                                            error_info=provider_error,
+                                        )
+                                        self._record_provider_failure(
+                                            interaction=interaction,
+                                            blocker=quota_blocker,
+                                            error_message=str(exc),
+                                        )
+                                    build_errors.append(f"transcript_build_failed:{interaction.id}:{exc}")
                 if (
                     analysis is None or not isinstance(analysis.scores_detail, dict) or not analysis.scores_detail
                 ) and interaction.text:
@@ -1012,6 +1056,85 @@ class CallsManualReportingOrchestrator:
             "error_class": error_info.error_class,
             "message": "Provider returned insufficient_quota. Further billable calls were stopped.",
         }
+
+    def _refresh_source_audio_url_before_transcript_build(
+        self,
+        *,
+        interaction: Interaction,
+    ) -> str | None:
+        """Refresh one selected OnlinePBX recording URL before billable STT."""
+        if not _should_refresh_onlinepbx_audio_url(interaction):
+            return None
+        call_id = _onlinepbx_canonical_call_id(interaction)
+        if not call_id:
+            return self._record_source_audio_unavailable(
+                interaction=interaction,
+                reason="missing_canonical_onlinepbx_call_id",
+            )
+        try:
+            fresh_url = self.intake.get_recording_url(call_id)
+        except ASAError as exc:
+            return self._record_source_audio_unavailable(
+                interaction=interaction,
+                reason="recording_url_refresh_failed",
+                error_message=str(exc),
+            )
+        if not fresh_url:
+            return self._record_source_audio_unavailable(
+                interaction=interaction,
+                reason="recording_url_refresh_empty",
+            )
+
+        metadata = dict(interaction.metadata_ or {})
+        metadata["source_audio_url_refresh"] = {
+            "provider": "onlinepbx",
+            "canonical_call_id": call_id,
+            "status": "refreshed",
+            "refreshed_at": datetime.now(UTC).isoformat(),
+        }
+        metadata.pop(SOURCE_AUDIO_UNAVAILABLE_REASON, None)
+        metadata.pop("last_audio_source_failure", None)
+        interaction.metadata_ = metadata
+        interaction.raw_ref = fresh_url
+        current_error = str(getattr(interaction, "error_message", "") or "")
+        if current_error.startswith(SOURCE_AUDIO_UNAVAILABLE_REASON) or (
+            "Failed to download audio artifact:" in current_error
+            and (
+                "onlinepbx" in current_error.lower()
+                or "key_is_expired" in current_error.lower()
+            )
+        ):
+            interaction.error_message = None
+        db = getattr(self, "db", None)
+        if db is not None:
+            db.commit()
+        return None
+
+    def _record_source_audio_unavailable(
+        self,
+        *,
+        interaction: Interaction,
+        reason: str,
+        error_message: str | None = None,
+    ) -> str:
+        """Persist an operator-facing source-audio diagnostic without secrets."""
+        metadata = dict(interaction.metadata_ or {})
+        diagnostic = {
+            "provider": "onlinepbx",
+            "canonical_call_id": _onlinepbx_canonical_call_id(interaction),
+            "reason": reason,
+            "failed_at": datetime.now(UTC).isoformat(),
+        }
+        if error_message:
+            diagnostic["message"] = error_message[:500]
+        metadata[SOURCE_AUDIO_UNAVAILABLE_REASON] = diagnostic
+        metadata["last_audio_source_failure"] = diagnostic
+        interaction.metadata_ = metadata
+        interaction.error_message = f"{SOURCE_AUDIO_UNAVAILABLE_REASON}:{reason}"
+        db = getattr(self, "db", None)
+        if db is not None:
+            db.commit()
+        return f"{SOURCE_AUDIO_UNAVAILABLE_REASON}:{interaction.id}:{reason}"
 
     def _record_provider_failure(
         self,
@@ -5338,7 +5461,7 @@ def _is_interaction_source_build_eligible(interaction: Interaction) -> bool:
         return False
     if direction and direction not in calls_config.allowed_directions:
         return False
-    if not interaction.raw_ref:
+    if not interaction.raw_ref and not _onlinepbx_canonical_call_id(interaction):
         return False
     return True
 
