@@ -38,6 +38,12 @@ REPORTING_ALLOWED_MODES = {
     "build_missing_and_report",
     "report_from_ready_data_only",
 }
+REPORT_DELIVERY_MODES = {
+    "preview_only",
+    "telegram_test_only",
+    "business_email_only",
+    "telegram_and_email",
+}
 SOURCE_AUDIO_UNAVAILABLE_REASON = "source_audio_unavailable"
 MANAGER_DAILY_MAX_WINDOW_WORKDAYS = 3
 MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC = 15
@@ -152,6 +158,15 @@ class ReportPreset:
     title: str
     recipient_kind: str
     requires_single_day: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class ReportDeliveryOptions:
+    """Explicit report delivery channel selection."""
+
+    mode: str
+    send_telegram_test_delivery: bool = False
+    send_business_email: bool = False
 
 
 @dataclass(slots=True)
@@ -284,6 +299,35 @@ def resolve_report_preset(code: str) -> ReportPreset:
     return preset
 
 
+def resolve_report_delivery_options(
+    *,
+    delivery_mode: str | None = None,
+    send_email: bool = False,
+    send_telegram_test: bool = False,
+) -> ReportDeliveryOptions:
+    """Resolve explicit delivery flags into one safe channel matrix."""
+    normalized = str(delivery_mode or "").strip().lower().replace("-", "_")
+    if normalized in {"", "none"}:
+        if send_telegram_test and send_email:
+            normalized = "telegram_and_email"
+        elif send_telegram_test:
+            normalized = "telegram_test_only"
+        elif send_email:
+            normalized = "business_email_only"
+        else:
+            normalized = "preview_only"
+    elif normalized in {"no_delivery", "no_delivery_preview", "preview", "preview_only"}:
+        normalized = "preview_only"
+    if normalized not in REPORT_DELIVERY_MODES:
+        allowed = ", ".join(sorted(REPORT_DELIVERY_MODES))
+        raise ASAError(f"Unsupported delivery_mode '{delivery_mode}'. Supported modes: {allowed}.")
+    return ReportDeliveryOptions(
+        mode=normalized,
+        send_telegram_test_delivery=normalized in {"telegram_test_only", "telegram_and_email"},
+        send_business_email=normalized in {"business_email_only", "telegram_and_email"},
+    )
+
+
 class CallsManualReportingOrchestrator:
     """Build bounded manual reports from persisted call artifacts."""
 
@@ -306,10 +350,17 @@ class CallsManualReportingOrchestrator:
         mode: str,
         filters: ReportRunFilters,
         model_override: str | None = None,
-        send_email: bool = True,
+        send_email: bool = False,
+        delivery_mode: str | None = None,
+        send_telegram_test: bool = False,
     ) -> dict[str, Any]:
         """Execute one bounded manual reporting run."""
         preset = resolve_report_preset(preset_code)
+        delivery_options = resolve_report_delivery_options(
+            delivery_mode=delivery_mode,
+            send_email=send_email,
+            send_telegram_test=send_telegram_test,
+        )
         normalized_mode = mode.strip().lower()
         if normalized_mode not in REPORTING_ALLOWED_MODES:
             allowed = ", ".join(sorted(REPORTING_ALLOWED_MODES))
@@ -359,6 +410,7 @@ class CallsManualReportingOrchestrator:
                         overall_status="blocked",
                         errors=[error_token],
                         artifacts=[],
+                        delivery_options=delivery_options,
                     )
         interactions = self._select_interactions(filters=filters, period=source_period)
         if not interactions:
@@ -370,7 +422,7 @@ class CallsManualReportingOrchestrator:
                     filters=filters,
                     mode=normalized_mode,
                     model_override=model_override,
-                    send_email=send_email,
+                    delivery_options=delivery_options,
                     reason_codes=["no_interactions_for_selected_filters"],
                     relevant_calls=0,
                     ready_analyses=0,
@@ -393,6 +445,7 @@ class CallsManualReportingOrchestrator:
                     overall_status="no_data",
                     errors=["no_interactions_for_selected_filters"],
                     artifacts=[],
+                    delivery_options=delivery_options,
                 )
             return self._build_terminal_run_result(
                 preset=preset,
@@ -409,6 +462,7 @@ class CallsManualReportingOrchestrator:
                 overall_status="no_data",
                 errors=["no_interactions_for_selected_filters"],
                 artifacts=[],
+                delivery_options=delivery_options,
             )
 
         artifacts, build_summary, build_errors = await self._prepare_artifacts(
@@ -426,7 +480,7 @@ class CallsManualReportingOrchestrator:
             filters=filters,
             mode=normalized_mode,
             model_override=model_override,
-            send_email=send_email,
+            delivery_options=delivery_options,
             manager_daily_windows=manager_daily_windows,
         )
         all_errors = [*source_discovery_errors, *build_errors]
@@ -449,8 +503,9 @@ class CallsManualReportingOrchestrator:
             ),
             overall_status=overall_status,
             errors=all_errors,
-            send_email=send_email,
+            send_email=delivery_options.send_business_email,
             artifacts=artifacts,
+            delivery_options=delivery_options,
         )
 
     def _build_terminal_run_result(
@@ -469,11 +524,13 @@ class CallsManualReportingOrchestrator:
         final_selected_interactions_count: int,
         overall_status: str,
         errors: list[str] | None = None,
-        send_email: bool = True,
+        send_email: bool = False,
         artifacts: list[ReportArtifact] | None = None,
+        delivery_options: ReportDeliveryOptions | None = None,
     ) -> dict[str, Any]:
         """Build the final structured run response for success and blocked outcomes."""
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=errors or [])
+        resolved_delivery_options = delivery_options or resolve_report_delivery_options(send_email=send_email)
         return {
             "status": overall_status,
             "preset": preset.code,
@@ -496,7 +553,7 @@ class CallsManualReportingOrchestrator:
                 period=period,
                 source_period=source_period,
                 mode=mode,
-                send_email=send_email,
+                delivery_options=resolved_delivery_options,
                 selected_interactions_count=selected_interactions_count,
                 build_summary=build_summary,
                 reports=reports,
@@ -519,6 +576,11 @@ class CallsManualReportingOrchestrator:
                 source_summary=source_summary,
                 errors=errors or [],
             ),
+            "delivery_options": {
+                "mode": resolved_delivery_options.mode,
+                "send_telegram_test_delivery": resolved_delivery_options.send_telegram_test_delivery,
+                "send_business_email": resolved_delivery_options.send_business_email,
+            },
         }
 
     @staticmethod
@@ -1191,7 +1253,7 @@ class CallsManualReportingOrchestrator:
         period: dict[str, str],
         source_period: dict[str, str],
         mode: str,
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
         selected_interactions_count: int,
         build_summary: dict[str, int],
         reports: list[dict[str, Any]],
@@ -1208,7 +1270,10 @@ class CallsManualReportingOrchestrator:
             if error
         ]
         all_errors = [*stage_errors, *report_errors]
-        delivery_summary = self._build_delivery_summary(reports=reports, send_email=send_email)
+        delivery_summary = self._build_delivery_summary(
+            reports=reports,
+            delivery_options=delivery_options,
+        )
         ai_costs = self._build_ai_costs(build_summary=build_summary, reports=reports)
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=all_errors)
         return {
@@ -1254,7 +1319,6 @@ class CallsManualReportingOrchestrator:
                 ),
                 self._build_delivery_stage(
                     reports=reports,
-                    send_email=send_email,
                     delivery_summary=delivery_summary,
                     errors=all_errors,
                 ),
@@ -2029,7 +2093,6 @@ class CallsManualReportingOrchestrator:
     def _build_delivery_stage(
         *,
         reports: list[dict[str, Any]],
-        send_email: bool,
         delivery_summary: dict[str, Any],
         errors: list[str],
     ) -> dict[str, Any]:
@@ -2048,7 +2111,7 @@ class CallsManualReportingOrchestrator:
                 email_status = (delivery_summary.get("email_delivery") or {}).get("status", "unknown")
                 telegram_targets = ", ".join((delivery_summary.get("telegram_test_delivery") or {}).get("targets", [])) or "no telegram target"
                 email_targets = ", ".join((delivery_summary.get("email_delivery") or {}).get("targets", [])) or "no email targets"
-                status = "completed" if telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", "not_started"} else "warn"
+                status = "completed" if delivery_summary.get("result") in {"sent", "skipped"} else "warn"
                 return {
                     "code": "delivery",
                     "label": "delivery",
@@ -2069,11 +2132,11 @@ class CallsManualReportingOrchestrator:
             }
         telegram_status = (delivery_summary.get("telegram_test_delivery") or {}).get("status", "unknown")
         email_status = (delivery_summary.get("email_delivery") or {}).get("status", "unknown")
-        if telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", "not_started"}:
+        if delivery_summary.get("result") in {"sent", "skipped"}:
             status = "completed"
-        elif telegram_status == "delivered" and email_status == "failed":
+        elif delivery_summary.get("result") == "partial":
             status = "warn"
-        elif telegram_status in {"failed", "blocked"}:
+        elif delivery_summary.get("result") == "blocked":
             status = "blocked"
         else:
             status = "warn"
@@ -2095,21 +2158,21 @@ class CallsManualReportingOrchestrator:
         self,
         *,
         reports: list[dict[str, Any]],
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
     ) -> dict[str, Any]:
         """Return a compact delivery summary for the operator UI."""
         if not reports:
             return {
-                "mode": "unknown",
+                "mode": delivery_options.mode,
                 "targets": [],
                 "result": "not_started",
                 "telegram_test_delivery": {
-                    "enabled": True,
+                    "enabled": delivery_options.send_telegram_test_delivery,
                     "status": "not_started",
                     "targets": [],
                 },
                 "email_delivery": {
-                    "enabled": send_email,
+                    "enabled": delivery_options.send_business_email,
                     "status": "not_started",
                     "targets": [],
                 },
@@ -2119,7 +2182,9 @@ class CallsManualReportingOrchestrator:
         telegram_targets: list[str] = []
         email_targets: list[str] = []
         telegram_status = "not_started"
-        email_status = "skipped" if not send_email else "not_started"
+        email_status = "not_started"
+        telegram_enabled = delivery_options.send_telegram_test_delivery
+        email_enabled = delivery_options.send_business_email
         for report in reports:
             delivery = report.get("delivery") or {}
             transport = delivery.get("transport") or {}
@@ -2128,6 +2193,8 @@ class CallsManualReportingOrchestrator:
 
             telegram = transport.get("telegram_test_delivery") or {}
             email = transport.get("email_delivery") or {}
+            telegram_enabled = telegram_enabled or bool(telegram.get("enabled"))
+            email_enabled = email_enabled or bool(email.get("enabled"))
 
             telegram_target = str(telegram.get("target") or "").strip()
             if telegram_target:
@@ -2153,23 +2220,25 @@ class CallsManualReportingOrchestrator:
                         targets.append(value)
 
             telegram_status = self._merge_channel_status(telegram_status, str(telegram.get("status") or "not_started"))
-            email_status = self._merge_channel_status(email_status, str(email.get("status") or email_status))
+            email_status = self._merge_channel_status(email_status, str(email.get("status") or "not_started"))
 
         result = self._derive_overall_delivery_result(
             telegram_status=telegram_status,
             email_status=email_status,
+            telegram_enabled=telegram_enabled,
+            email_enabled=email_enabled,
         )
         return {
             "mode": mode,
             "targets": targets,
             "result": result,
             "telegram_test_delivery": {
-                "enabled": True,
+                "enabled": telegram_enabled,
                 "status": telegram_status,
                 "targets": telegram_targets,
             },
             "email_delivery": {
-                "enabled": send_email,
+                "enabled": email_enabled,
                 "status": email_status,
                 "targets": email_targets,
             },
@@ -2191,16 +2260,25 @@ class CallsManualReportingOrchestrator:
         return candidate if priority.get(candidate, 0) >= priority.get(current, 0) else current
 
     @staticmethod
-    def _derive_overall_delivery_result(*, telegram_status: str, email_status: str) -> str:
+    def _derive_overall_delivery_result(
+        *,
+        telegram_status: str,
+        email_status: str,
+        telegram_enabled: bool,
+        email_enabled: bool,
+    ) -> str:
         """Derive one operator-facing delivery result from split channel states."""
-        if telegram_status == "failed":
-            return "blocked"
-        if telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", "not_started"}:
+        enabled_statuses = []
+        if telegram_enabled:
+            enabled_statuses.append(telegram_status)
+        if email_enabled:
+            enabled_statuses.append(email_status)
+        if not enabled_statuses:
+            return "skipped"
+        if any(status in {"failed", "blocked"} for status in enabled_statuses):
+            return "partial" if any(status in {"delivered", "sent"} for status in enabled_statuses) else "blocked"
+        if all(status in {"delivered", "sent", "skipped"} for status in enabled_statuses):
             return "sent"
-        if telegram_status == "delivered" and email_status == "failed":
-            return "partial"
-        if telegram_status == "blocked":
-            return "blocked"
         return "unknown"
 
     @staticmethod
@@ -2523,7 +2601,7 @@ class CallsManualReportingOrchestrator:
         filters: ReportRunFilters,
         mode: str,
         model_override: str | None,
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
         manager_daily_windows: list[ManagerDailyWindow],
     ) -> list[dict[str, Any]]:
         """Build bounded reports for the selected preset."""
@@ -2535,7 +2613,7 @@ class CallsManualReportingOrchestrator:
                 filters=filters,
                 mode=mode,
                 model_override=model_override,
-                send_email=send_email,
+                delivery_options=delivery_options,
                 windows=manager_daily_windows,
             )
         grouped_artifacts = self._group_artifacts_by_preset(
@@ -2551,7 +2629,7 @@ class CallsManualReportingOrchestrator:
                 filters=filters,
                 mode=mode,
                 model_override=model_override,
-                send_email=send_email,
+                delivery_options=delivery_options,
             )
             for group in grouped_artifacts
         ]
@@ -2565,7 +2643,7 @@ class CallsManualReportingOrchestrator:
         filters: ReportRunFilters,
         mode: str,
         model_override: str | None,
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
         windows: list[ManagerDailyWindow],
     ) -> list[dict[str, Any]]:
         """Build manager_daily groups through the bounded readiness decision layer."""
@@ -2581,7 +2659,7 @@ class CallsManualReportingOrchestrator:
                 filters=filters,
                 mode=mode,
                 model_override=model_override,
-                send_email=send_email,
+                delivery_options=delivery_options,
                 windows=windows,
             )
             for _, group in sorted(grouped.items())
@@ -2596,7 +2674,7 @@ class CallsManualReportingOrchestrator:
         filters: ReportRunFilters,
         mode: str,
         model_override: str | None,
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
         windows: list[ManagerDailyWindow],
     ) -> dict[str, Any]:
         """Choose full_report, signal_report, or skip_accumulate for one manager group."""
@@ -2644,7 +2722,7 @@ class CallsManualReportingOrchestrator:
                     preset=preset,
                     usable=usable,
                     payload=payload,
-                    send_email=send_email,
+                    delivery_options=delivery_options,
                     missing=missing,
                     readiness=readiness,
                 )
@@ -2655,7 +2733,7 @@ class CallsManualReportingOrchestrator:
             filters=filters,
             mode=mode,
             model_override=model_override,
-            send_email=send_email,
+            delivery_options=delivery_options,
             reason_codes=list(last_readiness["readiness_reason_codes"]),
             relevant_calls=last_readiness["relevant_calls"],
             ready_analyses=last_readiness["ready_analyses"],
@@ -2694,7 +2772,7 @@ class CallsManualReportingOrchestrator:
         filters: ReportRunFilters,
         mode: str,
         model_override: str | None,
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
     ) -> dict[str, Any]:
         """Build one normalized payload, render it, and optionally deliver it."""
         missing, usable = self._split_usable_artifacts(
@@ -2711,7 +2789,7 @@ class CallsManualReportingOrchestrator:
                     filters=filters,
                     mode=mode,
                     model_override=model_override,
-                    send_email=send_email,
+                    delivery_options=delivery_options,
                     reason_codes=["missing_artifacts", "insufficient_ready_artifacts"],
                     relevant_calls=len(artifacts),
                     ready_analyses=0,
@@ -2740,7 +2818,7 @@ class CallsManualReportingOrchestrator:
             preset=preset,
             usable=usable,
             payload=payload,
-            send_email=send_email,
+            delivery_options=delivery_options,
             missing=missing,
             readiness=None,
         )
@@ -2778,7 +2856,7 @@ class CallsManualReportingOrchestrator:
         preset: ReportPreset,
         usable: list[ReportArtifact],
         payload: dict[str, Any],
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
         missing: list[str],
         readiness: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -2787,7 +2865,8 @@ class CallsManualReportingOrchestrator:
             payload.setdefault("meta", {})["readiness"] = readiness
         manager_gate = None
         gate_failed = False
-        effective_send_email = send_email
+        effective_send_email = delivery_options.send_business_email
+        effective_send_telegram = delivery_options.send_telegram_test_delivery
         if preset.code == "manager_daily":
             manager_gate = _build_manager_facing_completeness_gate(
                 call_list=list(payload.get("call_list") or [])
@@ -2833,6 +2912,7 @@ class CallsManualReportingOrchestrator:
             "delivery": self.delivery.preview_report_delivery(
                 primary_email=primary_email,
                 cc_emails=cc_emails,
+                send_telegram_test_delivery=effective_send_telegram,
                 send_business_email=effective_send_email,
                 email_resolution_error=email_resolution_error,
             ),
@@ -2865,6 +2945,7 @@ class CallsManualReportingOrchestrator:
             template_meta=rendered.get("template"),
             artifact_meta=rendered.get("artifact"),
             send_business_email=effective_send_email,
+            send_telegram_test_delivery=effective_send_telegram,
             email_resolution_error=email_resolution_error,
             morning_card_text=rendered.get("morning_card_text"),
         )
@@ -2873,12 +2954,22 @@ class CallsManualReportingOrchestrator:
         transport = delivery.get("transport") or {}
         telegram_status = ((transport.get("telegram_test_delivery") or {}).get("status") or "").strip()
         email_status = ((transport.get("email_delivery") or {}).get("status") or "").strip()
+        telegram_enabled = bool((transport.get("telegram_test_delivery") or {}).get("enabled"))
+        email_enabled = bool((transport.get("email_delivery") or {}).get("enabled"))
+        delivery_result = self._derive_overall_delivery_result(
+            telegram_status=telegram_status,
+            email_status=email_status,
+            telegram_enabled=telegram_enabled,
+            email_enabled=email_enabled,
+        )
 
         if gate_failed:
             result["status"] = "review_required"
-        elif telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", ""}:
+        elif delivery_result == "sent":
             result["status"] = "delivered"
-        elif telegram_status == "delivered" and email_status == "failed":
+        elif delivery_result == "skipped":
+            result["status"] = "ready"
+        elif delivery_result == "partial":
             result["status"] = "partial"
         else:
             result["status"] = "blocked"
@@ -2905,7 +2996,7 @@ class CallsManualReportingOrchestrator:
         filters: ReportRunFilters,
         mode: str,
         model_override: str | None,
-        send_email: bool,
+        delivery_options: ReportDeliveryOptions,
         reason_codes: list[str],
         relevant_calls: int,
         ready_analyses: int,
@@ -2941,6 +3032,7 @@ class CallsManualReportingOrchestrator:
             template_meta=rendered.get("template"),
             artifact_meta=rendered.get("artifact"),
             send_business_email=False,
+            send_telegram_test_delivery=delivery_options.send_telegram_test_delivery,
             email_resolution_error=None,
             morning_card_text=rendered.get("morning_card_text"),
         )

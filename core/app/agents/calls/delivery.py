@@ -506,11 +506,18 @@ class CallsDelivery:
                     },
                 )
                 response.raise_for_status()
+                payload = response.json()
+            result = payload.get("result") if isinstance(payload, dict) else {}
+            if not isinstance(result, dict):
+                result = {}
+            document = result.get("document") if isinstance(result.get("document"), dict) else {}
             return {
                 "channel": "telegram",
                 "target": chat_id,
                 "status": "sent",
                 "artifact": filename,
+                "message_id": result.get("message_id"),
+                "document_id": document.get("file_id"),
             }
         except httpx.HTTPError as exc:
             raise DeliveryError(f"Telegram delivery failed: {exc}") from exc
@@ -598,20 +605,29 @@ class CallsDelivery:
         *,
         primary_email: str | None,
         cc_emails: list[str],
+        send_telegram_test_delivery: bool,
         send_business_email: bool,
         email_resolution_error: str | None = None,
     ) -> dict[str, Any]:
         """Return the effective operator-facing delivery preview for one report."""
+        telegram_enabled = bool(send_telegram_test_delivery)
+        telegram_ready = bool(settings.has_test_telegram_delivery)
         return {
             "mode": "split_operator_delivery",
             "telegram_test_delivery": {
-                "enabled": True,
+                "enabled": telegram_enabled,
                 "target": settings.test_delivery_telegram_chat_id or None,
-                "status": "planned" if settings.has_test_telegram_delivery else "failed",
+                "status": (
+                    "planned"
+                    if telegram_enabled and telegram_ready
+                    else "blocked"
+                    if telegram_enabled and not telegram_ready
+                    else "skipped"
+                ),
                 "error": (
                     None
-                    if settings.has_test_telegram_delivery
-                    else "Telegram test delivery is required for manual runs, but TEST_DELIVERY_TELEGRAM_CHAT_ID or TELEGRAM_BOT_TOKEN is not configured."
+                    if (not telegram_enabled) or telegram_ready
+                    else "Telegram test delivery is explicitly enabled, but TEST_DELIVERY_TELEGRAM_CHAT_ID or TELEGRAM_BOT_TOKEN is not configured."
                 ),
             },
             "email_delivery": {
@@ -648,11 +664,13 @@ class CallsDelivery:
         artifact_meta: dict[str, Any] | None = None,
         email_resolution_error: str | None = None,
         morning_card_text: str | None = None,
+        send_telegram_test_delivery: bool = False,
     ) -> dict[str, Any]:
-        """Deliver one operator report via mandatory Telegram test channel plus optional business email."""
+        """Deliver one operator report through explicitly enabled channels."""
         preview = self.preview_report_delivery(
             primary_email=primary_email,
             cc_emails=cc_emails,
+            send_telegram_test_delivery=send_telegram_test_delivery,
             send_business_email=send_business_email,
             email_resolution_error=email_resolution_error,
         )
@@ -670,36 +688,41 @@ class CallsDelivery:
                     f"Resolved email: {primary_email or 'not available'}",
                 ]
             )
-        try:
-            if not settings.has_test_telegram_delivery:
-                raise DeliveryError(
-                    "Telegram test delivery is required for manual runs, but TEST_DELIVERY_TELEGRAM_CHAT_ID or TELEGRAM_BOT_TOKEN is not configured."
+        if send_telegram_test_delivery:
+            try:
+                if not settings.has_test_telegram_delivery:
+                    raise DeliveryError(
+                        "Telegram test delivery is explicitly enabled, but TEST_DELIVERY_TELEGRAM_CHAT_ID or TELEGRAM_BOT_TOKEN is not configured."
+                    )
+                telegram_delivery = self.send_telegram_document(
+                    chat_id=settings.test_delivery_telegram_chat_id,
+                    filename=pdf_filename,
+                    content=pdf_bytes,
+                    caption=telegram_caption,
                 )
-            telegram_delivery = self.send_telegram_document(
-                chat_id=settings.test_delivery_telegram_chat_id,
-                filename=pdf_filename,
-                content=pdf_bytes,
-                caption=telegram_caption,
-            )
-            telegram_state.update(
-                {
-                    "status": "delivered",
-                    "artifact": pdf_filename,
-                }
-            )
-            targets.append(telegram_delivery)
-            self.logger.info(
-                "delivery.report_telegram_sent",
-                telegram_chat_id=settings.test_delivery_telegram_chat_id,
-                resolved_primary_email=primary_email,
-                resolved_cc_emails=cc_emails,
-                artifact_type=(artifact_meta or {}).get("media_type"),
-                generator_path=(artifact_meta or {}).get("generator_path"),
-                conversion_path=(artifact_meta or {}).get("conversion_path"),
-                conversion_status=(artifact_meta or {}).get("conversion_status"),
-            )
-        except DeliveryError as exc:
-            telegram_state.update({"status": "failed", "error": str(exc)})
+                telegram_state.update(
+                    {
+                        "status": "delivered",
+                        "artifact": pdf_filename,
+                        "message_id": telegram_delivery.get("message_id"),
+                        "document_id": telegram_delivery.get("document_id"),
+                    }
+                )
+                targets.append(telegram_delivery)
+                self.logger.info(
+                    "delivery.report_telegram_sent",
+                    telegram_chat_id=settings.test_delivery_telegram_chat_id,
+                    resolved_primary_email=primary_email,
+                    resolved_cc_emails=cc_emails,
+                    artifact_type=(artifact_meta or {}).get("media_type"),
+                    generator_path=(artifact_meta or {}).get("generator_path"),
+                    conversion_path=(artifact_meta or {}).get("conversion_path"),
+                    conversion_status=(artifact_meta or {}).get("conversion_status"),
+                )
+            except DeliveryError as exc:
+                telegram_state.update({"status": "failed", "error": str(exc)})
+        else:
+            telegram_state.update({"status": "skipped", "error": None})
 
         if send_business_email:
             if email_resolution_error:

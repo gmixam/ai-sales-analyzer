@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -41,6 +42,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     build_manager_daily_payload,
     build_rop_weekly_payload,
     render_report_email,
+    resolve_report_delivery_options,
     resolve_report_preset,
 )
 from app.agents.calls.report_templates import build_report_render_model  # noqa: E402
@@ -1539,7 +1541,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(send_telegram_test=True),
         )
 
         self.assertEqual(result["status"], "missing_artifacts")
@@ -1597,10 +1599,10 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=True,
+            delivery_options=resolve_report_delivery_options(send_email=True, send_telegram_test=True),
         )
 
-        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["status"], "partial")
         self.assertIn("recipient is not resolvable", result["errors"][-1])
         self.assertEqual(result["delivery"]["transport"]["telegram_test_delivery"]["status"], "delivered")
         self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "blocked")
@@ -1657,7 +1659,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=True,
+            delivery_options=resolve_report_delivery_options(send_email=True, send_telegram_test=True),
         )
 
         self.assertEqual(result["status"], "delivered")
@@ -1737,7 +1739,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=True,
+            delivery_options=resolve_report_delivery_options(send_email=True, send_telegram_test=True),
         )
 
         self.assertEqual(result["status"], "review_required")
@@ -1794,7 +1796,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=True,
+            delivery_options=resolve_report_delivery_options(send_email=True, send_telegram_test=True),
         )
 
         self.assertEqual(result["status"], "partial")
@@ -1826,15 +1828,15 @@ class ManualReportingStatusTests(unittest.TestCase):
         orchestrator.delivery = SimpleNamespace(
             preview_report_delivery=lambda **kwargs: {
                 "mode": "split_operator_delivery",
-                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "telegram_test_delivery": {"enabled": False, "status": "skipped", "target": "74665909"},
                 "email_delivery": {"enabled": False, "status": "skipped", "primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
                 "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
             },
             deliver_operator_report=lambda **kwargs: {
-                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "targets": [],
                 "transport": {
                     "mode": "split_operator_delivery",
-                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "telegram_test_delivery": {"enabled": False, "status": "skipped", "target": "74665909"},
                     "email_delivery": {"enabled": False, "status": "skipped"},
                     "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
                 },
@@ -1849,10 +1851,11 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(),
         )
 
-        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["delivery"]["transport"]["telegram_test_delivery"]["status"], "skipped")
         self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "skipped")
 
     def test_manager_daily_group_result_returns_full_report_when_day_is_ready(self) -> None:
@@ -1909,7 +1912,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(send_telegram_test=True),
             windows=CallsManualReportingOrchestrator._build_manager_daily_windows(anchor_day="2026-03-25"),
         )
 
@@ -2019,7 +2022,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(send_telegram_test=True),
             windows=CallsManualReportingOrchestrator._build_manager_daily_windows(anchor_day="2026-03-25"),
         )
 
@@ -2137,7 +2140,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(send_telegram_test=True),
             windows=CallsManualReportingOrchestrator._build_manager_daily_windows(anchor_day="2026-03-25"),
         )
 
@@ -2175,7 +2178,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             ),
             mode="report_from_ready_data_only",
             model_override=None,
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(send_telegram_test=True),
             reason_codes=["no_interactions_for_selected_filters"],
             relevant_calls=0,
             ready_analyses=0,
@@ -2210,7 +2213,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
             source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
             mode="build_missing_and_report",
-            send_email=True,
+            delivery_options=resolve_report_delivery_options(send_email=True, send_telegram_test=True),
             selected_interactions_count=2,
             build_summary={
                 "transcripts_built": 1,
@@ -2286,7 +2289,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
             source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
             mode="report_from_ready_data_only",
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(),
             selected_interactions_count=0,
             build_summary={
                 "transcripts_built": 0,
@@ -2325,7 +2328,7 @@ class ManualReportingStatusTests(unittest.TestCase):
             period={"date_from": "2026-03-20", "date_to": "2026-03-26"},
             source_period={"date_from": "2026-03-20", "date_to": "2026-03-26"},
             mode="build_missing_and_report",
-            send_email=False,
+            delivery_options=resolve_report_delivery_options(),
             selected_interactions_count=2,
             build_summary={
                 "transcripts_built": 0,
@@ -2816,7 +2819,12 @@ class ManualReportingStatusTests(unittest.TestCase):
 
 
 class ManualReportingDeliveryModeTests(unittest.TestCase):
-    def test_operator_report_delivery_always_sends_telegram_and_skips_email_when_disabled(self) -> None:
+    def _deliver_report_with_modes(
+        self,
+        *,
+        send_telegram_test_delivery: bool,
+        send_business_email: bool,
+    ) -> tuple[dict[str, Any], Any, Any]:
         delivery = object.__new__(CallsDelivery)
         delivery.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
@@ -2831,8 +2839,22 @@ class ManualReportingDeliveryModeTests(unittest.TestCase):
             with patch.object(
                 CallsDelivery,
                 "send_telegram_document",
-                return_value={"channel": "telegram", "target": "74665909", "status": "sent"},
-            ) as send_telegram_document:
+                return_value={
+                    "channel": "telegram",
+                    "target": "74665909",
+                    "status": "sent",
+                    "message_id": 101,
+                    "document_id": "doc-101",
+                },
+            ) as send_telegram_document, patch.object(
+                CallsDelivery,
+                "deliver_report_email",
+                return_value={
+                    "targets": [{"channel": "email", "target": "elmira@example.com", "status": "sent"}],
+                    "subject": "Weekly report",
+                    "preview": "Body",
+                },
+            ) as deliver_report_email:
                 result = CallsDelivery.deliver_operator_report(
                     delivery,
                     primary_email="elmira@example.com",
@@ -2843,16 +2865,63 @@ class ManualReportingDeliveryModeTests(unittest.TestCase):
                     pdf_bytes=b"%PDF-test",
                     pdf_filename="weekly_report_v1.pdf",
                     template_meta={"template_id": "rop_weekly_template_v1", "version": "rop_weekly_template_v1"},
-                    send_business_email=False,
+                    send_business_email=send_business_email,
+                    send_telegram_test_delivery=send_telegram_test_delivery,
                 )
+        return result, send_telegram_document, deliver_report_email
+
+    def test_operator_report_no_delivery_preview_skips_telegram_and_email(self) -> None:
+        result, send_telegram_document, deliver_report_email = self._deliver_report_with_modes(
+            send_telegram_test_delivery=False,
+            send_business_email=False,
+        )
+
+        send_telegram_document.assert_not_called()
+        deliver_report_email.assert_not_called()
+        self.assertEqual(result["targets"], [])
+        self.assertEqual(result["transport"]["telegram_test_delivery"]["status"], "skipped")
+        self.assertEqual(result["transport"]["email_delivery"]["status"], "skipped")
+        self.assertEqual(result["artifact"]["filename"], "weekly_report_v1.pdf")
+
+    def test_operator_report_telegram_test_only_sends_telegram_and_skips_email(self) -> None:
+        result, send_telegram_document, deliver_report_email = self._deliver_report_with_modes(
+            send_telegram_test_delivery=True,
+            send_business_email=False,
+        )
 
         send_telegram_document.assert_called_once()
+        deliver_report_email.assert_not_called()
         self.assertEqual(result["targets"][0]["channel"], "telegram")
         self.assertEqual(result["transport"]["mode"], "split_operator_delivery")
         self.assertEqual(result["transport"]["telegram_test_delivery"]["status"], "delivered")
+        self.assertEqual(result["transport"]["telegram_test_delivery"]["message_id"], 101)
         self.assertEqual(result["transport"]["email_delivery"]["status"], "skipped")
         self.assertEqual(result["transport"]["resolved_email"]["primary_email"], "elmira@example.com")
         self.assertEqual(result["artifact"]["filename"], "weekly_report_v1.pdf")
+
+    def test_operator_report_business_email_only_sends_email_and_skips_telegram(self) -> None:
+        result, send_telegram_document, deliver_report_email = self._deliver_report_with_modes(
+            send_telegram_test_delivery=False,
+            send_business_email=True,
+        )
+
+        send_telegram_document.assert_not_called()
+        deliver_report_email.assert_called_once()
+        self.assertEqual(result["targets"][0]["channel"], "email")
+        self.assertEqual(result["transport"]["telegram_test_delivery"]["status"], "skipped")
+        self.assertEqual(result["transport"]["email_delivery"]["status"], "delivered")
+
+    def test_operator_report_telegram_and_email_sends_both_channels(self) -> None:
+        result, send_telegram_document, deliver_report_email = self._deliver_report_with_modes(
+            send_telegram_test_delivery=True,
+            send_business_email=True,
+        )
+
+        send_telegram_document.assert_called_once()
+        deliver_report_email.assert_called_once()
+        self.assertEqual([target["channel"] for target in result["targets"]], ["telegram", "email"])
+        self.assertEqual(result["transport"]["telegram_test_delivery"]["status"], "delivered")
+        self.assertEqual(result["transport"]["email_delivery"]["status"], "delivered")
 
 
 class OnlinePBXIntakeUrlTests(unittest.TestCase):

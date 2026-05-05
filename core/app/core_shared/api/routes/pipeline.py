@@ -119,7 +119,9 @@ class RunManualReportRequest(BaseModel):
     min_duration_sec: int | None = None
     max_duration_sec: int | None = None
     model: str | None = None
-    send_email: bool = True
+    send_email: bool = False
+    delivery_mode: str | None = None
+    send_telegram_test: bool = False
     force_retry_quota_blocked: bool = False
 
 
@@ -521,6 +523,8 @@ async def run_calls_report_manual(request: RunManualReportRequest) -> dict:
                 ),
                 model_override=request.model,
                 send_email=request.send_email,
+                delivery_mode=request.delivery_mode,
+                send_telegram_test=request.send_telegram_test,
             )
     except ASAError as exc:
         detail = f"{exc.__class__.__name__}: {exc}"

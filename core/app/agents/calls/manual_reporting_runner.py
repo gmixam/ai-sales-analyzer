@@ -6,7 +6,11 @@ import argparse
 import asyncio
 import json
 
-from app.agents.calls.reporting import CallsManualReportingOrchestrator, ReportRunFilters
+from app.agents.calls.reporting import (
+    REPORT_DELIVERY_MODES,
+    CallsManualReportingOrchestrator,
+    ReportRunFilters,
+)
 from app.core_shared.db.session import get_db
 
 
@@ -41,7 +45,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-delivery",
         action="store_true",
-        help="Build payloads and previews without sending email.",
+        help="Build/render artifacts without Telegram or business email delivery.",
+    )
+    parser.add_argument(
+        "--delivery-mode",
+        choices=tuple(sorted(REPORT_DELIVERY_MODES)),
+        help="Explicit delivery mode. Defaults to preview_only unless a legacy channel flag is set.",
+    )
+    parser.add_argument(
+        "--telegram-test-delivery",
+        action="store_true",
+        help="Explicitly send rendered artifacts to the configured operator Telegram test chat.",
+    )
+    parser.add_argument(
+        "--send-business-email",
+        action="store_true",
+        help="Explicitly send rendered artifacts to resolved business email recipients.",
     )
     return parser
 
@@ -61,12 +80,15 @@ async def _run(args: argparse.Namespace) -> dict:
             max_duration_sec=args.max_duration_sec,
             force_retry_quota_blocked=args.force_retry_quota_blocked,
         )
+        delivery_mode = "preview_only" if args.no_delivery else args.delivery_mode
         return await orchestrator.run_report(
             preset_code=args.preset,
             mode=args.mode,
             filters=filters,
             model_override=args.model,
-            send_email=not args.no_delivery,
+            send_email=args.send_business_email,
+            delivery_mode=delivery_mode,
+            send_telegram_test=args.telegram_test_delivery,
         )
 
 

@@ -928,6 +928,31 @@ Evidence:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8P Closure: Safe Delivery Semantics + Telegram Test Send
+
+**Дата:** 2026-05-05
+
+**Scope:** bounded delivery-semantics hardening for ordinary `manager_daily` report path plus test Telegram delivery of the already verified Step 8O PDFs. No analyzer prompt/STT/LLM/build/scoring/eligibility/selection/rolling-window/report-content/`rop_weekly`/scheduler changes.
+
+**Implemented delivery matrix:**
+- `preview_only` / `--no-delivery`: no Telegram, no business email, artifact/render allowed.
+- `telegram_test_only`: Telegram test delivery only.
+- `business_email_only`: business email only.
+- `telegram_and_email`: both explicitly enabled channels.
+
+**Safety rules:**
+- `send_email=false` no longer enables Telegram by side effect.
+- Telegram test delivery requires explicit flag/mode.
+- Business email requires explicit flag/mode.
+- Incomplete / `review_required` `manager_daily` keeps business email forced off; Telegram operator preview is allowed only when explicitly enabled.
+
+**Result:**
+- Delivery semantics follow-up from Step 8M/8N/8O is closed.
+- Step 8O PDFs for Эльмира, Тимур, and Толеген (`2026-05-04`) were sent to the configured test/operator Telegram chat.
+- Business email was not sent; `build_missing`, STT, and LLM were not run.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

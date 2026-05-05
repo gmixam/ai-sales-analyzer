@@ -431,6 +431,7 @@
 - **Decision:** The remaining blocker is explicitly external: billable quota / balance access for those two keys.
 - **Decision:** Until the user confirms the balance top-up, full closure verification is not complete and must not be misrepresented as closed.
 - **Decision:** After user confirmation about top-up, only one bounded rerun is allowed for final closure verification: `manager_daily/build_missing_and_report` on the already fixed live case `department=472cda28-ce71-494c-9068-25d3ffbf7399`, `manager=09cae83f-7ac1-4ee0-b1d5-3a76c8053c3f`, `extension=322`, `period=2026-04-06`, with always-on Telegram test delivery and business email off.
+- **Superseded note:** Step 8P / ADR-049 replaces the always-on Telegram wording with explicit `telegram_test_only` delivery.
 - **Reason:** Repo docs must separate the last external billing dependency from code/runtime scope, so the team can close `Pilot Ready` immediately after one successful rerun instead of reopening architecture or broad reporting work.
 - **Scope:** No billing workaround in code, no `Business-ready Report Pack`, no full report mechanism upgrade, no scheduler/retries/beat/automation, and no broad analyzer redesign.
 - **Date:** 2026-04-15
@@ -492,3 +493,12 @@
 - **Reason:** The approved docx report is already the reliable business-facing standard for structure and style, while maintaining exact parity with a separate runtime PDF renderer has repeatedly created integration drag. Docx-first delivery preserves one canonical format source and still keeps PDF as the delivered artifact.
 - **Scope:** This is a bounded `manager_daily` delivery/runtime standard only. It does not redesign the report format, does not change analyzer contracts, does not switch delivery to raw docx, and does not introduce a broader document platform or scheduler redesign.
 - **Date:** 2026-04-23
+
+## ADR-049: Manual report delivery channels are explicit and opt-in
+- **Decision:** Manual report delivery must resolve to one explicit mode: `preview_only`, `telegram_test_only`, `business_email_only`, or `telegram_and_email`.
+- **Decision:** `--no-delivery` / `preview_only` means no Telegram and no business email while artifact/render generation remains allowed.
+- **Decision:** Telegram test delivery is allowed only when explicitly enabled by delivery mode or operator flag. `send_email=false` must not enable Telegram by side effect.
+- **Decision:** Business email delivery is allowed only when explicitly enabled. For incomplete / `review_required` `manager_daily`, business email remains forced off regardless of requested mode; Telegram operator preview remains possible only when explicitly enabled.
+- **Reason:** Step 8O proved manager-ready artifacts through a safe render-only path, but the older always-on Telegram test behavior made `--no-delivery` ambiguous and risky. Explicit channel selection keeps preview/report generation usable without accidental external delivery.
+- **Scope:** This changes delivery semantics only. It does not change analyzer prompts, STT/LLM/build logic, scoring, eligibility, selection model, rolling window, report content, `rop_weekly`, or scheduler behavior.
+- **Date:** 2026-05-05

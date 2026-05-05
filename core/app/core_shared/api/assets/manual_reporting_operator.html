@@ -717,7 +717,11 @@
             </div>
 
             <div class="field full">
-              <label>Email Delivery</label>
+              <label>Delivery</label>
+              <div class="checkbox">
+                <input id="send-telegram-test" name="send_telegram_test" type="checkbox">
+                <label for="send-telegram-test">Send to Telegram test chat</label>
+              </div>
               <div class="checkbox">
                 <input id="send-email" name="send_email" type="checkbox">
                 <label for="send-email">Send business email to manager / ROP</label>
@@ -758,7 +762,7 @@
           </div>
 
           <p class="note" id="form-note">
-            Список менеджеров берётся из локального Bitrix-synced справочника. Telegram test delivery выполняется всегда.
+            Список менеджеров берётся из локального Bitrix-synced справочника. Delivery channels are opt-in.
           </p>
         </form>
       </article>
@@ -977,6 +981,7 @@
     const extensionEl = document.getElementById("extension");
     const dateFromEl = document.getElementById("date-from");
     const dateToEl = document.getElementById("date-to");
+    const sendTelegramTestEl = document.getElementById("send-telegram-test");
     const sendEmailEl = document.getElementById("send-email");
     const previewSummaryEl = document.getElementById("preview-summary");
     const previewGroupsEl = document.getElementById("preview-groups");
@@ -1148,6 +1153,7 @@
         manager_extensions: Array.from(extensionEl.selectedOptions).map((item) => item.value).filter(Boolean),
         min_duration_sec: document.getElementById("min-duration").value || null,
         max_duration_sec: document.getElementById("max-duration").value || null,
+        send_telegram_test: sendTelegramTestEl.checked,
         send_email: sendEmailEl.checked,
       };
       return payload;
@@ -2130,16 +2136,16 @@
     function renderDeliveryMode() {
       const delivery = uiContext.operator_delivery || {};
       const scheduled = uiContext.scheduled_reviewable_reporting || {};
-      const transport = delivery.mode === "telegram_test"
-        ? `Telegram test delivery always-on → chat ${delivery.telegram_chat_id}`
-        : "Telegram test delivery should be always-on, but runtime chat is not configured";
+      const transport = delivery.telegram_chat_id
+        ? `Telegram test delivery opt-in → chat ${delivery.telegram_chat_id}`
+        : "Telegram test delivery opt-in; runtime chat is not configured";
       document.getElementById("delivery-mode-note").innerHTML = `
         Минимальный операторский интерфейс для ручного запуска <code>manager_daily</code> и
         <code>rop_weekly</code>. Режим доставки: <strong>${transport}</strong>.
       `;
       document.getElementById("form-note").innerHTML = `
         Список менеджеров из локального Bitrix-synced справочника. Нажмите <code>Refresh Local Managers</code> для актуализации.
-        Email delivery управляется checkbox выше. Если выбрать и менеджеров, и extensions, backend применит пересечение фильтров.
+        Telegram test delivery и business email включаются только checkbox выше. Если выбрать и менеджеров, и extensions, backend применит пересечение фильтров.
       `;
       if (scheduled.available === false) {
         document.getElementById("schedule-form-note").textContent =

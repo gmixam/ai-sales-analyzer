@@ -61,8 +61,8 @@
 - `rop_weekly` manual persisted-only aggregation;
 - bounded `scheduled_reviewable_reporting` with review-required draft in operator UI;
 - existing readiness / reuse / PDF rendering rules;
-- always-on Telegram test delivery;
-- optional business email delivery через existing toggle.
+- explicit opt-in Telegram test delivery;
+- explicit opt-in business email delivery.
 
 ### Pilot scope out
 
@@ -106,13 +106,13 @@
 
 ### Delivery success rule
 
-- Telegram test delivery is always attempted for every manual run;
-- business email toggle controls only business email delivery and defaults to `off`;
+- default `preview_only` / `--no-delivery` builds the artifact/render preview without Telegram and without business email;
+- Telegram test delivery is attempted only when explicitly enabled;
+- business email delivery is attempted only when explicitly enabled and remains forced off for incomplete / `review_required` manager-facing reports;
 - for `scheduled_reviewable_reporting`, automatic generation stops at `review_required` and does not auto-send business email;
 - business delivery on scheduled runs is counted only after explicit operator approve;
-- pilot delivery is counted as successful when the final PDF artifact is built and `telegram_test_delivery=delivered`;
-- if `send_email=true`, business email delivery is tracked separately and does not replace Telegram test delivery;
-- if Telegram delivery is not delivered, pilot delivery is not successful even when business email is enabled.
+- pilot preview success is counted by final PDF artifact availability; delivery-channel success is tracked separately per enabled channel;
+- if both Telegram and business email are enabled, partial channel failures are reported as structured delivery state and do not hide the built artifact.
 
 ### Segmentation rule for call types
 
@@ -183,7 +183,7 @@ After the user confirms the balance top-up, repeat exactly one bounded rerun:
 - manager = `09cae83f-7ac1-4ee0-b1d5-3a76c8053c3f`
 - extension = `322`
 - period = `2026-04-06`
-- delivery mode = always-on Telegram test delivery, business email `off`
+- delivery mode = explicit `telegram_test_only`, business email `off`
 
 This single rerun must confirm in one pass:
 - source discovery
@@ -424,13 +424,15 @@ Readiness проверяется последовательно:
 Для этого шага delivery:
 - baseline contract остаётся `email`-oriented с resolved primary recipient + monitoring copy;
 - для current operator manual run фактическая semantics split-channel:
-  - Telegram test delivery в `TEST_DELIVERY_TELEGRAM_CHAT_ID` выполняется всегда;
-  - business email delivery управляется отдельным operator toggle и по умолчанию выключена;
+  - `preview_only` / `--no-delivery`: no Telegram, no business email, artifact/render allowed;
+  - `telegram_test_only`: Telegram test delivery в `TEST_DELIVERY_TELEGRAM_CHAT_ID`, no business email;
+  - `business_email_only`: no Telegram, business email to resolved recipients;
+  - `telegram_and_email`: both explicitly enabled channels;
 - основной operator artifact теперь `PDF report`, построенный из active versioned template asset;
 - resolved email recipients при этом всё равно вычисляются и показываются в preview / run result как reference;
-- если operator включил email delivery, тогда поверх always-on Telegram идёт ещё и email to business recipients;
+- если `manager_daily` report имеет `review_required` / incomplete gate, business email delivery is forced off; Telegram operator preview remains possible only when explicitly enabled;
 - Telegram test delivery отправляет именно итоговый PDF document, а не text-only dump;
-- если Telegram delivery не удался, это возвращается как structured delivery status/reason, а не traceback.
+- если enabled delivery channel не удался, это возвращается как structured delivery status/reason, а не traceback.
 
 Источник адресатов:
 - email менеджера берётся из карточки сотрудника в Bitrix;
@@ -453,6 +455,7 @@ Readiness проверяется последовательно:
 На 2026-03-27 повторная live delivery validation всё ещё не подтвердила `delivered`: текущий runtime доходит до SMTP login и правильно резолвит primary recipient + monitoring copy, но сам SMTP login в этой среде продолжает отвечать `535`, поэтому фактический happy path остаётся зависимым от отдельного operational credentials fix, а не от reporting code path.
 На 2026-03-27 после переключения runtime на `smtp.mail.ru:587` delivered happy path был подтверждён и для CLI, и для API; первый операторский web UI использует тот же delivery path без отдельного frontend-приложения и без смены backend execution contract.
 На 2026-03-27 после задания `TEST_DELIVERY_TELEGRAM_CHAT_ID` live operator run подтвердил always-on Telegram test delivery semantics: `manager_daily` и `rop_weekly` manual runs с `send_email=false` всё равно возвращают `delivered` через target `telegram:74665909`, а resolved business recipients сохраняются в response как reference/fallback metadata для optional email channel.
+На 2026-05-05 Step 8P superseded always-on Telegram semantics: `send_email=false` / `--no-delivery` больше не включает Telegram, а Telegram test delivery требует explicit `telegram_test_only` / `telegram_and_email` или equivalent operator flag.
 На 2026-03-30 active standard template versions были зафиксированы как `manager_daily_template_v1` и `rop_weekly_template_v1`; live API smoke подтвердил для обоих preset’ов, что operator run возвращает final `artifact{kind=pdf_report, template_version=manager_daily_template_v1|rop_weekly_template_v1}` и доставляет в Telegram именно `.pdf` document (`manager_daily_*_manager_daily_template_v1.pdf`, `rop_weekly_*_rop_weekly_template_v1.pdf`).
 На 2026-03-30 `manager_daily_template_v1` дополнительно адаптирован прямо от approved HTML reference asset `docs/report_templates/reference/manager_daily_reference_html`: runtime filling теперь держит reference composition (hero, tiles, summary box, signal/focus banners, review grid, recommendation cards, outcomes table, dynamics, memo) и убирает reader-facing service traces вроде raw `not available`, `Note:` и template/debug lines из final report artifact.
 На 2026-03-30 corrective visual polish для `manager_daily_template_v1` довёл именно PDF renderer до той же логики композиции: first page теперь собирается как оформленный manager report, `РЕКОМЕНДАЦИИ` остаются карточными даже при скромных данных, `ИТОГИ ЗВОНКОВ` сохраняют table-based presentation со статусной дифференциацией, а fallback states в `РАЗБОР` и `КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ` формулируются редакторски, без ощущения технической заглушки.
@@ -520,7 +523,7 @@ Readiness проверяется последовательно:
 - UI semantics текущего operator page:
   - checkbox относится только к business email delivery;
   - default state = off;
-  - рядом с формой явно показано, что Telegram test delivery выполняется всегда для manual runs.
+  - Telegram test delivery must be exposed as explicit operator action, not an implicit side effect of `send_email=false` or `--no-delivery`.
 
 ## Reuse already-built artifacts
 
