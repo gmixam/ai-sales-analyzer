@@ -810,6 +810,37 @@ Artifacts generated locally without delivery:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8K Closure: Source Audio 404 Recovery Audit
+
+**Дата:** 2026-05-05
+
+**Scope:** forensic/read-only source-audio audit and one audio-only probe. No Step 8I gate changes, no analyzer/STT/LLM/scoring/eligibility/selection/rolling/renderer/delivery/`rop_weekly`/scheduler changes.
+
+**Root cause classification:** `expired URL`.
+
+Evidence:
+- The 9 remaining Эльмира/Тимур `Без транскрипта` calls have persisted `raw_ref`, but `raw_ref` is a direct OnlinePBX `api2.onlinepbx.ru/calls-records/download/.../rec.mp3` URL.
+- Old URL probes returned HTTP `404` with body `KEY_IS_EXPIRED`.
+- Each row still has canonical OnlinePBX uuid in `interactions.external_id` and `metadata.external_call_code`.
+- `get_cdr_list("2026-05-04")` still finds all 9 calls by uuid.
+- Current CDR records do not include `record_url`, but `get_recording_url(uuid)` successfully returns a fresh download URL for all 9 calls.
+- One-call audio-only probe on `98aa9872-5406-4eef-9c0b-30f44175b3a9` downloaded a fresh `audio/mpeg` MP3 (`368208` bytes), then deleted the temp file; no STT/LLM or DB mutation was performed.
+
+**Code-path finding:**
+- Persisted `raw_ref` is an expiring direct URL.
+- Canonical OnlinePBX uuid is preserved separately.
+- `_prepare_artifacts()` uses `interaction.raw_ref` as-is and does not refresh expired URLs before `CallsExtractor.download_and_extract()`.
+- Full source-aware report-run can re-resolve recording URLs during source discovery for targeted records, but exact-ID controlled build bypassed that prelude.
+
+**Next bounded implementation task:**
+- Add `source_audio_url_refresh` before transcript build for OnlinePBX calls:
+  - when `raw_ref` is missing or known-expired, use `interaction.external_id` / `metadata.external_call_code` with `OnlinePBXIntake.get_recording_url(uuid)`;
+  - update only selected interactions in bounded mode;
+  - after refresh, run a 1-call controlled build first;
+  - if lookup fails, return/persist operator-facing `source_audio_unavailable` diagnostic and keep manager-facing completeness gate blocking until operator review.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
