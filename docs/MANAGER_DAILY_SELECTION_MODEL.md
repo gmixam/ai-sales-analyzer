@@ -175,19 +175,20 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 
 ### Счётчики в итоговом блоке ИТОГ ДНЯ
 
-Итоговая таблица (ЗВОНКОВ / ДОГОВОРЁННОСТЬ / ПЕРЕНОС / ОТКАЗ / ОТКРЫТ / ТЕХ/СЕРВИС / НЕ КЛАСС.) считается по **`meaningful_calls`** report-day, а не по `coaching_core`.
+Итоговая таблица (ЗВОНКОВ / ДОГОВОРЁННОСТЬ / ПЕРЕНОС / ОТКАЗ / ОТКРЫТ / ТЕХ/СЕРВИС / БЕЗ РАЗБОРА) считается по **`meaningful_calls`** report-day, а не по `coaching_core`.
 
 Это позволяет показать реальный операционный результат дня, а не только аналитическое подмножество.
 
 **Источник данных в коде:**
 - `payload.call_outcomes_summary` строится из `operational_meaningful_artifacts` — report-day meaningful calls (тот же источник, что и `call_list`).
-- Звонки без анализа (`analysis is None`) считаются как `unclassified_count`, а не как `open`.
-- Колонка `НЕ КЛАСС.` показывается только если `unclassified_count > 0`.
-- Сумма всех категорий (включая НЕ КЛАСС.) обязана равняться `meaningful_calls_total`.
+- Звонки без готового reusable разбора (`status is None`) считаются как `unclassified_count`, а не как `open`.
+- Колонка `БЕЗ РАЗБОРА` показывается только если `unclassified_count > 0`.
+- `call_outcomes_summary.unclassified_by_bucket` разделяет manager-facing причины: `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Нет итога`, `Нет классификации`, `Без разбора`.
+- Сумма всех категорий (включая `БЕЗ РАЗБОРА`) обязана равняться `meaningful_calls_total`.
 
 **`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
 
-**`ДЕНЬГИ НА СТОЛЕ`** использует тот же `call_outcomes_summary` (agreed + open + rescheduled из report-day meaningful). Если все три = 0, показывается `Данных для данного раздела недостаточно.`.
+**`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
 
 ---
 

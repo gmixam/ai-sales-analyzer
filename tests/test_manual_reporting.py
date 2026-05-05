@@ -1186,6 +1186,148 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(unclassified[0]["unclassified_reason_code"], "analysis_not_reusable")
         self.assertEqual(unclassified[0]["unclassified_reason_label"], "Анализ не проходит reuse-проверку")
 
+    def test_unclassified_manager_buckets_are_added_to_call_list(self) -> None:
+        """Step 8G: diagnostic reasons get manager-facing status buckets."""
+        ready = _artifact(82.0, "strong")
+        no_transcript_interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        no_transcript_interaction.raw_ref = "onlinepbx://audio.wav"
+        no_transcript = ReportArtifact(
+            interaction=no_transcript_interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        no_analysis = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет анализа.",
+                call_date="2026-03-25 12:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+        )
+        rejected = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        non_reusable = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, но звонок не подходит для разбора.",
+                call_date="2026-03-25 13:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T13:00:00").replace(tzinfo=UTC),
+            original_analysis=rejected,
+            analysis_reuse_reason="semantic_empty:not_coachable_or_reportable",
+        )
+        failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        failed.is_failed = True
+        analysis_failed = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, analysis упал.",
+                call_date="2026-03-25 14:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T14:00:00").replace(tzinfo=UTC),
+            original_analysis=failed,
+            analysis_reuse_reason="contract_validation_error",
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, no_transcript, no_analysis, non_reusable, analysis_failed])
+        buckets = {
+            row["unclassified_reason_code"]: row["unclassified_status_label"]
+            for row in rows
+            if row["status"] is None
+        }
+
+        self.assertEqual(buckets["no_transcript"], "Без транскрипта")
+        self.assertEqual(buckets["no_analysis"], "Без анализа")
+        self.assertEqual(buckets["not_coachable_or_reportable"], "Не подходит для разбора")
+        self.assertEqual(buckets["analysis_failed"], "Ошибка анализа")
+
+    def test_day_summary_uses_without_breakdown_bucket_and_preserves_total(self) -> None:
+        """Step 8G: dashboard keeps arithmetic while replacing НЕ КЛАСС. with a breakdown."""
+        ready = _artifact(82.0, "strong")
+        missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет анализа.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        rejected = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        non_reusable = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, но звонок не подходит для разбора.",
+                call_date="2026-03-25 12:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+            original_analysis=rejected,
+            analysis_reuse_reason="not_coachable_or_reportable",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, missing, non_reusable],
+        )
+        report = build_report_render_model(payload)
+        day_summary = {section["id"]: section for section in report["sections"]}["day_summary"]
+        labels = [item["label"] for item in day_summary["outcome_cols"]]
+        values = [int(item["value"]) for item in day_summary["outcome_cols"]]
+
+        self.assertIn("БЕЗ РАЗБОРА", labels)
+        self.assertNotIn("НЕ КЛАСС.", labels)
+        self.assertIn("1 без анализа", day_summary["breakdown_note"])
+        self.assertIn("1 не подходит для разбора", day_summary["breakdown_note"])
+        self.assertEqual(sum(values[1:]), payload["selection_model"]["meaningful_calls_total"])
+
+    def test_call_list_render_status_matches_unclassified_bucket(self) -> None:
+        """Step 8G: СПИСОК ЗВОНКОВ ДНЯ shows concrete bucket, not generic gray status."""
+        ready = _artifact(82.0, "strong")
+        missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет анализа.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, missing],
+        )
+        report = build_report_render_model(payload)
+        call_list = {section["id"]: section for section in report["sections"]}["call_list"]
+        missing_row = [row for row in call_list["rows"] if row[5] == "Без анализа"][0]
+
+        self.assertEqual(missing_row[4], "Нет готового анализа")
+
     def test_manager_daily_coaching_core_excludes_support_not_eligible_calls(self) -> None:
         """Selection bugfix: support/not_eligible can be meaningful, but not coaching_core."""
         coaching_artifact = _artifact(82.0, "strong")

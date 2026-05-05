@@ -687,6 +687,58 @@ Do not restart a mass `build_missing_and_report` immediately. After quota is rep
 
 ---
 
+### Manager_daily Content Enrichment — Step 8G Closure: Split Unclassified Manager-Facing Statuses
+
+**Дата:** 2026-05-05
+
+**Scope:** manager_daily payload/render taxonomy only. No analyzer prompts, STT/LLM, scoring, eligibility, selection model, rolling window, coaching_core, Situation Day, Additional Situations, Challenge, Who to work tomorrow, `rop_weekly`, or scheduler changes.
+
+**What changed:**
+- Internal `status` taxonomy remains unchanged: calls without ready outcome still keep `status=None`.
+- `call_list[]` rows with `status=None` now carry manager-facing bucket fields:
+  - `unclassified_status_label`
+  - `unclassified_context_label`
+- `call_outcomes_summary` now includes `unclassified_by_bucket` while preserving `unclassified_count`.
+- PDF/render model replaces the old `НЕ КЛАСС.` column label with `БЕЗ РАЗБОРА` and adds a compact breakdown note under the day summary, for example: `Без разбора: 5 без транскрипта, 2 не подходят для разбора, 1 без анализа.`
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` shows concrete statuses such as `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Нет итога`, `Нет классификации`, instead of one generic `Не классифицировано`.
+
+**Manager-facing mapping:**
+
+| Internal reason | Manager-facing status |
+|---|---|
+| `no_transcript` | `Без транскрипта` |
+| `cdr_only_probable_live` | `Без транскрипта` |
+| `no_analysis` | `Без анализа` |
+| `analysis_failed` | `Ошибка анализа` |
+| `analysis_not_reusable` | `Не подходит для разбора` |
+| `not_coachable_or_reportable` | `Не подходит для разбора` |
+| `not_eligible` | `Не подходит для разбора` |
+| `no_follow_up_outcome` | `Нет итога` |
+| `missing_classification` | `Нет классификации` |
+| `unknown` | `Без разбора` |
+
+**Money block:** `ДЕНЬГИ НА СТОЛЕ` remains limited to actionable outcomes (`Договорённость`, `Открыт`, `Перенос`). Non-actionable buckets (`Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`) are excluded from potential-money calculations.
+
+**Ready-only verification on controlled 2026-05-04 cases:**
+
+| Manager | meaningful | normal outcomes | без транскрипта | без анализа | не подходит для разбора | ошибка анализа | other | sum |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Толеген | 6 | 4 | 1 | 1 | 0 | 0 | 0 | 6 |
+| Тимур | 15 | 5 | 6 | 0 | 0 | 4 | 0 | 15 |
+| Эльмира | 12 | 3 | 5 | 0 | 0 | 4 | 0 | 12 |
+
+Artifacts generated locally without delivery:
+- `/tmp/step8g_Толеген_2026-05-04.pdf`
+- `/tmp/step8g_Тимур_2026-05-04.pdf`
+- `/tmp/step8g_Эльмира_2026-05-04.pdf`
+
+**Tests:**
+- `docker compose exec -T api pytest -q tests/test_manual_reporting.py -k 'unclassified or call_outcomes or call_list or meaningful or selection_model or money'` — 18 passed.
+- `docker compose exec -T api pytest -q tests/test_manual_reporting.py tests/test_ai_provider_routing.py` — 120 passed.
+- `node --check scripts/generate_docx_report.js` — passed.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

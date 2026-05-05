@@ -67,6 +67,32 @@ UNCLASSIFIED_REASON_LABELS = {
     "support_or_internal": "Тех/сервис или внутренний звонок",
     "unknown": "Причина не определена",
 }
+UNCLASSIFIED_MANAGER_STATUS_LABELS = {
+    "no_transcript": "Без транскрипта",
+    "cdr_only_probable_live": "Без транскрипта",
+    "no_analysis": "Без анализа",
+    "analysis_failed": "Ошибка анализа",
+    "analysis_not_reusable": "Не подходит для разбора",
+    "not_coachable_or_reportable": "Не подходит для разбора",
+    "not_eligible": "Не подходит для разбора",
+    "no_follow_up_outcome": "Нет итога",
+    "missing_classification": "Нет классификации",
+    "support_or_internal": "Тех/сервис",
+    "unknown": "Без разбора",
+}
+UNCLASSIFIED_MANAGER_CONTEXT_LABELS = {
+    "no_transcript": "Транскрипт не построен",
+    "cdr_only_probable_live": "Транскрипт не построен",
+    "no_analysis": "Нет готового анализа",
+    "analysis_failed": "Ошибка при анализе",
+    "analysis_not_reusable": "Анализ не дал usable результата",
+    "not_coachable_or_reportable": "Не подходит для разбора",
+    "not_eligible": "Не подходит для разбора",
+    "no_follow_up_outcome": "Нет результата follow-up",
+    "missing_classification": "Нет классификации",
+    "support_or_internal": "Тех/сервис",
+    "unknown": "Нет готового разбора",
+}
 
 
 @dataclass(slots=True)
@@ -4784,6 +4810,20 @@ def _reason_label(reason_code: str | None) -> str | None:
     return UNCLASSIFIED_REASON_LABELS.get(reason_code, UNCLASSIFIED_REASON_LABELS["unknown"])
 
 
+def _manager_unclassified_status(reason_code: str | None) -> str | None:
+    """Return manager-facing bucket for an unclassified diagnostic reason."""
+    if not reason_code:
+        return None
+    return UNCLASSIFIED_MANAGER_STATUS_LABELS.get(reason_code, UNCLASSIFIED_MANAGER_STATUS_LABELS["unknown"])
+
+
+def _manager_unclassified_context(reason_code: str | None) -> str | None:
+    """Return compact manager-facing context for an unclassified diagnostic reason."""
+    if not reason_code:
+        return None
+    return UNCLASSIFIED_MANAGER_CONTEXT_LABELS.get(reason_code, UNCLASSIFIED_MANAGER_CONTEXT_LABELS["unknown"])
+
+
 def _is_cdr_only_probable_live(artifact: ReportArtifact) -> bool:
     """Return True when a no-transcript row entered meaningful via source-side live signal."""
     if artifact.interaction.text:
@@ -4826,6 +4866,8 @@ def _derive_unclassified_reason(artifact: ReportArtifact) -> tuple[str | None, s
     if original_analysis is not None:
         if bool(getattr(original_analysis, "is_failed", False)):
             reason_code = "analysis_failed"
+        elif any(token in reuse_reason for token in ("not_coachable", "not_reportable", "not_coachable_or_reportable", "semantic_empty")):
+            reason_code = "not_coachable_or_reportable"
         elif reuse_reason and reuse_reason not in {"missing_analysis", "reusable"}:
             reason_code = "analysis_not_reusable"
         else:
@@ -4861,6 +4903,7 @@ def _build_unclassified_breakdown(*, artifacts: list[ReportArtifact]) -> dict[st
                     "client": row.get("client_or_phone"),
                     "reason_code": reason_code,
                     "reason_label": reason_label,
+                    "status_label": row.get("unclassified_status_label"),
                 }
             )
     return {
@@ -4904,6 +4947,8 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     unclassified_reason_label = None
     if status is None:
         unclassified_reason_code, unclassified_reason_label = _derive_unclassified_reason(artifact)
+    unclassified_status_label = _manager_unclassified_status(unclassified_reason_code)
+    unclassified_context_label = _manager_unclassified_context(unclassified_reason_code)
     return {
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
         "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
@@ -4917,6 +4962,8 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         "score_percent": _extract_score_percent(artifact.analysis),
         "unclassified_reason_code": unclassified_reason_code,
         "unclassified_reason_label": unclassified_reason_label,
+        "unclassified_status_label": unclassified_status_label,
+        "unclassified_context_label": unclassified_context_label,
     }
 
 
@@ -5656,18 +5703,18 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
     open_count = 0
     tech_service = 0
     unclassified = 0
+    unclassified_by_bucket: dict[str, int] = {}
     for artifact in artifacts:
-        if artifact.analysis is None:
+        row = _build_daily_call_row(artifact)
+        status = row.get("status")
+        if status is None:
             unclassified += 1
+            bucket = str(row.get("unclassified_status_label") or UNCLASSIFIED_MANAGER_STATUS_LABELS["unknown"])
+            unclassified_by_bucket[bucket] = unclassified_by_bucket.get(bucket, 0) + 1
             continue
-        detail = dict(artifact.analysis.scores_detail or {})
-        call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
-        if call_type in {"support", "internal"}:
+        if status == "tech_service":
             tech_service += 1
-            continue
-        follow_up = dict(detail.get("follow_up") or {})
-        status, _deadline = _derive_call_status_and_deadline(follow_up=follow_up)
-        if status == "agreed":
+        elif status == "agreed":
             agreed += 1
         elif status == "rescheduled":
             rescheduled += 1
@@ -5682,6 +5729,7 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
         "open_count": open_count,
         "tech_service_count": tech_service,
         "unclassified_count": unclassified,
+        "unclassified_by_bucket": unclassified_by_bucket,
         "source_note": "derived_from_follow_up_and_classification",
     }
 

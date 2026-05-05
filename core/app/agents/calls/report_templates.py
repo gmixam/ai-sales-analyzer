@@ -345,7 +345,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {"label": "ТЕХ/СЕРВИС", "value": _manager_reader_value(call_outcomes.get("tech_service_count"), "0"), "tone": "neutral"},
     ]
     if _unclassified_count > 0:
-        outcome_cols.append({"label": "НЕ КЛАСС.", "value": _unclassified_count, "tone": "neutral"})
+        outcome_cols.append({"label": "БЕЗ РАЗБОРА", "value": _unclassified_count, "tone": "neutral"})
+    unclassified_note = _build_unclassified_summary_note(call_outcomes)
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     _readiness_outcome = readiness.get("readiness_outcome") or ""
     _report_type_label = (
@@ -366,6 +367,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {
             **_section_meta(template, "day_summary"),
             "outcome_cols": outcome_cols,
+            "breakdown_note": unclassified_note,
         },
         {
             **_section_meta(template, "money_on_table"),
@@ -446,8 +448,9 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                         str(row.get("status") or ""),
                         row.get("deadline"),
                         row.get("reason"),
+                        row=row,
                     ),
-                    _call_status_label(row.get("status")),
+                    _call_list_status_label(row),
                 ]
                 for idx, row in enumerate(call_list_raw)
             ],
@@ -1029,7 +1032,11 @@ def _render_html_section(section: dict[str, Any]) -> str:
             )
             for item in section.get("outcome_cols") or []
         )
-        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><table class=\"outcome-table\"><tbody><tr>{header}</tr></tbody></table></div></section>"
+        note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('breakdown_note') or ''))}</p>"
+            if section.get("breakdown_note") else ""
+        )
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><table class=\"outcome-table\"><tbody><tr>{header}</tr></tbody></table>{note}</div></section>"
     if kind == "money_focus":
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel warning\">"
@@ -1619,6 +1626,9 @@ def _render_manager_daily_pdf_report(
         draw_centered_text(page1, left=outcome_left, top=231, box_width=outcome_width, text=_manager_reader_value(item.get("value"), "—"), size=15.5, color=tone_accent.get(tone, accent))
         draw_centered_text(page1, left=outcome_left, top=252, box_width=outcome_width, text=str(item.get("label") or ""), size=7.2, color=muted)
         outcome_left += outcome_width + outcome_gap
+
+    if day_summary.get("breakdown_note"):
+        draw_text(page1, left=margin, top=276, text=str(day_summary.get("breakdown_note") or ""), size=7.5, color=muted, max_width=width - (margin * 2))
 
     draw_section_bar(page1, top=288, title=money_on_table["label"], color=amber)
     money_box_h = max(
@@ -2685,6 +2695,37 @@ def _build_money_on_table_data(
     }
 
 
+def _build_unclassified_summary_note(call_outcomes: dict[str, Any]) -> str:
+    """Build compact manager-facing breakdown for unclassified calls."""
+    by_bucket = dict(call_outcomes.get("unclassified_by_bucket") or {})
+    if not by_bucket:
+        return ""
+    total = sum(int(value or 0) for value in by_bucket.values())
+    if total <= 0:
+        return ""
+    preferred_order = [
+        "Без транскрипта",
+        "Без анализа",
+        "Не подходит для разбора",
+        "Ошибка анализа",
+        "Нет итога",
+        "Нет классификации",
+        "Без разбора",
+    ]
+    parts: list[str] = []
+    for label in preferred_order:
+        count = int(by_bucket.get(label) or 0)
+        if count:
+            parts.append(f"{count} {label.lower()}")
+    for label, raw_count in sorted(by_bucket.items()):
+        if label in preferred_order:
+            continue
+        count = int(raw_count or 0)
+        if count:
+            parts.append(f"{count} {str(label).lower()}")
+    return f"Без разбора: {', '.join(parts)}." if parts else ""
+
+
 def _build_warm_pipeline_data(
     *,
     call_list_raw: list[dict[str, Any]],
@@ -3270,9 +3311,17 @@ def _call_topic_label(call_type: str | None, scenario_type: str | None) -> str:
     return type_label or scenario_label or "—"
 
 
-def _call_context_label(status: str | None, deadline: str | None, reason: str | None) -> str:
+def _call_context_label(
+    status: str | None,
+    deadline: str | None,
+    reason: str | None,
+    *,
+    row: dict[str, Any] | None = None,
+) -> str:
     """Build short Контекст for a call list row from follow_up outcome data."""
     if not status:
+        if row:
+            return str(row.get("unclassified_context_label") or "Нет готового разбора")
         return "Нет готового разбора"
     dl = _format_deadline_human(deadline) if deadline else None
     if status == "agreed":
@@ -3295,7 +3344,14 @@ def _call_status_label(value: Any) -> str:
         "tech_service": "Тех/сервис",
     }
     raw = str(value or "").strip()
-    return mapping.get(raw, "Не классифицировано")
+    return mapping.get(raw, "Без разбора")
+
+
+def _call_list_status_label(row: dict[str, Any]) -> str:
+    """Return manager-facing status for one call-list row."""
+    if row.get("status") is None:
+        return str(row.get("unclassified_status_label") or "Без разбора")
+    return _call_status_label(row.get("status"))
 
 
 def _call_level_label(value: Any) -> str:

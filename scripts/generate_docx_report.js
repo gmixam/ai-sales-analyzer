@@ -63,6 +63,30 @@ function safeNumber(value, fallback) {
   return isNaN(n) ? (fallback !== undefined ? fallback : 0) : n;
 }
 
+function buildUnclassifiedNote(byBucket) {
+  const entries = byBucket || {};
+  const preferred = [
+    "Без транскрипта",
+    "Без анализа",
+    "Не подходит для разбора",
+    "Ошибка анализа",
+    "Нет итога",
+    "Нет классификации",
+    "Без разбора",
+  ];
+  const parts = [];
+  for (const label of preferred) {
+    const count = safeNumber(entries[label], 0);
+    if (count > 0) parts.push(`${count} ${label.toLowerCase()}`);
+  }
+  for (const label of Object.keys(entries).sort()) {
+    if (preferred.includes(label)) continue;
+    const count = safeNumber(entries[label], 0);
+    if (count > 0) parts.push(`${count} ${label.toLowerCase()}`);
+  }
+  return parts.length ? `Без разбора: ${parts.join(", ")}.` : "";
+}
+
 function formatRussianDate(dateStr) {
   const months = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
   const s = String(dateStr || "");
@@ -310,7 +334,7 @@ function emptyStateData(payload) {
     day_score: 0,
     day_funnel: null,
     coaching_window: null,
-    outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0 },
+    outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0, unclassified_by_bucket: {}, unclassified_note: "" },
     money_on_table: { body: "Данные за день не накоплены.", highlight_line: "", reason_line: "", note: "" },
     pipeline: { summary_line: "Нет достаточных данных для pipeline.", counts_line: "", conversion_line: "", average_line: "", contacts: [] },
     stages: [],
@@ -377,6 +401,30 @@ function dataFromBundle(bundle) {
     open: "Открыт",
     tech_service: "Тех/сервис",
   };
+  const unclassifiedStatusMap = {
+    no_transcript: "Без транскрипта",
+    cdr_only_probable_live: "Без транскрипта",
+    no_analysis: "Без анализа",
+    analysis_failed: "Ошибка анализа",
+    analysis_not_reusable: "Не подходит для разбора",
+    not_coachable_or_reportable: "Не подходит для разбора",
+    not_eligible: "Не подходит для разбора",
+    no_follow_up_outcome: "Нет итога",
+    missing_classification: "Нет классификации",
+    unknown: "Без разбора",
+  };
+  const unclassifiedContextMap = {
+    no_transcript: "Транскрипт не построен",
+    cdr_only_probable_live: "Транскрипт не построен",
+    no_analysis: "Нет готового анализа",
+    analysis_failed: "Ошибка при анализе",
+    analysis_not_reusable: "Анализ не дал usable результата",
+    not_coachable_or_reportable: "Не подходит для разбора",
+    not_eligible: "Не подходит для разбора",
+    no_follow_up_outcome: "Нет результата follow-up",
+    missing_classification: "Нет классификации",
+    unknown: "Нет готового разбора",
+  };
   const allCalls = (callList.rows || []).map((row) => {
     const payloadCall = (payload.call_list || [])[Number(row[0]) - 1];
     let status;
@@ -386,16 +434,16 @@ function dataFromBundle(bundle) {
       if (ct === "support" || ct === "internal") {
         status = "Тех/сервис";
       } else {
-        status = statusLabelMap[st] || "Не классифицировано";
+        status = statusLabelMap[st] || payloadCall.unclassified_status_label || unclassifiedStatusMap[payloadCall.unclassified_reason_code] || "Без разбора";
       }
     } else {
       // Fallback to pre-rendered section row for forward/backward compatibility
-      status = row[5] || "Не классифицировано";
+      status = row[5] || "Без разбора";
     }
     const rawContext = row[4] || "—";
-    const context = (status === "Не классифицировано" && rawContext === "—")
-      ? "Нет готового разбора"
-      : rawContext;
+    const context = (payloadCall && !payloadCall.status)
+      ? (payloadCall.unclassified_context_label || unclassifiedContextMap[payloadCall.unclassified_reason_code] || "Нет готового разбора")
+      : ((status === "Без разбора" && rawContext === "—") ? "Нет готового разбора" : rawContext);
     return {
       n: row[0] || "—",
       time: row[1] || "—",
@@ -451,6 +499,8 @@ function dataFromBundle(bundle) {
   const refusal  = safeNumber(outcomeMap["ОТКАЗ"]);
   const open     = safeNumber(outcomeMap["ОТКРЫТ"]);
   const techSvc  = safeNumber(outcomeMap["ТЕХ/СЕРВИС"]);
+  const unclassifiedByBucket = payload.call_outcomes_summary?.unclassified_by_bucket || {};
+  const unclassifiedNote = daySummary.breakdown_note || buildUnclassifiedNote(unclassifiedByBucket);
 
   return {
     manager: reportHeader.manager_name || payload.header?.manager_name || "—",
@@ -470,6 +520,8 @@ function dataFromBundle(bundle) {
       refusal,
       open,
       tech_service: techSvc,
+      unclassified_by_bucket: unclassifiedByBucket,
+      unclassified_note: unclassifiedNote,
     },
     money_on_table: {
       body: moneyOnTable.body || "",
@@ -918,6 +970,7 @@ function buildSvodnaya() {
   const dayTotal = DATA.meaningful_calls; // total = all meaningful calls of the day
   const knownSum = agreed + rescheduled + refusal + open + tech_service;
   const unclassified = Math.max(0, dayTotal - knownSum);
+  const unclassifiedNote = DATA.outcomes.unclassified_note || buildUnclassifiedNote(DATA.outcomes.unclassified_by_bucket);
 
   function outCell(num, label, color) {
     return new TableCell({
@@ -948,7 +1001,7 @@ function buildSvodnaya() {
     outCell(tech_service,  "Тех/Сервис",      COLORS.gray),
   ];
   if (unclassified > 0) {
-    cells.push(outCell(unclassified, "Не класс.", COLORS.gray));
+    cells.push(outCell(unclassified, "Без разбора", COLORS.gray));
   }
 
   return [
@@ -961,6 +1014,7 @@ function buildSvodnaya() {
       "Итог дня — все содержательные звонки отчётного дня; коучинговый разбор ведётся по отдельной базе.",
       { color: COLORS.gray, size: SZ.meta },
     ),
+    ...(unclassifiedNote ? [bodyPara(unclassifiedNote, { color: COLORS.gray, size: SZ.meta })] : []),
     spacer(4),
   ];
 }
