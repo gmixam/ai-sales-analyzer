@@ -58,9 +58,13 @@ UNCLASSIFIED_REASON_LABELS = {
     "no_transcript": "Нет транскрипта",
     "no_analysis": "Нет готового анализа",
     "analysis_failed": "Анализ завершился ошибкой",
+    "analysis_failed_contract": "Ошибка контракта анализа",
+    "analysis_failed_provider": "Ошибка провайдера анализа",
+    "analysis_failed_unknown": "Анализ завершился ошибкой",
     "analysis_not_reusable": "Анализ не проходит reuse-проверку",
     "not_eligible": "Звонок не подходит для разбора",
     "not_coachable_or_reportable": "Не coaching/reporting-звонок",
+    "semantic_empty": "Звонок не подходит для разбора",
     "no_follow_up_outcome": "Нет результата follow-up",
     "cdr_only_probable_live": "CDR-only: вероятный живой разговор",
     "missing_classification": "Нет классификации в анализе",
@@ -72,9 +76,13 @@ UNCLASSIFIED_MANAGER_STATUS_LABELS = {
     "cdr_only_probable_live": "Без транскрипта",
     "no_analysis": "Без анализа",
     "analysis_failed": "Ошибка анализа",
+    "analysis_failed_contract": "Ошибка анализа",
+    "analysis_failed_provider": "Ошибка провайдера",
+    "analysis_failed_unknown": "Ошибка анализа",
     "analysis_not_reusable": "Не подходит для разбора",
     "not_coachable_or_reportable": "Не подходит для разбора",
     "not_eligible": "Не подходит для разбора",
+    "semantic_empty": "Не подходит для разбора",
     "no_follow_up_outcome": "Нет итога",
     "missing_classification": "Нет классификации",
     "support_or_internal": "Тех/сервис",
@@ -85,13 +93,29 @@ UNCLASSIFIED_MANAGER_CONTEXT_LABELS = {
     "cdr_only_probable_live": "Транскрипт не построен",
     "no_analysis": "Нет готового анализа",
     "analysis_failed": "Ошибка при анализе",
+    "analysis_failed_contract": "Ошибка контракта анализа",
+    "analysis_failed_provider": "Ошибка провайдера",
+    "analysis_failed_unknown": "Ошибка при анализе",
     "analysis_not_reusable": "Анализ не дал usable результата",
     "not_coachable_or_reportable": "Не подходит для разбора",
     "not_eligible": "Не подходит для разбора",
+    "semantic_empty": "Не подходит для разбора",
     "no_follow_up_outcome": "Нет результата follow-up",
     "missing_classification": "Нет классификации",
     "support_or_internal": "Тех/сервис",
     "unknown": "Нет готового разбора",
+}
+MANAGER_FACING_COMPLETENESS_BLOCKING_BUCKETS = {
+    "Без транскрипта",
+    "Без анализа",
+    "Ошибка анализа",
+    "Ошибка провайдера",
+}
+MANAGER_FACING_COMPLETENESS_REQUIRED_ACTIONS = {
+    "Без транскрипта": "Достроить транскрипт перед отправкой менеджеру.",
+    "Без анализа": "Достроить анализ перед отправкой менеджеру.",
+    "Ошибка анализа": "Проверить техническую ошибку анализа и перезапустить точечно.",
+    "Ошибка провайдера": "Проверить provider/quota и перезапустить точечно после устранения.",
 }
 
 
@@ -469,7 +493,7 @@ class CallsManualReportingOrchestrator:
             return "blocked" if build_errors else "completed"
         had_success = any(status in {"ready", "delivered", "partial"} for status in statuses)
         had_skip = "skip_accumulate" in statuses
-        had_blocking = any(status in {"missing_artifacts", "blocked"} for status in statuses) or bool(build_errors)
+        had_blocking = any(status in {"missing_artifacts", "blocked", "review_required"} for status in statuses) or bool(build_errors)
         if had_success and had_blocking:
             return "partial"
         if had_success:
@@ -1515,7 +1539,7 @@ class CallsManualReportingOrchestrator:
         """Map internal reporting statuses to the UI run-state indicator."""
         if status in {"completed", "delivered", "ready"}:
             return "completed"
-        if status in {"blocked", "partial", "no_data", "recipient_blocked", "missing_artifacts"}:
+        if status in {"blocked", "partial", "no_data", "recipient_blocked", "missing_artifacts", "review_required"}:
             return "blocked"
         return "failed"
 
@@ -2622,6 +2646,27 @@ class CallsManualReportingOrchestrator:
         """Render one ready payload and run split delivery."""
         if readiness is not None:
             payload.setdefault("meta", {})["readiness"] = readiness
+        manager_gate = None
+        gate_failed = False
+        effective_send_email = send_email
+        if preset.code == "manager_daily":
+            manager_gate = _build_manager_facing_completeness_gate(
+                call_list=list(payload.get("call_list") or [])
+            )
+            payload["manager_facing_completeness"] = manager_gate
+            payload.setdefault("meta", {})["manager_facing_completeness"] = {
+                "status": manager_gate["status"],
+                "reason": manager_gate.get("reason"),
+                "manager_report_allowed": manager_gate["manager_report_allowed"],
+                "blocking_counts": dict(manager_gate["blocking_counts"]),
+            }
+            gate_failed = not bool(manager_gate["manager_report_allowed"])
+            if gate_failed:
+                effective_send_email = False
+                header = payload.setdefault("header", {})
+                title = str(header.get("report_title") or "Ежедневный разбор звонков")
+                if "OPERATOR PREVIEW" not in title:
+                    header["report_title"] = f"{title} — OPERATOR PREVIEW / INCOMPLETE"
         rendered = render_report_email(payload, prefer_docx_first=True)
 
         try:
@@ -2639,20 +2684,22 @@ class CallsManualReportingOrchestrator:
 
         preview = {key: value for key, value in rendered.items() if key != "pdf_bytes"}
         result = {
-            "status": "ready",
+            "status": "review_required" if gate_failed else "ready",
             "preset": preset.code,
             "group_key": payload["meta"]["group_key"],
-            "errors": missing,
+            "errors": [*missing, "manager_facing_gate_failed:incomplete_day_call_processing"] if gate_failed else missing,
             "payload": payload,
             "preview": preview,
             "artifact": rendered.get("artifact"),
             "delivery": self.delivery.preview_report_delivery(
                 primary_email=primary_email,
                 cc_emails=cc_emails,
-                send_business_email=send_email,
+                send_business_email=effective_send_email,
                 email_resolution_error=email_resolution_error,
             ),
         }
+        if manager_gate is not None:
+            result["manager_facing_completeness"] = manager_gate
         if readiness is not None:
             result.update(
                 {
@@ -2678,7 +2725,7 @@ class CallsManualReportingOrchestrator:
             pdf_filename=rendered["artifact"]["filename"],
             template_meta=rendered.get("template"),
             artifact_meta=rendered.get("artifact"),
-            send_business_email=send_email,
+            send_business_email=effective_send_email,
             email_resolution_error=email_resolution_error,
             morning_card_text=rendered.get("morning_card_text"),
         )
@@ -2688,7 +2735,9 @@ class CallsManualReportingOrchestrator:
         telegram_status = ((transport.get("telegram_test_delivery") or {}).get("status") or "").strip()
         email_status = ((transport.get("email_delivery") or {}).get("status") or "").strip()
 
-        if telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", ""}:
+        if gate_failed:
+            result["status"] = "review_required"
+        elif telegram_status == "delivered" and email_status in {"delivered", "skipped", "blocked", ""}:
             result["status"] = "delivered"
         elif telegram_status == "delivered" and email_status == "failed":
             result["status"] = "partial"
@@ -2704,7 +2753,8 @@ class CallsManualReportingOrchestrator:
             if error
         ]
         if delivery_errors:
-            result["errors"] = [*missing, *delivery_errors]
+            base_errors = [*missing, "manager_facing_gate_failed:incomplete_day_call_processing"] if gate_failed else list(missing)
+            result["errors"] = [*base_errors, *delivery_errors]
         return result
 
     def _build_manager_daily_empty_state_result(
@@ -3570,6 +3620,10 @@ def build_manager_daily_payload(
     ]
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
     unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
+    call_list = _build_meaningful_call_list(
+        window_artifacts=operational_day_artifacts,
+    )
+    manager_facing_completeness = _build_manager_facing_completeness_gate(call_list=call_list)
 
     payload = {
         "meta": _build_base_meta(
@@ -3646,15 +3700,14 @@ def build_manager_daily_payload(
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "unclassified_breakdown": unclassified_breakdown,
+        "manager_facing_completeness": manager_facing_completeness,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
         "situation_dialogue_excerpt": situation_dialogue_excerpt,
         "focus_stage_deep_dive": focus_stage_deep_dive,
         "focus_stage_recommendation": focus_stage_recommendation,
         "situation_day_coaching_view": situation_day_coaching_view,
-        "call_list": _build_meaningful_call_list(
-            window_artifacts=operational_day_artifacts,
-        ),
+        "call_list": call_list,
         "focus_criterion_dynamics": focus_dynamics,
         "memo_legend": {
             "call_level_legend": ["strong", "baseline", "problematic"],
@@ -4839,6 +4892,74 @@ def _is_cdr_only_probable_live(artifact: ReportArtifact) -> bool:
     )
 
 
+def _analysis_failure_text(analysis: Any, reuse_reason: str | None) -> str:
+    """Return non-secret persisted failure context for deterministic bucket classification."""
+    parts = [reuse_reason or ""]
+    for attr in ("fail_reason", "error_message", "error", "status_reason"):
+        value = getattr(analysis, attr, None)
+        if value:
+            parts.append(str(value))
+    detail = getattr(analysis, "scores_detail", None)
+    if isinstance(detail, dict):
+        for key in ("fail_reason", "error", "error_message", "validation_error"):
+            value = detail.get(key)
+            if value:
+                parts.append(str(value))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _classify_failed_analysis_reason(analysis: Any, reuse_reason: str | None) -> str:
+    """Classify persisted failed analysis into manager/operator buckets."""
+    text = _analysis_failure_text(analysis, reuse_reason).lower()
+    if any(
+        token in text
+        for token in (
+            "not_coachable_or_reportable",
+            "not_coachable",
+            "not_reportable",
+            "semantic_empty",
+            "semantically empty",
+        )
+    ):
+        return "semantic_empty" if "semantic" in text else "not_coachable_or_reportable"
+    if any(
+        token in text
+        for token in (
+            "insufficient_quota",
+            "quota",
+            "429",
+            "rate limit",
+            "rate_limited",
+            "timeout",
+            "provider",
+            "openai",
+            "auth",
+            "401",
+            "403",
+            "5xx",
+            "500",
+            "502",
+            "503",
+            "504",
+        )
+    ):
+        return "analysis_failed_provider"
+    if any(
+        token in text
+        for token in (
+            "criterion",
+            "missing required fields",
+            "validation",
+            "contract",
+            "parser",
+            "parse",
+            "schema",
+        )
+    ):
+        return "analysis_failed_contract"
+    return "analysis_failed_unknown"
+
+
 def _derive_unclassified_reason(artifact: ReportArtifact) -> tuple[str | None, str | None]:
     """Explain why a meaningful call has no manager-facing classification."""
     if artifact.analysis is not None:
@@ -4865,9 +4986,9 @@ def _derive_unclassified_reason(artifact: ReportArtifact) -> tuple[str | None, s
     reuse_reason = str(artifact.analysis_reuse_reason or "").strip()
     if original_analysis is not None:
         if bool(getattr(original_analysis, "is_failed", False)):
-            reason_code = "analysis_failed"
+            reason_code = _classify_failed_analysis_reason(original_analysis, reuse_reason)
         elif any(token in reuse_reason for token in ("not_coachable", "not_reportable", "not_coachable_or_reportable", "semantic_empty")):
-            reason_code = "not_coachable_or_reportable"
+            reason_code = "semantic_empty" if "semantic_empty" in reuse_reason else "not_coachable_or_reportable"
         elif reuse_reason and reuse_reason not in {"missing_analysis", "reusable"}:
             reason_code = "analysis_not_reusable"
         else:
@@ -4910,6 +5031,59 @@ def _build_unclassified_breakdown(*, artifacts: list[ReportArtifact]) -> dict[st
         "total": total,
         "by_reason": by_reason,
         "sample_calls": sample_calls,
+    }
+
+
+def _build_manager_facing_completeness_gate(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return whether a manager_daily call list is ready for business delivery."""
+    blocking_counts = {
+        "no_transcript": 0,
+        "no_analysis": 0,
+        "analysis_error": 0,
+        "provider_error": 0,
+    }
+    counts_by_bucket = {bucket: 0 for bucket in sorted(MANAGER_FACING_COMPLETENESS_BLOCKING_BUCKETS)}
+    affected_calls: list[dict[str, Any]] = []
+    for row in call_list:
+        if row.get("status") is not None:
+            continue
+        bucket = str(row.get("unclassified_status_label") or _manager_unclassified_status(row.get("unclassified_reason_code")) or "")
+        if bucket not in MANAGER_FACING_COMPLETENESS_BLOCKING_BUCKETS:
+            continue
+        reason_code = str(row.get("unclassified_reason_code") or "unknown")
+        counts_by_bucket[bucket] += 1
+        if bucket == "Без транскрипта":
+            blocking_counts["no_transcript"] += 1
+        elif bucket == "Без анализа":
+            blocking_counts["no_analysis"] += 1
+        elif bucket == "Ошибка провайдера":
+            blocking_counts["provider_error"] += 1
+        else:
+            blocking_counts["analysis_error"] += 1
+        affected_calls.append(
+            {
+                "time": _short_time_label(row.get("time")),
+                "client": row.get("client_or_phone"),
+                "duration_sec": row.get("duration_sec"),
+                "reason_code": reason_code,
+                "reason_label": row.get("unclassified_reason_label") or _reason_label(reason_code),
+                "bucket": bucket,
+                "required_action": MANAGER_FACING_COMPLETENESS_REQUIRED_ACTIONS.get(
+                    bucket,
+                    "Проверить звонок перед отправкой менеджеру.",
+                ),
+            }
+        )
+    total_blocking = sum(blocking_counts.values())
+    passed = total_blocking == 0
+    return {
+        "status": "passed" if passed else "review_required",
+        "manager_report_allowed": passed,
+        "reason": None if passed else "incomplete_day_call_processing",
+        "blocking_counts": blocking_counts,
+        "counts": counts_by_bucket,
+        "affected_calls_count": total_blocking,
+        "affected_calls": affected_calls,
     }
 
 

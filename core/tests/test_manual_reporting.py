@@ -1664,6 +1664,87 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["delivery"]["targets"][0]["channel"], "telegram")
         self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "delivered")
 
+    def test_single_report_result_blocks_business_email_when_manager_gate_fails(self) -> None:
+        """Step 8I: incomplete manager_daily is operator preview and cannot send business email."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        ready = _artifact()
+        missing_interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        missing_interaction.raw_ref = "onlinepbx://audio.wav"
+        missing = ReportArtifact(
+            interaction=missing_interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+                window_artifacts=[ready, missing],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+
+        def _preview_report_delivery(**kwargs):
+            self.assertFalse(kwargs["send_business_email"])
+            return {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": False, "status": "skipped"},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            }
+
+        def _deliver_operator_report(**kwargs):
+            self.assertFalse(kwargs["send_business_email"])
+            return {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            }
+
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=_preview_report_delivery,
+            deliver_operator_report=_deliver_operator_report,
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=True,
+        )
+
+        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(result["manager_facing_completeness"]["reason"], "incomplete_day_call_processing")
+        self.assertIn("OPERATOR PREVIEW / INCOMPLETE", result["payload"]["header"]["report_title"])
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "skipped")
+
     def test_single_report_result_returns_blocked_when_delivery_fails(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
         setattr(
@@ -1949,7 +2030,10 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["relevant_calls"], 3)
         self.assertEqual(result["ready_analyses"], 2)
         self.assertIn("signal_report_ready", result["readiness_reason_codes"])
-        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(result["manager_facing_completeness"]["reason"], "incomplete_day_call_processing")
+        self.assertEqual(result["manager_facing_completeness"]["blocking_counts"]["no_analysis"], 1)
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "skipped")
         self.assertIn("Сигнальный отчёт", result["preview"]["text"])
         self.assertIn("Найдено в телефонии: 2", result["preview"]["text"])
         self.assertIn("вошло в разбор: 2", result["preview"]["text"])

@@ -1226,6 +1226,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
         failed.is_failed = True
+        failed.fail_reason = "Criterion intro missing required fields: comment"
         analysis_failed = ReportArtifact(
             interaction=_interaction(
                 manager_id=ready.interaction.manager_id,
@@ -1238,8 +1239,25 @@ class ManualReportingPayloadTests(unittest.TestCase):
             original_analysis=failed,
             analysis_reuse_reason="contract_validation_error",
         )
+        provider_failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        provider_failed.is_failed = True
+        provider_failed.fail_reason = "OpenAI 429 insufficient_quota"
+        provider_error = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, provider вернул ошибку.",
+                call_date="2026-03-25 15:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T15:00:00").replace(tzinfo=UTC),
+            original_analysis=provider_failed,
+            analysis_reuse_reason="provider_error",
+        )
 
-        rows = _build_meaningful_call_list(window_artifacts=[ready, no_transcript, no_analysis, non_reusable, analysis_failed])
+        rows = _build_meaningful_call_list(
+            window_artifacts=[ready, no_transcript, no_analysis, non_reusable, analysis_failed, provider_error]
+        )
         buckets = {
             row["unclassified_reason_code"]: row["unclassified_status_label"]
             for row in rows
@@ -1248,8 +1266,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         self.assertEqual(buckets["no_transcript"], "Без транскрипта")
         self.assertEqual(buckets["no_analysis"], "Без анализа")
-        self.assertEqual(buckets["not_coachable_or_reportable"], "Не подходит для разбора")
-        self.assertEqual(buckets["analysis_failed"], "Ошибка анализа")
+        self.assertEqual(buckets["semantic_empty"], "Не подходит для разбора")
+        self.assertEqual(buckets["analysis_failed_contract"], "Ошибка анализа")
+        self.assertEqual(buckets["analysis_failed_provider"], "Ошибка провайдера")
 
     def test_day_summary_uses_without_breakdown_bucket_and_preserves_total(self) -> None:
         """Step 8G: dashboard keeps arithmetic while replacing НЕ КЛАСС. with a breakdown."""
@@ -1327,6 +1346,101 @@ class ManualReportingPayloadTests(unittest.TestCase):
         missing_row = [row for row in call_list["rows"] if row[5] == "Без анализа"][0]
 
         self.assertEqual(missing_row[4], "Нет готового анализа")
+
+    def test_manager_facing_completeness_gate_passes_with_non_coachable_bucket(self) -> None:
+        """Step 8I: non-coachable/semantic-empty calls may remain in a manager-facing report."""
+        ready = _artifact(82.0, "strong")
+        failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        failed.is_failed = True
+        failed.fail_reason = "not_coachable_or_reportable: semantic_empty"
+        non_coachable = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Расшифрованный звонок без sales-содержания.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+            original_analysis=failed,
+            analysis_reuse_reason="semantic_empty:not_coachable_or_reportable",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, non_coachable],
+        )
+
+        self.assertEqual(payload["manager_facing_completeness"]["status"], "passed")
+        self.assertTrue(payload["manager_facing_completeness"]["manager_report_allowed"])
+        self.assertEqual(payload["call_outcomes_summary"]["unclassified_by_bucket"]["Не подходит для разбора"], 1)
+
+    def test_manager_facing_completeness_gate_fails_on_incomplete_and_technical_buckets(self) -> None:
+        """Step 8I: incomplete/technical buckets block ordinary manager-facing delivery."""
+        ready = _artifact(82.0, "strong")
+        no_transcript_interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        no_transcript_interaction.raw_ref = "onlinepbx://audio.wav"
+        no_transcript = ReportArtifact(
+            interaction=no_transcript_interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        no_analysis = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, анализа нет.",
+                call_date="2026-03-25 12:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+        )
+        failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        failed.is_failed = True
+        failed.fail_reason = "Criterion greeting missing required fields: comment"
+        contract_error = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, contract validation упал.",
+                call_date="2026-03-25 13:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T13:00:00").replace(tzinfo=UTC),
+            original_analysis=failed,
+            analysis_reuse_reason="contract_validation_error",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, no_transcript, no_analysis, contract_error],
+        )
+        gate = payload["manager_facing_completeness"]
+
+        self.assertEqual(gate["status"], "review_required")
+        self.assertFalse(gate["manager_report_allowed"])
+        self.assertEqual(gate["reason"], "incomplete_day_call_processing")
+        self.assertEqual(gate["blocking_counts"]["no_transcript"], 1)
+        self.assertEqual(gate["blocking_counts"]["no_analysis"], 1)
+        self.assertEqual(gate["blocking_counts"]["analysis_error"], 1)
+        self.assertEqual(gate["affected_calls_count"], 3)
 
     def test_manager_daily_coaching_core_excludes_support_not_eligible_calls(self) -> None:
         """Selection bugfix: support/not_eligible can be meaningful, but not coaching_core."""
@@ -2301,6 +2415,87 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["delivery"]["targets"][0]["channel"], "telegram")
         self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "delivered")
 
+    def test_single_report_result_blocks_business_email_when_manager_gate_fails(self) -> None:
+        """Step 8I: incomplete manager_daily is operator preview and cannot send business email."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        ready = _artifact()
+        missing_interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        missing_interaction.raw_ref = "onlinepbx://audio.wav"
+        missing = ReportArtifact(
+            interaction=missing_interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        setattr(
+            orchestrator,
+            "_build_payload",
+            lambda **kwargs: build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=kwargs["artifacts"],
+                period=kwargs["period"],
+                filters=kwargs["filters"],
+                mode=kwargs["mode"],
+                model_override=kwargs["model_override"],
+                window_artifacts=[ready, missing],
+            ),
+        )
+        setattr(
+            orchestrator,
+            "_resolve_delivery_targets",
+            lambda **kwargs: {
+                "primary_email": "elmira@example.com",
+                "cc_emails": ["sales@dogovor24.kz"],
+            },
+        )
+
+        def _preview_report_delivery(**kwargs):
+            self.assertFalse(kwargs["send_business_email"])
+            return {
+                "mode": "split_operator_delivery",
+                "telegram_test_delivery": {"enabled": True, "status": "planned", "target": "74665909"},
+                "email_delivery": {"enabled": False, "status": "skipped"},
+                "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+            }
+
+        def _deliver_operator_report(**kwargs):
+            self.assertFalse(kwargs["send_business_email"])
+            return {
+                "targets": [{"channel": "telegram", "target": "74665909", "status": "sent"}],
+                "transport": {
+                    "mode": "split_operator_delivery",
+                    "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                    "email_delivery": {"enabled": False, "status": "skipped"},
+                    "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                },
+            }
+
+        orchestrator.delivery = SimpleNamespace(
+            preview_report_delivery=_preview_report_delivery,
+            deliver_operator_report=_deliver_operator_report,
+        )
+
+        result = CallsManualReportingOrchestrator._build_single_report_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            send_email=True,
+        )
+
+        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(result["manager_facing_completeness"]["reason"], "incomplete_day_call_processing")
+        self.assertIn("OPERATOR PREVIEW / INCOMPLETE", result["payload"]["header"]["report_title"])
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "skipped")
+
     def test_single_report_result_returns_blocked_when_delivery_fails(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
         setattr(
@@ -2586,7 +2781,10 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["relevant_calls"], 3)
         self.assertEqual(result["ready_analyses"], 2)
         self.assertIn("signal_report_ready", result["readiness_reason_codes"])
-        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(result["manager_facing_completeness"]["reason"], "incomplete_day_call_processing")
+        self.assertEqual(result["manager_facing_completeness"]["blocking_counts"]["no_analysis"], 1)
+        self.assertEqual(result["delivery"]["transport"]["email_delivery"]["status"], "skipped")
         self.assertIn("Сигнальный отчёт", result["preview"]["text"])
         self.assertIn("Найдено в телефонии: 2", result["preview"]["text"])
         self.assertIn("вошло в разбор: 2", result["preview"]["text"])

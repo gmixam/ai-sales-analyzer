@@ -183,12 +183,29 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 - `payload.call_outcomes_summary` строится из `operational_meaningful_artifacts` — report-day meaningful calls (тот же источник, что и `call_list`).
 - Звонки без готового reusable разбора (`status is None`) считаются как `unclassified_count`, а не как `open`.
 - Колонка `БЕЗ РАЗБОРА` показывается только если `unclassified_count > 0`.
-- `call_outcomes_summary.unclassified_by_bucket` разделяет manager-facing причины: `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Нет итога`, `Нет классификации`, `Без разбора`.
+- `call_outcomes_summary.unclassified_by_bucket` разделяет manager-facing причины: `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера`, `Нет итога`, `Нет классификации`, `Без разбора`.
 - Сумма всех категорий (включая `БЕЗ РАЗБОРА`) обязана равняться `meaningful_calls_total`.
 
 **`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
 
-**`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
+**`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
+
+### Manager-Facing Completeness Gate
+
+Обычный manager-facing daily report считается готовым к business delivery только если техническая обработка report-day call list завершена.
+
+Gate проходит, когда в `call_list[]` нет blocking buckets:
+- `Без транскрипта`;
+- `Без анализа`;
+- technical `Ошибка анализа`;
+- `Ошибка провайдера`.
+
+Gate может пропустить отчёт, если в нём остались:
+- normal outcomes (`Договорённость`, `Перенос`, `Отказ`, `Открыт`);
+- `Не подходит для разбора` для semantic-empty / not_coachable_or_reportable calls;
+- `Тех/сервис`.
+
+Если gate не проходит, runtime возвращает operator-facing `review_required` с reason `incomplete_day_call_processing`, counts и affected calls. Business email не отправляется; operator/test preview может быть создан только как incomplete preview.
 
 ---
 

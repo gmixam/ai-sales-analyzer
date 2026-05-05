@@ -739,6 +739,44 @@ Artifacts generated locally without delivery:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8I Closure: Manager-Facing Completeness Gate
+
+**Дата:** 2026-05-05
+
+**Scope:** manager_daily payload/delivery readiness gate and failed-analysis bucket classification only. No analyzer prompts, STT/LLM, scoring, eligibility, selection model, rolling window, coaching_core, Situation Day, Additional Situations, Challenge, Who to work tomorrow, `rop_weekly`, or scheduler changes.
+
+**What changed:**
+- Added nullable/backward-compatible `payload.manager_facing_completeness`.
+- Ordinary manager-facing delivery is allowed only when report-day `call_list[]` has no blocking buckets:
+  - `Без транскрипта`
+  - `Без анализа`
+  - technical `Ошибка анализа`
+  - `Ошибка провайдера`
+- If the gate fails, report result status becomes `review_required`, reason `incomplete_day_call_processing`, business email is disabled, and the payload contains counts plus affected calls with required operator action.
+- Operator/test Telegram delivery may still be used as preview, but the payload header is marked `OPERATOR PREVIEW / INCOMPLETE`.
+
+**Updated bucket classifier:**
+
+| Persisted/internal signal | Bucket |
+|---|---|
+| `semantic_empty`, `not_coachable_or_reportable`, `not_coachable`, `not_reportable` | `Не подходит для разбора` |
+| contract / parser / schema / validation / `Criterion ... missing required fields` | `Ошибка анализа` |
+| provider / quota / 429 / rate-limit / timeout / auth / 5xx | `Ошибка провайдера` |
+| failed analysis with unknown technical cause | `Ошибка анализа` |
+
+**Ready-only verification on current controlled 2026-05-04 state:**
+
+| Manager | meaningful | normal outcomes | без транскрипта | без анализа | не подходит для разбора | ошибка анализа | ошибка провайдера | Gate result |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Эльмира | 12 | 3 | 4 | 0 | 5 | 0 | 0 | `review_required` |
+| Тимур | 15 | 6 | 5 | 0 | 4 | 0 | 0 | `review_required` |
+| Толеген | 6 | 4 | 0 | 1 | 1 | 0 | 0 | `review_required` |
+
+**Tests:**
+- `docker compose exec -T api pytest -q tests/test_manual_reporting.py -k 'unclassified or call_outcomes or call_list or meaningful or selection_model or completeness or delivery'` — 22 passed.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
