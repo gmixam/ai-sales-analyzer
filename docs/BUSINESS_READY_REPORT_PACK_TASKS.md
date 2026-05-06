@@ -398,6 +398,65 @@ business-facing morning card.
 - rebuilt PDFs: `/tmp/step8w_Эльмира_2026-05-04.pdf`, `/tmp/step8w_Тимур_2026-05-04.pdf`, `/tmp/step8w_Толеген_2026-05-04.pdf`;
 - delivery, `build_missing`, STT and LLM were not run.
 
+### Manager_daily Target Architecture — Step 8Y Design: LLM2 `report_evidence`
+
+**Дата:** 2026-05-06
+
+**Scope:** design/docs only. No code implementation, prompt implementation, STT/LLM rerun, `build_missing`, delivery, report rendering change, or mass rebuild.
+
+**Contract created:** `docs/REPORT_EVIDENCE_CONTRACT.md`
+
+**Target architecture:**
+
+```text
+STT -> transcript + segments + speaker labels if available
+LLM1 -> light classification / routing / analyze-or-skip decision
+LLM2 -> deep call analysis + checklist + report-ready evidence package
+Reporting layer -> deterministic selection, aggregation, rendering, delivery
+```
+
+**Decision:**
+- Step 8W transcript/evidence fallback remains the compatibility path for legacy analyses.
+- Target behavior is additive `report_evidence` produced by LLM2 during each call analysis.
+- Reporting layer must not become the semantic analyzer; it selects report scope, validates/ranks ready candidates, resolves final outcomes deterministically, and renders.
+
+**Minimum `report_evidence` package:**
+- `business_outcome` — LLM2 semantic signal for outcome evidence; final `BusinessOutcomeResolver` still wins.
+- `situation_candidates` — ready candidates for `СИТУАЦИЯ ДНЯ`.
+- `manager_coaching_moments` — ready moments for `РАЗБОР ЗВОНКА`, stage examples, coaching blocks.
+- `voice_of_customer` — grounded client quotes for `ГОЛОС КЛИЕНТА`.
+- `additional_situations` — additional report-ready situations.
+- `follow_up_candidates` — tomorrow candidates, constrained by final resolver status.
+- `quote_bank` — reusable grounded quote pool for daily/weekly/future reports.
+
+**Validation principles:**
+- `report_evidence_version` required when package is present.
+- All enums valid; `stage_code` matches MVP-1 checklist stage codes.
+- Speakers are only `manager`, `client`, or `unknown`; unreliable roles stay `unknown`.
+- Quotes and dialogue fragments must be grounded in transcript or marked insufficient.
+- Weak/ambiguous items can set `usable_in_report=false`.
+- `evidence_quality=insufficient` must not render as strong proof.
+
+**Backward compatibility:**
+
+```text
+If report_evidence exists and passes validation:
+    use report_evidence for candidate ranking and evidence rendering
+else:
+    use current Step 8W fallback logic
+```
+
+**Rollout:**
+- Step 8Y — design contract only.
+- Step 8Z — implement schema / validator.
+- Step 8AA — update LLM2 prompt.
+- Step 8AB — persist `report_evidence` in analysis.
+- Step 8AC — controlled LLM2 re-analysis for 3-5 calls from `2026-05-04`.
+- Step 8AD — wire `manager_daily` to prefer `report_evidence`.
+- Step 8AE — rebuild PDFs and compare with Step 8W.
+- Step 8AF — human review.
+- Step 8AI — separate STT diarization/speaker investigation.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04

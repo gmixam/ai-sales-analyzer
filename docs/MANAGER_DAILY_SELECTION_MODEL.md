@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`.
+**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`.
 
 ---
 
@@ -222,6 +222,15 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 - Speaker roles must not be invented. When persisted segment speaker roles are unreliable or generic, the payload uses `speaker=unknown` and the renderer shows `Реплика`, not `Клиент` / `Менеджер`.
 - If there is no explicit priority stage below the threshold but a meaningful key problem and selected breakdown call exist, the focus deep-dive may use the lowest-scoring available stage as a bounded Situation Day fallback.
 - This is payload/render assembly only: no analyzer prompt, STT/LLM, scoring, eligibility, selection model, rolling-window, business outcome resolver, or delivery behavior changes.
+
+**Target report evidence architecture (Step 8Y):**
+- Step 8W fallback is the backward-compatible path for legacy analyses, not the final semantic architecture.
+- Target path: `STT -> transcript/segments -> LLM1 routing -> LLM2 deep analysis + report_evidence -> deterministic reporting layer`.
+- LLM2 should add an additive `report_evidence` package to each analyzed call. The approved MVP-1 analysis contract remains valid and is not replaced.
+- `report_evidence` contains report-ready candidates for `business_outcome`, `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and reusable quote bank.
+- Reporting layer remains deterministic: it selects report scope/report-day calls, validates/ranks candidates, applies final `BusinessOutcomeResolver` status, aggregates, renders, and falls back to Step 8W logic when `report_evidence` is absent or invalid.
+- Final `BusinessOutcomeResolver` status wins over `report_evidence.business_outcome` conflicts. For example, explicit refusal beats LLM-open, service/document help beats LLM-not-suitable, and technical blockers remain blockers.
+- Full contract, validation requirements, backward compatibility, prompt update plan, and rollout Step 8Z..8AI live in `docs/REPORT_EVIDENCE_CONTRACT.md`.
 
 **`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
 

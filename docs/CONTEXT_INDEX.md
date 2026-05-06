@@ -75,7 +75,16 @@
 - понять rolling window rule и transparency requirements;
 - получить перечень bounded implementation tasks для реализации этого contract.
 
-### 11. `docs/mvp1_sources/`
+### 11. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
+Читать, если задача затрагивает LLM2 report-ready evidence, `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, prompt update plan или будущую интеграцию `report_evidence`.
+
+Зачем читать:
+- понять target architecture `LLM2 -> report_evidence -> reporting layer`;
+- увидеть additive JSON contract и validation rules;
+- не превращать reporting layer в semantic analyzer;
+- понять backward compatibility с Step 8W fallback.
+
+### 12. `docs/mvp1_sources/`
 Читать только когда задача затрагивает analyzer contract, checklist, manager card format или source prompt assets.
 
 Минимальный набор source-of-truth файлов:
@@ -91,6 +100,7 @@
 - Stage-specific Manual Output Validation rules: [docs/MANUAL_OUTPUT_VALIDATION_SPEC.md](docs/MANUAL_OUTPUT_VALIDATION_SPEC.md)
 - Manual Reporting Pilot operating model: [docs/MANUAL_REPORTING_PILOT.md](docs/MANUAL_REPORTING_PILOT.md)
 - **`manager_daily` selection model и report contract (canonical):** [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
+- **LLM2 report-ready evidence contract:** [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
 - Prompt policies и prompt/task split: [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
 - Короткий шаблон будущих task-промптов: [docs/TASK_PROMPT_TEMPLATE.md](docs/TASK_PROMPT_TEMPLATE.md)
 

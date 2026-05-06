@@ -539,3 +539,14 @@
 - **Reason:** Step 8V PDFs showed `СИТУАЦИЯ ДНЯ` either empty while `РАЗБОР ЗВОНКА` existed, or showing a conclusion with `Фрагмент звонка в текущем payload не передан`, even though selected calls had persisted transcripts/segments.
 - **Scope:** Reporting payload assembly and docx-first render behavior for `СИТУАЦИЯ ДНЯ` only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling window, BusinessOutcomeResolver priority, delivery semantics, PDF layout redesign, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-06
+
+## ADR-053: LLM2 provides additive report-ready evidence; reporting remains deterministic
+- **Decision:** The target architecture for `manager_daily` evidence-rich report blocks is `STT -> transcript/segments -> LLM1 routing -> LLM2 deep analysis + report_evidence -> deterministic reporting layer`.
+- **Decision:** LLM2 should add an additive `report_evidence_version=v1` / `report_evidence` package to each call analysis. This does not replace the approved MVP-1 analysis contract.
+- **Decision:** `report_evidence` contains report-ready candidates for business outcome evidence, Situation Day, manager coaching moments, Voice of Customer, Additional Situations, follow-up candidates, and quote bank. The full contract lives in `docs/REPORT_EVIDENCE_CONTRACT.md`.
+- **Decision:** Reporting layer is not an AI analysis layer. It selects report scope, report-day calls, `meaningful_calls`, `coaching_core`, validates/ranks candidates, applies final `BusinessOutcomeResolver` status, aggregates, renders, and falls back to Step 8W legacy evidence logic when `report_evidence` is missing or invalid.
+- **Decision:** `BusinessOutcomeResolver` remains the final deterministic source for manager-facing outcome. Future resolver versions may use `report_evidence.business_outcome` as the primary semantic signal, but deterministic priority rules and technical blockers still win.
+- **Decision:** Validation must enforce known enums, checklist `stage_code`, speaker values `manager|client|unknown`, transcript-grounded quotes/dialogue, no invented roles, and non-rendering of insufficient evidence as strong proof.
+- **Reason:** Step 8W proved the reporting layer can recover evidence from persisted transcripts, but that should remain a compatibility fallback. Report-ready semantic candidates should be prepared during LLM2 analysis so reporting can stay bounded, deterministic, and auditable.
+- **Scope:** Design/architecture contract only in Step 8Y. No code implementation, prompt implementation, STT/LLM rerun, build_missing, delivery, report rendering change, mass rebuild, scheduler, or `rop_weekly` behavior change.
+- **Date:** 2026-05-06
