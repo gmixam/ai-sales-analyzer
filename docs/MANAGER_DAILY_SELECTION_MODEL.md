@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority.
+**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists.
 
 ---
 
@@ -180,6 +180,12 @@ Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `rep
 
 If `report_evidence` is missing or invalid, the report uses the current Step 8W persisted evidence/transcript fallback. Reporting diagnostics must expose `report_evidence_available`, `report_evidence_valid`, validation issues, and `report_evidence_source=report_evidence|legacy_fallback`.
 
+Since Step 8AF, legacy evidence fallback has an information-quality guard:
+- greeting-only, name-confirmation, connection/noise, `ТЕЛЕФОННЫЙ ЗВОНОК`, and IVR-like boilerplate are not selected as proof fragments while any more meaningful sales-like fragment exists;
+- fallback ranking prefers valid `report_evidence`, then usable sales-like evidence, then transcript fragments with business terms, and keeps greeting/IVR fragments only as last resort;
+- low-information last-resort fragments must be marked weak/partial rather than rendered as strong proof;
+- fresh LLM2 finding rows that provide `text` without `title` are still valid for report aggregation and legacy `РАЗБОР ЗВОНКА` fallback.
+
 ---
 
 ### Счётчики в итоговом блоке ИТОГ ДНЯ
@@ -228,6 +234,7 @@ If `report_evidence` is missing or invalid, the report uses the current Step 8W 
   2. persisted `interaction.metadata_.segments` from the selected breakdown call, 1-3 short turns;
   3. persisted `interaction.text` from the selected breakdown call, 1-3 short text chunks;
   4. if none of the above exists, render `Недостаточно подтверждённых фрагментов звонков для доказательного разбора ситуации дня.`
+- Segment/text fallback must skip greeting-only and IVR-like boilerplate when better transcript evidence exists. If only low-information text remains, payload marks `partial_reason=low_information_fragment_only` / `evidence_quality=weak` so the renderer does not present it as strong proof.
 - Speaker roles must not be invented. When persisted segment speaker roles are unreliable or generic, the payload uses `speaker=unknown` and the renderer shows `Реплика`, not `Клиент` / `Менеджер`.
 - If there is no explicit priority stage below the threshold but a meaningful key problem and selected breakdown call exist, the focus deep-dive may use the lowest-scoring available stage as a bounded Situation Day fallback.
 - This is payload/render assembly only: no analyzer prompt, STT/LLM, scoring, eligibility, selection model, rolling-window, business outcome resolver, or delivery behavior changes.

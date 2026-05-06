@@ -691,6 +691,45 @@ Step 8R/8V outcome totals remained unchanged:
 
 **Decision:** do not proceed to Step 8AF human review with these PDFs as final artifacts. Add a bounded quality follow-up before human review: either improve Timур sales-like `report_evidence` richness for open calls, or tighten legacy fallback ranking so IVR-like fragments are not selected when report evidence is missing/unusable.
 
+### Manager_daily Target Architecture — Step 8AF Closure: Тимур Evidence Quality Follow-up
+
+**Дата:** 2026-05-06
+
+**Scope:** bounded quality fix before human review. No STT, source discovery, `build_missing`, mass LLM, delivery, final `BusinessOutcomeResolver` changes, money-rule changes, prompt rewrite, or report runner invocation.
+
+**Diagnosis:**
+- Step 8AE selected Тимур `12:09 / +77470957591` (`ba0fbc39-33f3-4f27-b978-dc2ef9ab75d0`) for `СИТУАЦИЯ ДНЯ` / `РАЗБОР ЗВОНКА` through legacy fallback.
+- The old fragment was IVR-like / greeting-only (`Вас приветствует...`, `Наберите внутренний номер...`) and was not acceptable as manager-facing proof while richer sales-like report-day calls existed.
+
+**Implemented:**
+- legacy fallback evidence utility in `reporting.py`: `is_greeting_only_fragment`, `is_low_information_fragment`, `fragment_information_score`;
+- Situation Day transcript fallback now skips greetings, name confirmation, connection/noise, and IVR-like boilerplate; low-information fragments are last-resort only and marked weak;
+- legacy `РАЗБОР ЗВОНКА` ranking now prefers candidates with meaningful business evidence before lowest-score tie-breaking;
+- fresh LLM2 gap items with `text` but no `title` are accepted by report aggregation / call-breakdown fallback;
+- docx renderer shows an explicit weak-fragment note for `partial_reason=low_information_fragment_only`.
+
+**Controlled LLM2 sample:**
+
+Direct `CallsAnalyzer.analyze_call()` only, on persisted transcripts for 3 exact Тимур `2026-05-04` interactions:
+
+| interaction_id | time | new analysis | validator | useful package |
+|---|---:|---|---|---|
+| `3d7f0ba0-2c88-482f-89b7-283b67a76fad` | 09:14 | `c2281d67-89d5-4f29-86dd-5bf6d0eeaeb6` | passed | `agreement`, follow-up `1` |
+| `489676d0-0fc8-4457-819d-9167de42425b` | 09:22 | `fb93126a-fcbd-4d23-89bd-709728a2af71` | passed | `open`, VOC `1`, follow-up `1`, weak situation/coaching marked unusable |
+| `ba0fbc39-33f3-4f27-b978-dc2ef9ab75d0` | 12:09 | `2ae15a76-cf82-46c6-8472-d908a9cc3861` | passed | `open`, usable situation `1` |
+
+**Ready-only verification:**
+
+Artifact copied to host:
+- `/tmp/step8af_Тимур_2026-05-04.pdf`
+- `/tmp/step8af_timur_summary_2026-05-04.json`
+
+| Manager | call_list_dates | gate | outcome totals | report_evidence valid | Situation source | Breakdown source | VOC source |
+|---|---|---|---|---:|---|---|---|
+| Тимур | `["2026-05-04"]` | passed | `15 / 3 / 1 / 2 / 6 / 2 / 1` | 5/15 | `report_evidence.situation_candidates` | legacy fallback, meaningful `07:48`, score `20` | `report_evidence.voice_of_customer` |
+
+**Decision:** Тимур no longer uses IVR/greeting-only evidence for `СИТУАЦИЯ ДНЯ` or `РАЗБОР ЗВОНКА` when a better candidate exists. Proceed to bounded human-review handoff with Step 8AF artifact set; remaining richness gaps are normal prompt/report_evidence iteration, not a blocker for this artifact handoff.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04

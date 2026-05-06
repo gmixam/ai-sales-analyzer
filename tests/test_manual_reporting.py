@@ -961,6 +961,182 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("документооборот", coaching_view["what_happened"])
         self.assertTrue(coaching_view["dialogue_is_partial"])
 
+    def test_manager_daily_situation_fallback_skips_ivr_like_transcript_segments(self) -> None:
+        artifact = _artifact(35.0, "problematic")
+        artifact.interaction.text = (
+            "Здравствуйте! Вас приветствует главный эксперт по путешествиям турагентства HTKZ. "
+            "Наберите внутренний номер сотрудника или дождитесь ответа менеджера. "
+            "Только у нас вы можете забронировать тур не выходя из дома, оплачивая картой виза или мастер-карт. "
+            "Я хотел у вас уточнить по поводу электронного документооборота. "
+            "Скиньте коммерческое предложение в WhatsApp, я посмотрю."
+        )
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "Здравствуйте! Вас приветствует главный эксперт по путешествиям турагентства HTKZ."},
+            {"speaker": "A", "text": "Наберите внутренний номер сотрудника или дождитесь ответа менеджера."},
+            {
+                "speaker": "A",
+                "text": "Только у нас вы можете забронировать тур не выходя из дома, оплачивая картой виза или мастер-карт.",
+            },
+            {"speaker": "A", "text": "Я хотел у вас уточнить по поводу электронного документооборота."},
+            {"speaker": "A", "text": "Скиньте коммерческое предложение в WhatsApp, я посмотрю."},
+        ]
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"]["contact_name"] = "HTKZ клиент"
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Текущий процесс не уточнен.",
+                    }
+                ],
+            }
+        ]
+        detail["gaps"] = [
+            {
+                "criterion_code": "qp_current_process",
+                "title": "Текущий процесс не уточнен",
+                "comment": "Текущий процесс не уточнен.",
+            }
+        ]
+        detail["evidence_fragments"] = []
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        excerpt = payload["situation_dialogue_excerpt"]
+        self.assertIsNotNone(excerpt)
+        self.assertEqual(excerpt["source"], "call_breakdown_transcript_segments")
+        rendered = " ".join(turn["text"] for turn in excerpt["turns"])
+        self.assertIn("документооборота", rendered)
+        self.assertNotIn("турагентства", rendered)
+        self.assertNotIn("Наберите внутренний номер", rendered)
+        self.assertEqual(excerpt["evidence_quality"], "indirect")
+
+    def test_manager_daily_call_breakdown_prefers_meaningful_fallback_over_greeting_only(self) -> None:
+        weak = _artifact(10.0, "problematic", call_date="2026-03-25 09:00:00")
+        weak.interaction.text = "ТЕЛЕФОННЫЙ ЗВОНОК. Алло. Добрый день."
+        weak.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "ТЕЛЕФОННЫЙ ЗВОНОК"},
+            {"speaker": "A", "text": "Алло"},
+            {"speaker": "A", "text": "Добрый день"},
+        ]
+        strong = _artifact(80.0, "basic", call_date="2026-03-25 10:00:00")
+        strong.interaction.text = (
+            "Менеджер уточнил электронный документооборот. "
+            "Клиент попросил отправить коммерческое предложение в WhatsApp."
+        )
+        strong.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "Менеджер уточнил электронный документооборот."},
+            {"speaker": "B", "text": "Клиент попросил отправить коммерческое предложение в WhatsApp."},
+        ]
+
+        for artifact, label in ((weak, "Слабый IVR"), (strong, "Содержательный клиент")):
+            detail = artifact.analysis.scores_detail
+            detail["classification"] = {
+                "call_type": "sales_primary",
+                "scenario_type": "cold_outbound",
+                "analysis_eligibility": "eligible",
+            }
+            detail["call"]["contact_name"] = label
+            detail["score_by_stage"] = [
+                {
+                    "stage_code": "qualification_primary",
+                    "stage_name": "Квалификация и первичная потребность",
+                    "stage_score": 0,
+                    "max_stage_score": 2,
+                    "criteria_results": [
+                        {
+                            "criterion_code": "qp_current_process",
+                            "criterion_name": "Текущий процесс",
+                            "score": 0,
+                            "max_score": 2,
+                            "comment": "Текущий процесс не уточнен.",
+                        }
+                    ],
+                }
+            ]
+            detail["gaps"] = [
+                {
+                    "criterion_code": "qp_current_process",
+                    "title": "Текущий процесс не уточнен",
+                    "comment": "Текущий процесс не уточнен.",
+                }
+            ]
+            detail["evidence_fragments"] = []
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[weak, strong],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(payload["call_breakdown"]["client_label"], "Содержательный клиент")
+        self.assertEqual(payload["call_breakdown"]["fallback_evidence_quality"], "indirect")
+        self.assertGreaterEqual(payload["call_breakdown"]["fallback_evidence_score"], 4)
+
+    def test_manager_daily_call_breakdown_accepts_text_only_gap_items(self) -> None:
+        artifact = _artifact(42.0, "problematic")
+        artifact.interaction.text = "Клиент попросил коммерческое предложение в WhatsApp, но процесс не был уточнен."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"]["contact_name"] = "Текстовый gap"
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [],
+            }
+        ]
+        detail["gaps"] = [{"text": "Менеджер не выяснил, как устроен текущий процесс у клиента."}]
+        detail["evidence_fragments"] = []
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertFalse(payload["call_breakdown"]["is_placeholder"])
+        self.assertEqual(payload["call_breakdown"]["client_label"], "Текстовый gap")
+        self.assertEqual(
+            payload["analysis_improve"][0]["label"],
+            "Менеджер не выяснил, как устроен текущий процесс у клиента.",
+        )
+
     def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [

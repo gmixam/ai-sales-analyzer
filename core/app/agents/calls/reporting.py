@@ -4972,6 +4972,122 @@ def _dialogue_turn_text(value: str, *, limit: int = 320) -> str:
     return text[:limit].rsplit(" ", 1)[0].strip() + "…"
 
 
+_GREETING_ONLY_WORDS = {
+    "а",
+    "ага",
+    "алло",
+    "вас",
+    "вечер",
+    "говорить",
+    "да",
+    "день",
+    "добрый",
+    "здравствуйте",
+    "меня",
+    "минуту",
+    "можно",
+    "слышно",
+    "слушаю",
+    "секунду",
+    "утро",
+    "угу",
+    "это",
+    "я",
+}
+
+_CALL_START_BOILERPLATE_PHRASES = (
+    "вас приветствует",
+    "наберите внутренний номер",
+    "дождитесь ответа",
+    "все менеджеры заняты",
+    "оставайтесь на линии",
+    "главный эксперт по путешествиям",
+    "турагентства",
+    "забронировать тур",
+    "оплачивая картой",
+    "виза или мастер",
+    "visa или master",
+)
+
+_BUSINESS_FRAGMENT_TERMS = (
+    "акт",
+    "бухгалтер",
+    "ватсап",
+    "whatsapp",
+    "договор",
+    "документ",
+    "документооборот",
+    "кп",
+    "коммерчес",
+    "контрагент",
+    "лиценз",
+    "оплат",
+    "подключ",
+    "подпис",
+    "подписка",
+    "потребност",
+    "прайс",
+    "рассматрива",
+    "соглас",
+    "стоимост",
+    "счёт",
+    "счет",
+    "тариф",
+    "цен",
+    "эдо",
+    "электрон",
+)
+
+
+def _dialogue_compact(value: str) -> str:
+    return re.sub(r"[^\wа-яё]+", "", _dialogue_norm(value), flags=re.IGNORECASE)
+
+
+def _business_fragment_signal_count(text: str) -> int:
+    normalized = _dialogue_norm(text)
+    return sum(1 for term in _BUSINESS_FRAGMENT_TERMS if term in normalized)
+
+
+def is_greeting_only_fragment(value: str) -> bool:
+    """Return True for call-start boilerplate that is unsafe as report evidence."""
+    text = _dialogue_norm(value)
+    if not text:
+        return True
+
+    compact = _dialogue_compact(text)
+    if compact in {"алло", "да", "угу", "ага", "добрыйдень", "здравствуйте", "телефонныйзвонок"}:
+        return True
+    if any(phrase in text for phrase in _CALL_START_BOILERPLATE_PHRASES):
+        return True
+
+    words = re.findall(r"[a-zа-яё0-9]+", text, flags=re.IGNORECASE)
+    if words and len(words) <= 7 and all(word in _GREETING_ONLY_WORDS for word in words):
+        return True
+    return False
+
+
+def fragment_information_score(value: str) -> int:
+    """Score how useful one persisted fragment is as manager-facing evidence."""
+    text = _dialogue_norm(value)
+    if not text:
+        return 0
+    if is_greeting_only_fragment(text):
+        return 0
+
+    words = re.findall(r"[a-zа-яё0-9]+", text, flags=re.IGNORECASE)
+    useful_words = [word for word in words if len(word) >= 4 and word not in _GREETING_ONLY_WORDS]
+    business_signals = _business_fragment_signal_count(text)
+    score = min(len(useful_words), 8) + business_signals * 4
+    if "?" in text:
+        score += 1
+    return score
+
+
+def is_low_information_fragment(value: str) -> bool:
+    """Guard legacy fallback from treating greetings/IVR as proof fragments."""
+    return fragment_information_score(value) < 4
+
+
 def _build_situation_dialogue_excerpt(
     *,
     artifacts: list[ReportArtifact],
@@ -5134,12 +5250,14 @@ def _build_situation_evidence_quote_from_call_breakdown(
 
 def _is_dialogue_noise_line(value: str) -> bool:
     text = _dialogue_norm(value)
-    compact = re.sub(r"[^\wа-яё]+", "", text, flags=re.IGNORECASE)
+    compact = _dialogue_compact(text)
     if not text:
         return True
     if compact in {"алло", "да", "угу", "ага"}:
         return True
     if compact in {"телефонныйзвонок"}:
+        return True
+    if is_greeting_only_fragment(text):
         return True
     return False
 
@@ -5155,10 +5273,14 @@ def _build_situation_dialogue_excerpt_from_call_breakdown(
         return None
 
     turns: list[dict[str, str]] = []
+    low_information_turns: list[dict[str, str]] = []
     segments = list((artifact.interaction.metadata_ or {}).get("segments") or [])
     for segment in segments:
         segment_text = _dialogue_turn_text(str((segment or {}).get("text") or ""), limit=260)
         if _is_dialogue_noise_line(segment_text):
+            continue
+        if is_low_information_fragment(segment_text):
+            low_information_turns.append({"speaker": "unknown", "text": segment_text})
             continue
         turns.append({"speaker": "unknown", "text": segment_text})
         if len(turns) >= 3:
@@ -5170,9 +5292,17 @@ def _build_situation_dialogue_excerpt_from_call_breakdown(
             chunk_text = _dialogue_turn_text(chunk, limit=260)
             if _is_dialogue_noise_line(chunk_text):
                 continue
+            if is_low_information_fragment(chunk_text):
+                low_information_turns.append({"speaker": "unknown", "text": chunk_text})
+                continue
             turns.append({"speaker": "unknown", "text": chunk_text})
             if len(turns) >= 3:
                 break
+
+    used_low_information_fallback = False
+    if not turns and low_information_turns:
+        turns = low_information_turns[:1]
+        used_low_information_fallback = True
 
     if not turns:
         return None
@@ -5180,9 +5310,43 @@ def _build_situation_dialogue_excerpt_from_call_breakdown(
         **_artifact_call_reference(artifact),
         "source": "call_breakdown_transcript_segments" if segments else "call_breakdown_transcript_text",
         "is_partial": True,
-        "partial_reason": "speaker_roles_unavailable",
+        "partial_reason": "low_information_fragment_only"
+        if used_low_information_fallback
+        else "speaker_roles_unavailable",
+        "evidence_quality": "weak" if used_low_information_fallback else "indirect",
         "turns": turns,
     }
+
+
+def _artifact_fallback_evidence_score(artifact: ReportArtifact) -> int:
+    """Best deterministic evidence score available for legacy report fallbacks."""
+    texts: list[str] = []
+    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+
+    for frag in detail.get("evidence_fragments") or []:
+        if not isinstance(frag, dict):
+            continue
+        texts.extend(
+            str(frag.get(key) or "").strip()
+            for key in ("client_text", "manager_text", "manager_phrase", "evidence")
+            if str(frag.get(key) or "").strip()
+        )
+
+    for segment in (artifact.interaction.metadata_ or {}).get("segments") or []:
+        if isinstance(segment, dict):
+            text = str(segment.get("text") or "").strip()
+            if text:
+                texts.append(text)
+
+    transcript = str(artifact.interaction.text or "").strip()
+    if transcript:
+        texts.extend(
+            chunk.strip()
+            for chunk in re.split(r"(?<=[.!?])\s+", transcript)
+            if chunk.strip()
+        )
+
+    return max((fragment_information_score(text) for text in texts), default=0)
 
 
 _FOCUS_STAGE_WHY_FALLBACKS: dict[str, str] = {
@@ -5601,18 +5765,37 @@ def _score_bucket(analysis: Analysis | None) -> str:
     return "problematic"
 
 
+def _finding_item_label(item: dict[str, Any]) -> str:
+    """Return a stable manager-facing label from legacy or fresh LLM2 finding shapes."""
+    label = str(
+        item.get("title")
+        or item.get("criterion_name")
+        or item.get("criterion_code")
+        or item.get("text")
+        or ""
+    ).strip()
+    return label or "Без названия"
+
+
+def _finding_item_interpretation(item: dict[str, Any]) -> str:
+    """Return a readable finding explanation without relying on one contract variant."""
+    value = str(
+        item.get("impact")
+        or item.get("comment")
+        or item.get("text")
+        or item.get("evidence")
+        or ""
+    ).strip()
+    return value or "Подтверждено в нескольких звонках."
+
+
 def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> list[dict[str, Any]]:
     """Aggregate repeated strength/gap findings into compact report items."""
     grouped: dict[str, list[dict[str, Any]]] = {}
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for item in detail.get(key) or []:
-            label = str(
-                item.get("title")
-                or item.get("criterion_name")
-                or item.get("criterion_code")
-                or "Без названия"
-            )
+            label = _finding_item_label(dict(item or {}))
             grouped.setdefault(label, []).append(item)
     result: list[dict[str, Any]] = []
     for label, items in sorted(grouped.items(), key=lambda pair: len(pair[1]), reverse=True)[:5]:
@@ -5622,12 +5805,7 @@ def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> li
                 "label": label,
                 "signal": len(items),
                 "criterion_code": str(first.get("criterion_code") or "").strip() or None,
-                "interpretation": str(
-                    first.get("impact")
-                    or first.get("comment")
-                    or first.get("evidence")
-                    or "Подтверждено в нескольких звонках."
-                ),
+                "interpretation": _finding_item_interpretation(dict(first or {})),
             }
         )
     return result
@@ -7073,8 +7251,8 @@ def _build_call_breakdown(
 ) -> dict[str, Any]:
     """Build compact step-by-step breakdown of the most representative problem call.
 
-    Selection rule: among calls containing the top gap label, pick the one with the
-    lowest overall score (best illustrator of the problem).
+    Selection rule: among calls containing the top gap label, prefer calls with
+    usable business evidence, then pick the lowest overall score.
     """
     _empty: dict[str, Any] = {
         "is_placeholder": True,
@@ -7092,22 +7270,32 @@ def _build_call_breakdown(
         return _empty
 
     gap_label = improve_items[0]["label"]
-    best_artifact: ReportArtifact | None = None
-    best_score = float("inf")
+    candidates: list[tuple[int, float, int, datetime, ReportArtifact]] = []
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         has_gap = any(
-            str(item.get("title") or item.get("criterion_name") or item.get("criterion_code") or "").strip() == gap_label
+            _finding_item_label(dict(item or {})) == gap_label
             for item in (detail.get("gaps") or [])
         )
         if has_gap:
             s = _extract_score_percent(artifact.analysis)
-            if s < best_score:
-                best_score = s
-                best_artifact = artifact
+            evidence_score = _artifact_fallback_evidence_score(artifact)
+            evidence_rank = 0 if evidence_score >= 4 else 1
+            candidates.append(
+                (
+                    evidence_rank,
+                    s,
+                    -evidence_score,
+                    artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+                    artifact,
+                )
+            )
 
-    if best_artifact is None:
+    if not candidates:
         return _empty
+    candidates.sort(key=lambda item: item[:4])
+    best_evidence_rank, _best_score, best_negative_evidence_score, _best_started_at, best_artifact = candidates[0]
+    best_evidence_score = abs(best_negative_evidence_score)
 
     detail = dict((best_artifact.analysis.scores_detail or {}) if best_artifact.analysis is not None else {})
     call_meta = dict(detail.get("call") or {})
@@ -7145,19 +7333,19 @@ def _build_call_breakdown(
 
     worked = [
         {
-            "label": str(i.get("title") or i.get("criterion_name") or ""),
-            "interpretation": str(i.get("impact") or i.get("comment") or i.get("evidence") or ""),
+            "label": _finding_item_label(dict(i or {})),
+            "interpretation": _finding_item_interpretation(dict(i or {})),
         }
         for i in (detail.get("strengths") or [])[:2]
-        if str(i.get("title") or i.get("criterion_name") or "").strip()
+        if _finding_item_label(dict(i or {})) != "Без названия"
     ]
     to_fix = [
         {
-            "label": str(i.get("title") or i.get("criterion_name") or ""),
-            "interpretation": str(i.get("impact") or i.get("comment") or i.get("evidence") or ""),
+            "label": _finding_item_label(dict(i or {})),
+            "interpretation": _finding_item_interpretation(dict(i or {})),
         }
         for i in (detail.get("gaps") or [])[:2]
-        if str(i.get("title") or i.get("criterion_name") or "").strip()
+        if _finding_item_label(dict(i or {})) != "Без названия"
     ]
 
     recs = detail.get("recommendations") or []
@@ -7182,6 +7370,8 @@ def _build_call_breakdown(
         "worked": worked,
         "to_fix": to_fix,
         "recommendation": recommendation,
+        "fallback_evidence_score": best_evidence_score,
+        "fallback_evidence_quality": "weak" if best_evidence_rank else "indirect",
     }
 
 
@@ -7200,13 +7390,9 @@ def _build_problem_call_example(
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for gap_item in detail.get("gaps") or []:
-            item_label = str(
-                gap_item.get("title") or gap_item.get("criterion_name") or gap_item.get("criterion_code") or ""
-            ).strip()
+            item_label = _finding_item_label(dict(gap_item or {}))
             if item_label == gap_label:
-                reason = str(
-                    gap_item.get("comment") or gap_item.get("evidence") or gap_item.get("impact") or ""
-                ).strip()
+                reason = _finding_item_interpretation(dict(gap_item or {}))
                 score = _extract_score_percent(artifact.analysis)
                 candidates.append((score, artifact, reason))
                 break
@@ -7541,9 +7727,9 @@ def _first_gap_evidence(*, artifacts: list[ReportArtifact], label: str) -> str |
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for item in detail.get("gaps") or []:
-            item_label = str(item.get("title") or item.get("criterion_name") or item.get("criterion_code") or "").strip()
+            item_label = _finding_item_label(dict(item or {}))
             if item_label == label:
-                return str(item.get("comment") or item.get("evidence") or item.get("impact") or "").strip() or None
+                return _finding_item_interpretation(dict(item or {})) or None
     return None
 
 

@@ -218,9 +218,12 @@ function buildDialogueParagraphs(excerpt, quote) {
   }
   const partial = source?.is_partial !== false;
   const reason = cleanText(source?.partial_reason);
-  const partialText = reason === "speaker_roles_unavailable"
-    ? "Фрагмент звонка передан частично: роли участников определены не полностью."
-    : "Фрагмент звонка передан частично.";
+  let partialText = "Фрагмент звонка передан частично.";
+  if (reason === "speaker_roles_unavailable") {
+    partialText = "Фрагмент звонка передан частично: роли участников определены не полностью.";
+  } else if (reason === "low_information_fragment_only") {
+    partialText = "Доступен только слабый фрагмент: в звонке не найдено более содержательное подтверждение.";
+  }
   const paras = partial
     ? [bodyPara(partialText, { color: COLORS.gray, size: SZ.cell, italic: true })]
     : [];
