@@ -1007,6 +1007,59 @@ Evidence:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8T Audit Closure + Step 8U Follow-up
+
+**Дата:** 2026-05-06
+
+**Scope:** audit-only consistency check after Step 8R resolver and Step 8S PDF regeneration. Inputs were only Step 8S PDFs and report-day `2026-05-04` payload/code inspection. No `build_missing`, STT, LLM, delivery, prompt, scoring, eligibility, selection, rolling-window, renderer, or resolver implementation changes.
+
+**Consistency summary:**
+
+| Manager | Итог дня ok | Деньги на столе ok | Кого взять завтра ok | Call list ok | Issues |
+|---|---|---|---|---|---:|
+| Эльмира | yes | yes | no | yes | 3 |
+| Тимур | yes | yes | no | yes | 3 |
+| Толеген | yes | yes | no | yes | 5 |
+
+**Confirmed source alignment:**
+- `ИТОГ ДНЯ` uses `payload.call_outcomes_summary`, now derived from `BusinessOutcomeResolver`.
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` uses `_build_daily_call_row()` and final resolver status.
+- `ДЕНЬГИ НА СТОЛЕ` uses the same `call_outcomes_summary`; it excludes `Отказ`, `Тех/сервис`, and `Не подходит`.
+- Current money rule intentionally counts `Договорённость + Открыт + Перенос`. If business wants `Перенос` excluded or separated, that is a business-rule change, not a Step 8T consistency bug.
+
+**Inconsistencies found:**
+
+| Manager | call/time/client | call list status | other block | conflict | recommended fix |
+|---|---|---|---|---|---|
+| Эльмира | `06:28` / `+77012172463` | `Открыт` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | build tomorrow list from final call-list status; show as `Открытый` |
+| Эльмира | `12:05` / `Акмарал` | `Тех/сервис` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | exclude `Тех/сервис` from tomorrow actions |
+| Эльмира | `10:14` / `Агирим` | `Отказ` | `КОГО ВЗЯТЬ` | shown as open follow-up | exclude `Отказ` from tomorrow actions |
+| Тимур | `12:09` / `+77470957591` | `Открыт` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | show as `Открытый`, not hot agreement |
+| Тимур | `09:26` / `+77751231100` | `Открыт` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | show as `Открытый`, not hot agreement |
+| Тимур | `04:47` / `Надежда Анатольевна` | `Отказ` | `КОГО ВЗЯТЬ` | shown as open follow-up | exclude `Отказ` from tomorrow actions |
+| Толеген | `11:52` / `+77020472248` | `Тех/сервис` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | exclude `Тех/сервис` from tomorrow actions |
+| Толеген | `06:37` / `+77774745093` | `Открыт` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | show as `Открытый`, not hot agreement |
+| Толеген | `11:46` / `Нур-Султан` | `Открыт` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | show as `Открытый`, not hot agreement |
+| Толеген | `11:36` / `Флора` | `Отказ` | `КОГО ВЗЯТЬ` | shown as hot `Договорённость` | exclude `Отказ` from tomorrow actions |
+| Толеген | `11:52` / `+77020472248` | `Тех/сервис` | `РАЗБОР ЗВОНКА` | coaching example selected from service outcome | filter coaching examples by final business outcome or mark service examples separately |
+
+**Root cause:**
+- `_build_call_tomorrow()` still runs on `coaching_core` artifacts and calls legacy `_derive_call_status_and_deadline(follow_up)`.
+- It does not read final `BusinessOutcomeResolver` status from `payload.call_list[]`.
+- Coaching blocks still use `coaching_core` and do not know final business outcome; a reusable/eligible analysis can still become a final `Тех/сервис` or `Отказ` after Step 8R.
+
+**Step 8U follow-up:**
+- Align `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` with final business outcome source:
+  - build from `payload.call_list[]` / resolver status, not raw follow-up status;
+  - include only final `Перенос`, `Договорённость`, `Открыт`;
+  - exclude final `Отказ`, `Тех/сервис`, and unclassified rows;
+  - preserve `deadline`, `next_step`, and `reason`, but derive priority label from final status.
+- Add deterministic tests for the Step 8T cases above.
+- Decide whether coaching examples should exclude report-day final `Тех/сервис` / `Отказ`, or explicitly label them as non-sales coaching examples. Recommended default: exclude them from `РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, and `ЧЕЛЛЕНДЖ` candidate examples when enough final sales-like calls remain.
+- Keep `ДЕНЬГИ НА СТОЛЕ` unchanged unless business explicitly changes the rule for `Перенос`.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅
