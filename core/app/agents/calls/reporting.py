@@ -4246,29 +4246,60 @@ def build_manager_daily_payload(
     average_score = round(sum(score_values) / len(score_values), 1) if score_values else None
     recent_score = _latest_call_score(artifacts)
     level_counts = {"strong": 0, "baseline": 0, "problematic": 0}
-    worked_items = _aggregate_finding_items(artifacts=artifacts, key="strengths")
-    improve_items = _aggregate_finding_items(artifacts=artifacts, key="gaps")
-    recommendation_cards = _aggregate_recommendation_cards(artifacts=artifacts)
-    product_signal = _select_most_important_product_signal(artifacts)
-    evidence_fragment = _select_evidence_fragment(artifacts)
-    key_problem = _build_manager_daily_key_problem(improve_items=improve_items, artifacts=artifacts, calls_count=calls_count)
-    call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=artifacts)
-    voice_of_customer = _build_voice_of_customer(artifacts=artifacts)
+    all_window_artifacts = window_artifacts if window_artifacts is not None else artifacts
+    operational_day_artifacts = _filter_artifacts_by_period(
+        artifacts=all_window_artifacts,
+        period={
+            "date_from": filters.date_from or period["date_from"],
+            "date_to": filters.date_to or filters.date_from or period["date_to"],
+        },
+    )
+    # Outcomes summary uses report-day meaningful calls (same source as call_list), not coaching_core.
+    # This aligns ИТОГ ДНЯ and ДЕНЬГИ НА СТОЛЕ with the call list totals.
+    operational_meaningful_artifacts = [
+        a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
+    ]
+    call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
+    unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
+    call_list = _build_meaningful_call_list(
+        window_artifacts=operational_day_artifacts,
+    )
+    call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
+    coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
+        artifacts=artifacts,
+        call_list_by_interaction_id=call_list_by_interaction_id,
+    )
+    manager_facing_completeness = _build_manager_facing_completeness_gate(call_list=call_list)
+    worked_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="strengths")
+    improve_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="gaps")
+    recommendation_cards = _aggregate_recommendation_cards(artifacts=coaching_content_artifacts)
+    product_signal = _select_most_important_product_signal(coaching_content_artifacts)
+    evidence_fragment = _select_evidence_fragment(coaching_content_artifacts)
+    key_problem = _build_manager_daily_key_problem(
+        improve_items=improve_items,
+        artifacts=coaching_content_artifacts,
+        calls_count=calls_count,
+    )
+    call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=coaching_content_artifacts)
+    voice_of_customer = _build_voice_of_customer(artifacts=coaching_content_artifacts)
     additional_situations = _build_additional_situations(
         improve_items=improve_items,
         worked_items=worked_items,
         top_gap_title=(improve_items[0]["label"] if improve_items else None),
     )
-    call_tomorrow = _build_call_tomorrow(artifacts=artifacts)
-    focus_dynamics = _build_focus_criterion_dynamics(artifacts=artifacts, improve_items=improve_items)
-    score_by_stage = _aggregate_stage_scores(artifacts=artifacts)
+    call_tomorrow = _build_call_tomorrow(call_list=call_list)
+    focus_dynamics = _build_focus_criterion_dynamics(
+        artifacts=coaching_content_artifacts,
+        improve_items=improve_items,
+    )
+    score_by_stage = _aggregate_stage_scores(artifacts=coaching_content_artifacts)
     situation_evidence_quote = _build_situation_evidence_quote(
-        artifacts=artifacts,
+        artifacts=coaching_content_artifacts,
         score_by_stage=score_by_stage,
         improve_items=improve_items,
     )
     situation_dialogue_excerpt = _build_situation_dialogue_excerpt(
-        artifacts=artifacts,
+        artifacts=coaching_content_artifacts,
         situation_evidence_quote=situation_evidence_quote,
     )
     focus_stage_deep_dive = _build_focus_stage_deep_dive(
@@ -4290,25 +4321,6 @@ def build_manager_daily_payload(
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
-    all_window_artifacts = window_artifacts if window_artifacts is not None else artifacts
-    operational_day_artifacts = _filter_artifacts_by_period(
-        artifacts=all_window_artifacts,
-        period={
-            "date_from": filters.date_from or period["date_from"],
-            "date_to": filters.date_to or filters.date_from or period["date_to"],
-        },
-    )
-    # Outcomes summary uses report-day meaningful calls (same source as call_list), not coaching_core.
-    # This aligns ИТОГ ДНЯ and ДЕНЬГИ НА СТОЛЕ with the call list totals.
-    operational_meaningful_artifacts = [
-        a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
-    ]
-    call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
-    unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
-    call_list = _build_meaningful_call_list(
-        window_artifacts=operational_day_artifacts,
-    )
-    manager_facing_completeness = _build_manager_facing_completeness_gate(call_list=call_list)
 
     payload = {
         "meta": _build_base_meta(
@@ -5804,6 +5816,7 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     unclassified_status_label = _manager_unclassified_status(unclassified_reason_code)
     unclassified_context_label = _manager_unclassified_context(unclassified_reason_code)
     return {
+        "interaction_id": str(artifact.interaction.id),
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
         "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
         "duration_sec": artifact.interaction.duration_sec,
@@ -6191,45 +6204,82 @@ def _call_tomorrow_opening_script(
     return "Добрый день! Звоню завершить нашу беседу — осталось уточнить пару деталей."
 
 
-def _build_call_tomorrow(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
-    """Build ПОЗВОНИ ЗАВТРА shortlist with opening scripts.
+FINAL_SALES_LIKE_STATUSES = {"agreed", "rescheduled", "open"}
+CALL_TOMORROW_STATUS_ORDER = ("agreed", "rescheduled", "open")
+
+
+def _call_list_rows_by_interaction_id(call_list: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index final report-day call rows by interaction id."""
+    rows: dict[str, dict[str, Any]] = {}
+    for row in call_list:
+        interaction_id = str(row.get("interaction_id") or "").strip()
+        if interaction_id:
+            rows[interaction_id] = row
+    return rows
+
+
+def _filter_coaching_artifacts_by_final_outcome(
+    *,
+    artifacts: list[ReportArtifact],
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+) -> list[ReportArtifact]:
+    """Exclude report-day service/refusal rows from normal sales coaching examples.
+
+    The filter is activated only when at least one report-day coaching artifact has
+    a final sales-like outcome. If not, the previous fallback behavior is kept so
+    sparse reports do not lose every coaching block.
+    """
+    report_day_status_by_artifact: dict[str, str | None] = {}
+    has_sales_like_report_day_candidate = False
+    for artifact in artifacts:
+        interaction_id = str(artifact.interaction.id)
+        row = call_list_by_interaction_id.get(interaction_id)
+        if row is None:
+            continue
+        status = row.get("status")
+        status_value = str(status) if status is not None else None
+        report_day_status_by_artifact[interaction_id] = status_value
+        if status_value in FINAL_SALES_LIKE_STATUSES:
+            has_sales_like_report_day_candidate = True
+
+    if not has_sales_like_report_day_candidate:
+        return artifacts
+
+    filtered = [
+        artifact
+        for artifact in artifacts
+        if report_day_status_by_artifact.get(str(artifact.interaction.id)) in FINAL_SALES_LIKE_STATUSES
+        or str(artifact.interaction.id) not in report_day_status_by_artifact
+    ]
+    return filtered or artifacts
+
+
+def _build_call_tomorrow(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА from final report-day outcomes.
 
     Selection rule (deterministic):
-    - Exclude refusal, support, internal calls
-    - Priority groups: rescheduled → agreed → open
+    - Include only final Договорённость, Перенос, Открыт
+    - Exclude final Отказ, Тех/сервис and unclassified technical buckets
+    - Priority groups: agreed → rescheduled → open
     - Within group: soonest deadline first, then call time
     - Deduplicate by client_label
     - Cap at 5 contacts total
     """
-    _priority_order = ("rescheduled", "agreed", "open")
-    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in _priority_order}
+    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in CALL_TOMORROW_STATUS_ORDER}
 
-    for artifact in artifacts:
-        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-        call = dict(detail.get("call") or {})
-        follow_up = dict(detail.get("follow_up") or {})
-        classification = dict(detail.get("classification") or {})
-
-        call_type = str(classification.get("call_type") or "").lower()
-        if call_type in {"support", "internal"}:
+    for row in call_list:
+        status = str(row.get("status") or "")
+        if status not in FINAL_SALES_LIKE_STATUSES:
             continue
 
-        status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
-        if status not in _priority_order:
-            continue
-
-        client_raw = (
-            call.get("contact_name")
-            or call.get("contact_phone")
-            or (artifact.interaction.metadata_ or {}).get("contact_phone")
-        )
-        client_label = str(client_raw or "").strip()
+        client_label = str(row.get("client_or_phone") or "").strip()
         if not client_label:
             continue
 
-        next_step = str(follow_up.get("next_step_text") or "").strip()
-        scenario_type = str(classification.get("scenario_type") or "").lower()
-        time_label = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+        next_step = str(row.get("next_step") or "").strip()
+        scenario_type = str(row.get("scenario_type") or "").lower()
+        time_label = _short_time_label(row.get("time")) or "—"
+        deadline = str(row.get("deadline") or "").strip() or None
 
         grouped[status].append({
             "client_label": client_label,
@@ -6237,13 +6287,14 @@ def _build_call_tomorrow(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
             "status": status,
             "deadline": deadline,
             "next_step": next_step,
+            "reason": str(row.get("reason") or "").strip() or None,
             "scenario_type": scenario_type,
-            "_sort_key": str(deadline or "z"),
+            "_sort_key": (str(deadline or "z"), time_label),
         })
 
     seen: set[str] = set()
     contacts: list[dict[str, Any]] = []
-    for status in _priority_order:
+    for status in CALL_TOMORROW_STATUS_ORDER:
         for item in sorted(grouped[status], key=lambda x: x["_sort_key"]):
             if item["client_label"] in seen:
                 continue
@@ -6253,6 +6304,8 @@ def _build_call_tomorrow(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
                 "time_label": item["time_label"],
                 "status": item["status"],
                 "deadline": item["deadline"],
+                "next_step": item["next_step"],
+                "reason": item["reason"],
                 "opening_script": _call_tomorrow_opening_script(
                     status=item["status"],
                     deadline=item["deadline"],
@@ -6268,6 +6321,8 @@ def _build_call_tomorrow(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
     return {
         "is_placeholder": len(contacts) == 0,
         "contacts": contacts,
+        "empty_state": "Нет коммерческих звонков для работы завтра по итогам отчётного дня.",
+        "source_note": "derived_from_final_business_outcome_call_list",
     }
 
 

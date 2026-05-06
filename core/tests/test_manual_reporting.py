@@ -848,6 +848,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         analysis = SimpleNamespace(
             id=uuid4(),
+            instruction_version="analysis_v1",
             score_total=0.0,
             scores_detail={
                 "classification": {
@@ -1151,6 +1152,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         interaction.duration_sec = duration_sec
         analysis = SimpleNamespace(
             id=uuid4(),
+            instruction_version="analysis_v1",
             score_total=0.0,
             scores_detail={
                 "classification": {
@@ -1262,6 +1264,161 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIsNone(row["status"])
         self.assertEqual(row["unclassified_reason_code"], "analysis_failed_contract")
         self.assertEqual(row["unclassified_status_label"], "Ошибка анализа")
+
+    # --- Step 8U post-summary block alignment tests ---
+
+    def _set_business_contact(
+        self,
+        artifact: ReportArtifact,
+        *,
+        client: str,
+        call_date: str,
+        score_percent: float = 50.0,
+    ) -> ReportArtifact:
+        artifact.call_started_at = datetime.fromisoformat(call_date.replace(" ", "T")).replace(tzinfo=UTC)
+        artifact.interaction.metadata_["call_date"] = call_date
+        artifact.interaction.metadata_["contact_phone"] = client
+        detail = artifact.original_analysis.scores_detail if artifact.original_analysis is not None else artifact.analysis.scores_detail
+        detail["call"] = {"contact_phone": client}
+        detail["score"] = {"checklist_score": {"score_percent": score_percent}}
+        if artifact.analysis is not None:
+            artifact.analysis.score_total = score_percent
+        if artifact.original_analysis is not None:
+            artifact.original_analysis.score_total = score_percent
+        return artifact
+
+    def test_step8u_call_tomorrow_uses_final_call_list_outcomes(self) -> None:
+        agreed = self._set_business_contact(
+            self._business_artifact(
+                text="Клиент согласился: выставляйте счет сегодня.",
+                follow_up={"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
+            ),
+            client="Счет клиент",
+            call_date="2026-05-04 09:00:00",
+        )
+        open_call = self._set_business_contact(
+            self._business_artifact(
+                text="Скиньте информацию на WhatsApp, я посмотрю и потом дам обратную связь.",
+                follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
+            ),
+            client="Открытый клиент",
+            call_date="2026-05-04 10:00:00",
+        )
+        refusal = self._set_business_contact(
+            self._business_artifact(
+                text="Не актуально, пока нет потребности, ничего не рассматриваем.",
+                follow_up={"next_step_fixed": False, "reason_not_fixed": "Клиент отказался."},
+            ),
+            client="Отказ клиент",
+            call_date="2026-05-04 11:00:00",
+        )
+        service = self._set_business_contact(
+            self._business_artifact(
+                text="Клиент просит помочь с QR и NCALayer, документ не открывается.",
+                call_type="support",
+                eligibility="not_eligible",
+            ),
+            client="Сервис клиент",
+            call_date="2026-05-04 12:00:00",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[agreed, open_call, refusal, service],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        statuses_by_client = {
+            item["client_label"]: item["status"]
+            for item in payload["call_tomorrow"]["contacts"]
+        }
+        self.assertEqual(statuses_by_client, {"Счет клиент": "agreed", "Открытый клиент": "open"})
+        self.assertEqual(payload["call_outcomes_summary"]["refusal_count"], 1)
+        self.assertEqual(payload["call_outcomes_summary"]["tech_service_count"], 1)
+
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        tomorrow_rows = sections["call_tomorrow"]["rows"]
+        row_by_client = {row[1]: row for row in tomorrow_rows}
+        self.assertEqual(row_by_client["Счет клиент"][0], "🔴 Горячий")
+        self.assertEqual(row_by_client["Открытый клиент"][0], "🔵 Открытый")
+        self.assertNotIn("Отказ клиент", row_by_client)
+        self.assertNotIn("Сервис клиент", row_by_client)
+
+    def test_step8u_coaching_examples_skip_service_when_sales_like_exists(self) -> None:
+        service = self._set_business_contact(
+            self._business_artifact(
+                text="Клиент просит помочь с QR и NCALayer, документ не открывается.",
+                call_type="support",
+                eligibility="not_eligible",
+            ),
+            client="Сервис клиент",
+            call_date="2026-05-04 11:52:00",
+            score_percent=10.0,
+        )
+        sales = self._set_business_contact(
+            self._business_artifact(
+                text="Скиньте информацию на WhatsApp, я посмотрю и вернусь с обратной связью.",
+                follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
+            ),
+            client="Открытый клиент",
+            call_date="2026-05-04 12:09:00",
+            score_percent=80.0,
+        )
+        for artifact, quote in (
+            (service, "Не могу открыть документ через QR."),
+            (sales, "Скиньте информацию на WhatsApp, я посмотрю."),
+        ):
+            detail = artifact.original_analysis.scores_detail if artifact.original_analysis is not None else artifact.analysis.scores_detail
+            detail["gaps"] = [
+                {
+                    "title": "Фиксация следующего шага",
+                    "comment": "Следующий шаг не закреплен достаточно конкретно.",
+                    "criterion_code": "ns_next_step",
+                }
+            ]
+            detail["score_by_stage"] = [
+                {
+                    "stage_code": "completion_next_step",
+                    "stage_name": "Завершение и следующий шаг",
+                    "stage_score": 0,
+                    "max_stage_score": 2,
+                    "criteria_results": [
+                        {
+                            "criterion_code": "ns_next_step",
+                            "criterion_name": "Фиксация следующего шага",
+                            "score": 0,
+                            "max_score": 1,
+                            "comment": "Нужно точнее закреплять продолжение.",
+                        }
+                    ],
+                }
+            ]
+            detail["evidence_fragments"] = [
+                {
+                    "criterion_code": "ns_next_step",
+                    "fragment_type": "missed_opportunity",
+                    "client_text": quote,
+                    "manager_text": "Отправлю информацию, дальше уточним интерес.",
+                }
+            ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[service, sales],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(payload["call_breakdown"]["client_label"], "Открытый клиент")
+        self.assertEqual(payload["situation_evidence_quote"]["client_label"], "Открытый клиент")
+        self.assertEqual([row["status"] for row in payload["call_list"]], ["tech_service", "open"])
 
     # --- SM-4 acceptance tests ---
 

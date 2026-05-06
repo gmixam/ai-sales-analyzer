@@ -520,3 +520,12 @@
 - **Reason:** Step 8Q audit of `2026-05-04` report-day call lists showed inflated `Не подходит для разбора`, almost no refusals, and business-significant outcomes hidden behind coaching eligibility / failed semantic analysis states.
 - **Scope:** Reporting-layer mapping only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling window, Step 8I gate, Step 8L source-audio refresh, Step 8N validation persistence, Step 8P delivery semantics, PDF layout, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-06
+
+## ADR-051: `manager_daily` post-summary blocks use final report-day business outcomes
+- **Decision:** `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` must be built from final report-day `payload.call_list[]` / `BusinessOutcomeResolver` status, not from raw `follow_up` status over `coaching_core`.
+- **Decision:** Tomorrow actions include only final `Договорённость`, `Перенос`, and `Открыт`. Final `Отказ`, `Тех/сервис`, `Не подходит для разбора`, `Без транскрипта`, `Без анализа`, `Ошибка анализа`, and `Ошибка провайдера` must not be shown as sales follow-up actions.
+- **Decision:** Tomorrow priority labels are derived from final outcome: `Договорённость -> Горячий`, `Перенос -> Перенос`, `Открыт -> Открытый`.
+- **Decision:** Normal report-day coaching examples (`РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, `ЧЕЛЛЕНДЖ`) must not silently select final `Отказ` or `Тех/сервис` as ordinary sales coaching examples when at least one final sales-like candidate exists.
+- **Reason:** Step 8T showed that post-summary blocks could contradict the resolver-aligned `ИТОГ ДНЯ` and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, e.g. final `Открыт` rendered as hot agreement, final `Отказ` shown as follow-up, and final `Тех/сервис` selected as normal call breakdown.
+- **Scope:** Reporting payload/post-summary block alignment only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling-window rule, Step 8R resolver priority, delivery semantics, money rule, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-06

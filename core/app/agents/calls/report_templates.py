@@ -824,7 +824,12 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             return ["Приоритет | Клиент | Срок/повод | Цель звонка | Первая фраза"] + [
                 " | ".join(_value(cell) for cell in row) for row in rows
             ]
-        return ["Нет открытых контактов для перезвона."]
+        return [
+            str(
+                section.get("empty_state")
+                or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
+            )
+        ]
     if kind == "morning_card":
         lines = [
             str(section.get("greeting") or ""),
@@ -1183,9 +1188,15 @@ def _render_html_section(section: dict[str, Any]) -> str:
             for row in section.get("rows") or []
         )
         if not rows:
+            empty_state = html.escape(
+                str(
+                    section.get("empty_state")
+                    or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
+                )
+            )
             return (
                 f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-                "<p class=\"muted\">Нет открытых контактов для перезвона.</p>"
+                f"<p class=\"muted\">{empty_state}</p>"
                 "</div></section>"
             )
         return (
@@ -1774,7 +1785,18 @@ def _render_manager_daily_pdf_report(
             body_size=6.9,
         )
     else:
-        draw_text(page5, left=margin, top=94, text="Нет открытых контактов для перезвона.", size=9.0, color=muted, max_width=width - (margin * 2))
+        draw_text(
+            page5,
+            left=margin,
+            top=94,
+            text=str(
+                call_tomorrow.get("empty_state")
+                or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
+            ),
+            size=9.0,
+            color=muted,
+            max_width=width - (margin * 2),
+        )
     footer(page5, 5)
 
     page6 = add_page()
@@ -2486,7 +2508,7 @@ def _render_additional_situations_html(section: dict[str, Any]) -> str:
 
 
 _CALL_TOMORROW_STATUS_LABEL: dict[str, str] = {
-    "rescheduled": "Перезвон",
+    "rescheduled": "Перенос",
     "agreed": "Договорённость",
     "open": "Открытый",
 }
@@ -2497,10 +2519,16 @@ def _render_call_tomorrow_html(section: dict[str, Any]) -> str:
     label = html.escape(str(section.get("label") or "ПОЗВОНИ ЗАВТРА"))
     contacts = list(section.get("contacts") or [])
     if section.get("is_placeholder") or not contacts:
+        empty_state = html.escape(
+            str(
+                section.get("empty_state")
+                or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
+            )
+        )
         return (
             f"<div class=\"section-bar\">{label}</div>"
             "<section class=\"call-tomorrow\">"
-            "<div class=\"ct-placeholder\">Нет открытых контактов для перезвона — все звонки завершены с результатом.</div>"
+            f"<div class=\"ct-placeholder\">{empty_state}</div>"
             "</section>"
         )
     rows = ""
@@ -3036,7 +3064,7 @@ def _priority_icon_for_contact(status: str) -> str:
 
 def _priority_label_for_contact(status: str) -> str:
     """Return v5 priority label for call_tomorrow row."""
-    return {"agreed": "Горячий", "rescheduled": "Тёплый", "open": "Открытый"}.get(status, "Открытый")
+    return {"agreed": "Горячий", "rescheduled": "Перенос", "open": "Открытый"}.get(status, "Открытый")
 
 
 def _deadline_label_for_contact(item: dict[str, Any]) -> str:
@@ -3091,6 +3119,10 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
     return {
         "contacts": contacts,
         "rows": rows[:5],
+        "empty_state": str(
+            section.get("empty_state")
+            or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
+        ),
     }
 
 
@@ -3557,10 +3589,16 @@ def _manager_status_text_color(
             "</article></div></section>"
         )
     if kind == "call_tomorrow":
+        empty_state = html.escape(
+            str(
+                section.get("empty_state")
+                or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
+            )
+        )
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
-        ) or "<tr><td colspan=\"4\">Нет открытых контактов для перезвона.</td></tr>"
+        ) or f"<tr><td colspan=\"4\">{empty_state}</td></tr>"
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
             "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Скрипт открытия</th></tr></thead>"

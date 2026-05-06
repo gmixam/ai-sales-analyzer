@@ -1060,6 +1060,53 @@ Evidence:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8U Closure: Post-Summary Blocks Use Final Business Outcome
+
+**Дата:** 2026-05-06
+
+**Scope:** bounded implementation for report payload assembly / post-summary `manager_daily` blocks only. No `build_missing`, STT, LLM, analyzer prompt, scoring, eligibility, selection model, rolling window, Step 8I/8L/8N/8P/8R, delivery semantics, or money-rule changes.
+
+**Implemented:**
+- `payload.call_list[]` rows now carry `interaction_id` so post-summary blocks can join against final report-day outcomes.
+- `_build_call_tomorrow()` now builds from final `payload.call_list[]` / `BusinessOutcomeResolver` status, not legacy raw `follow_up` over `coaching_core`.
+- Tomorrow actions include only final `agreed`, `rescheduled`, `open`.
+- Tomorrow actions exclude final `refusal`, `tech_service`, `Не подходит для разбора`, `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера`.
+- Priority labels are derived from final status:
+  - `agreed -> Горячий`;
+  - `rescheduled -> Перенос`;
+  - `open -> Открытый`.
+- Empty state is explicit and non-fabricating: `Нет коммерческих звонков для работы завтра по итогам отчётного дня.`
+- Normal coaching candidate pool for `РАЗБОР ЗВОНКА` / `СИТУАЦИЯ ДНЯ` / `ЧЕЛЛЕНДЖ` excludes report-day final `refusal`, `tech_service`, and unclassified technical buckets when at least one report-day sales-like candidate exists. If no sales-like candidates exist, previous sparse fallback behavior is preserved.
+
+**Ready-only verification for `2026-05-04`:**
+
+| Manager | Tomorrow items | Excluded refusals | Excluded tech/service | Open shown as open | Conflicts remaining |
+|---|---:|---:|---:|---|---:|
+| Эльмира | 4 | 2/2 | 6/6 | yes | 0 |
+| Тимур | 5 | 2/2 | 2/2 | yes | 0 |
+| Толеген | 3 | 1/1 | 2/2 | yes | 0 |
+
+**Step 8T conflict closure:**
+- Эльмира `06:28 +77012172463` is rendered as `🔵 Открытый`, not hot agreement.
+- Эльмира `12:05 Акмарал` final `Тех/сервис` is excluded from tomorrow.
+- Эльмира `10:14 Агирим` final `Отказ` is excluded from tomorrow.
+- Тимур `12:09 +77470957591` and `09:26 +77751231100` are no longer rendered as hot agreements.
+- Тимур `04:47 Надежда Анатольевна` final `Отказ` is excluded from tomorrow.
+- Толеген `11:52 +77020472248` final `Тех/сервис` is excluded from tomorrow and is not selected as normal `РАЗБОР ЗВОНКА` while sales-like candidates exist.
+- Толеген `06:37 +77774745093` and `11:46 Нур-Султан` are rendered as `🔵 Открытый`.
+- Толеген `11:36 Флора` final `Отказ` is excluded from tomorrow.
+
+**Verification facts:**
+- `call_list_dates=["2026-05-04"]` for all three managers.
+- Rolling-window calls did not enter the report-day call list.
+- `manager_facing_completeness.status=passed`.
+- Delivery was not run.
+- `build_missing`, STT and LLM were not run.
+
+**Checks:** `python3 -m py_compile core/app/agents/calls/reporting.py`; `docker compose exec -T api pytest -q tests/test_manual_reporting.py -k 'step8u or tomorrow or outcome or refusal or call_list or call_outcomes or meaningful or completeness'` (`15 passed`); full checks were run as part of Step 8U close-out.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

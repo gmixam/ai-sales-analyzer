@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`.
+**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source.
 
 ---
 
@@ -201,6 +201,14 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 - `duration_below_threshold` / coaching non-eligibility не должны перебивать business outcome в report-day call list, если transcript or persisted analysis содержит бизнес-смысл.
 
 **`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
+
+**Post-summary outcome alignment (Step 8U):**
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` строится из финального report-day `payload.call_list[]` / `BusinessOutcomeResolver` status, а не из raw `follow_up` по `coaching_core`.
+- В блок попадают только final `Договорённость`, `Перенос`, `Открыт`.
+- Final `Отказ`, `Тех/сервис`, `Не подходит для разбора`, `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера` не становятся tomorrow sales actions.
+- Priority label derived from final status: `Договорённость -> Горячий`, `Перенос -> Перенос`, `Открыт -> Открытый`.
+- Если после фильтрации нет кандидатов, блок показывает safe empty state и не фабрикует follow-up.
+- Normal coaching examples for report-day calls (`РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, `ЧЕЛЛЕНДЖ`) exclude final `Отказ`, `Тех/сервис`, and unclassified technical buckets when at least one final sales-like candidate (`Договорённость`, `Перенос`, `Открыт`) exists. If no sales-like candidate exists, sparse fallback behavior may remain explicit rather than silently treating service/refusal as normal sales coaching.
 
 **`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
 
