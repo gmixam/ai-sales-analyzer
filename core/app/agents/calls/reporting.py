@@ -4298,10 +4298,20 @@ def build_manager_daily_payload(
         score_by_stage=score_by_stage,
         improve_items=improve_items,
     )
+    if situation_evidence_quote is None:
+        situation_evidence_quote = _build_situation_evidence_quote_from_call_breakdown(
+            artifacts=coaching_content_artifacts,
+            call_breakdown=call_breakdown,
+        )
     situation_dialogue_excerpt = _build_situation_dialogue_excerpt(
         artifacts=coaching_content_artifacts,
         situation_evidence_quote=situation_evidence_quote,
     )
+    if situation_dialogue_excerpt is None:
+        situation_dialogue_excerpt = _build_situation_dialogue_excerpt_from_call_breakdown(
+            artifacts=coaching_content_artifacts,
+            call_breakdown=call_breakdown,
+        )
     focus_stage_deep_dive = _build_focus_stage_deep_dive(
         score_by_stage=score_by_stage,
         key_problem=key_problem,
@@ -4989,6 +4999,152 @@ def _build_situation_dialogue_excerpt(
     }
 
 
+def _artifact_client_label(artifact: ReportArtifact) -> str:
+    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+    call_meta = dict(detail.get("call") or {})
+    return str(
+        call_meta.get("contact_name")
+        or call_meta.get("contact_phone")
+        or (artifact.interaction.metadata_ or {}).get("contact_phone")
+        or "Клиент"
+    ).strip()
+
+
+def _artifact_client_phone(artifact: ReportArtifact) -> str | None:
+    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+    call_meta = dict(detail.get("call") or {})
+    phone = str(
+        call_meta.get("contact_phone")
+        or (artifact.interaction.metadata_ or {}).get("contact_phone")
+        or ""
+    ).strip()
+    return phone or None
+
+
+def _artifact_call_reference(artifact: ReportArtifact) -> dict[str, Any]:
+    client_label = _artifact_client_label(artifact)
+    return {
+        "call_id": str(artifact.interaction.id),
+        "client_label": client_label,
+        "client_name": None if re.sub(r"\D", "", client_label).strip() else client_label,
+        "client_phone": _artifact_client_phone(artifact),
+        "date_label": artifact.call_started_at.date().isoformat() if artifact.call_started_at else None,
+        "time_label": artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—",
+    }
+
+
+def _find_call_breakdown_artifact(
+    *,
+    artifacts: list[ReportArtifact],
+    call_breakdown: dict[str, Any] | None,
+) -> ReportArtifact | None:
+    """Find the persisted artifact selected by РАЗБОР ЗВОНКА."""
+    if not call_breakdown or call_breakdown.get("is_placeholder"):
+        return None
+    call_id = str(call_breakdown.get("call_id") or "").strip()
+    if call_id:
+        found = next((item for item in artifacts if str(item.interaction.id) == call_id), None)
+        if found is not None:
+            return found
+
+    client_label = str(call_breakdown.get("client_label") or "").strip()
+    time_label = str(call_breakdown.get("time_label") or "").strip()
+    for artifact in artifacts:
+        if client_label and _artifact_client_label(artifact) != client_label:
+            continue
+        artifact_time = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+        if time_label and artifact_time != time_label:
+            continue
+        return artifact
+    return None
+
+
+def _build_situation_evidence_quote_from_call_breakdown(
+    *,
+    artifacts: list[ReportArtifact],
+    call_breakdown: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Fallback Situation Day quote to the selected sales-like breakdown call evidence."""
+    artifact = _find_call_breakdown_artifact(artifacts=artifacts, call_breakdown=call_breakdown)
+    if artifact is None or artifact.analysis is None:
+        return None
+
+    detail = dict(artifact.analysis.scores_detail or {})
+    for frag in detail.get("evidence_fragments") or []:
+        client_text = str(frag.get("client_text") or "").strip()
+        if len(client_text) < 5:
+            continue
+        manager_text = str(
+            frag.get("manager_text")
+            or frag.get("manager_phrase")
+            or frag.get("manager")
+            or ""
+        ).strip() or None
+        criterion_code = str(frag.get("criterion_code") or "").strip()
+        return {
+            **_artifact_call_reference(artifact),
+            "client_text": client_text,
+            "manager_text": manager_text,
+            "criterion_code": criterion_code,
+            "stage_code": _stage_code_from_criterion_code(criterion_code),
+            "source": "call_breakdown_evidence_fragments",
+        }
+    return None
+
+
+def _is_dialogue_noise_line(value: str) -> bool:
+    text = _dialogue_norm(value)
+    compact = re.sub(r"[^\wа-яё]+", "", text, flags=re.IGNORECASE)
+    if not text:
+        return True
+    if compact in {"алло", "да", "угу", "ага"}:
+        return True
+    if compact in {"телефонныйзвонок"}:
+        return True
+    return False
+
+
+def _build_situation_dialogue_excerpt_from_call_breakdown(
+    *,
+    artifacts: list[ReportArtifact],
+    call_breakdown: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build a bounded Situation Day transcript excerpt from the selected breakdown call."""
+    artifact = _find_call_breakdown_artifact(artifacts=artifacts, call_breakdown=call_breakdown)
+    if artifact is None:
+        return None
+
+    turns: list[dict[str, str]] = []
+    segments = list((artifact.interaction.metadata_ or {}).get("segments") or [])
+    for segment in segments:
+        segment_text = _dialogue_turn_text(str((segment or {}).get("text") or ""), limit=260)
+        if _is_dialogue_noise_line(segment_text):
+            continue
+        turns.append({"speaker": "unknown", "text": segment_text})
+        if len(turns) >= 3:
+            break
+
+    if not turns:
+        text = str(artifact.interaction.text or "").strip()
+        for chunk in re.split(r"(?<=[.!?])\s+", text):
+            chunk_text = _dialogue_turn_text(chunk, limit=260)
+            if _is_dialogue_noise_line(chunk_text):
+                continue
+            turns.append({"speaker": "unknown", "text": chunk_text})
+            if len(turns) >= 3:
+                break
+
+    if not turns:
+        return None
+    return {
+        **_artifact_call_reference(artifact),
+        "source": "call_breakdown_transcript_segments" if segments else "call_breakdown_transcript_text",
+        "is_partial": True,
+        "partial_reason": "speaker_roles_unavailable",
+        "turns": turns,
+    }
+
+
 _FOCUS_STAGE_WHY_FALLBACKS: dict[str, str] = {
     "contact_start": "Если старт разговора не создаёт контекст и разрешение на диалог, клиент отвечает формально и быстрее выходит из контакта.",
     "qualification_primary": "Без понимания роли, процесса и задачи клиента презентация звучит общей и не привязана к реальной потребности.",
@@ -5148,6 +5304,10 @@ def _build_focus_stage_deep_dive(
 ) -> dict[str, Any] | None:
     """Build a compact deterministic deep-dive for the priority stage from existing payload data."""
     priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
+    if priority_stage is None and _is_meaningful_key_problem(key_problem):
+        scored_stages = [item for item in score_by_stage if item.get("score") is not None]
+        if scored_stages:
+            priority_stage = min(scored_stages, key=lambda item: float(item.get("score") or 999.0))
     if priority_stage is None:
         return None
 
@@ -6338,7 +6498,10 @@ def _build_call_breakdown(
     """
     _empty: dict[str, Any] = {
         "is_placeholder": True,
+        "call_id": None,
         "client_label": None,
+        "client_phone": None,
+        "date_label": None,
         "time_label": None,
         "stage_steps": [],
         "worked": [],
@@ -6373,6 +6536,12 @@ def _build_call_breakdown(
         or (best_artifact.interaction.metadata_ or {}).get("contact_phone")
         or "Клиент"
     ).strip()
+    client_phone = str(
+        call_meta.get("contact_phone")
+        or (best_artifact.interaction.metadata_ or {}).get("contact_phone")
+        or ""
+    ).strip() or None
+    date_label = best_artifact.call_started_at.date().isoformat() if best_artifact.call_started_at else None
     time_label = best_artifact.call_started_at.strftime("%H:%M") if best_artifact.call_started_at else "—"
 
     # Build stage steps ordered by funnel
@@ -6424,7 +6593,10 @@ def _build_call_breakdown(
 
     return {
         "is_placeholder": not stage_steps and not worked and not to_fix,
+        "call_id": str(best_artifact.interaction.id),
         "client_label": client_label,
+        "client_phone": client_phone,
+        "date_label": date_label,
         "time_label": time_label,
         "stage_steps": stage_steps,
         "worked": worked,

@@ -214,7 +214,7 @@ function buildDialogueParagraphs(excerpt, quote) {
     turns.push({ speaker: "client", text: quote.client_text });
   }
   if (turns.length === 0) {
-    return [bodyPara("Фрагмент звонка в текущем payload не передан.", { color: COLORS.gray, size: SZ.cell })];
+    return [bodyPara("Недостаточно подтверждённых фрагментов звонков для доказательного разбора ситуации дня.", { color: COLORS.gray, size: SZ.cell })];
   }
   const partial = source?.is_partial !== false;
   const reason = cleanText(source?.partial_reason);

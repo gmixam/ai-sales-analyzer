@@ -441,7 +441,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("[конкретная задача клиента]", " ".join(coaching_view["scripts"]))
         self.assertNotIn("qp_role_scope", " ".join(str(value) for value in coaching_view.values()))
 
-    def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
+    def test_manager_daily_payload_falls_back_to_breakdown_evidence_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [
             {
@@ -476,7 +476,69 @@ class ManualReportingPayloadTests(unittest.TestCase):
             model_override=None,
         )
 
+        quote = payload["situation_evidence_quote"]
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote["source"], "call_breakdown_evidence_fragments")
+        self.assertIn("другому этапу", quote["client_text"])
+
+    def test_manager_daily_payload_falls_back_to_breakdown_transcript_excerpt(self) -> None:
+        artifact = _artifact(74.0, "basic")
+        artifact.interaction.text = (
+            "ТЕЛЕФОННЫЙ ЗВОНОК. Алло. Здравствуйте, это Эльмира, компания Договор-24. "
+            "Вы интересовались подписанием документов. Можем продолжить диалог?"
+        )
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "ТЕЛЕФОННЫЙ ЗВОНОК"},
+            {"speaker": "A", "text": "Алло."},
+            {"speaker": "A", "text": "Здравствуйте, это Эльмира, компания Договор-24."},
+            {"speaker": "A", "text": "Вы интересовались подписанием документов."},
+            {"speaker": "A", "text": "Можем продолжить диалог?"},
+        ]
+        artifact.analysis.scores_detail["call"]["contact_name"] = "Жанна"
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "stage_score": 3,
+                "max_stage_score": 4,
+                "criteria_results": [
+                    {
+                        "criterion_code": "cs_permission",
+                        "criterion_name": "Проверка уместности",
+                        "score": 1,
+                        "max_score": 2,
+                        "comment": "Проверка уместности разговора была, но без адаптации.",
+                    }
+                ],
+            }
+        ]
+        artifact.analysis.scores_detail["gaps"] = [
+            {
+                "criterion_code": "cs_permission",
+                "title": "Проверил уместность разговора / возможность говорить",
+                "comment": "Проверка уместности разговора была, но без адаптации.",
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
         self.assertIsNone(payload["situation_evidence_quote"])
+        excerpt = payload["situation_dialogue_excerpt"]
+        self.assertIsNotNone(excerpt)
+        self.assertEqual(excerpt["source"], "call_breakdown_transcript_segments")
+        self.assertEqual(excerpt["client_name"], "Жанна")
+        self.assertEqual(excerpt["turns"][0]["speaker"], "unknown")
+        self.assertIn("Эльмира", excerpt["turns"][0]["text"])
+        self.assertNotIn("ТЕЛЕФОННЫЙ ЗВОНОК", " ".join(turn["text"] for turn in excerpt["turns"]))
+        self.assertIsNotNone(payload["situation_day_coaching_view"])
 
     def test_manager_daily_payload_dialogue_excerpt_is_partial_with_client_text_only(self) -> None:
         artifact = _artifact(50.0, "problematic")

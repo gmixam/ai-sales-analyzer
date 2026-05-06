@@ -186,7 +186,7 @@ business-facing morning card.
 | СПИСОК ЗВОНКОВ: колонка «Контекст» (ситуация per call) | `follow_up.next_step_text` или bounded LLM |
 | БАЛЛЫ ПО ЭТАПАМ: детализация критериев внутри этапа | Richer распаковка `criteria_results` |
 | БАЛЛЫ ПО ЭТАПАМ: Основная проблема для non-priority stages | Data exists: `criteria_results[].comment + evidence` per stage in DB; `criterion_code` prefix maps to stage_code (`cs_→contact_start`, `qp_→qualification_primary`, `nd_→needs_discovery`). Requires `_aggregate_stage_scores()` in reporting.py to surface worst criterion comment+evidence per stage. No analyzer change needed. |
-| СИТУАЦИЯ ДНЯ: evidence quote linked to priority stage | Data exists: `evidence_fragments[i].client_text` is real verbatim text when non-null, linked by `criterion_code` to stage. Requires new `situation_evidence_quote` field in payload built from evidence_fragments where criterion_code starts with priority stage prefix and client_text is not null. |
+| СИТУАЦИЯ ДНЯ: evidence quote / transcript fragment | Data exists: `evidence_fragments[i].client_text` is real verbatim text when non-null, linked by `criterion_code` to stage. If stage-linked quote is absent, Step 8W uses selected sales-like `call_breakdown.call_id` and persisted `metadata_.segments` / `interaction.text` as bounded evidence fallback. |
 | БАЛЛЫ ПО ЭТАПАМ: stage-linked gaps / Основная проблема via criterion_code | `gaps` items in DB have `criterion_code` with stage prefix — stage linkage is possible without analyzer change. Requires `_aggregate_finding_items()` to preserve `criterion_code` and `_aggregate_stage_scores()` to match gaps to stages by prefix. |
 | РАЗБОР ЗВОНКА: verbatim evidence от реального клиента | `evidence_fragments.client_text` может быть реальной цитатой (non-null); сейчас `call_breakdown.rows` используют LLM-written `evidence_text`. Requires renderer to prefer non-null `client_text` over `evidence_text` when building РАЗБОР ЗВОНКА rows. |
 | СИТУАЦИЯ ДНЯ: stage-linked recommendation / checklist | `focus_stage_deep_dive` + priority stage + deterministic stage checklist. | **IMPLEMENTED 2026-05-04 (Step 5)** — `focus_stage_recommendation` surfaced in payload and rendered as `Что сделать в следующих звонках` | ДА | СДЕЛАНО — bounded assembly, no analyzer/LLM change |
@@ -237,6 +237,7 @@ business-facing morning card.
 1. `[DONE 2026-05-04]` `_aggregate_stage_scores()` — добавлен `problem_summary` / `problem_source` per stage из худшего stage-linked issue (`criteria_results.comment`, затем `gaps`, затем `evidence_fragments`)
 2. `[DONE 2026-05-04]` `_aggregate_finding_items()` / stage aggregation — `criterion_code` сохраняется в aggregated gaps; stage matching работает по prefix без analyzer change
 3. `[DONE 2026-05-04]` `build_manager_daily_payload()` — добавлено nullable `situation_evidence_quote`: real `evidence_fragments.client_text` matching priority stage criterion_code prefix; renderer показывает `Фрагмент диалога` в `СИТУАЦИЯ ДНЯ`
+4. `[DONE 2026-05-06 / Step 8W]` `build_manager_daily_payload()` — if stage-linked `situation_evidence_quote` is absent, `СИТУАЦИЯ ДНЯ` can use selected sales-like `call_breakdown` call as evidence fallback: first `evidence_fragments.client_text`, then persisted `metadata_.segments`, then persisted `interaction.text`; renderer shows an honest insufficient-evidence state only when none of those persisted sources exists.
 
 ### Manager_daily Content Enrichment — Step 2 Closure
 
@@ -376,6 +377,26 @@ business-facing morning card.
 **Future gap for full non-partial dialogue excerpt:**
 - persist reliable transcript turns with `turn_id`, `speaker`, `text`, `timestamp`, `call_id`;
 - once speaker roles are reliable, `situation_dialogue_excerpt` can switch from partial `unknown` surrounding turns to full manager/client turns without changing analyzer prompts.
+
+### Manager_daily Content Enrichment — Step 8W Closure
+
+**Дата:** 2026-05-06
+
+**Scope:** only `СИТУАЦИЯ ДНЯ` evidence / fragment assembly and docx-first render empty-state. No analyzer prompt, STT/LLM, scoring, eligibility, selection model, rolling window, business outcome resolver, delivery semantics, or PDF layout change.
+
+**Реализовано:**
+- `call_breakdown` now carries `call_id`, `date_label`, `client_phone`, allowing `СИТУАЦИЯ ДНЯ` to reference the same selected sales-like call when separate stage-linked evidence is missing;
+- fallback evidence source order: selected call `evidence_fragments.client_text` → selected call `metadata_.segments` → selected call `interaction.text` → honest insufficient-evidence state;
+- transcript fallback uses 1-3 bounded lines and preserves unreliable roles as `speaker=unknown` / renderer `Реплика`;
+- when no explicit below-threshold priority stage exists but a meaningful key problem is present, focus deep-dive may use the lowest-scoring available stage so `СИТУАЦИЯ ДНЯ` does not contradict an available `РАЗБОР ЗВОНКА`;
+- old placeholder `Фрагмент звонка в текущем payload не передан` is replaced with `Недостаточно подтверждённых фрагментов звонков для доказательного разбора ситуации дня.`
+
+**Verified 2026-05-04 ready-only cases:**
+- Эльмира `+77012172463 · 06:28`, Тимур `+77751231100 · 09:26`, Толеген `Нур-Султан · 11:46`;
+- all three selected calls had persisted transcript + `metadata_.segments`;
+- `evidence_fragments.client_text/manager_text` were empty for all three, so `situation_dialogue_excerpt.source = call_breakdown_transcript_segments`;
+- rebuilt PDFs: `/tmp/step8w_Эльмира_2026-05-04.pdf`, `/tmp/step8w_Тимур_2026-05-04.pdf`, `/tmp/step8w_Толеген_2026-05-04.pdf`;
+- delivery, `build_missing`, STT and LLM were not run.
 
 ### Manager_daily Content Enrichment — Step 6C Closure
 

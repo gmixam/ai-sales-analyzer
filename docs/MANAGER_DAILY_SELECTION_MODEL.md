@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source.
+**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`.
 
 ---
 
@@ -209,6 +209,19 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 - Priority label derived from final status: `Договорённость -> Горячий`, `Перенос -> Перенос`, `Открыт -> Открытый`.
 - Если после фильтрации нет кандидатов, блок показывает safe empty state и не фабрикует follow-up.
 - Normal coaching examples for report-day calls (`РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, `ЧЕЛЛЕНДЖ`) exclude final `Отказ`, `Тех/сервис`, and unclassified technical buckets when at least one final sales-like candidate (`Договорённость`, `Перенос`, `Открыт`) exists. If no sales-like candidate exists, sparse fallback behavior may remain explicit rather than silently treating service/refusal as normal sales coaching.
+
+**Situation Day evidence contract (Step 8W):**
+- `СИТУАЦИЯ ДНЯ` must not render a strong coaching conclusion without either a call reference + evidence fragment or an honest insufficient-evidence state.
+- Primary evidence source remains `situation_evidence_quote` from persisted `evidence_fragments.client_text` linked to the Situation Day/focus stage by `criterion_code`.
+- If stage-linked quote is absent, the reporting layer may use the selected sales-like `call_breakdown` call as bounded fallback evidence source. The selected call is referenced by `call_breakdown.call_id` plus `date_label`, `time_label`, `client_label`, and `client_phone`.
+- Fallback order:
+  1. `evidence_fragments.client_text` from the selected breakdown call, with `manager_text` when present;
+  2. persisted `interaction.metadata_.segments` from the selected breakdown call, 1-3 short turns;
+  3. persisted `interaction.text` from the selected breakdown call, 1-3 short text chunks;
+  4. if none of the above exists, render `Недостаточно подтверждённых фрагментов звонков для доказательного разбора ситуации дня.`
+- Speaker roles must not be invented. When persisted segment speaker roles are unreliable or generic, the payload uses `speaker=unknown` and the renderer shows `Реплика`, not `Клиент` / `Менеджер`.
+- If there is no explicit priority stage below the threshold but a meaningful key problem and selected breakdown call exist, the focus deep-dive may use the lowest-scoring available stage as a bounded Situation Day fallback.
+- This is payload/render assembly only: no analyzer prompt, STT/LLM, scoring, eligibility, selection model, rolling-window, business outcome resolver, or delivery behavior changes.
 
 **`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
 

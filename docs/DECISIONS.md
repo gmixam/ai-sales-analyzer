@@ -529,3 +529,13 @@
 - **Reason:** Step 8T showed that post-summary blocks could contradict the resolver-aligned `ИТОГ ДНЯ` and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, e.g. final `Открыт` rendered as hot agreement, final `Отказ` shown as follow-up, and final `Тех/сервис` selected as normal call breakdown.
 - **Scope:** Reporting payload/post-summary block alignment only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling-window rule, Step 8R resolver priority, delivery semantics, money rule, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-06
+
+## ADR-052: `manager_daily` Situation Day must be evidence-based or explicitly insufficient
+- **Decision:** `СИТУАЦИЯ ДНЯ` must not render a strong manager-facing conclusion without either a call reference plus persisted evidence/fragment or an explicit insufficient-evidence state.
+- **Decision:** The primary source remains stage-linked persisted `evidence_fragments.client_text` selected by `criterion_code` / focus stage. When that quote is absent, reporting may use the selected sales-like `РАЗБОР ЗВОНКА` call as a bounded fallback evidence source.
+- **Decision:** The fallback source order is selected call `evidence_fragments.client_text` with optional manager text, then selected call `interaction.metadata_.segments`, then selected call `interaction.text`. If none exists, renderer must say `Недостаточно подтверждённых фрагментов звонков для доказательного разбора ситуации дня.`
+- **Decision:** Speaker roles must not be inferred from unreliable transcript segment labels. Unknown/generic segment speakers remain `speaker=unknown` and render as `Реплика`, not as client/manager dialogue.
+- **Decision:** `call_breakdown` carries `call_id`, date/time, client label and phone so post-summary evidence fallback can reference the same selected sales-like call deterministically.
+- **Reason:** Step 8V PDFs showed `СИТУАЦИЯ ДНЯ` either empty while `РАЗБОР ЗВОНКА` existed, or showing a conclusion with `Фрагмент звонка в текущем payload не передан`, even though selected calls had persisted transcripts/segments.
+- **Scope:** Reporting payload assembly and docx-first render behavior for `СИТУАЦИЯ ДНЯ` only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling window, BusinessOutcomeResolver priority, delivery semantics, PDF layout redesign, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-06
