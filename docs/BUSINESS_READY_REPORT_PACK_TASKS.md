@@ -658,6 +658,39 @@ Step 8R/8V outcome totals remained unchanged:
 
 **Next step:** Step 8AE — rebuild/compare PDFs after report_evidence wiring when human-review artifacts are needed; keep Step 8W fallback for all legacy analyses.
 
+### Manager_daily Target Architecture — Step 8AE Closure: PDF Rebuild and Step 8W Comparison
+
+**Дата:** 2026-05-06
+
+**Scope:** ready-only artifact rebuild and quality comparison only. No source discovery, STT, `build_missing`, new LLM analyses, prompt changes, validator changes, `BusinessOutcomeResolver` changes, delivery, or PDF layout changes.
+
+**Artifacts:**
+- `/tmp/step8ae_Эльмира_2026-05-04.pdf`
+- `/tmp/step8ae_Тимур_2026-05-04.pdf`
+- `/tmp/step8ae_Толеген_2026-05-04.pdf`
+- `/tmp/step8ae_summary_2026-05-04.json`
+
+**Safety verification:**
+- `call_list_dates=["2026-05-04"]` for all three managers;
+- rolling-window calls absent from call list;
+- `manager_facing_completeness.status=passed`;
+- no `OPERATOR PREVIEW / INCOMPLETE`;
+- no old `Фрагмент звонка в текущем payload не передан`;
+- outcome totals unchanged from Step 8R/8V.
+
+| Manager | evidence available | evidence valid | situation source | breakdown source | VOC source | additional source |
+|---|---:|---:|---|---|---|---|
+| Эльмира | 2 | 2 | deterministic fallback | `report_evidence.manager_coaching_moments` | `report_evidence.voice_of_customer` | legacy fallback |
+| Тимур | 2 | 2 | deterministic fallback | legacy fallback | legacy fallback | legacy fallback |
+| Толеген | 1 | 1 | `report_evidence` | `report_evidence.manager_coaching_moments` | `report_evidence.voice_of_customer` | legacy fallback |
+
+**Comparison with Step 8W:**
+- Эльмира is partially better: `РАЗБОР ЗВОНКА` and `ГОЛОС КЛИЕНТА` now use valid report evidence, but `СИТУАЦИЯ ДНЯ` remains fallback because the LLM2 situation candidate is `evidence_quality=insufficient` / `usable_in_report=false`.
+- Толеген is better: `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, and one tomorrow follow-up use valid report evidence.
+- Тимур is still not human-review ready: normal sales-like report evidence only enriches one follow-up; usable Situation/VOC evidence is absent, usable coaching is insufficient, and legacy fallback selects an IVR-like fragment for `СИТУАЦИЯ ДНЯ` / `РАЗБОР ЗВОНКА`.
+
+**Decision:** do not proceed to Step 8AF human review with these PDFs as final artifacts. Add a bounded quality follow-up before human review: either improve Timур sales-like `report_evidence` richness for open calls, or tighten legacy fallback ranking so IVR-like fragments are not selected when report evidence is missing/unusable.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04
