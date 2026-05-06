@@ -542,6 +542,43 @@ else:
 
 **Next step:** Step 8AB — persist / observe `report_evidence` from fresh analyses and expose validation diagnostics without connecting report rendering yet.
 
+### Manager_daily Target Architecture — Step 8AB Runtime Verification: Controlled LLM2 Sample
+
+**Дата:** 2026-05-06
+
+**Scope:** controlled runtime verification on 5 exact persisted interactions from report-day `2026-05-04`. No mass re-analysis, source discovery, STT, `build_missing`, report rendering, `BusinessOutcomeResolver` change, delivery, report rebuild, prompt rewrite, or scheduler work.
+
+**Operational path:**
+- direct `CallsAnalyzer.analyze_call()` on already persisted transcripts;
+- persisted one new analysis row per selected interaction using instruction version `edo_sales_mvp1_call_analysis_v2_report_evidence`;
+- the existing analyzer chain executed its normal LLM1 first-pass helper plus LLM2 deep analysis;
+- extractor/source discovery/reporting/delivery runners were not invoked.
+
+**Sample:**
+
+| Call | Type | New analysis id | Validator | Key result |
+|---|---|---|---|---|
+| Эльмира `06:28 / +77012172463` (`03cb37da-abc5-41c9-b5f2-7cdfafac129c`) | sales-like open | `4f4a317b-7786-46eb-872c-3e9b45cec139` | failed | `business_outcome.status=postponed`, but allowed enum is `rescheduled`; no `situation_candidates` / coaching moments |
+| Тимур `09:26 / +77751231100` (`4d3f2ddb-b3b5-4c5f-9a37-07256d88cf58`) | sales-like open | `97ebc8f9-f9cd-434b-8a9b-17e26dddef09` | passed | `business_outcome.status=open`; no `situation_candidates`, coaching moments, VOC, or follow-up candidates |
+| Толеген `11:46 / Нур-Султан` (`626894e2-732d-4b38-b6c0-9cd9463478b4`) | sales-like open | `cd6f4198-4424-4395-b0c8-868c1c0affc2` | passed | `business_outcome.status=open`; VOC and follow-up present; no `situation_candidates` / coaching moments |
+| Тимур `04:47 / Надежда Анатольевна` (`79ebbb9b-4326-41c0-96bd-3dea7de2e453`) | refusal | `a63a6303-fef2-4437-85fc-2e5633f2e60e` | failed | `business_outcome.status=declined`, but allowed enum is `refusal`; no follow-up candidate, as expected |
+| Эльмира `06:30 / +77006973346` (`3337ccea-9a3b-477f-a806-9b30580f22d7`) | tech/service | `ed5a17cb-2e49-41ab-a546-96720fa1b543` | failed | `business_outcome.status=tech_service`, but evidence quote was paraphrased / ungrounded; analysis row is semantic-failed after retry |
+
+**Findings:**
+- `report_evidence_version="v1"` and `report_evidence` appeared in all 5 fresh outputs.
+- Only 2/5 outputs passed `validate_report_evidence`.
+- Primary schema issue: LLM2 still uses legacy outcome words (`postponed`, `declined`) instead of contract enums (`rescheduled`, `refusal`).
+- Primary grounding issue: tech/service evidence can be a paraphrase rather than transcript quote.
+- Primary content-quality issue: `situation_candidates` and `manager_coaching_moments` were empty across the sample, including sales-like open calls.
+- Existing MVP-1 required fields remained present in 4/5 successful analyses; one tech/service call remained a failed semantic analysis and is not ready for report use.
+
+**Decision:**
+- Do not wire `manager_daily` to prefer `report_evidence` yet.
+- Step 8W legacy transcript/evidence fallback remains the reporting-safe path.
+- Add a bounded prompt-quality follow-up before Step 8AD.
+
+**Next step:** Step 8AC — tighten LLM2 `report_evidence` prompt examples/constraints and rerun a small sample before report integration.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04

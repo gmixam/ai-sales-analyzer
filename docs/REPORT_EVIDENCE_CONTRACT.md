@@ -367,6 +367,17 @@ Prompt behavior:
 
 Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v2_report_evidence`. This marks the prompt change without changing `schema_version=call_analysis.v1` or checklist scoring.
 
+### Step 8AB runtime verification note
+
+Step 8AB ran a controlled sample on 5 exact persisted `2026-05-04` interactions. Every fresh output included `report_evidence_version="v1"` and `report_evidence`, but only 2 of 5 passed `validate_report_evidence`.
+
+Observed gaps:
+- outcome enum drift: LLM2 emitted `postponed` and `declined` instead of contract enums `rescheduled` and `refusal`;
+- grounding drift: one tech/service `business_outcome.evidence_quote` was a paraphrase rather than transcript-grounded text;
+- richness gap: `situation_candidates` and `manager_coaching_moments` were empty across the sample, including sales-like calls.
+
+Until these gaps are corrected and re-verified, reporting must continue to treat Step 8W legacy evidence fallback as the safe path and must not prefer `report_evidence` for manager-facing rendering.
+
 ## BusinessOutcomeResolver Synchronization
 
 Current state:
@@ -471,9 +482,9 @@ Prompt update must be a separate bounded step.
 1. Step 8Y — design contract only. **Done.**
 2. Step 8Z — implement schema / validator. **Done.**
 3. Step 8AA — update LLM2 prompt. **Done.**
-4. Step 8AB — persist `report_evidence` in analysis.
-5. Step 8AC — controlled LLM2 re-analysis for 3-5 calls from `2026-05-04`.
-6. Step 8AD — wire `manager_daily` to prefer `report_evidence`.
+4. Step 8AB — controlled LLM2 runtime sample for 5 calls from `2026-05-04`. **Done; prompt tightening needed.**
+5. Step 8AC — tighten `report_evidence` prompt examples/constraints and rerun a small sample.
+6. Step 8AD — wire `manager_daily` to prefer valid `report_evidence`.
 7. Step 8AE — rebuild PDFs and compare with Step 8W.
 8. Step 8AF — human review.
 9. Step 8AI — separate STT diarization/speaker investigation.
