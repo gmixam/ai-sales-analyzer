@@ -26,6 +26,7 @@ from app.agents.calls.orchestrator import (
     CallsManualPilotOrchestrator,
     analysis_contract_failure_reason,
 )
+from app.agents.calls.report_evidence import validate_report_evidence
 from app.agents.calls.report_templates import get_active_template_version, render_report_artifact
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
 from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError, SemanticAnalysisError
@@ -4269,6 +4270,8 @@ def build_manager_daily_payload(
         artifacts=artifacts,
         call_list_by_interaction_id=call_list_by_interaction_id,
     )
+    report_evidence_index = _build_report_evidence_index(artifacts=operational_meaningful_artifacts)
+    report_evidence_diagnostics = _build_report_evidence_diagnostics(index=report_evidence_index)
     manager_facing_completeness = _build_manager_facing_completeness_gate(call_list=call_list)
     worked_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="strengths")
     improve_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="gaps")
@@ -4280,37 +4283,65 @@ def build_manager_daily_payload(
         artifacts=coaching_content_artifacts,
         calls_count=calls_count,
     )
-    call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=coaching_content_artifacts)
-    voice_of_customer = _build_voice_of_customer(artifacts=coaching_content_artifacts)
-    additional_situations = _build_additional_situations(
-        improve_items=improve_items,
-        worked_items=worked_items,
-        top_gap_title=(improve_items[0]["label"] if improve_items else None),
-    )
-    call_tomorrow = _build_call_tomorrow(call_list=call_list)
     focus_dynamics = _build_focus_criterion_dynamics(
         artifacts=coaching_content_artifacts,
         improve_items=improve_items,
     )
     score_by_stage = _aggregate_stage_scores(artifacts=coaching_content_artifacts)
-    situation_evidence_quote = _build_situation_evidence_quote(
+    report_evidence_situation = _build_report_evidence_situation(
         artifacts=coaching_content_artifacts,
+        report_evidence_index=report_evidence_index,
+        call_list_by_interaction_id=call_list_by_interaction_id,
         score_by_stage=score_by_stage,
-        improve_items=improve_items,
     )
+    call_breakdown = _build_call_breakdown_from_report_evidence(
+        artifacts=coaching_content_artifacts,
+        report_evidence_index=report_evidence_index,
+        call_list_by_interaction_id=call_list_by_interaction_id,
+        score_by_stage=score_by_stage,
+    )
+    if call_breakdown is None:
+        call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=coaching_content_artifacts)
+    voice_of_customer = _build_voice_of_customer_from_report_evidence(
+        artifacts=coaching_content_artifacts,
+        report_evidence_index=report_evidence_index,
+        call_list_by_interaction_id=call_list_by_interaction_id,
+    )
+    if voice_of_customer is None:
+        voice_of_customer = _build_voice_of_customer(artifacts=coaching_content_artifacts)
+    additional_situations = _build_additional_situations_from_report_evidence(
+        artifacts=coaching_content_artifacts,
+        report_evidence_index=report_evidence_index,
+        call_list_by_interaction_id=call_list_by_interaction_id,
+        top_situation_title=str((report_evidence_situation or {}).get("situation_title") or "").strip() or None,
+    )
+    if additional_situations is None:
+        additional_situations = _build_additional_situations(
+            improve_items=improve_items,
+            worked_items=worked_items,
+            top_gap_title=(improve_items[0]["label"] if improve_items else None),
+        )
+    call_tomorrow = _build_call_tomorrow(
+        call_list=call_list,
+        report_evidence_index=report_evidence_index,
+    )
+    situation_evidence_quote = (report_evidence_situation or {}).get("evidence_quote")
+    if situation_evidence_quote is None:
+        situation_evidence_quote = _build_situation_evidence_quote(
+            artifacts=coaching_content_artifacts,
+            score_by_stage=score_by_stage,
+            improve_items=improve_items,
+        )
     if situation_evidence_quote is None:
         situation_evidence_quote = _build_situation_evidence_quote_from_call_breakdown(
             artifacts=coaching_content_artifacts,
             call_breakdown=call_breakdown,
         )
-    situation_dialogue_excerpt = _build_situation_dialogue_excerpt(
-        artifacts=coaching_content_artifacts,
-        situation_evidence_quote=situation_evidence_quote,
-    )
+    situation_dialogue_excerpt = (report_evidence_situation or {}).get("dialogue_excerpt")
     if situation_dialogue_excerpt is None:
-        situation_dialogue_excerpt = _build_situation_dialogue_excerpt_from_call_breakdown(
+        situation_dialogue_excerpt = _build_situation_dialogue_excerpt(
             artifacts=coaching_content_artifacts,
-            call_breakdown=call_breakdown,
+            situation_evidence_quote=situation_evidence_quote,
         )
     focus_stage_deep_dive = _build_focus_stage_deep_dive(
         score_by_stage=score_by_stage,
@@ -4321,13 +4352,20 @@ def build_manager_daily_payload(
         focus_stage_deep_dive=focus_stage_deep_dive,
         recommendations=recommendation_cards,
     )
-    situation_day_coaching_view = _build_situation_day_coaching_view(
-        score_by_stage=score_by_stage,
-        situation_evidence_quote=situation_evidence_quote,
-        situation_dialogue_excerpt=situation_dialogue_excerpt,
-        focus_stage_deep_dive=focus_stage_deep_dive,
-        focus_stage_recommendation=focus_stage_recommendation,
-    )
+    if situation_dialogue_excerpt is None:
+        situation_dialogue_excerpt = _build_situation_dialogue_excerpt_from_call_breakdown(
+            artifacts=coaching_content_artifacts,
+            call_breakdown=call_breakdown,
+        )
+    situation_day_coaching_view = (report_evidence_situation or {}).get("coaching_view")
+    if situation_day_coaching_view is None:
+        situation_day_coaching_view = _build_situation_day_coaching_view(
+            score_by_stage=score_by_stage,
+            situation_evidence_quote=situation_evidence_quote,
+            situation_dialogue_excerpt=situation_dialogue_excerpt,
+            focus_stage_deep_dive=focus_stage_deep_dive,
+            focus_stage_recommendation=focus_stage_recommendation,
+        )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -4414,6 +4452,7 @@ def build_manager_daily_payload(
         "focus_stage_deep_dive": focus_stage_deep_dive,
         "focus_stage_recommendation": focus_stage_recommendation,
         "situation_day_coaching_view": situation_day_coaching_view,
+        "report_evidence_diagnostics": report_evidence_diagnostics,
         "call_list": call_list,
         "focus_criterion_dynamics": focus_dynamics,
         "memo_legend": {
@@ -4435,6 +4474,7 @@ def build_manager_daily_payload(
             usable_artifacts=artifacts,
         ),
     }
+    payload["meta"]["report_evidence"] = report_evidence_diagnostics["summary"]
     return payload
 
 
@@ -6366,6 +6406,9 @@ def _call_tomorrow_opening_script(
 
 FINAL_SALES_LIKE_STATUSES = {"agreed", "rescheduled", "open"}
 CALL_TOMORROW_STATUS_ORDER = ("agreed", "rescheduled", "open")
+REPORT_EVIDENCE_USABLE_QUALITIES = {"direct", "indirect", "weak"}
+REPORT_EVIDENCE_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+REPORT_EVIDENCE_QUALITY_RANK = {"direct": 0, "indirect": 1, "weak": 2, "insufficient": 9}
 
 
 def _call_list_rows_by_interaction_id(call_list: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -6414,7 +6457,520 @@ def _filter_coaching_artifacts_by_final_outcome(
     return filtered or artifacts
 
 
-def _build_call_tomorrow(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
+def _issue_payloads(issues: list[Any]) -> list[dict[str, str]]:
+    """Return JSON-safe validation issue diagnostics."""
+    return [
+        {
+            "code": str(getattr(issue, "code", "") or ""),
+            "path": str(getattr(issue, "path", "") or ""),
+            "message": str(getattr(issue, "message", "") or ""),
+        }
+        for issue in issues
+    ]
+
+
+def _build_report_evidence_index(*, artifacts: list[ReportArtifact]) -> dict[str, dict[str, Any]]:
+    """Validate report_evidence once per report-day artifact and keep diagnostics."""
+    index: dict[str, dict[str, Any]] = {}
+    for artifact in artifacts:
+        source_analysis = artifact.analysis or artifact.original_analysis
+        detail = dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
+        available = isinstance(detail.get("report_evidence"), dict)
+        validation = validate_report_evidence(detail, getattr(artifact.interaction, "text", None))
+        valid = bool(available and validation.is_valid)
+        normalized = dict(validation.normalized or {}) if valid else {}
+        report_evidence = dict(normalized.get("report_evidence") or {}) if valid else {}
+        interaction_id = str(artifact.interaction.id)
+        index[interaction_id] = {
+            "interaction_id": interaction_id,
+            "analysis_id": str(getattr(source_analysis, "id", "") or "") or None,
+            "instruction_version": str(getattr(source_analysis, "instruction_version", "") or "") or None,
+            "report_evidence_available": available,
+            "report_evidence_valid": valid,
+            "report_evidence_errors": _issue_payloads(list(validation.errors or [])),
+            "report_evidence_warnings": _issue_payloads(list(validation.warnings or [])),
+            "report_evidence_source": "report_evidence" if valid else "legacy_fallback",
+            "report_evidence_version": validation.version,
+            "normalized": normalized,
+            "report_evidence": report_evidence,
+        }
+    return index
+
+
+def _build_report_evidence_diagnostics(*, index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Return payload-level report_evidence validation diagnostics."""
+    rows = [
+        {
+            "interaction_id": item["interaction_id"],
+            "analysis_id": item.get("analysis_id"),
+            "instruction_version": item.get("instruction_version"),
+            "report_evidence_available": bool(item.get("report_evidence_available")),
+            "report_evidence_valid": bool(item.get("report_evidence_valid")),
+            "report_evidence_errors": list(item.get("report_evidence_errors") or []),
+            "report_evidence_warnings": list(item.get("report_evidence_warnings") or []),
+            "report_evidence_source": item.get("report_evidence_source") or "legacy_fallback",
+            "report_evidence_version": item.get("report_evidence_version"),
+        }
+        for item in index.values()
+    ]
+    return {
+        "summary": {
+            "calls_checked": len(rows),
+            "available_count": sum(1 for item in rows if item["report_evidence_available"]),
+            "valid_count": sum(1 for item in rows if item["report_evidence_valid"]),
+            "invalid_count": sum(
+                1 for item in rows if item["report_evidence_available"] and not item["report_evidence_valid"]
+            ),
+            "missing_count": sum(1 for item in rows if not item["report_evidence_available"]),
+            "source_policy": "valid_report_evidence_preferred_else_step8w_fallback",
+        },
+        "calls": sorted(rows, key=lambda item: str(item.get("interaction_id") or "")),
+    }
+
+
+def _valid_report_evidence_for_artifact(
+    *,
+    artifact: ReportArtifact,
+    report_evidence_index: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    entry = report_evidence_index.get(str(artifact.interaction.id)) or {}
+    if not entry.get("report_evidence_valid"):
+        return None
+    evidence = entry.get("report_evidence")
+    return dict(evidence) if isinstance(evidence, dict) else None
+
+
+def _final_status_for_artifact(
+    *,
+    artifact: ReportArtifact,
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+) -> str | None:
+    row = call_list_by_interaction_id.get(str(artifact.interaction.id))
+    if row is not None:
+        status = row.get("status")
+        return str(status) if status is not None else None
+    return BusinessOutcomeResolver().resolve(artifact).final_status
+
+
+def _is_report_evidence_sales_like(
+    *,
+    artifact: ReportArtifact,
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+) -> bool:
+    return _final_status_for_artifact(
+        artifact=artifact,
+        call_list_by_interaction_id=call_list_by_interaction_id,
+    ) in FINAL_SALES_LIKE_STATUSES
+
+
+def _stage_name_for_code(stage_code: str, score_by_stage: list[dict[str, Any]]) -> str:
+    code = str(stage_code or "").strip()
+    for item in score_by_stage:
+        if str(item.get("stage_code") or "").strip() == code:
+            return str(item.get("stage_name") or "").strip()
+    for known_code, _funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
+        if known_code == code:
+            return stage_name
+    return code or "Фокусный этап"
+
+
+def _report_evidence_stage_score_label(stage_code: str, score_by_stage: list[dict[str, Any]]) -> str | None:
+    for item in score_by_stage:
+        if str(item.get("stage_code") or "").strip() == str(stage_code or "").strip():
+            score = item.get("score")
+            if score is None:
+                return None
+            try:
+                return f"{float(score) / 2:.1f}/5"
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _report_evidence_turns(candidate: dict[str, Any], *, limit: int = 320) -> list[dict[str, str]]:
+    """Return bounded report_evidence dialogue turns without inventing roles."""
+    turns: list[dict[str, str]] = []
+    for turn in candidate.get("dialogue_fragment") or []:
+        if not isinstance(turn, dict):
+            continue
+        text = _dialogue_turn_text(str(turn.get("text") or ""), limit=limit)
+        if not text:
+            continue
+        speaker = str(turn.get("speaker") or "unknown").strip().lower()
+        if speaker not in {"manager", "client", "unknown"}:
+            speaker = "unknown"
+        turns.append({"speaker": speaker, "text": text})
+        if len(turns) >= 4:
+            break
+    return turns
+
+
+def _report_evidence_quote_text(turns: list[dict[str, str]]) -> str:
+    """Choose one grounded text line for legacy quote-shaped payloads."""
+    for preferred in ("client", "unknown", "manager"):
+        found = next((turn for turn in turns if turn.get("speaker") == preferred), None)
+        if found:
+            return str(found.get("text") or "").strip()
+    return ""
+
+
+def _manager_text_from_turns(turns: list[dict[str, str]]) -> str | None:
+    found = next((turn for turn in turns if turn.get("speaker") == "manager"), None)
+    return str(found.get("text") or "").strip() if found else None
+
+
+def _report_evidence_candidate_rank(
+    *,
+    candidate: dict[str, Any],
+    score_by_stage: list[dict[str, Any]],
+    artifact: ReportArtifact,
+) -> tuple[int, int, int, float, datetime]:
+    priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
+    priority_stage_code = str((priority_stage or {}).get("stage_code") or "").strip()
+    stage_code = str(candidate.get("stage_code") or "").strip()
+    return (
+        0 if priority_stage_code and stage_code == priority_stage_code else 1,
+        REPORT_EVIDENCE_PRIORITY_RANK.get(str(candidate.get("priority") or "").lower(), 9),
+        REPORT_EVIDENCE_QUALITY_RANK.get(str(candidate.get("evidence_quality") or "").lower(), 9),
+        _extract_score_percent(artifact.analysis),
+        artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+    )
+
+
+def _build_report_evidence_situation(
+    *,
+    artifacts: list[ReportArtifact],
+    report_evidence_index: dict[str, dict[str, Any]],
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+    score_by_stage: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build Situation Day from valid report_evidence.situation_candidates when usable."""
+    candidates: list[tuple[tuple[int, int, int, float, datetime], ReportArtifact, dict[str, Any], list[dict[str, str]]]] = []
+    for artifact in artifacts:
+        if not _is_report_evidence_sales_like(
+            artifact=artifact,
+            call_list_by_interaction_id=call_list_by_interaction_id,
+        ):
+            continue
+        evidence = _valid_report_evidence_for_artifact(
+            artifact=artifact,
+            report_evidence_index=report_evidence_index,
+        )
+        if evidence is None:
+            continue
+        for candidate in evidence.get("situation_candidates") or []:
+            if not isinstance(candidate, dict) or candidate.get("usable_in_report") is not True:
+                continue
+            quality = str(candidate.get("evidence_quality") or "").strip().lower()
+            if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
+                continue
+            turns = _report_evidence_turns(candidate)
+            if not turns:
+                continue
+            candidates.append(
+                (
+                    _report_evidence_candidate_rank(
+                        candidate=candidate,
+                        score_by_stage=score_by_stage,
+                        artifact=artifact,
+                    ),
+                    artifact,
+                    candidate,
+                    turns,
+                )
+            )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    _rank, artifact, candidate, turns = candidates[0]
+    ref = _artifact_call_reference(artifact)
+    stage_code = str(candidate.get("stage_code") or "").strip()
+    stage_name = _stage_name_for_code(stage_code, score_by_stage)
+    quote_text = _report_evidence_quote_text(turns)
+    dialogue_is_partial = any(turn.get("speaker") == "unknown" for turn in turns)
+    return {
+        "situation_title": str(candidate.get("situation_title") or "").strip(),
+        "evidence_quote": {
+            **ref,
+            "client_text": quote_text,
+            "manager_text": _manager_text_from_turns(turns),
+            "criterion_code": None,
+            "stage_code": stage_code,
+            "source": "report_evidence.situation_candidates",
+            "evidence_quality": candidate.get("evidence_quality"),
+        },
+        "dialogue_excerpt": {
+            **ref,
+            "source": "report_evidence.situation_candidates",
+            "is_partial": dialogue_is_partial,
+            "partial_reason": "speaker_roles_unavailable" if dialogue_is_partial else None,
+            "turns": turns,
+        },
+        "coaching_view": {
+            "pattern_title": str(candidate.get("situation_title") or "").strip()
+            or "Ситуация дня из report_evidence",
+            "stage_code": stage_code,
+            "stage_label": stage_name,
+            "stage_score_label": _report_evidence_stage_score_label(stage_code, score_by_stage),
+            "what_happened": _first_sentence(str(candidate.get("what_happened") or ""), limit=260),
+            "meaning": _first_sentence(str(candidate.get("what_it_means") or ""), limit=260),
+            "what_was_missing": _first_sentence(str(candidate.get("what_was_missing") or ""), limit=260),
+            "next_time_action": _first_sentence(str(candidate.get("next_time_action") or ""), limit=260),
+            "scripts": [
+                _first_sentence(str(item or ""), limit=220)
+                for item in list(candidate.get("scripts") or [])[:3]
+                if str(item or "").strip()
+            ],
+            "source": "report_evidence",
+            "dialogue_is_partial": dialogue_is_partial,
+        },
+    }
+
+
+def _build_call_breakdown_from_report_evidence(
+    *,
+    artifacts: list[ReportArtifact],
+    report_evidence_index: dict[str, dict[str, Any]],
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+    score_by_stage: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build РАЗБОР ЗВОНКА from valid manager_coaching_moments when available."""
+    candidates: list[tuple[tuple[int, int, int, float, datetime], ReportArtifact, dict[str, Any], list[dict[str, str]]]] = []
+    for artifact in artifacts:
+        if not _is_report_evidence_sales_like(
+            artifact=artifact,
+            call_list_by_interaction_id=call_list_by_interaction_id,
+        ):
+            continue
+        evidence = _valid_report_evidence_for_artifact(
+            artifact=artifact,
+            report_evidence_index=report_evidence_index,
+        )
+        if evidence is None:
+            continue
+        for moment in evidence.get("manager_coaching_moments") or []:
+            if not isinstance(moment, dict) or moment.get("usable_in_report") is not True:
+                continue
+            quality = str(moment.get("evidence_quality") or "").strip().lower()
+            if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
+                continue
+            turns = _report_evidence_turns(moment)
+            if not turns:
+                continue
+            candidates.append(
+                (
+                    _report_evidence_candidate_rank(
+                        candidate=moment,
+                        score_by_stage=score_by_stage,
+                        artifact=artifact,
+                    ),
+                    artifact,
+                    moment,
+                    turns,
+                )
+            )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    _rank, best_artifact, _best_moment, _turns = candidates[0]
+    best_candidates = [
+        (rank, moment, turns)
+        for rank, artifact, moment, turns in candidates
+        if str(artifact.interaction.id) == str(best_artifact.interaction.id)
+    ]
+    best_candidates.sort(key=lambda item: item[0])
+    rows: list[list[str]] = []
+    for index, (_moment_rank, moment, turns) in enumerate(best_candidates[:3], start=1):
+        stage_name = _stage_name_for_code(str(moment.get("stage_code") or ""), score_by_stage)
+        quote = _report_evidence_quote_text(turns)
+        quote_part = f" Фрагмент: «{_dialogue_turn_text(quote, limit=180)}»." if quote else ""
+        what = _first_sentence(str(moment.get("what_happened") or ""), limit=220)
+        better = _first_sentence(str(moment.get("what_better") or ""), limit=240)
+        rows.append(
+            [
+                f"{index}",
+                f"{stage_name}: {what}{quote_part}".strip(),
+                better or "Закрепить следующий шаг конкретной формулировкой.",
+            ]
+        )
+    if not rows:
+        return None
+    ref = _artifact_call_reference(best_artifact)
+    return {
+        "is_placeholder": False,
+        "call_id": ref["call_id"],
+        "client_label": ref["client_label"],
+        "client_phone": ref["client_phone"],
+        "date_label": ref["date_label"],
+        "time_label": ref["time_label"],
+        "stage_steps": [],
+        "worked": [],
+        "to_fix": [],
+        "recommendation": None,
+        "rows": rows,
+        "summary_line": f"{ref['client_label']} · {ref['time_label']} · report_evidence",
+        "source_note": "report_evidence.manager_coaching_moments",
+    }
+
+
+def _build_voice_of_customer_from_report_evidence(
+    *,
+    artifacts: list[ReportArtifact],
+    report_evidence_index: dict[str, dict[str, Any]],
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build Голос клиента from valid report_evidence.voice_of_customer candidates."""
+    rows: list[tuple[tuple[int, int, datetime], dict[str, Any]]] = []
+    seen: set[str] = set()
+    signal_rank = {"high": 0, "medium": 1, "low": 2}
+    for artifact in artifacts:
+        if not _is_report_evidence_sales_like(
+            artifact=artifact,
+            call_list_by_interaction_id=call_list_by_interaction_id,
+        ):
+            continue
+        evidence = _valid_report_evidence_for_artifact(
+            artifact=artifact,
+            report_evidence_index=report_evidence_index,
+        )
+        if evidence is None:
+            continue
+        ref = _artifact_call_reference(artifact)
+        for item in evidence.get("voice_of_customer") or []:
+            if not isinstance(item, dict) or item.get("usable_in_report") is not True:
+                continue
+            if str(item.get("speaker") or "").strip().lower() not in {"client", "unknown"}:
+                continue
+            if str(item.get("business_signal") or "").strip().lower() not in {"high", "medium"}:
+                continue
+            quote = _dialogue_turn_text(str(item.get("quote") or ""), limit=180)
+            if len(quote) < 5 or quote in seen:
+                continue
+            seen.add(quote)
+            rows.append(
+                (
+                    (
+                        signal_rank.get(str(item.get("business_signal") or "").lower(), 9),
+                        0 if str(item.get("speaker") or "").lower() == "client" else 1,
+                        artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+                    ),
+                    {
+                        "client_label": ref["client_label"],
+                        "time_label": ref["time_label"],
+                        "quote": quote,
+                        "context": _first_sentence(str(item.get("meaning") or ""), limit=180),
+                        "source": "report_evidence.voice_of_customer",
+                    },
+                )
+            )
+    if not rows:
+        return None
+    rows.sort(key=lambda item: item[0])
+    return {
+        "is_placeholder": False,
+        "situations": [item for _rank, item in rows[:3]],
+        "source_note": "report_evidence.voice_of_customer",
+    }
+
+
+def _build_additional_situations_from_report_evidence(
+    *,
+    artifacts: list[ReportArtifact],
+    report_evidence_index: dict[str, dict[str, Any]],
+    call_list_by_interaction_id: dict[str, dict[str, Any]],
+    top_situation_title: str | None,
+) -> dict[str, Any] | None:
+    """Build additional situations from valid report_evidence additional_situations."""
+    rows: list[tuple[tuple[int, int, datetime], dict[str, Any]]] = []
+    seen_titles = {str(top_situation_title or "").strip().lower()}
+    for artifact in artifacts:
+        if not _is_report_evidence_sales_like(
+            artifact=artifact,
+            call_list_by_interaction_id=call_list_by_interaction_id,
+        ):
+            continue
+        evidence = _valid_report_evidence_for_artifact(
+            artifact=artifact,
+            report_evidence_index=report_evidence_index,
+        )
+        if evidence is None:
+            continue
+        for item in evidence.get("additional_situations") or []:
+            if not isinstance(item, dict) or item.get("usable_in_report") is not True:
+                continue
+            quality = str(item.get("evidence_quality") or "").strip().lower()
+            priority = str(item.get("priority") or "").strip().lower()
+            if quality not in REPORT_EVIDENCE_USABLE_QUALITIES or priority not in {"high", "medium"}:
+                continue
+            title = _first_sentence(str(item.get("title") or ""), limit=120).rstrip(".")
+            title_key = title.strip().lower()
+            if not title or title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+            kind = "strength" if str(item.get("type") or "") == "strength" else "gap"
+            rows.append(
+                (
+                    (
+                        REPORT_EVIDENCE_PRIORITY_RANK.get(priority, 9),
+                        REPORT_EVIDENCE_QUALITY_RANK.get(quality, 9),
+                        artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+                    ),
+                    {
+                        "kind": kind,
+                        "title": title,
+                        "signal": 1,
+                        "interpretation": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
+                        "client_said": _first_sentence(str(item.get("what_happened") or ""), limit=180),
+                        "meant": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
+                        "how_to": _first_sentence(str(item.get("recommended_action") or ""), limit=180),
+                        "why": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
+                        "source": "report_evidence.additional_situations",
+                    },
+                )
+            )
+    if not rows:
+        return None
+    rows.sort(key=lambda item: item[0])
+    return {
+        "is_placeholder": False,
+        "situations": [item for _rank, item in rows[:3]],
+        "source_note": "report_evidence.additional_situations",
+    }
+
+
+def _select_report_evidence_follow_up(
+    *,
+    interaction_id: str,
+    final_status: str,
+    report_evidence_index: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not report_evidence_index:
+        return None
+    entry = report_evidence_index.get(interaction_id) or {}
+    if not entry.get("report_evidence_valid"):
+        return None
+    evidence = dict(entry.get("report_evidence") or {})
+    expected_status = {
+        "agreed": "agreement",
+        "rescheduled": "rescheduled",
+        "open": "open",
+    }.get(final_status)
+    if not expected_status:
+        return None
+    for candidate in evidence.get("follow_up_candidates") or []:
+        if not isinstance(candidate, dict) or candidate.get("usable_in_report") is not True:
+            continue
+        if str(candidate.get("status") or "").strip().lower() != expected_status:
+            continue
+        return candidate
+    return None
+
+
+def _build_call_tomorrow(
+    *,
+    call_list: list[dict[str, Any]],
+    report_evidence_index: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Build КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА from final report-day outcomes.
 
     Selection rule (deterministic):
@@ -6436,10 +6992,32 @@ def _build_call_tomorrow(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
         if not client_label:
             continue
 
-        next_step = str(row.get("next_step") or "").strip()
+        interaction_id = str(row.get("interaction_id") or "").strip()
+        evidence_follow_up = _select_report_evidence_follow_up(
+            interaction_id=interaction_id,
+            final_status=status,
+            report_evidence_index=report_evidence_index,
+        )
+        next_step = str(
+            (evidence_follow_up or {}).get("next_step")
+            or row.get("next_step")
+            or ""
+        ).strip()
         scenario_type = str(row.get("scenario_type") or "").lower()
         time_label = _short_time_label(row.get("time")) or "—"
-        deadline = str(row.get("deadline") or "").strip() or None
+        deadline = str(
+            (evidence_follow_up or {}).get("deadline")
+            or row.get("deadline")
+            or ""
+        ).strip() or None
+        opening_script = str((evidence_follow_up or {}).get("first_phrase") or "").strip()
+        if not opening_script:
+            opening_script = _call_tomorrow_opening_script(
+                status=status,
+                deadline=deadline,
+                next_step=next_step,
+                scenario_type=scenario_type,
+            )
 
         grouped[status].append({
             "client_label": client_label,
@@ -6447,8 +7025,14 @@ def _build_call_tomorrow(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
             "status": status,
             "deadline": deadline,
             "next_step": next_step,
-            "reason": str(row.get("reason") or "").strip() or None,
+            "reason": str(
+                (evidence_follow_up or {}).get("why_follow_up")
+                or row.get("reason")
+                or ""
+            ).strip() or None,
             "scenario_type": scenario_type,
+            "opening_script": opening_script,
+            "source": "report_evidence.follow_up_candidates" if evidence_follow_up else "final_call_list",
             "_sort_key": (str(deadline or "z"), time_label),
         })
 
@@ -6466,12 +7050,8 @@ def _build_call_tomorrow(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
                 "deadline": item["deadline"],
                 "next_step": item["next_step"],
                 "reason": item["reason"],
-                "opening_script": _call_tomorrow_opening_script(
-                    status=item["status"],
-                    deadline=item["deadline"],
-                    next_step=item["next_step"],
-                    scenario_type=item["scenario_type"],
-                ),
+                "opening_script": item["opening_script"],
+                "source": item["source"],
             })
             if len(contacts) >= 5:
                 break
@@ -6482,7 +7062,7 @@ def _build_call_tomorrow(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
         "is_placeholder": len(contacts) == 0,
         "contacts": contacts,
         "empty_state": "Нет коммерческих звонков для работы завтра по итогам отчётного дня.",
-        "source_note": "derived_from_final_business_outcome_call_list",
+        "source_note": "derived_from_final_business_outcome_call_list_prefers_valid_report_evidence",
     }
 
 

@@ -705,6 +705,120 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("[конкретная задача клиента]", " ".join(coaching_view["scripts"]))
         self.assertNotIn("qp_role_scope", " ".join(str(value) for value in coaching_view.values()))
 
+    def test_manager_daily_prefers_valid_report_evidence_for_report_blocks(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"]["contact_name"] = "Алия"
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Контекст процесса не уточнён.",
+                    }
+                ],
+            }
+        ]
+        detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Legacy gap"}]
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        diagnostics = payload["report_evidence_diagnostics"]["summary"]
+        self.assertEqual(diagnostics["available_count"], 1)
+        self.assertEqual(diagnostics["valid_count"], 1)
+        self.assertEqual(payload["situation_evidence_quote"]["source"], "report_evidence.situation_candidates")
+        self.assertEqual(payload["situation_day_coaching_view"]["source"], "report_evidence")
+        self.assertEqual(payload["situation_day_coaching_view"]["pattern_title"], "Контекст процесса не уточнён")
+        self.assertEqual(payload["call_breakdown"]["source_note"], "report_evidence.manager_coaching_moments")
+        self.assertIn("Следующий шаг остался общим", payload["call_breakdown"]["rows"][0][1])
+        self.assertEqual(payload["voice_of_customer"]["source_note"], "report_evidence.voice_of_customer")
+        self.assertEqual(payload["voice_of_customer"]["situations"][0]["quote"], "Скиньте в WhatsApp, я посмотрю.")
+        self.assertEqual(payload["additional_situations"]["source_note"], "report_evidence.additional_situations")
+        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["source"], "report_evidence.follow_up_candidates")
+        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["next_step"], "Отправить материалы и вернуться с вопросом.")
+
+    def test_manager_daily_invalid_report_evidence_uses_step8w_fallback(self) -> None:
+        artifact = _artifact(50.0, "problematic")
+        artifact.interaction.text = "Клиент: Я просто уточняю для руководителя, сама решение не принимаю."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_role_scope",
+                        "criterion_name": "Роль и масштаб",
+                        "score": 0,
+                        "max_score": 2,
+                    }
+                ],
+            }
+        ]
+        detail["gaps"] = [{"criterion_code": "qp_role_scope", "title": "Роль собеседника не была уточнена"}]
+        detail["evidence_fragments"] = [
+            {
+                "criterion_code": "qp_role_scope",
+                "client_text": "Я просто уточняю для руководителя, сама решение не принимаю.",
+            }
+        ]
+        invalid_report_evidence = _valid_report_evidence_detail()
+        invalid_report_evidence["report_evidence"]["voice_of_customer"][0]["quote"] = "Этой цитаты нет в транскрипте."
+        detail.update(invalid_report_evidence)
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        diagnostics = payload["report_evidence_diagnostics"]["summary"]
+        self.assertEqual(diagnostics["available_count"], 1)
+        self.assertEqual(diagnostics["valid_count"], 0)
+        self.assertEqual(diagnostics["invalid_count"], 1)
+        self.assertEqual(
+            payload["report_evidence_diagnostics"]["calls"][0]["report_evidence_source"],
+            "legacy_fallback",
+        )
+        self.assertEqual(payload["situation_evidence_quote"]["source"], "evidence_fragments")
+        self.assertIn("сама решение не принимаю", payload["situation_evidence_quote"]["client_text"])
+
     def test_manager_daily_payload_falls_back_to_breakdown_evidence_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [

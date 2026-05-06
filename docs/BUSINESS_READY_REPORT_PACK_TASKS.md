@@ -616,6 +616,48 @@ else:
 
 **Next step:** Step 8AD — wire `manager_daily` to prefer valid `report_evidence` for candidate ranking/evidence rendering, with fallback to legacy Step 8W behavior when missing/invalid.
 
+### Manager_daily Target Architecture — Step 8AD Closure: Reporting Prefers Valid `report_evidence`
+
+**Дата:** 2026-05-06
+
+**Scope:** `manager_daily` report payload assembly only. No LLM2 prompt changes, validator schema changes, `BusinessOutcomeResolver` final-authority changes, scoring, eligibility, selection model, rolling window, source discovery, STT, `build_missing`, mass LLM, delivery, scheduler, or PDF layout changes.
+
+**Implemented:**
+- `build_manager_daily_payload()` now creates a report-day `report_evidence` validation index over operational `meaningful_calls`;
+- validation uses `validate_report_evidence(scores_detail, transcript)` once per call and records `report_evidence_available`, `report_evidence_valid`, errors, warnings, version, and `report_evidence_source`;
+- valid `report_evidence` is preferred for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`, and follow-up enrichment in `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`;
+- missing or invalid `report_evidence` uses existing Step 8W fallback logic;
+- final outcome remains deterministic: `BusinessOutcomeResolver` / final `payload.call_list[]` still decide call-list status, money counters, and tomorrow inclusion/exclusion.
+
+**Source policy now in payload diagnostics:**
+
+```
+valid report_evidence -> prefer for report evidence candidates
+missing/invalid report_evidence -> legacy_fallback
+report_evidence.business_outcome -> semantic signal only
+BusinessOutcomeResolver -> final manager-facing outcome authority
+```
+
+**Read-only verification on `2026-05-04`:**
+
+No `run_report`, source discovery, STT, LLM, `build_missing`, report rebuild, or delivery was invoked. The verification built persisted payloads and render models directly and saved `/tmp/step8ad_summary_2026-05-04.json`.
+
+| Manager | call_list_dates | gate | totals unchanged | valid report_evidence | report_evidence used | fallback used |
+|---|---|---|---|---:|---:|---:|
+| Эльмира | `["2026-05-04"]` | passed | yes | 2/12 | 2 | 6 |
+| Тимур | `["2026-05-04"]` | passed | yes | 2/15 | 1 | 8 |
+| Толеген | `["2026-05-04"]` | passed | yes | 1/6 | 4 | 3 |
+
+Step 8R/8V outcome totals remained unchanged:
+
+| Manager | Meaningful | Договорённость | Перенос | Отказ | Открыт | Тех/сервис | Не подходит |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Эльмира | 12 | 1 | 1 | 2 | 2 | 6 | 0 |
+| Тимур | 15 | 3 | 1 | 2 | 6 | 2 | 1 |
+| Толеген | 6 | 0 | 0 | 1 | 3 | 2 | 0 |
+
+**Next step:** Step 8AE — rebuild/compare PDFs after report_evidence wiring when human-review artifacts are needed; keep Step 8W fallback for all legacy analyses.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04

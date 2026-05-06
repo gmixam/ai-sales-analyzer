@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`.
+**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority.
 
 ---
 
@@ -170,6 +170,15 @@ Service note должна отображать полную воронку от�
 - ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ
 
 Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) также считается по `coaching_core`.
+
+Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `report_evidence v1` when it exists and passes `validate_report_evidence(scores_detail, transcript)`:
+- `СИТУАЦИЯ ДНЯ` prefers usable `report_evidence.situation_candidates`;
+- `РАЗБОР ЗВОНКА` prefers usable `report_evidence.manager_coaching_moments`;
+- `ГОЛОС КЛИЕНТА` prefers usable grounded `report_evidence.voice_of_customer`;
+- `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` prefers usable high/medium `report_evidence.additional_situations`;
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` may use `report_evidence.follow_up_candidates` for text enrichment, but only after the final `payload.call_list[]` status allows inclusion.
+
+If `report_evidence` is missing or invalid, the report uses the current Step 8W persisted evidence/transcript fallback. Reporting diagnostics must expose `report_evidence_available`, `report_evidence_valid`, validation issues, and `report_evidence_source=report_evidence|legacy_fallback`.
 
 ---
 

@@ -1,6 +1,6 @@
 # Report Evidence Contract — LLM2 to Reporting Layer
 
-**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC.
+**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC; `manager_daily` preferred-source wiring implemented in Step 8AD.
 **Date:** 2026-05-06  
 **Milestone:** 6.5 `Business-ready Report Pack`  
 **Scope:** `manager_daily` first, reusable for weekly/future reports later.
@@ -399,6 +399,19 @@ Controlled v7 result:
 - the tech/service sample remained a persisted `not_coachable_or_reportable` analysis, with valid `report_evidence.business_outcome.status=tech_service`, `evidence_quote=null`, and no follow-up candidate.
 
 Reporting may now proceed to Step 8AD, but valid `report_evidence` must still be treated as preferred evidence input with fallback safeguards, not as a hard replacement for legacy data in older or failed analyses.
+
+### Step 8AD reporting integration note
+
+Step 8AD wired `manager_daily` to prefer valid `report_evidence v1` for evidence candidate selection and text enrichment.
+
+Current implemented source policy:
+- validate each report-day `meaningful_calls` analysis with `validate_report_evidence(scores_detail, transcript)`;
+- if `report_evidence` exists and is valid, prefer it for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`, and follow-up candidate text enrichment;
+- if it is missing or invalid, use Step 8W legacy fallback;
+- keep `BusinessOutcomeResolver` as final authority for `payload.call_list[]`, outcome counters, money rules, and tomorrow inclusion/exclusion;
+- expose diagnostics for availability, validity, errors, warnings, version, and selected source.
+
+This integration does not make `report_evidence.business_outcome` final authority. It remains a semantic signal until a future resolver step explicitly consumes it under deterministic priority rules.
 
 ## BusinessOutcomeResolver Synchronization
 
