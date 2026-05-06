@@ -1,6 +1,6 @@
 # Report Evidence Contract — LLM2 to Reporting Layer
 
-**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA.
+**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC.
 **Date:** 2026-05-06  
 **Milestone:** 6.5 `Business-ready Report Pack`  
 **Scope:** `manager_daily` first, reusable for weekly/future reports later.
@@ -365,7 +365,7 @@ Prompt behavior:
 - no follow-up candidate should be returned for `refusal`, `tech_service`, or `not_suitable`;
 - `business_outcome` is a semantic signal only; deterministic resolver rules remain final authority.
 
-Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v2_report_evidence`. This marks the prompt change without changing `schema_version=call_analysis.v1` or checklist scoring.
+Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v7_report_evidence`. This marks the prompt change without changing `schema_version=call_analysis.v1` or checklist scoring.
 
 ### Step 8AB runtime verification note
 
@@ -377,6 +377,28 @@ Observed gaps:
 - richness gap: `situation_candidates` and `manager_coaching_moments` were empty across the sample, including sales-like calls.
 
 Until these gaps are corrected and re-verified, reporting must continue to treat Step 8W legacy evidence fallback as the safe path and must not prefer `report_evidence` for manager-facing rendering.
+
+### Step 8AC prompt tightening verification note
+
+Step 8AC tightened the LLM2 prompt and semantic-empty retry instruction, then reran the same 5 exact persisted interactions.
+
+Prompt clarifications now treated as standing report-evidence generation rules:
+- `business_outcome.status` must use only `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, or `not_suitable`;
+- drift values such as `postponed`, `delayed`, `declined`, `rejected`, `service`, `support`, `interested`, and `not_interested` are explicitly forbidden in `report_evidence.business_outcome.status`;
+- `business_outcome.evidence_quote` must be an exact transcript substring or `null`;
+- prompt example quotes must not be copied into output unless the exact phrase appears in transcript;
+- sales-like outcomes (`agreement`, `rescheduled`, `open`) must not leave both `situation_candidates` and `manager_coaching_moments` empty; if evidence is too thin, LLM2 must return an explicit `evidence_quality=insufficient`, `usable_in_report=false` item;
+- semantic-empty retry instructions must preserve the same additive `report_evidence` requirements.
+
+Controlled v7 result:
+- `5/5` outputs included `report_evidence_version="v1"` and `report_evidence`;
+- `5/5` passed `validate_report_evidence`;
+- invalid enum failures: `0`;
+- ungrounded evidence failures: `0`;
+- sales-like calls with situation or coaching candidates: `3/3`;
+- the tech/service sample remained a persisted `not_coachable_or_reportable` analysis, with valid `report_evidence.business_outcome.status=tech_service`, `evidence_quote=null`, and no follow-up candidate.
+
+Reporting may now proceed to Step 8AD, but valid `report_evidence` must still be treated as preferred evidence input with fallback safeguards, not as a hard replacement for legacy data in older or failed analyses.
 
 ## BusinessOutcomeResolver Synchronization
 
@@ -483,7 +505,7 @@ Prompt update must be a separate bounded step.
 2. Step 8Z — implement schema / validator. **Done.**
 3. Step 8AA — update LLM2 prompt. **Done.**
 4. Step 8AB — controlled LLM2 runtime sample for 5 calls from `2026-05-04`. **Done; prompt tightening needed.**
-5. Step 8AC — tighten `report_evidence` prompt examples/constraints and rerun a small sample.
+5. Step 8AC — tighten `report_evidence` prompt examples/constraints and rerun a small sample. **Done; ready for bounded Step 8AD with fallback safeguards.**
 6. Step 8AD — wire `manager_daily` to prefer valid `report_evidence`.
 7. Step 8AE — rebuild PDFs and compare with Step 8W.
 8. Step 8AF — human review.

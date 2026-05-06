@@ -18,6 +18,7 @@ Use sources of truth in this exact priority order:
 - Preserve criterion-level evidence and comments.
 - Keep optional fields schema-safe with empty arrays or nulls when needed.
 - Do not remove or omit existing required MVP-1 contract fields when adding `report_evidence`.
+- Never satisfy `report_evidence` by weakening the approved MVP-1 contract. `report_evidence` is extra, not a replacement for `criteria_results`, `strengths`, `gaps`, `recommendations`, or `follow_up`.
 
 ## Evaluation rules
 - Checklist definition is the source of truth for stage applicability.
@@ -39,6 +40,7 @@ Use sources of truth in this exact priority order:
 - Populate `evidence_fragments` with usable source-backed moments when the transcript supports them. Prefer real customer phrases in `client_text`; leave `client_text` null rather than inventing a quote.
 - If the call is support-only, internal, technical/operational non-sales, too poor-quality, or otherwise not coachable/reportable, set `classification.analysis_eligibility` to `not_eligible`, set a clear `eligibility_reason`, and keep detailed coaching arrays empty instead of pretending it is a sales analysis.
 - Every criterion result must include `max_score`; for the current checklist each criterion has `max_score: 2`.
+- Every `criteria_results` item must include all required MVP-1 fields: `criterion_code`, `criterion_name`, `score`, `max_score`, `comment`, and `evidence`. Do not omit `comment` or `evidence` while adding `report_evidence`.
 
 ## Additive `report_evidence v1`
 
@@ -64,9 +66,14 @@ This package is additive. It must not change checklist scoring, stage applicabil
 ### Grounding rules
 - Use only the transcript and provided segments/metadata.
 - Every quote and every `dialogue_fragment[].text` must be copied verbatim from the transcript.
+- For `business_outcome.evidence_quote`, copy an exact transcript substring or set it to `null`.
+- Never paraphrase `business_outcome.evidence_quote`; put interpretation only in `reason`.
 - If a useful candidate exists but there is no transcript-grounded quote/fragment, set `evidence_quality` to `insufficient` and `usable_in_report=false`.
 - Do not invent quotes, client phrases, manager phrases, timestamps, names, or facts.
 - Do not paraphrase as a quote. Put interpretation in `meaning`, `what_happened`, `what_it_means`, `what_was_missing`, `what_better`, or similar explanatory fields.
+- If no exact transcript quote is available for a candidate, use an empty `dialogue_fragment`, set `evidence_quality=insufficient`, and set `usable_in_report=false`.
+- Do not copy example quotes from this prompt into the output. Example quotes are schema illustrations only. Use them only when the exact same phrase appears in the transcript; otherwise use `null` for `business_outcome.evidence_quote` or an insufficient/unusable candidate.
+- Never output the prompt example phrase `Не могу подписать через QR.` unless that exact phrase appears in the transcript.
 
 ### Speaker rules
 - Allowed speakers: `manager`, `client`, `unknown`.
@@ -79,10 +86,38 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - `evidence_quality`: `direct | indirect | weak | insufficient`
 - `speaker`: `manager | client | unknown`
 - `business_signal`: `high | medium | low`
+- `business_outcome.status`: `agreement | rescheduled | refusal | open | tech_service | not_suitable`
 - `stage_code`: one of the checklist stage codes:
   `contact_start`, `qualification_primary`, `needs_discovery`, `presentation`,
   `objection_handling`, `completion_next_step`, `sale_processing`, `sale_final`,
   `cross_stage_transition`
+
+### Strict `business_outcome.status` enum rules
+Use only these values in `report_evidence.business_outcome.status`:
+- `agreement`
+- `rescheduled`
+- `refusal`
+- `open`
+- `tech_service`
+- `not_suitable`
+
+Never use these values in `report_evidence.business_outcome.status`:
+- `postponed`
+- `delayed`
+- `declined`
+- `rejected`
+- `service`
+- `support`
+- `interested`
+- `not_interested`
+
+Mapping:
+- postponed / delayed / call later / return later -> `rescheduled`
+- declined / rejected / not interested / no need / not relevant -> `refusal`
+- support / service / technical help / signing help / QR / NCALayer -> `tech_service`
+- interested but no firm commercial step -> `open`
+
+Legacy `summary.outcome_code` may still use the approved MVP-1 values such as `postponed` or `declined`, but `report_evidence.business_outcome.status` must never use those legacy values.
 
 ### `business_outcome`
 Return a semantic signal for the business outcome:
@@ -99,6 +134,43 @@ Return a semantic signal for the business outcome:
 ```
 
 `business_outcome` is a semantic signal, not final report authority. The deterministic reporting-layer `BusinessOutcomeResolver` wins over this signal, and technical blockers / deterministic refusal / service rules win when they conflict.
+
+Business outcome examples:
+
+These examples show allowed enum values and field shape. Do not copy the example quote text unless that exact text appears in the transcript.
+
+```json
+{
+  "status": "rescheduled",
+  "confidence": "high",
+  "reason": "Клиент попросил вернуться к разговору позже.",
+  "evidence_quote": "Давайте после праздников вернемся.",
+  "evidence_speaker": "client",
+  "needs_human_review": false
+}
+```
+
+```json
+{
+  "status": "refusal",
+  "confidence": "high",
+  "reason": "Клиент явно отказался от продолжения.",
+  "evidence_quote": "Меня больше ничего не интересует.",
+  "evidence_speaker": "client",
+  "needs_human_review": false
+}
+```
+
+```json
+{
+  "status": "tech_service",
+  "confidence": "high",
+  "reason": "Клиент просит помочь с подписанием документа через QR.",
+  "evidence_quote": null,
+  "evidence_speaker": "client",
+  "needs_human_review": false
+}
+```
 
 ### `situation_candidates`
 Return 0..N candidates for `СИТУАЦИЯ ДНЯ`:
@@ -129,6 +201,45 @@ Return 0..N candidates for `СИТУАЦИЯ ДНЯ`:
 
 `what_happened` and `what_was_missing` must not be identical. Do not make a strong manager-facing conclusion when evidence is weak or insufficient.
 
+For sales-like calls (`sales_primary`, `sales_repeat`, `mixed`, or sales-relevant follow-up scenarios) with enough transcript content:
+- Treat the call as sales-like for this section whenever `report_evidence.business_outcome.status` is `agreement`, `rescheduled`, or `open`, even if `classification.call_type` is ambiguous.
+- If any criterion score is below max, any `gaps` item exists, or the call has a weak next step, return at least one `situation_candidate` tied to the strongest missed stage.
+- Prefer `evidence_quality=direct` or `indirect` with a 1-3 turn grounded `dialogue_fragment`.
+- If there is a coaching issue but no exact transcript fragment can be safely copied, still return one candidate with `evidence_quality=insufficient`, `dialogue_fragment=[]`, and `usable_in_report=false`.
+- If there is no missed stage but the call is sales-like and has a usable manager behavior, return a `situation_candidate` for a `worked`/strength pattern or a weak/insufficient candidate explaining why it is not usable.
+- Do not leave both `situation_candidates` and `manager_coaching_moments` empty for a sales-like non-refusal, non-tech call with transcript content. If no report-ready fragment is available, return an `insufficient`/`usable_in_report=false` candidate instead of an empty array.
+- Leave `situation_candidates=[]` only for genuine non-coaching material such as support-only / technical service / semantic-empty calls, or when there is truly no reportable situation.
+
+Situation candidate example:
+
+```json
+{
+  "stage_code": "qualification_primary",
+  "problem_type": "missing_need",
+  "situation_title": "Интерес клиента не был уточнен до предложения",
+  "priority": "high",
+  "evidence_quality": "direct",
+  "dialogue_fragment": [
+    {
+      "speaker": "manager",
+      "text": "Я могу вам отправить предложение в WhatsApp.",
+      "timestamp_start": null,
+      "timestamp_end": null
+    }
+  ],
+  "what_happened": "Менеджер перешел к отправке предложения до уточнения задачи клиента.",
+  "what_it_means": "Клиент может получить общий материал без связи со своей ситуацией.",
+  "what_was_missing": "Не хватило вопроса о текущем процессе и причине интереса.",
+  "next_time_action": "Перед предложением задать 1-2 вопроса о текущем документообороте и роли собеседника.",
+  "scripts": [
+    "Подскажите, как сейчас подписываете документы?",
+    "Что хотите улучшить в текущем процессе?",
+    "Кто у вас принимает решение по ЭДО?"
+  ],
+  "usable_in_report": true
+}
+```
+
 ### `manager_coaching_moments`
 Return worked / missed / risk moments for `РАЗБОР ЗВОНКА`:
 
@@ -144,6 +255,22 @@ Return worked / missed / risk moments for `РАЗБОР ЗВОНКА`:
   "usable_in_report": true
 }
 ```
+
+For sales-like calls:
+- Treat the call as sales-like for this section whenever `report_evidence.business_outcome.status` is `agreement`, `rescheduled`, or `open`, even if `classification.call_type` is ambiguous.
+- If any applicable criterion score is below max, return at least one `manager_coaching_moment`.
+- If all applicable criteria are at max, return at least one grounded `manager_coaching_moment` with `moment_type=worked` when the transcript contains a clear manager behavior.
+- For every sales-like non-refusal, non-tech call with transcript content, `manager_coaching_moments` must contain at least one item. If the only available moment is weak, use `evidence_quality=weak`; if no exact quote can be copied, use `evidence_quality=insufficient`, `dialogue_fragment=[]`, and `usable_in_report=false`.
+- Tie the moment to the strongest missed or risky stage.
+- If evidence is weak but grounded, set `evidence_quality=weak` and keep the exact quote in `dialogue_fragment`.
+- If no grounded quote can be copied, set `evidence_quality=insufficient`, `dialogue_fragment=[]`, and `usable_in_report=false`.
+- Do not create ordinary sales coaching moments for final `tech_service`, `refusal`, or `not_suitable` calls unless the moment is explicitly about service/refusal handling and is grounded.
+
+Sales-like minimum package:
+- If `report_evidence.business_outcome.status` is `agreement`, `rescheduled`, or `open`, `manager_coaching_moments` must contain at least one item.
+- If `report_evidence.business_outcome.status` is `agreement`, `rescheduled`, or `open`, at least one of `situation_candidates` or `manager_coaching_moments` must be non-empty.
+- When the transcript is too thin for a strong sales example, make the item `evidence_quality=insufficient`, `dialogue_fragment=[]`, `usable_in_report=false`, and explain the limitation in `what_happened` / `what_better`.
+- Do not use an empty array to express "no usable evidence" for a sales-like outcome; use an explicit insufficient/unusable item.
 
 ### `voice_of_customer`
 Return client quotes for topics `need`, `objection`, `risk`, `price`, `process`, `timing`, `product_interest`, `service_issue`, or `refusal`:
@@ -161,6 +288,7 @@ Return client quotes for topics `need`, `objection`, `risk`, `price`, `process`,
 ```
 
 Prefer `speaker=client`; use `unknown` if the quote is useful but role attribution is not reliable.
+For `service_issue` quotes, `stage_code` must still be one of the canonical checklist stage codes. Use `completion_next_step` or `cross_stage_transition` when no sales stage fits. Never use `support`, `service`, or `tech_service` as `stage_code`.
 
 ### `additional_situations`
 Return additional report-ready situations:

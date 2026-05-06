@@ -98,7 +98,7 @@ class AIProviderRoutingTests(unittest.TestCase):
             context["analysis_result_contract_template"]["instruction_version"],
             APPROVED_INSTRUCTION_VERSION,
         )
-        self.assertEqual(APPROVED_INSTRUCTION_VERSION, "edo_sales_mvp1_call_analysis_v2_report_evidence")
+        self.assertEqual(APPROVED_INSTRUCTION_VERSION, "edo_sales_mvp1_call_analysis_v7_report_evidence")
         self.assertIn("REPORT_EVIDENCE_CONTRACT.md", context["source_of_truth_priority"])
         self.assertIn("report_evidence_contract_markdown", context["approved_sources"])
         report_evidence_source = context["approved_sources"]["report_evidence_contract_markdown"]
@@ -888,6 +888,22 @@ class AIProviderRoutingTests(unittest.TestCase):
         )
         self.assertEqual(marked["classification"]["analysis_eligibility"], "not_eligible")
         self.assertEqual(marked["score_by_stage"], [])
+
+    def test_semantic_retry_instruction_preserves_report_evidence_minimum(self) -> None:
+        error = SemanticAnalysisError(
+            "Analyzer returned a semantically empty analysis contract.",
+            interaction_id="sales-call",
+            raw_response="{}",
+            normalized_result={"classification": {"call_type": "sales_primary"}},
+            reason_code="semantically_empty_analysis",
+        )
+
+        instruction = CallsAnalyzer._build_analysis_retry_instruction(error)
+
+        self.assertIn('report_evidence_version="v1"', instruction)
+        self.assertIn("`manager_coaching_moments` must contain at least one item", instruction)
+        self.assertIn("return an explicit `evidence_quality=insufficient`", instruction)
+        self.assertIn("Do not return `follow_up_candidates` for `refusal`, `tech_service`, or `not_suitable`", instruction)
 
     def test_persist_analysis_stores_raw_llm_response_separately_from_normalized_result(self) -> None:
         class _FakeQuery:

@@ -86,6 +86,9 @@ Standing rules:
 - `report_evidence` is additive and must not remove or rename existing MVP-1 call-analysis fields.
 - The analyzer prompt must keep `REPORT_EVIDENCE_CONTRACT.md` as the source of truth for `report_evidence` field shape, enums, grounding, speaker, and validation rules.
 - Direct quotes and dialogue fragments must be transcript-grounded. If grounding is not available, the prompt must require `evidence_quality=insufficient` and `usable_in_report=false`.
+- `business_outcome.evidence_quote` must be an exact transcript substring or `null`; prompt examples are never reusable evidence unless the exact phrase appears in transcript.
+- `report_evidence.business_outcome.status` must use only the contract enum values: `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, `not_suitable`.
+- For sales-like outcomes (`agreement`, `rescheduled`, `open`), the prompt and retry instruction must require at least one `manager_coaching_moment`, and at least one of `situation_candidates` / `manager_coaching_moments` must be non-empty. Thin evidence should become explicit `insufficient` / `usable_in_report=false`, not silent empty arrays.
 - Speaker roles must stay `unknown` when transcript/segments do not make the role reliable.
 - `report_evidence.business_outcome` is only a semantic signal. Final manager-facing outcome remains owned by deterministic reporting-layer resolver rules.
 - Prompt changes that alter `report_evidence` expectations must remain traceable through `instruction_version`.

@@ -579,6 +579,43 @@ else:
 
 **Next step:** Step 8AC — tighten LLM2 `report_evidence` prompt examples/constraints and rerun a small sample before report integration.
 
+### Manager_daily Target Architecture — Step 8AC Closure: Prompt Tightening + Controlled Rerun
+
+**Дата:** 2026-05-06
+
+**Scope:** prompt asset / analyzer retry instruction / prompt regression tests plus controlled LLM2 sample on the same 5 exact persisted `2026-05-04` interactions. No mass re-analysis, source discovery, STT, `build_missing`, report rendering, `BusinessOutcomeResolver`, delivery, report rebuild, scheduler, scoring or checklist changes.
+
+**Implemented prompt constraints:**
+- strict `report_evidence.business_outcome.status` allowed-only block: `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, `not_suitable`;
+- explicit mapping from drift values: `postponed/delayed -> rescheduled`, `declined/rejected/not interested -> refusal`, `support/service/technical help -> tech_service`, interest without firm step -> `open`;
+- `business_outcome.evidence_quote` must be an exact transcript substring or `null`;
+- example quotes are schema illustrations only and must not be copied unless the exact phrase appears in transcript;
+- `service/support/tech_service` are forbidden as `stage_code`; service issue quotes must use canonical checklist stage codes;
+- sales-like outcomes (`agreement`, `rescheduled`, `open`) must return at least one `manager_coaching_moment`, and at least one of `situation_candidates` / `manager_coaching_moments` must be non-empty, with `evidence_quality=insufficient` + `usable_in_report=false` when the transcript is too thin.
+
+**Analyzer retry prompt:**
+- semantic-empty retry instruction now preserves additive `report_evidence_version="v1"` / `report_evidence`;
+- retry also repeats the sales-like minimum package so LLM2 does not repair only MVP-1 `score_by_stage` while leaving report evidence empty.
+
+**Controlled v7 rerun results:**
+
+| Call | Type | Step 8AB validator | Step 8AC validator | New analysis id | Key result |
+|---|---|---|---|---|---|
+| Эльмира `06:28 / +77012172463` | sales-like open | failed | passed | `d353c6ea-515e-422d-b54e-e43fd1959d3b` | `rescheduled`; situation `1`, coaching `1`, VOC `1`, follow-up `1` |
+| Тимур `09:26 / +77751231100` | sales-like open | passed | passed | `3e11a6ab-d8bb-4aa4-b824-77d62c5ede3e` | `open`; coaching `1`, follow-up `1`; no empty richness regression |
+| Толеген `11:46 / Нур-Султан` | sales-like open | passed | passed | `b023f1ae-8313-483e-90fb-6e0873eebe5b` | `open`; situation `1`, coaching `1`, VOC `1`, follow-up `1` |
+| Тимур `04:47 / Надежда Анатольевна` | refusal | failed | passed | `88c42d92-3abe-4d06-86c9-3c1d83438d68` | `refusal`; no follow-up candidate |
+| Эльмира `06:30 / +77006973346` | tech/service | failed | passed | `02327df1-e68a-4b86-80a7-ad4f5abca5cd` | `tech_service`; `evidence_quote=null`; no follow-up candidate; persisted as expected non-coachable semantic-failed row |
+
+**Decision:**
+- pass rate improved from `2/5` to `5/5`;
+- invalid enum failures: `0`;
+- ungrounded evidence failures: `0`;
+- sales-like richness improved from `0/3` to `3/3` calls with situation or coaching evidence;
+- Step 8AD can proceed as a bounded reporting integration that prefers valid `report_evidence` when present, while keeping Step 8W fallback and non-coachable safeguards.
+
+**Next step:** Step 8AD — wire `manager_daily` to prefer valid `report_evidence` for candidate ranking/evidence rendering, with fallback to legacy Step 8W behavior when missing/invalid.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04
