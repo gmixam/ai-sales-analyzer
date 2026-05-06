@@ -848,6 +848,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         analysis = SimpleNamespace(
             id=uuid4(),
+            score_total=0.0,
             scores_detail={
                 "classification": {
                     "call_type": "other",
@@ -1132,6 +1133,135 @@ class ManualReportingPayloadTests(unittest.TestCase):
         result = _build_meaningful_call_list(window_artifacts=[normal, support_artifact, beep])
         self.assertEqual(len(result), 2)
         self.assertNotIn("too_short_or_no_speech", [r.get("call_type") for r in result])
+
+    # --- Step 8R business outcome resolver tests ---
+
+    def _business_artifact(
+        self,
+        *,
+        text: str,
+        call_type: str = "sales_primary",
+        eligibility: str = "eligible",
+        follow_up: dict[str, Any] | None = None,
+        is_failed: bool = False,
+        fail_reason: str | None = None,
+        duration_sec: int = 120,
+    ) -> ReportArtifact:
+        interaction = _interaction(text=text, call_date="2026-05-04 10:00:00")
+        interaction.duration_sec = duration_sec
+        analysis = SimpleNamespace(
+            id=uuid4(),
+            score_total=0.0,
+            scores_detail={
+                "classification": {
+                    "call_type": call_type,
+                    "analysis_eligibility": eligibility,
+                },
+                "call": {"contact_phone": "+77070000000"},
+                "follow_up": follow_up or {},
+                "score": {"checklist_score": {"score_percent": 0.0}},
+                "score_by_stage": [],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+            },
+            is_failed=is_failed,
+            fail_reason=fail_reason,
+        )
+        return ReportArtifact(
+            interaction=interaction,
+            analysis=None if is_failed else analysis,
+            manager=_manager(),
+            call_started_at=datetime.fromisoformat("2026-05-04T10:00:00").replace(tzinfo=UTC),
+            original_analysis=analysis,
+            analysis_reuse_reason=fail_reason if is_failed else "reusable",
+        )
+
+    def test_step8r_non_coachable_service_resolves_to_tech_service(self) -> None:
+        artifact = self._business_artifact(
+            text=(
+                "Клиент не может подписать договор через QR. Менеджер объясняет NCALayer, "
+                "модуль Договор 24 и помогает продолжить подписание."
+            ),
+            call_type="support",
+            eligibility="not_eligible",
+            is_failed=True,
+            fail_reason="not_coachable_or_reportable",
+        )
+
+        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
+
+        self.assertEqual(row["status"], "tech_service")
+        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_tech_service")
+        self.assertIsNone(row["unclassified_status_label"])
+
+    def test_step8r_non_coachable_sales_refusal_beats_not_suitable(self) -> None:
+        artifact = self._business_artifact(
+            text=(
+                "Звонила по заявке. Клиент сказал: передумали, мы уже другой нашли. "
+                "Если вопросы будут, обратитесь."
+            ),
+            eligibility="not_eligible",
+            is_failed=True,
+            fail_reason="not_coachable_or_reportable",
+        )
+
+        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
+
+        self.assertEqual(row["status"], "refusal")
+        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_refusal")
+
+    def test_step8r_refusal_beats_open_and_agreement(self) -> None:
+        open_artifact = self._business_artifact(
+            text=(
+                "Клиент смотрел демо-доступ. Пока нет необходимости, вопросы отсутствуют, "
+                "обращусь если понадобится."
+            ),
+            follow_up={"next_step_fixed": False, "reason_not_fixed": "Клиент не проявил интереса к следующему шагу."},
+        )
+        agreed_artifact = self._business_artifact(
+            text="Все устраивает на данный момент, другие системы не рассматриваем.",
+            follow_up={"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[open_artifact, agreed_artifact])
+
+        self.assertEqual([row["status"] for row in rows], ["refusal", "refusal"])
+
+    def test_step8r_commercial_next_step_resolves_to_agreed(self) -> None:
+        artifact = self._business_artifact(
+            text="Клиент согласился: да, выставляйте счет, счет на WhatsApp сейчас отправлю.",
+            follow_up={"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
+        )
+
+        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
+
+        self.assertEqual(row["status"], "agreed")
+        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_agreed_commercial_step")
+
+    def test_step8r_weak_follow_up_stays_open_not_agreed(self) -> None:
+        artifact = self._business_artifact(
+            text="Скиньте информацию на WhatsApp, я посмотрю, если все нормально, может созвонимся.",
+            follow_up={"next_step_fixed": True, "next_step_text": "Информация отправлена на WhatsApp."},
+        )
+
+        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
+
+        self.assertEqual(row["status"], "open")
+        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_open_follow_up")
+
+    def test_step8r_contract_error_remains_blocking(self) -> None:
+        artifact = self._business_artifact(
+            text="Клиент просит выставить счет.",
+            is_failed=True,
+            fail_reason="analysis_failed_contract: missing required fields",
+        )
+
+        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
+
+        self.assertIsNone(row["status"])
+        self.assertEqual(row["unclassified_reason_code"], "analysis_failed_contract")
+        self.assertEqual(row["unclassified_status_label"], "Ошибка анализа")
 
     # --- SM-4 acceptance tests ---
 

@@ -181,6 +181,460 @@ class ReportArtifact:
     analysis_reuse_reason: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class BusinessOutcome:
+    """Final manager_daily business outcome for one report-day call row."""
+
+    final_status: str | None
+    reason_code: str | None
+    evidence: str | None = None
+    confidence: str = "medium"
+    deadline: str | None = None
+
+
+class BusinessOutcomeResolver:
+    """Resolve manager-facing call outcome from persisted report-day artifacts.
+
+    The resolver is intentionally deterministic and reporting-local. It reads the
+    persisted analysis/transcript surface and never changes analyzer eligibility,
+    scoring, prompts, selection, or readiness.
+    """
+
+    SERVICE_TERMS = (
+        "эцп",
+        "эцк",
+        "qr",
+        "нцалейер",
+        "ncalayer",
+        "nc layer",
+        "подписание",
+        "подписанный документ",
+        "подписать договор",
+        "документ не открывается",
+        "не можем подписать",
+        "модуль договор 24",
+        "личный кабинет",
+        "личном кабинете",
+        "регистрац",
+        "активац",
+        "парол",
+        "техподдерж",
+        "техническая поддержка",
+        "передам техническую",
+        "передать ваш номер в техническую",
+        "помогут найти подписанный документ",
+        "дальнейшие действия",
+        "ошибка",
+        "статус код",
+    )
+    OFFTOPIC_NO_OUTCOME_TERMS = (
+        "chat gpt",
+        "чат gpt",
+        "чад gpt",
+        "искусственного интеллекта",
+        "другая компания",
+        "белимкласс",
+        "блимкласс",
+    )
+    REFUSAL_TERMS = (
+        "не рассматриваем",
+        "не рассматривает",
+        "не актуально",
+        "неактуально",
+        "нет необходимости",
+        "нет потребности",
+        "не интересно",
+        "не заинтересован",
+        "больше ничего не интересует",
+        "уже другой нашли",
+        "уже нашли",
+        "передумали",
+        "нет финансовой возможности",
+        "платно пока не рассматриваем",
+        "пока нет потребности",
+        "пока нет необходимости",
+        "пока не планируете",
+    )
+    AGREEMENT_TERMS = (
+        "zoom",
+        "зум",
+        "встреч",
+        "демо",
+        "презентац",
+        "выставить счет",
+        "выставляйте счет",
+        "счет на whatsapp",
+        "счёт на whatsapp",
+        "счет выстав",
+        "счёт выстав",
+        "подключен",
+        "до встречи",
+    )
+    WEAK_CONTINUATION_TERMS = (
+        "скиньте",
+        "отправьте",
+        "на whatsapp",
+        "на ватсап",
+        "посмотрю",
+        "подумаем",
+        "посоветуюсь",
+        "перезвоню",
+        "может быть",
+        "возможно",
+        "обратной связи",
+        "напоминайте",
+        "напишите",
+    )
+    RESCHEDULE_TERMS = (
+        "после праздников",
+        "в конце года",
+        "в следующем году",
+        "позже",
+        "сейчас нет времени",
+        "сейчас занят",
+        "сейчас занято",
+        "после согласования",
+        "после просмотра",
+    )
+
+    def resolve(self, artifact: ReportArtifact) -> BusinessOutcome:
+        """Return the final business outcome for a manager_daily call row."""
+        transcript = self._normalize(getattr(artifact.interaction, "text", "") or "")
+        source_analysis = artifact.analysis or artifact.original_analysis
+        detail = dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
+        follow_up = dict(detail.get("follow_up") or {})
+        classification = dict(detail.get("classification") or {})
+        call_type = str(classification.get("call_type") or "").strip().lower()
+        eligibility = str(classification.get("analysis_eligibility") or "").strip().lower()
+        failure_reason = (
+            _classify_failed_analysis_reason(artifact.original_analysis, artifact.analysis_reuse_reason)
+            if artifact.original_analysis is not None and bool(getattr(artifact.original_analysis, "is_failed", False))
+            else None
+        )
+
+        blocker = self._technical_blocker(
+            artifact=artifact,
+            transcript=transcript,
+            source_analysis=source_analysis,
+            failure_reason=failure_reason,
+        )
+        if blocker is not None:
+            return blocker
+
+        text = self._combined_text(
+            transcript=transcript,
+            classification=classification,
+            follow_up=follow_up,
+            detail=detail,
+        )
+        deadline = _format_iso_deadline(
+            str(follow_up.get("due_date_text") or follow_up.get("due_date_iso") or "").strip() or None
+        )
+
+        tech = self._resolve_tech_service(text=text, call_type=call_type)
+        if tech is not None:
+            return tech
+
+        refusal = self._resolve_refusal(text=text, follow_up=follow_up)
+        if refusal is not None:
+            return refusal
+
+        agreed = self._resolve_agreement(text=text, follow_up=follow_up, deadline=deadline)
+        if agreed is not None:
+            return agreed
+
+        rescheduled = self._resolve_rescheduled(text=text, follow_up=follow_up, deadline=deadline)
+        if rescheduled is not None:
+            return rescheduled
+
+        off_topic = self._resolve_offtopic_no_outcome(text=text)
+        if off_topic is not None:
+            return off_topic
+
+        open_outcome = self._resolve_open(text=text, follow_up=follow_up, call_type=call_type, deadline=deadline)
+        if open_outcome is not None:
+            return open_outcome
+
+        if failure_reason in {"semantic_empty", "not_coachable_or_reportable"}:
+            return BusinessOutcome(
+                final_status=None,
+                reason_code=failure_reason,
+                evidence=self._evidence(text, ()),
+                confidence="high" if failure_reason == "semantic_empty" else "medium",
+            )
+        if eligibility in {"not_eligible", "not_coachable", "not_reportable", "not_coachable_or_reportable"}:
+            return BusinessOutcome(
+                final_status=None,
+                reason_code="not_coachable_or_reportable",
+                evidence=self._evidence(text, ()),
+                confidence="medium",
+            )
+        if not classification or not call_type:
+            return BusinessOutcome(final_status=None, reason_code="missing_classification", confidence="medium")
+        if not follow_up:
+            return BusinessOutcome(final_status=None, reason_code="no_follow_up_outcome", confidence="medium")
+        return BusinessOutcome(final_status="open", reason_code="open_fallback", confidence="low", deadline=deadline)
+
+    def _technical_blocker(
+        self,
+        *,
+        artifact: ReportArtifact,
+        transcript: str,
+        source_analysis: Any,
+        failure_reason: str | None,
+    ) -> BusinessOutcome | None:
+        if not transcript:
+            reason_code = "no_transcript" if getattr(artifact.interaction, "raw_ref", None) else "cdr_only_probable_live"
+            if not _is_cdr_only_probable_live(artifact):
+                reason_code = "no_transcript"
+            return BusinessOutcome(final_status=None, reason_code=reason_code, confidence="high")
+        if source_analysis is None:
+            return BusinessOutcome(final_status=None, reason_code="no_analysis", confidence="high")
+        if failure_reason in {"analysis_failed_contract", "analysis_failed_provider", "analysis_failed_unknown"}:
+            return BusinessOutcome(final_status=None, reason_code=failure_reason, confidence="high")
+        return None
+
+    def _resolve_tech_service(self, *, text: str, call_type: str) -> BusinessOutcome | None:
+        service_hit = self._find_first(text, self.SERVICE_TERMS)
+        if not service_hit:
+            return None
+        actual_service_hit = self._find_first(
+            text,
+            (
+                "qr",
+                "нцалейер",
+                "ncalayer",
+                "nc layer",
+                "не можем подписать",
+                "документ не открывается",
+                "модуль договор 24",
+                "личный кабинет",
+                "парол",
+                "регистрац",
+                "активац",
+                "передам техническую",
+                "передать ваш номер в техническую",
+                "помогут найти подписанный документ",
+                "дальнейшие действия",
+                "ошибка",
+                "статус код",
+            ),
+        )
+        if (
+            call_type in {"support", "internal"}
+            or actual_service_hit is not None
+        ):
+            if self._contains_any(text, self.OFFTOPIC_NO_OUTCOME_TERMS) and not self._contains_any(
+                text,
+                ("подписание", "подписанный документ", "договор 24", "личный кабинет", "парол", "активац"),
+            ):
+                return None
+            return BusinessOutcome(
+                final_status="tech_service",
+                reason_code="business_outcome_tech_service",
+                evidence=self._evidence(text, (service_hit,)),
+                confidence="high",
+            )
+        return None
+
+    def _resolve_refusal(self, *, text: str, follow_up: dict[str, Any]) -> BusinessOutcome | None:
+        refusal_hit = self._find_first(text, self.REFUSAL_TERMS)
+        if refusal_hit:
+            return BusinessOutcome(
+                final_status="refusal",
+                reason_code="business_outcome_refusal",
+                evidence=self._evidence(text, (refusal_hit,)),
+                confidence="high",
+            )
+        reason = self._normalize(str(follow_up.get("reason_not_fixed") or ""))
+        if self._contains_any(reason, ("отказ", "не проявил интерес", "не заинтересован", "клиент не заинтересован")):
+            return BusinessOutcome(
+                final_status="refusal",
+                reason_code="business_outcome_refusal_follow_up",
+                evidence=str(follow_up.get("reason_not_fixed") or "").strip() or None,
+                confidence="medium",
+            )
+        if "все устраивает" in text and self._contains_any(text, ("не рассматриваем", "не рассматриваете")):
+            return BusinessOutcome(
+                final_status="refusal",
+                reason_code="business_outcome_refusal_satisfied_no_alternative",
+                evidence=self._evidence(text, ("все устраивает", "не рассматриваем")),
+                confidence="high",
+            )
+        return None
+
+    def _resolve_agreement(
+        self,
+        *,
+        text: str,
+        follow_up: dict[str, Any],
+        deadline: str | None,
+    ) -> BusinessOutcome | None:
+        next_text = self._normalize(str(follow_up.get("next_step_text") or ""))
+        next_type = self._normalize(str(follow_up.get("next_step_type") or ""))
+        combined = " ".join(part for part in (text, next_text, next_type) if part)
+        agreement_hit = self._find_first(combined, self.AGREEMENT_TERMS)
+        if agreement_hit:
+            return BusinessOutcome(
+                final_status="agreed",
+                reason_code="business_outcome_agreed_commercial_step",
+                evidence=self._evidence(combined, (agreement_hit,)),
+                confidence="high",
+                deadline=deadline,
+            )
+        if follow_up.get("next_step_fixed") and self._contains_any(
+            combined,
+            ("покуп", "подключ", "подписк", "коммерческое предложение", "кп", "созвон", "обсудить"),
+        ) and not self._contains_any(combined, self.WEAK_CONTINUATION_TERMS):
+            return BusinessOutcome(
+                final_status="agreed",
+                reason_code="business_outcome_agreed_structured_follow_up",
+                evidence=str(follow_up.get("next_step_text") or "").strip() or None,
+                confidence="medium",
+                deadline=deadline,
+            )
+        return None
+
+    def _resolve_offtopic_no_outcome(self, *, text: str) -> BusinessOutcome | None:
+        if self._contains_any(text, self.OFFTOPIC_NO_OUTCOME_TERMS) and not self._contains_any(
+            text,
+            (
+                "подписанный документ",
+                "подписание",
+                "личный кабинет",
+                "парол",
+                "активац",
+                "техподдерж",
+                "техническая поддержка",
+                "коммерческое предложение",
+                "счет",
+                "счёт",
+                "встреч",
+                "zoom",
+                "зум",
+            ),
+        ):
+            return BusinessOutcome(
+                final_status=None,
+                reason_code="not_coachable_or_reportable",
+                evidence=self._evidence(text, self.OFFTOPIC_NO_OUTCOME_TERMS),
+                confidence="high",
+            )
+        return None
+
+    def _resolve_rescheduled(
+        self,
+        *,
+        text: str,
+        follow_up: dict[str, Any],
+        deadline: str | None,
+    ) -> BusinessOutcome | None:
+        combined = " ".join(
+            part
+            for part in (
+                text,
+                self._normalize(str(follow_up.get("next_step_text") or "")),
+                self._normalize(str(follow_up.get("reason_not_fixed") or "")),
+            )
+            if part
+        )
+        reschedule_hit = self._find_first(combined, self.RESCHEDULE_TERMS)
+        if reschedule_hit:
+            return BusinessOutcome(
+                final_status="rescheduled",
+                reason_code="business_outcome_rescheduled",
+                evidence=self._evidence(combined, (reschedule_hit,)),
+                confidence="high",
+                deadline=deadline,
+            )
+        return None
+
+    def _resolve_open(
+        self,
+        *,
+        text: str,
+        follow_up: dict[str, Any],
+        call_type: str,
+        deadline: str | None,
+    ) -> BusinessOutcome | None:
+        combined = " ".join(
+            part
+            for part in (
+                text,
+                self._normalize(str(follow_up.get("next_step_text") or "")),
+                self._normalize(str(follow_up.get("reason_not_fixed") or "")),
+            )
+            if part
+        )
+        open_hit = self._find_first(combined, self.WEAK_CONTINUATION_TERMS)
+        if open_hit:
+            return BusinessOutcome(
+                final_status="open",
+                reason_code="business_outcome_open_follow_up",
+                evidence=self._evidence(combined, (open_hit,)),
+                confidence="high",
+                deadline=deadline,
+            )
+        if call_type in {"sales", "sales_primary", "follow_up", "follow-up"}:
+            return BusinessOutcome(
+                final_status="open",
+                reason_code="business_outcome_open_sales_contact",
+                evidence=str(follow_up.get("reason_not_fixed") or follow_up.get("next_step_text") or "").strip()
+                or self._evidence(combined, ()),
+                confidence="medium",
+                deadline=deadline,
+            )
+        return None
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return re.sub(r"\s+", " ", value.replace("ё", "е").strip().lower())
+
+    @classmethod
+    def _contains_any(cls, text: str, tokens: tuple[str, ...]) -> bool:
+        return any(cls._normalize(token) in text for token in tokens)
+
+    @classmethod
+    def _find_first(cls, text: str, tokens: tuple[str, ...]) -> str | None:
+        for token in tokens:
+            normalized = cls._normalize(token)
+            if normalized in text:
+                return normalized
+        return None
+
+    @classmethod
+    def _combined_text(
+        cls,
+        *,
+        transcript: str,
+        classification: dict[str, Any],
+        follow_up: dict[str, Any],
+        detail: dict[str, Any],
+    ) -> str:
+        parts: list[str] = [transcript]
+        parts.extend(str(value or "") for value in classification.values())
+        parts.extend(str(value or "") for value in follow_up.values())
+        for key in ("strengths", "gaps", "recommendations", "product_signals", "evidence_fragments"):
+            value = detail.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        parts.extend(str(child or "") for child in item.values())
+                    else:
+                        parts.append(str(item or ""))
+        return cls._normalize(" ".join(parts))
+
+    @classmethod
+    def _evidence(cls, text: str, tokens: tuple[str, ...]) -> str | None:
+        normalized_tokens = [cls._normalize(token) for token in tokens if token]
+        indexes = [text.find(token) for token in normalized_tokens if token and text.find(token) >= 0]
+        if not indexes:
+            return text[:240].strip() or None
+        start = max(0, min(indexes) - 90)
+        end = min(len(text), min(indexes) + 180)
+        return text[start:end].strip() or None
+
+
 def classify_provider_error(error: BaseException | str) -> ProviderErrorInfo:
     """Classify provider-facing errors without exposing secrets."""
     raw = str(error or "").strip()
@@ -5333,25 +5787,20 @@ def _short_time_label(value: Any) -> str | None:
 
 def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     """Build one short daily call row."""
-    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+    source_analysis = artifact.analysis or artifact.original_analysis
+    detail = dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
     call = dict(detail.get("call") or {})
     follow_up = dict(detail.get("follow_up") or {})
     classification = dict(detail.get("classification") or {})
     call_type = classification.get("call_type")
-    if artifact.analysis is None:
-        # No analysis available — outcome unknown; report as unclassified, not "open"
-        status = None
-        deadline = None
-    elif str(call_type or "").lower() in ("support", "internal"):
-        # Service/internal calls — not a sales outcome
-        status = "tech_service"
-        deadline = None
-    else:
-        status, deadline = _derive_call_status_and_deadline(follow_up=follow_up)
+    outcome = BusinessOutcomeResolver().resolve(artifact)
+    status = outcome.final_status
+    deadline = outcome.deadline
     unclassified_reason_code = None
     unclassified_reason_label = None
     if status is None:
-        unclassified_reason_code, unclassified_reason_label = _derive_unclassified_reason(artifact)
+        unclassified_reason_code = outcome.reason_code
+        unclassified_reason_label = _reason_label(unclassified_reason_code)
     unclassified_status_label = _manager_unclassified_status(unclassified_reason_code)
     unclassified_context_label = _manager_unclassified_context(unclassified_reason_code)
     return {
@@ -5369,6 +5818,9 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         "unclassified_reason_label": unclassified_reason_label,
         "unclassified_status_label": unclassified_status_label,
         "unclassified_context_label": unclassified_context_label,
+        "business_outcome_reason_code": outcome.reason_code,
+        "business_outcome_evidence": outcome.evidence,
+        "business_outcome_confidence": outcome.confidence,
     }
 
 
@@ -6135,7 +6587,7 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
         "tech_service_count": tech_service,
         "unclassified_count": unclassified,
         "unclassified_by_bucket": unclassified_by_bucket,
-        "source_note": "derived_from_follow_up_and_classification",
+        "source_note": "derived_from_business_outcome_resolver",
     }
 
 

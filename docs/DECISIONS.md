@@ -502,3 +502,21 @@
 - **Reason:** Step 8O proved manager-ready artifacts through a safe render-only path, but the older always-on Telegram test behavior made `--no-delivery` ambiguous and risky. Explicit channel selection keeps preview/report generation usable without accidental external delivery.
 - **Scope:** This changes delivery semantics only. It does not change analyzer prompts, STT/LLM/build logic, scoring, eligibility, selection model, rolling window, report content, `rop_weekly`, or scheduler behavior.
 - **Date:** 2026-05-05
+
+## ADR-050: `manager_daily` final call outcomes use deterministic report-day business resolution
+- **Decision:** Final manager-facing outcomes in `manager_daily` `ИТОГ ДНЯ` and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` must be resolved by a deterministic reporting-layer `BusinessOutcomeResolver` over already persisted report-day data: transcript / `interaction.text`, latest reusable or persisted failed analysis, `scores_detail.classification`, `scores_detail.follow_up`, fail reason, and metadata.
+- **Decision:** Outcome resolution applies only to report-day `meaningful_calls` / `payload.call_list[]`. Rolling-window calls, coaching_core calls outside the report-day call list, historical calls, weekly data, and `rop_weekly` are not inputs to manager_daily outcome acceptance.
+- **Decision:** The priority order is:
+  1. technical blockers: `Без транскрипта`, `Без анализа`, technical `Ошибка анализа`, `Ошибка провайдера`;
+  2. `Тех/сервис` for contentful service/help calls;
+  3. explicit `Отказ`;
+  4. commercial `Договорённость`;
+  5. `Перенос`;
+  6. `Открыт`;
+  7. `Не подходит для разбора` only when no business signal exists.
+- **Decision:** `not_coachable_or_reportable` is no longer a direct manager-facing outcome mapping. It means the call may be unavailable for coaching, not that it lacks a business outcome. Reporting must first attempt business outcome resolution and only fall back to `Не подходит для разбора` when the call is truly semantic-empty / not business-meaningful.
+- **Decision:** Explicit refusal language such as `не рассматриваем`, `не интересно`, `нет необходимости`, `нет потребности`, `уже нашли`, `передумали`, or equivalent persisted follow-up evidence must beat `Открыт` and weak “contact later” agreement.
+- **Decision:** Service/help signals such as ЭЦП, QR, NCALayer, signing, document access/signing help, support handoff, or instructions for an already created contract/document must become `Тех/сервис`, even when the analyzer marked the call non-coachable.
+- **Reason:** Step 8Q audit of `2026-05-04` report-day call lists showed inflated `Не подходит для разбора`, almost no refusals, and business-significant outcomes hidden behind coaching eligibility / failed semantic analysis states.
+- **Scope:** Reporting-layer mapping only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling window, Step 8I gate, Step 8L source-audio refresh, Step 8N validation persistence, Step 8P delivery semantics, PDF layout, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-06

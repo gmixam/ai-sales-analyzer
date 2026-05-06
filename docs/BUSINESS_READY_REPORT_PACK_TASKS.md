@@ -953,6 +953,60 @@ Evidence:
 
 ---
 
+### Manager_daily Content Enrichment — Step 8Q/8R Closure: Report-Day Business Outcome Resolver
+
+**Дата:** 2026-05-06
+
+**Scope:** bounded audit and implementation for `manager_daily` report-day call-list outcomes only. Acceptance/verification used only `payload.call_list[]` / `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` with `call_list_dates=["2026-05-04"]` for Эльмира, Тимур, and Толеген. Rolling-window calls, coaching_core calls outside report-day call list, historical calls, weekly data, and `rop_weekly` were not used for outcome acceptance.
+
+**Step 8Q audit result:**
+
+| Manager | Report-day calls checked | Current `Не подходит для разбора` | Confirmed correct | Questionable | Likely refusal | Likely tech/service | Likely open/follow-up |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Эльмира | 12 | 9 | 1 | 0 | 1 | 4 | 3 |
+| Тимур | 15 | 9 | 1 | 1 | 1 | 1 | 5 |
+| Толеген | 6 | 1 | 0 | 0 | 0 | 0 | 1 |
+
+**Implemented:**
+- `core/app/agents/calls/reporting.py` now has `BusinessOutcomeResolver`.
+- `_build_daily_call_row()` uses the resolver to populate final `status`, unclassified bucket, and diagnostic evidence fields.
+- `_build_call_outcomes_summary()` now derives from `BusinessOutcomeResolver` output.
+
+**Standing priority order:**
+1. technical blockers: no transcript, no analysis, contract/parser/schema analysis error, provider error;
+2. `Тех/сервис`;
+3. explicit `Отказ`;
+4. true commercial `Договорённость`;
+5. `Перенос`;
+6. `Открыт`;
+7. `Не подходит для разбора` only for truly semantic-empty / no business signal.
+
+**Behavior change:**
+- `not_coachable_or_reportable` no longer maps directly to `Не подходит для разбора`.
+- Resolver first checks persisted transcript/analysis/follow-up/fail reason for business outcome.
+- If business outcome exists, manager-facing category becomes `Тех/сервис`, `Отказ`, `Договорённость`, `Перенос`, or `Открыт`.
+- If no business signal exists, the call remains `Не подходит для разбора`.
+- `duration_below_threshold` / coaching non-eligibility does not automatically beat business outcome in `payload.call_list[]`.
+
+**Ready-only verification for `2026-05-04`:**
+
+| Manager | Meaningful | Договорённость | Перенос | Отказ | Открыт | Тех/сервис | Не подходит для разбора | Gate |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Эльмира | 12 | 1 | 1 | 2 | 2 | 6 | 0 | passed |
+| Тимур | 15 | 3 | 1 | 2 | 6 | 2 | 1 | passed |
+| Толеген | 6 | 0 | 0 | 1 | 3 | 2 | 0 | passed |
+
+**Suspicious-call regression after Step 8R:**
+- Эльмира: `3337ccea-9a3b-477f-a806-9b30580f22d7 -> Тех/сервис`; `84d678b1-2af2-45e9-928a-a9e5fbd6b075 -> Открыт`; `a7db44c0-ffe1-4e35-b354-e14dc5cabe10 -> Отказ`; `fbe3a0e8-1749-4cab-9d7b-07b1edc34231 -> Отказ`; `577222e5-c8aa-4704-bdb4-c5be21335d4e -> Тех/сервис`; `efd7037a-95c4-4fe4-a667-7e55992807e0 -> Перенос`; `85427168-a321-441e-ac03-f501149057b4 -> Договорённость`.
+- Тимур: `697e2efc-f4b7-4108-85f8-b3359f2fe050 -> Не подходит для разбора`; `79ebbb9b-4326-41c0-96bd-3dea7de2e453 -> Отказ`; `e4022d06-5e4b-4b08-8912-5b2abac7957d -> Отказ`; `41822044-3a3b-4df3-ace2-eabd33138c07 -> Открыт`; `4147eac0-6ae9-4248-9dcd-434a8d5b2a82 -> Тех/сервис`; `3d7f0ba0-2c88-482f-89b7-283b67a76fad -> Договорённость`; `489676d0-0fc8-4457-819d-9167de42425b -> Открыт`.
+- Толеген: `cc115847-cc05-4666-a03d-4e67d8db22c3 -> Открыт`; `9d83c5e3-ea90-436a-9e47-c20a2ae0fb34 -> Отказ`.
+
+**Explicit non-actions:** no `build_missing`, no STT, no LLM, no delivery, no analyzer prompt/scoring/eligibility/selection/rolling-window/Step 8I/Step 8L/Step 8N/Step 8P/PDF-layout changes.
+
+**Checks:** `python3 -m py_compile core/app/agents/calls/reporting.py`; `docker compose exec -T api pytest -q tests/test_manual_reporting.py -k 'outcome or refusal or unclassified or call_outcomes or call_list or meaningful or completeness'` (`13 passed`); `docker compose exec -T api pytest -q tests/test_manual_reporting.py tests/test_ai_provider_routing.py` (`132 passed`); `node --check scripts/generate_docx_report.js`; `git diff --check`.
+
+---
+
 ### Verified Tolegen 2026-04-27 (67→16→9) State
 
 - `raw_calls = 67` (interactions table, 2026-04-27) ✅

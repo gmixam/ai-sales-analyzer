@@ -5,8 +5,8 @@
 Этот документ фиксирует canonical selection model и report contract для `manager_daily`.
 Он является source of truth для bounded implementation tasks по этой теме.
 
-**Doc-only фиксация. Код не меняется.**
-Фиксация: 2026-04-30.
+**Первичная фиксация:** 2026-04-30.
+**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`.
 
 ---
 
@@ -186,6 +186,20 @@ Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) так�
 - `call_outcomes_summary.unclassified_by_bucket` разделяет manager-facing причины: `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера`, `Нет итога`, `Нет классификации`, `Без разбора`.
 - Сумма всех категорий (включая `БЕЗ РАЗБОРА`) обязана равняться `meaningful_calls_total`.
 
+**Business outcome resolver (Step 8R):**
+- Финальный `status` для `call_list[]` и `call_outcomes_summary` определяется deterministic reporting-layer resolver из уже сохранённых данных: transcript / `interaction.text`, latest reusable or persisted failed analysis, `scores_detail.classification`, `scores_detail.follow_up`, fail reason and metadata.
+- Resolver не запускает STT/LLM, не меняет analyzer prompt, scoring, eligibility, selection model, rolling window, delivery или PDF layout.
+- Приоритет категорий:
+  1. technical blockers: `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера`;
+  2. `Тех/сервис` для содержательной сервисной помощи;
+  3. `Отказ` для явного отказа;
+  4. `Договорённость` только для реального следующего коммерческого шага;
+  5. `Перенос`;
+  6. `Открыт`;
+  7. `Не подходит для разбора` только для truly semantic-empty / no business signal.
+- `not_coachable_or_reportable` больше не означает автоматическое `Не подходит для разбора` в manager-facing outcome. Сначала resolver пытается найти business outcome; если найден сервис, отказ, перенос, договорённость или open/follow-up, в отчёт попадает бизнес-категория. Если business signal отсутствует, остаётся `Не подходит для разбора`.
+- `duration_below_threshold` / coaching non-eligibility не должны перебивать business outcome в report-day call list, если transcript or persisted analysis содержит бизнес-смысл.
+
 **`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
 
 **`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
@@ -202,7 +216,7 @@ Gate проходит, когда в `call_list[]` нет blocking buckets:
 
 Gate может пропустить отчёт, если в нём остались:
 - normal outcomes (`Договорённость`, `Перенос`, `Отказ`, `Открыт`);
-- `Не подходит для разбора` для semantic-empty / not_coachable_or_reportable calls;
+- `Не подходит для разбора` для semantic-empty / not business-meaningful calls after BusinessOutcomeResolver pass;
 - `Тех/сервис`.
 
 Если gate не проходит, runtime возвращает operator-facing `review_required` с reason `incomplete_day_call_processing`, counts и affected calls. Business email не отправляется; operator/test preview может быть создан только как incomplete preview.
