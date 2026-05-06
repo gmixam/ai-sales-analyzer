@@ -1,6 +1,6 @@
 # Report Evidence Contract — LLM2 to Reporting Layer
 
-**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z.
+**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA.
 **Date:** 2026-05-06  
 **Milestone:** 6.5 `Business-ready Report Pack`  
 **Scope:** `manager_daily` first, reusable for weekly/future reports later.
@@ -348,7 +348,24 @@ Current strictness:
 - `evidence_quality=insufficient` with `usable_in_report=true` fails validation;
 - identical `what_happened` / `what_was_missing` in `situation_candidates` emits a warning.
 
-The validator is not yet wired into LLM2 prompt, analysis persistence, report rendering, `BusinessOutcomeResolver`, or delivery. That is reserved for later rollout steps.
+The validator is not yet wired into analysis persistence, report rendering, `BusinessOutcomeResolver`, or delivery. LLM2 prompt instructions were updated in Step 8AA to request the additive package for fresh analyses.
+
+## Prompt Implementation
+
+Step 8AA updated the LLM2 deep-analysis prompt asset `core/app/agents/calls/prompts/analyze.md`.
+
+Prompt behavior:
+- all existing MVP-1 required fields remain required;
+- the only approved additive top-level fields are `report_evidence_version` and `report_evidence`;
+- `REPORT_EVIDENCE_CONTRACT.md` is included in the prompt source priority;
+- every quote / `dialogue_fragment[].text` must be copied verbatim from transcript;
+- unreliable speaker roles must be `unknown`;
+- weak/insufficient evidence must not become strong manager-facing proof;
+- follow-up candidates are allowed only for `agreement`, `rescheduled`, or `open`;
+- no follow-up candidate should be returned for `refusal`, `tech_service`, or `not_suitable`;
+- `business_outcome` is a semantic signal only; deterministic resolver rules remain final authority.
+
+Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v2_report_evidence`. This marks the prompt change without changing `schema_version=call_analysis.v1` or checklist scoring.
 
 ## BusinessOutcomeResolver Synchronization
 
@@ -453,7 +470,7 @@ Prompt update must be a separate bounded step.
 
 1. Step 8Y — design contract only. **Done.**
 2. Step 8Z — implement schema / validator. **Done.**
-3. Step 8AA — update LLM2 prompt.
+3. Step 8AA — update LLM2 prompt. **Done.**
 4. Step 8AB — persist `report_evidence` in analysis.
 5. Step 8AC — controlled LLM2 re-analysis for 3-5 calls from `2026-05-04`.
 6. Step 8AD — wire `manager_daily` to prefer `report_evidence`.

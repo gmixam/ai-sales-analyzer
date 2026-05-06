@@ -328,6 +328,16 @@ def _valid_report_evidence_detail() -> dict[str, Any]:
     }
 
 
+def _analyze_prompt_text() -> str:
+    for candidate in (
+        CORE_ROOT / "core" / "app" / "agents" / "calls" / "prompts" / "analyze.md",
+        CORE_ROOT / "app" / "agents" / "calls" / "prompts" / "analyze.md",
+    ):
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    raise AssertionError("LLM2 analyze prompt asset was not found")
+
+
 class ReportEvidenceValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.transcript = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
@@ -444,6 +454,17 @@ class ReportEvidenceValidationTests(unittest.TestCase):
         self.assertTrue(result.is_valid)
         self.assertEqual(result.errors, [])
         self.assertEqual(result.normalized["report_evidence"]["situation_candidates"], [])
+
+    def test_llm2_prompt_requires_additive_report_evidence_contract(self):
+        prompt = _analyze_prompt_text()
+
+        self.assertIn("REPORT_EVIDENCE_CONTRACT.md", prompt)
+        self.assertIn("report_evidence_version", prompt)
+        self.assertIn("report_evidence", prompt)
+        self.assertIn("Do not add extra top-level fields except", prompt)
+        self.assertIn("Every quote and every `dialogue_fragment[].text` must be copied verbatim", prompt)
+        self.assertIn("semantic signal, not final report authority", prompt)
+        self.assertIn("Do not return `follow_up_candidates` for `refusal`, `tech_service`, or `not_suitable`", prompt)
 
 
 class ManualReportingPayloadTests(unittest.TestCase):

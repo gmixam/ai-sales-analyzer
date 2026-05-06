@@ -506,6 +506,42 @@ else:
 
 **Next step:** Step 8AA — update LLM2 prompt to produce the already-validated additive `report_evidence` package.
 
+### Manager_daily Target Architecture — Step 8AA Closure: LLM2 Prompt Produces `report_evidence v1`
+
+**Дата:** 2026-05-06
+
+**Scope:** LLM2 prompt asset / analyzer prompt context / prompt regression tests only. No mass STT/LLM, no `build_missing`, no scoring/checklist change, no `BusinessOutcomeResolver` change, no report rendering, no delivery, no PDF rebuild.
+
+**Implemented:**
+- `core/app/agents/calls/prompts/analyze.md` now requires fresh LLM2 output to include additive top-level `report_evidence_version="v1"` and `report_evidence`.
+- Existing MVP-1 required fields remain required and unchanged.
+- Old prompt rule `Do not add extra top-level fields` now allows only the approved additive `report_evidence_version` / `report_evidence` fields.
+- `REPORT_EVIDENCE_CONTRACT.md` is now in LLM2 source priority after the approved MVP-1 call-analysis contract.
+- Prompt includes grounded schema/instructions for:
+  - `business_outcome`;
+  - `situation_candidates`;
+  - `manager_coaching_moments`;
+  - `voice_of_customer`;
+  - `additional_situations`;
+  - `follow_up_candidates`;
+  - `quote_bank`.
+- Prompt requires quotes and dialogue fragments to be verbatim transcript text, or else `evidence_quality=insufficient` and `usable_in_report=false`.
+- Prompt forbids invented quotes, invented roles, invented manager/client dialogue, invented timestamps, names, or facts.
+- Prompt allows only `speaker=manager|client|unknown`; unreliable roles must be `unknown`.
+- Prompt says `business_outcome` is semantic signal only; deterministic `BusinessOutcomeResolver` remains final authority.
+- Prompt says follow-up candidates are only for `agreement`, `rescheduled`, `open`, and must not be returned for `refusal`, `tech_service`, or `not_suitable`.
+
+**Analyzer prompt context:**
+- `core/app/agents/calls/analyzer.py` now loads `docs/REPORT_EVIDENCE_CONTRACT.md` into `approved_sources.report_evidence_contract_markdown`.
+- Fresh analyzer instruction version bumped to `edo_sales_mvp1_call_analysis_v2_report_evidence`.
+- `schema_version` remains `call_analysis.v1`; checklist/scoring remain unchanged.
+
+**Tests added/updated:**
+- prompt regression asserts LLM2 prompt contains `REPORT_EVIDENCE_CONTRACT.md`, additive `report_evidence_version` / `report_evidence`, grounding, resolver authority, and follow-up exclusion instructions;
+- existing sample `report_evidence` package still passes `validate_report_evidence`.
+
+**Next step:** Step 8AB — persist / observe `report_evidence` from fresh analyses and expose validation diagnostics without connecting report rendering yet.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04

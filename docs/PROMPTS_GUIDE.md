@@ -77,3 +77,15 @@ For `Manual Reporting Pilot`, prompt changes must stay explicitly bounded:
 - preserve reuse-first behavior: changing a reporting prompt must not imply a full pipeline rerun unless that reporting step actually depends on the changed prompt output;
 - model experiments for reporting should target only the model-dependent reporting step when possible;
 - prompt assets for `manager_daily` and `rop_weekly` should be organized around `report_preset + period + filters`, not around implicit scheduler assumptions.
+
+## 7. LLM2 Report Evidence Prompt Policy
+
+Starting with Step 8AA, the LLM2 deep call-analysis prompt owns an additive `report_evidence_version="v1"` / `report_evidence` package.
+
+Standing rules:
+- `report_evidence` is additive and must not remove or rename existing MVP-1 call-analysis fields.
+- The analyzer prompt must keep `REPORT_EVIDENCE_CONTRACT.md` as the source of truth for `report_evidence` field shape, enums, grounding, speaker, and validation rules.
+- Direct quotes and dialogue fragments must be transcript-grounded. If grounding is not available, the prompt must require `evidence_quality=insufficient` and `usable_in_report=false`.
+- Speaker roles must stay `unknown` when transcript/segments do not make the role reliable.
+- `report_evidence.business_outcome` is only a semantic signal. Final manager-facing outcome remains owned by deterministic reporting-layer resolver rules.
+- Prompt changes that alter `report_evidence` expectations must remain traceable through `instruction_version`.

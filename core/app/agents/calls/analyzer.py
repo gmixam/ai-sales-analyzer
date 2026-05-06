@@ -34,8 +34,14 @@ MVP1_SOURCE_DIR_CANDIDATES = [
     Path(__file__).resolve().parent / "mvp1_sources",
 ]
 
+REPORT_EVIDENCE_CONTRACT_FILE_NAME = "REPORT_EVIDENCE_CONTRACT.md"
+REPORT_EVIDENCE_SOURCE_DIR_CANDIDATES = [
+    Path(__file__).resolve().parents[4] / "docs",
+    Path(__file__).resolve().parents[3] / "docs",
+]
+
 APPROVED_SCHEMA_VERSION = "call_analysis.v1"
-APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v1"
+APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v2_report_evidence"
 APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
 NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
@@ -529,9 +535,24 @@ class CallsAnalyzer:
                 return candidate
         return None
 
+    def _resolve_report_evidence_contract_file(self) -> Path | None:
+        """Resolve the additive report_evidence contract across known runtime locations."""
+        for directory in REPORT_EVIDENCE_SOURCE_DIR_CANDIDATES:
+            candidate = directory / REPORT_EVIDENCE_CONTRACT_FILE_NAME
+            if candidate.exists():
+                return candidate
+        return None
+
     def _load_source_text(self, key: str, fallback_text: str) -> str:
         """Read one source-of-truth MVP-1 document or return a runtime-safe fallback."""
         source_file = self._resolve_source_file(key)
+        if source_file is not None:
+            return source_file.read_text(encoding="utf-8")
+        return fallback_text
+
+    def _load_report_evidence_contract_text(self, fallback_text: str) -> str:
+        """Read the additive report_evidence contract or return a runtime-safe fallback."""
+        source_file = self._resolve_report_evidence_contract_file()
         if source_file is not None:
             return source_file.read_text(encoding="utf-8")
         return fallback_text
@@ -693,6 +714,12 @@ class CallsAnalyzer:
                         indent=2,
                     ),
                 ),
+                "report_evidence_contract_markdown": self._load_report_evidence_contract_text(
+                    fallback_text=(
+                        "Runtime fallback: REPORT_EVIDENCE_CONTRACT.md is unavailable. "
+                        "Use prompt_assets.analyze additive report_evidence v1 instructions."
+                    ),
+                ),
                 "manager_card_markdown": self._load_source_text(
                     "manager_card",
                     fallback_text=runtime_fallback_note,
@@ -712,6 +739,7 @@ class CallsAnalyzer:
                 "MVP1_CODEX_HANDOFF.md",
                 "MVP1_CHECKLIST_DEFINITION_v1.md",
                 "MVP1_CALL_ANALYSIS_CONTRACT_v1.md",
+                "REPORT_EVIDENCE_CONTRACT.md",
                 "MVP1_CALL_ANALYSIS_EXAMPLE_TIMUR_v1.json",
                 "MVP1_MANAGER_CARD_FORMAT_v1.md",
             ],

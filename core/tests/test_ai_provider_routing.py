@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +24,11 @@ os.environ.setdefault("ONLINEPBX_DOMAIN", "example.onpbx.ru")
 os.environ.setdefault("ONLINEPBX_API_KEY", "test-key")
 
 
-from app.agents.calls.analyzer import CallsAnalyzer
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.agents.calls.analyzer import APPROVED_INSTRUCTION_VERSION, CallsAnalyzer
 from app.agents.calls.extractor import CallsExtractor
 from app.agents.calls.orchestrator import CallsManualPilotOrchestrator
 from app.core_shared.ai_routing import AIProviderRouter
@@ -68,6 +73,41 @@ def _build_settings(**overrides: object) -> Settings:
 
 
 class AIProviderRoutingTests(unittest.TestCase):
+    def test_analyzer_prompt_context_includes_report_evidence_contract(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="prompt-context-case",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=300,
+            text="Клиент: Скиньте в WhatsApp, я посмотрю.",
+            metadata_={
+                "external_call_code": "prompt-context-case",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-05-04 09:00:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        context = analyzer.build_prompt_context(interaction)
+
+        self.assertEqual(
+            context["analysis_result_contract_template"]["instruction_version"],
+            APPROVED_INSTRUCTION_VERSION,
+        )
+        self.assertEqual(APPROVED_INSTRUCTION_VERSION, "edo_sales_mvp1_call_analysis_v2_report_evidence")
+        self.assertIn("REPORT_EVIDENCE_CONTRACT.md", context["source_of_truth_priority"])
+        self.assertIn("report_evidence_contract_markdown", context["approved_sources"])
+        report_evidence_source = context["approved_sources"]["report_evidence_contract_markdown"]
+        self.assertTrue(
+            "Report Evidence Contract" in report_evidence_source
+            or "REPORT_EVIDENCE_CONTRACT.md" in report_evidence_source
+        )
+        self.assertIn("report_evidence", report_evidence_source)
+
     def test_fixed_policy_resolves_configured_alias(self) -> None:
         settings = _build_settings(
             ai_stt_routing_policy="fixed",
