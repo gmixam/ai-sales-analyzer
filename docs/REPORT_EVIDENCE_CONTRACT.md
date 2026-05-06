@@ -1,6 +1,6 @@
 # Report Evidence Contract — LLM2 to Reporting Layer
 
-**Status:** design target, Step 8Y; not implemented yet.  
+**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z.
 **Date:** 2026-05-06  
 **Milestone:** 6.5 `Business-ready Report Pack`  
 **Scope:** `manager_daily` first, reusable for weekly/future reports later.
@@ -334,6 +334,22 @@ Validator requirements:
 12. Empty arrays are valid; missing arrays should be normalized to empty arrays.
 13. Invalid `report_evidence` must not invalidate the whole call analysis unless the future validator explicitly makes it blocking.
 
+### Step 8Z implementation note
+
+Step 8Z implemented the standalone schema and validator in `core/app/agents/calls/report_evidence.py`.
+
+Current strictness:
+- missing `report_evidence` is a valid legacy state;
+- missing `report_evidence_version` fails when `report_evidence` exists;
+- only `v1` is supported;
+- enum/schema errors fail validation;
+- invalid `stage_code` fails validation against `CHECKLIST_DEFINITION["stages"]` from the approved analyzer checklist source;
+- ungrounded dialogue/quote text fails validation unless the item is explicitly `evidence_quality=insufficient` and `usable_in_report=false`;
+- `evidence_quality=insufficient` with `usable_in_report=true` fails validation;
+- identical `what_happened` / `what_was_missing` in `situation_candidates` emits a warning.
+
+The validator is not yet wired into LLM2 prompt, analysis persistence, report rendering, `BusinessOutcomeResolver`, or delivery. That is reserved for later rollout steps.
+
 ## BusinessOutcomeResolver Synchronization
 
 Current state:
@@ -435,8 +451,8 @@ Prompt update must be a separate bounded step.
 
 ## Rollout Plan
 
-1. Step 8Y — design contract only.
-2. Step 8Z — implement schema / validator.
+1. Step 8Y — design contract only. **Done.**
+2. Step 8Z — implement schema / validator. **Done.**
 3. Step 8AA — update LLM2 prompt.
 4. Step 8AB — persist `report_evidence` in analysis.
 5. Step 8AC — controlled LLM2 re-analysis for 3-5 calls from `2026-05-04`.

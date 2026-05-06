@@ -457,6 +457,55 @@ else:
 - Step 8AF — human review.
 - Step 8AI — separate STT diarization/speaker investigation.
 
+### Manager_daily Target Architecture — Step 8Z Closure: `report_evidence` Schema / Validator
+
+**Дата:** 2026-05-06
+
+**Scope:** schema/validator and unit tests only. No LLM2 prompt change, STT/LLM, `build_missing`, report rendering, `BusinessOutcomeResolver`, scoring/checklist/selection model, delivery, PDF rebuild, or mass re-analysis.
+
+**Implemented:**
+- new standalone module `core/app/agents/calls/report_evidence.py`;
+- Pydantic models:
+  - `ReportEvidencePackage`;
+  - `BusinessOutcomeEvidence`;
+  - `SituationCandidate`;
+  - `ManagerCoachingMoment`;
+  - `VoiceOfCustomerItem`;
+  - `AdditionalSituationItem`;
+  - `FollowUpCandidate`;
+  - `QuoteBankItem`;
+  - `DialogueTurn`;
+  - `ReportEvidenceValidationResult` / `ReportEvidenceValidationIssue`;
+- enums for priority, evidence quality, speaker, business signal, business outcome status, problem type, moment type, voice topic, additional situation type, follow-up status and priority;
+- helper `canonical_report_stage_codes()` reads stage codes from analyzer `CHECKLIST_DEFINITION["stages"]`, avoiding a duplicated stale stage list;
+- helper `validate_report_evidence(scores_detail, transcript) -> ReportEvidenceValidationResult`.
+
+**Validation implemented:**
+- missing `report_evidence` is valid legacy state;
+- `report_evidence_version` is required when package exists;
+- only `v1` is supported;
+- enum/schema errors fail validation;
+- invalid `stage_code` fails validation;
+- speaker must be `manager`, `client`, or `unknown`;
+- quote/dialogue text must be transcript-grounded unless item is explicitly `evidence_quality=insufficient` and `usable_in_report=false`;
+- `evidence_quality=insufficient` with `usable_in_report=true` fails validation;
+- identical `what_happened` / `what_was_missing` in a Situation Day candidate emits warning;
+- empty arrays pass and normalize to empty arrays.
+
+**Tests added:**
+- valid full package passes;
+- missing package returns valid legacy result;
+- missing version fails when package exists;
+- invalid enum fails;
+- invalid stage code fails;
+- unsupported speaker fails;
+- quote not in transcript fails;
+- insufficient evidence marked usable fails;
+- duplicated situation fields warn;
+- empty arrays pass.
+
+**Next step:** Step 8AA — update LLM2 prompt to produce the already-validated additive `report_evidence` package.
+
 ### Manager_daily Content Enrichment — Step 6C Closure
 
 **Дата:** 2026-05-04

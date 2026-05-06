@@ -45,6 +45,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     resolve_report_delivery_options,
     resolve_report_preset,
 )
+from app.agents.calls.report_evidence import validate_report_evidence  # noqa: E402
 from app.agents.calls.report_templates import build_report_render_model  # noqa: E402
 from app.agents.calls.verification_report_runner import (  # noqa: E402
     build_canonical_verification_bundle,
@@ -215,6 +216,234 @@ def _artifact_for_manager(
         manager=manager,
         call_started_at=datetime.fromisoformat(call_date.replace(" ", "T")).replace(tzinfo=UTC),
     )
+
+
+def _valid_report_evidence_detail() -> dict[str, Any]:
+    return {
+        "report_evidence_version": "v1",
+        "report_evidence": {
+            "business_outcome": {
+                "status": "open",
+                "confidence": "high",
+                "reason": "Client asked to review the materials.",
+                "evidence_quote": "Скиньте в WhatsApp, я посмотрю.",
+                "evidence_speaker": "client",
+                "needs_human_review": False,
+            },
+            "situation_candidates": [
+                {
+                    "stage_code": "qualification_primary",
+                    "problem_type": "missing_process",
+                    "situation_title": "Контекст процесса не уточнён",
+                    "priority": "high",
+                    "evidence_quality": "direct",
+                    "dialogue_fragment": [
+                        {
+                            "speaker": "client",
+                            "text": "Скиньте в WhatsApp, я посмотрю.",
+                            "timestamp_start": None,
+                            "timestamp_end": None,
+                        },
+                        {
+                            "speaker": "manager",
+                            "text": "Хорошо, отправлю информацию.",
+                            "timestamp_start": None,
+                            "timestamp_end": None,
+                        },
+                    ],
+                    "what_happened": "Менеджер согласился отправить материалы без уточнения процесса.",
+                    "what_it_means": "Открытый интерес может остаться без конкретного следующего шага.",
+                    "what_was_missing": "Не хватило вопроса о текущем документообороте.",
+                    "next_time_action": "Уточнить текущий процесс до отправки материалов.",
+                    "scripts": ["Как сейчас у вас подписываются документы?"],
+                    "usable_in_report": True,
+                }
+            ],
+            "manager_coaching_moments": [
+                {
+                    "stage_code": "completion_next_step",
+                    "moment_type": "missed",
+                    "priority": "medium",
+                    "evidence_quality": "direct",
+                    "dialogue_fragment": [
+                        {
+                            "speaker": "manager",
+                            "text": "Хорошо, отправлю информацию.",
+                            "timestamp_start": None,
+                            "timestamp_end": None,
+                        }
+                    ],
+                    "what_happened": "Следующий шаг остался общим.",
+                    "what_better": "Закрепить срок повторного контакта.",
+                    "usable_in_report": True,
+                }
+            ],
+            "voice_of_customer": [
+                {
+                    "quote": "Скиньте в WhatsApp, я посмотрю.",
+                    "speaker": "client",
+                    "topic": "product_interest",
+                    "meaning": "Client accepts materials and keeps the conversation open.",
+                    "business_signal": "medium",
+                    "stage_code": "completion_next_step",
+                    "usable_in_report": True,
+                }
+            ],
+            "additional_situations": [
+                {
+                    "type": "growth_zone",
+                    "title": "Открытый интерес без срока возврата",
+                    "priority": "medium",
+                    "evidence_quality": "indirect",
+                    "what_happened": "Клиент попросил материалы.",
+                    "why_it_matters": "Без срока возврата follow-up слабее.",
+                    "recommended_action": "Согласовать дату следующего контакта.",
+                    "stage_code": "completion_next_step",
+                    "usable_in_report": True,
+                }
+            ],
+            "follow_up_candidates": [
+                {
+                    "status": "open",
+                    "client_label": "Алия",
+                    "next_step": "Отправить материалы и вернуться с вопросом.",
+                    "deadline": "завтра",
+                    "priority": "open",
+                    "first_phrase": "Алия, добрый день. Отправляю материалы, как договорились.",
+                    "why_follow_up": "Client asked to review materials.",
+                    "usable_in_report": True,
+                }
+            ],
+            "quote_bank": [
+                {
+                    "quote": "Скиньте в WhatsApp, я посмотрю.",
+                    "speaker": "client",
+                    "topic": "product_interest",
+                    "stage_code": "completion_next_step",
+                    "evidence_quality": "direct",
+                    "usable_in_report": True,
+                }
+            ],
+        },
+    }
+
+
+class ReportEvidenceValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.transcript = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
+
+    def _validate(self, detail: dict[str, Any], transcript: str | None = None):
+        return validate_report_evidence(detail, self.transcript if transcript is None else transcript)
+
+    def _issue_codes(self, issues: list[Any]) -> set[str]:
+        return {issue.code for issue in issues}
+
+    def test_report_evidence_valid_full_package_passes(self):
+        result = self._validate(_valid_report_evidence_detail())
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.version, "v1")
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(result.normalized["report_evidence_version"], "v1")
+        self.assertEqual(
+            result.normalized["report_evidence"]["business_outcome"]["status"],
+            "open",
+        )
+
+    def test_report_evidence_missing_package_is_valid_legacy_state(self):
+        result = self._validate({"classification": {"call_type": "sales_primary"}})
+
+        self.assertTrue(result.is_valid)
+        self.assertIsNone(result.version)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.normalized, {})
+
+    def test_report_evidence_missing_version_fails_when_package_exists(self):
+        detail = _valid_report_evidence_detail()
+        detail.pop("report_evidence_version")
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("missing_report_evidence_version", self._issue_codes(result.errors))
+
+    def test_report_evidence_invalid_enum_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["business_outcome"]["status"] = "maybe"
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("schema_validation_error", self._issue_codes(result.errors))
+
+    def test_report_evidence_invalid_stage_code_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["situation_candidates"][0]["stage_code"] = "unknown_stage"
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("invalid_stage_code", self._issue_codes(result.errors))
+
+    def test_report_evidence_unsupported_speaker_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["quote_bank"][0]["speaker"] = "operator"
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("schema_validation_error", self._issue_codes(result.errors))
+
+    def test_report_evidence_quote_not_in_transcript_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["voice_of_customer"][0]["quote"] = "Этого текста в звонке нет."
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("ungrounded_evidence_text", self._issue_codes(result.errors))
+
+    def test_report_evidence_insufficient_but_usable_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["additional_situations"][0]["evidence_quality"] = "insufficient"
+        detail["report_evidence"]["additional_situations"][0]["usable_in_report"] = True
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("insufficient_evidence_marked_usable", self._issue_codes(result.errors))
+
+    def test_report_evidence_duplicate_situation_fields_warns(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["situation_candidates"][0]["what_was_missing"] = detail["report_evidence"][
+            "situation_candidates"
+        ][0]["what_happened"]
+
+        result = self._validate(detail)
+
+        self.assertTrue(result.is_valid)
+        self.assertIn("duplicated_situation_fields", self._issue_codes(result.warnings))
+
+    def test_report_evidence_empty_arrays_pass(self):
+        detail = {
+            "report_evidence_version": "v1",
+            "report_evidence": {
+                "business_outcome": None,
+                "situation_candidates": [],
+                "manager_coaching_moments": [],
+                "voice_of_customer": [],
+                "additional_situations": [],
+                "follow_up_candidates": [],
+                "quote_bank": [],
+            },
+        }
+
+        result = self._validate(detail)
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.normalized["report_evidence"]["situation_candidates"], [])
 
 
 class ManualReportingPayloadTests(unittest.TestCase):
