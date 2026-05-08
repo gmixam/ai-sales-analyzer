@@ -5160,6 +5160,7 @@ def _artifact_call_metadata(artifact: ReportArtifact) -> dict[str, Any]:
             or interaction_meta.get("client_name")
             or interaction_meta.get("contact_label")
             or interaction_meta.get("customer_name")
+            or _safe_persisted_transcript_contact_name(artifact)
         ),
         "contact_phone": _clean_display_part(
             call_meta.get("contact_phone")
@@ -7710,6 +7711,45 @@ def _build_client_call_reference(
 
     parts = [part for part in (label, phone_text, _format_call_started_human(call_started_at)) if part]
     return " · ".join(parts) if parts else None
+
+
+def _safe_persisted_transcript_contact_name(artifact: ReportArtifact) -> str | None:
+    """Return a contact name only when persisted transcript metadata states it directly."""
+    metadata = dict(artifact.interaction.metadata_ or {})
+    segments = [dict(item or {}) for item in list(metadata.get("segments") or []) if isinstance(item, dict)]
+    segment_texts = [_clean_display_part(item.get("text")) for item in segments]
+    for index, text in enumerate(segment_texts[:-1]):
+        lowered = text.lower().replace("ё", "е")
+        if "как могу к вам обращаться" not in lowered and "как к вам обращаться" not in lowered:
+            continue
+        candidate = _safe_contact_name_candidate(segment_texts[index + 1])
+        if candidate:
+            return candidate
+
+    full_text = _clean_display_part(" ".join(segment_texts) or artifact.interaction.text)
+    match = re.search(
+        r"(?:как могу к вам обращаться|как к вам обращаться)[^А-Яа-яЁё]{0,40}"
+        r"([А-ЯЁ][А-Яа-яЁё-]{1,30}(?:\s+[А-ЯЁ][А-Яа-яЁё-]{1,30}){0,2})",
+        full_text,
+    )
+    if match:
+        return _safe_contact_name_candidate(match.group(1))
+    return None
+
+
+def _safe_contact_name_candidate(value: Any) -> str | None:
+    """Validate a short persisted transcript answer as a name/label, not a guessed identity."""
+    text = _clean_display_part(value).strip(".,:;!?«»\"'()[]{} ")
+    if not text or _is_phone_like_display(text):
+        return None
+    lowered = text.lower().replace("ё", "е")
+    if lowered in {"алло", "да", "нет", "добрый день", "здравствуйте", "слушаю", "угу", "ага"}:
+        return None
+    if len(text) > 40:
+        return None
+    if not re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё -]{1,39}", text):
+        return None
+    return text
 
 
 def _derive_call_status_and_deadline(*, follow_up: dict[str, Any]) -> tuple[str, str | None]:

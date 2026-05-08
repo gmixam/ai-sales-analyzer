@@ -2004,6 +2004,39 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn(expected, sections["voice_of_customer"]["rows"][0][0])
         self.assertNotIn("+77071523663 · +77071523663", expected)
 
+    def test_step8ah1_uses_safe_persisted_transcript_name_when_metadata_name_missing(self) -> None:
+        artifact = self._business_artifact(
+            text="Как могу к вам обращаться? Нур-Султан. Нур-Султан, приятно познакомиться.",
+            follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
+        )
+        artifact.call_started_at = datetime.fromisoformat("2026-05-04T11:46:00").replace(tzinfo=UTC)
+        artifact.interaction.metadata_["call_date"] = "2026-05-04 11:46:00"
+        artifact.interaction.metadata_.pop("contact_name", None)
+        artifact.interaction.metadata_["contact_phone"] = "+77071523663"
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "А как могу к вам обращаться?"},
+            {"speaker": "B", "text": "Нур-Султан."},
+        ]
+        detail = artifact.original_analysis.scores_detail
+        detail["call"] = {"contact_name": None, "contact_phone": "+77071523663"}
+        detail["score"] = {"checklist_score": {"score_percent": 65.0}}
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(
+            payload["call_list"][0]["client_call_reference"],
+            "Нур-Султан · +77071523663 · 4 мая 2026, 11:46",
+        )
+
     def test_step8u_coaching_examples_skip_service_when_sales_like_exists(self) -> None:
         service = self._set_business_contact(
             self._business_artifact(
