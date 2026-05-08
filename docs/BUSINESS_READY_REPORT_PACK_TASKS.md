@@ -1678,6 +1678,36 @@ Fallbacks:
 
 **Important:** final outcome remains deterministic and unchanged. `Открытый` remains a final call status where appropriate, but is no longer rendered as a priority label in `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`.
 
+## Step 8AH-4 — Extend `report_evidence` with call summary/context/hotness/recommendation fields
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** design/schema/validator/docs/tests only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt changes, report rendering changes, `BusinessOutcomeResolver` changes, delivery semantics changes, or inclusion/exclusion changes.
+
+**Added additive object:**
+
+```json
+{
+  "call_report_summary": {
+    "short_topic": "...",
+    "short_context": "...",
+    "client_display_name": "...",
+    "client_name_confidence": "high|medium|low",
+    "hotness": "hot|warm|low",
+    "hotness_reason": "...",
+    "manager_next_action": "...",
+    "suggested_manager_phrase": "..."
+  }
+}
+```
+
+**Purpose for later steps:**
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`: richer `Тип / суть` and `Контекст`.
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`: better LLM2-prepared explanation/recommendation while deterministic final hotness remains authority.
+- `ГОЛОС КЛИЕНТА`: clearer manager-facing next action / response recommendation.
+
+**Validator:** legacy analyses without `call_report_summary` remain valid; new enum values are checked; length limits are enforced; `suggested_manager_phrase` copied from a known client quote fails validation; non-null phrase for refusal/tech/not_suitable without explicit follow-up emits a warning.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract

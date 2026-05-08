@@ -64,6 +64,7 @@ Top-level shape:
   "report_evidence_version": "v1",
   "report_evidence": {
     "business_outcome": {},
+    "call_report_summary": {},
     "situation_candidates": [],
     "manager_coaching_moments": [],
     "voice_of_customer": [],
@@ -81,6 +82,8 @@ priority: high | medium | low
 evidence_quality: direct | indirect | weak | insufficient
 speaker: manager | client | unknown
 business_signal: high | medium | low
+client_name_confidence: high | medium | low
+summary_hotness: hot | warm | low
 ```
 
 Canonical `stage_code` values come from `docs/mvp1_sources/MVP1_CHECKLIST_DEFINITION_v1.md`:
@@ -131,7 +134,48 @@ Allowed statuses:
 - `tech_service` — service, signing, document, QR, NCALayer, support or existing-contract help.
 - `not_suitable` — semantic-empty, wrong number, noise, or no business signal.
 
-## 2. Situation Day Candidates
+## 2. Call Report Summary
+
+Used later by `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and manager-facing recommendations in `ГОЛОС КЛИЕНТА`.
+
+```json
+{
+  "call_report_summary": {
+    "short_topic": "Клиент попросил счёт",
+    "short_context": "Клиент готов рассмотреть ЭДО, нужно отправить счёт и уточнить сроки оплаты.",
+    "client_display_name": "Алия",
+    "client_name_confidence": "high",
+    "hotness": "warm",
+    "hotness_reason": "Клиент попросил материалы и оставил продолжение, но не зафиксировал срок.",
+    "manager_next_action": "Отправить счёт и согласовать дату оплаты.",
+    "suggested_manager_phrase": "Алия, добрый день. Отправляю счёт, как договорились. Когда удобно сверить сроки оплаты?"
+  }
+}
+```
+
+Field intent:
+- `short_topic` — краткая суть звонка for `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, column `Тип / суть`; max `120` chars.
+- `short_context` — short manager-facing context for the call-list `Контекст`; max `280` chars.
+- `client_display_name` — name/FIO/name fragment only if explicitly present in transcript or metadata; do not invent; use `null` if uncertain.
+- `client_name_confidence` — `high|medium|low`; omit or set `null` when `client_display_name=null`.
+- `hotness` — semantic signal only: `hot|warm|low`. `rescheduled` is a final deterministic status/category, not LLM hotness.
+- `hotness_reason` — why the model sees this signal; max `280` chars.
+- `manager_next_action` — concrete next action for the manager; max `280` chars.
+- `suggested_manager_phrase` — phrase from the manager's voice; max `240` chars. It must not copy a client quote. If there is no commercial/service follow-up, set `null`.
+
+Examples:
+- `short_topic`: `Клиент попросил счёт`, `Клиент хочет посоветоваться`, `Помощь с подписанием`, `Клиент отказался от услуги`, `Клиент попросил отправить КП`.
+- `short_context`: `Клиент попросил материалы в WhatsApp и не зафиксировал срок возврата.`
+- `manager_next_action`: `Уточнить, удалось ли обсудить предложение с коллегами.`
+- `suggested_manager_phrase`: `Добрый день. Возвращаюсь по материалам: удалось обсудить предложение с коллегами?`
+
+Authority rules:
+- Reporting layer remains final authority for final outcome, call-list inclusion/exclusion, and manager-facing tomorrow hotness priority.
+- `call_report_summary.hotness` is a semantic signal that future reporting steps may use as input; it must not override deterministic Step 8AH-3 hotness rules by itself.
+- Phone/date/time remain the reporting layer's responsibility through the unified client/call reference contract.
+- For `refusal`, `tech_service`, and `not_suitable`, `suggested_manager_phrase` should usually be `null`; a non-null phrase is allowed only for explicit service follow-up and should be treated carefully by the validator/reporting layer.
+
+## 3. Situation Day Candidates
 
 Used by `СИТУАЦИЯ ДНЯ`.
 
@@ -179,7 +223,7 @@ Rules:
 - `usable_in_report=false` is allowed when the issue exists but evidence is too weak for manager-facing proof.
 - `what_happened`, `what_it_means`, and `what_was_missing` must be distinct, not repeated text.
 
-## 3. Manager Coaching Moments
+## 4. Manager Coaching Moments
 
 Used by `РАЗБОР ЗВОНКА`, stage examples, and coaching blocks.
 
@@ -212,7 +256,7 @@ Rules:
 - `moment_type=missed` and `risk` can support growth zones and challenge.
 - Service/refusal calls should not be rendered as ordinary sales coaching moments unless explicitly selected for a service/refusal-specific example.
 
-## 4. Voice of Customer
+## 5. Voice of Customer
 
 Used by `ГОЛОС КЛИЕНТА`.
 
@@ -238,7 +282,7 @@ Rules:
 - Quotes must be transcript-grounded.
 - Do not paraphrase as a quote.
 
-## 5. Additional Situations
+## 6. Additional Situations
 
 Used by `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`.
 
@@ -265,7 +309,7 @@ Rules:
 - Use distinct situation types when possible.
 - `service_issue` can be rendered as operational context, not sales coaching failure.
 
-## 6. Follow-Up Candidates
+## 7. Follow-Up Candidates
 
 Used by `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`.
 
@@ -292,7 +336,7 @@ Rules:
 - If final status is `refusal`, `tech_service`, `not_suitable`, or any unclassified technical bucket, reporting must exclude this candidate from tomorrow sales actions.
 - Do not label final `open` as hot agreement.
 
-## 7. Quote Bank
+## 8. Quote Bank
 
 Reusable quote pool for daily, weekly, and future report formats.
 
@@ -332,7 +376,12 @@ Validator requirements:
 10. `usable_in_report=false` is allowed for weak or ambiguous evidence.
 11. If `evidence_quality=insufficient`, the reporting layer must not render the item as strong proof.
 12. Empty arrays are valid; missing arrays should be normalized to empty arrays.
-13. Invalid `report_evidence` must not invalidate the whole call analysis unless the future validator explicitly makes it blocking.
+13. `call_report_summary.short_topic` must fit within `120` chars; `short_context`, `hotness_reason`, and `manager_next_action` within `280`; `suggested_manager_phrase` within `240`.
+14. `call_report_summary.hotness` must be `hot`, `warm`, or `low`; `rescheduled` is intentionally not allowed there.
+15. `call_report_summary.client_name_confidence` must be `high`, `medium`, or `low`; if `client_display_name=null`, confidence should be omitted or `null`.
+16. `call_report_summary.suggested_manager_phrase` must not equal a known client quote from `business_outcome.evidence_quote`, `voice_of_customer[]`, or `quote_bank[]`.
+17. If `business_outcome.status` is `refusal`, `tech_service`, or `not_suitable`, a non-null `suggested_manager_phrase` should warn unless there is explicit follow-up/service continuation.
+18. Invalid `report_evidence` must not invalidate the whole call analysis unless the future validator explicitly makes it blocking.
 
 ### Step 8Z implementation note
 
@@ -343,6 +392,11 @@ Current strictness:
 - missing `report_evidence_version` fails when `report_evidence` exists;
 - only `v1` is supported;
 - enum/schema errors fail validation;
+- `call_report_summary` is optional and missing it remains a valid legacy state;
+- invalid `call_report_summary.hotness` / `client_name_confidence` enum values fail validation;
+- too-long `call_report_summary.short_topic` / `short_context` fields fail schema validation;
+- `suggested_manager_phrase` copied from a known client quote fails validation;
+- non-null `suggested_manager_phrase` on `refusal`, `tech_service`, or `not_suitable` without explicit follow-up emits a warning;
 - invalid `stage_code` fails validation against `CHECKLIST_DEFINITION["stages"]` from the approved analyzer checklist source;
 - ungrounded dialogue/quote text fails validation unless the item is explicitly `evidence_quality=insufficient` and `usable_in_report=false`;
 - `evidence_quality=insufficient` with `usable_in_report=true` fails validation;

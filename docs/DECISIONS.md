@@ -580,3 +580,13 @@
 - **Reason:** Human review after Step 8AH-2 showed that `Открытый` describes final outcome rather than follow-up urgency. Managers need the priority column to answer how urgently to work the contact tomorrow, while outcome totals and final statuses remain deterministic.
 - **Scope:** Reporting payload/render deterministic priority calculation only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract, `BusinessOutcomeResolver`, selection/inclusion rules, delivery semantics, or short-topic/context generation changes.
 - **Date:** 2026-05-08
+
+## ADR-057: `report_evidence v1` includes optional call report summary
+- **Decision:** `report_evidence v1` supports an optional `call_report_summary` object with `short_topic`, `short_context`, `client_display_name`, `client_name_confidence`, `hotness`, `hotness_reason`, `manager_next_action`, and `suggested_manager_phrase`.
+- **Decision:** `call_report_summary` is additive and backward-compatible. Legacy analyses without it remain valid and reusable.
+- **Decision:** `call_report_summary.hotness` is only a semantic signal (`hot|warm|low`). It does not override deterministic final outcome, tomorrow inclusion/exclusion, or Step 8AH-3 manager-facing hotness priority. `rescheduled` stays a deterministic final status/category, not LLM summary hotness.
+- **Decision:** The reporting layer remains responsible for phone/date/time display through the unified client/call reference. `client_display_name` may provide only an explicit name/FIO/name fragment and must not be invented.
+- **Decision:** `suggested_manager_phrase` must be a manager phrase, not copied client text. The validator rejects exact copies of known client quotes and warns on non-null phrases for refusal/tech/not_suitable outcomes without explicit follow-up.
+- **Reason:** Human review after Step 8AH-1..8AH-3 showed that table layout and deterministic priority are now cleaner, but future report quality needs LLM2-prepared short topic, context, recommendation, and manager phrase fields without changing rendering or prompts in this bounded step.
+- **Scope:** `report_evidence` schema/validator/docs/tests only. No analyzer prompt change, STT/LLM run, source discovery, `build_missing`, report rendering, `BusinessOutcomeResolver`, delivery semantics, or persisted data migration.
+- **Date:** 2026-05-08

@@ -230,6 +230,16 @@ def _valid_report_evidence_detail() -> dict[str, Any]:
                 "evidence_speaker": "client",
                 "needs_human_review": False,
             },
+            "call_report_summary": {
+                "short_topic": "Клиент попросил материалы в WhatsApp",
+                "short_context": "Клиент готов посмотреть материалы, но срок возврата ещё не зафиксирован.",
+                "client_display_name": "Алия",
+                "client_name_confidence": "high",
+                "hotness": "warm",
+                "hotness_reason": "Есть интерес и запрос материалов, но нет обязательства по следующему шагу.",
+                "manager_next_action": "Отправить материалы и согласовать дату следующего контакта.",
+                "suggested_manager_phrase": "Алия, добрый день. Отправляю материалы, как договорились. Когда удобно обсудить?",
+            },
             "situation_candidates": [
                 {
                     "stage_code": "qualification_primary",
@@ -360,6 +370,10 @@ class ReportEvidenceValidationTests(unittest.TestCase):
             result.normalized["report_evidence"]["business_outcome"]["status"],
             "open",
         )
+        self.assertEqual(
+            result.normalized["report_evidence"]["call_report_summary"]["hotness"],
+            "warm",
+        )
 
     def test_report_evidence_missing_package_is_valid_legacy_state(self):
         result = self._validate({"classification": {"call_type": "sales_primary"}})
@@ -386,6 +400,62 @@ class ReportEvidenceValidationTests(unittest.TestCase):
 
         self.assertFalse(result.is_valid)
         self.assertIn("schema_validation_error", self._issue_codes(result.errors))
+
+    def test_report_evidence_invalid_summary_hotness_enum_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["call_report_summary"]["hotness"] = "rescheduled"
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("schema_validation_error", self._issue_codes(result.errors))
+
+    def test_report_evidence_invalid_client_name_confidence_enum_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["call_report_summary"]["client_name_confidence"] = "certain"
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("schema_validation_error", self._issue_codes(result.errors))
+
+    def test_report_evidence_too_long_call_report_summary_fields_fail(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["call_report_summary"]["short_topic"] = "x" * 121
+        detail["report_evidence"]["call_report_summary"]["short_context"] = "x" * 281
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("schema_validation_error", self._issue_codes(result.errors))
+
+    def test_report_evidence_suggested_manager_phrase_copying_client_quote_fails(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["call_report_summary"]["suggested_manager_phrase"] = "Скиньте в WhatsApp, я посмотрю."
+
+        result = self._validate(detail)
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("suggested_manager_phrase_copies_client_quote", self._issue_codes(result.errors))
+
+    def test_report_evidence_non_follow_up_outcome_with_suggested_phrase_warns(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"]["business_outcome"]["status"] = "refusal"
+        detail["report_evidence"]["follow_up_candidates"] = []
+
+        result = self._validate(detail)
+
+        self.assertTrue(result.is_valid)
+        self.assertIn("suggested_manager_phrase_on_non_follow_up_outcome", self._issue_codes(result.warnings))
+
+    def test_report_evidence_without_call_report_summary_remains_valid(self):
+        detail = _valid_report_evidence_detail()
+        detail["report_evidence"].pop("call_report_summary")
+
+        result = self._validate(detail)
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.errors, [])
 
     def test_report_evidence_invalid_stage_code_fails(self):
         detail = _valid_report_evidence_detail()

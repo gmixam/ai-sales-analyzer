@@ -97,6 +97,18 @@ class FollowUpPriority(StrEnum):
     OPEN = "open"
 
 
+class ClientNameConfidence(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class SummaryHotness(StrEnum):
+    HOT = "hot"
+    WARM = "warm"
+    LOW = "low"
+
+
 class _ReportEvidenceModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -185,8 +197,20 @@ class QuoteBankItem(_ReportEvidenceModel):
     usable_in_report: bool = True
 
 
+class CallReportSummary(_ReportEvidenceModel):
+    short_topic: str | None = Field(default=None, max_length=120)
+    short_context: str | None = Field(default=None, max_length=280)
+    client_display_name: str | None = Field(default=None, max_length=120)
+    client_name_confidence: ClientNameConfidence | None = None
+    hotness: SummaryHotness | None = None
+    hotness_reason: str | None = Field(default=None, max_length=280)
+    manager_next_action: str | None = Field(default=None, max_length=280)
+    suggested_manager_phrase: str | None = Field(default=None, max_length=240)
+
+
 class ReportEvidence(_ReportEvidenceModel):
     business_outcome: BusinessOutcomeEvidence | None = None
+    call_report_summary: CallReportSummary | None = None
     situation_candidates: list[SituationCandidate] = Field(default_factory=list)
     manager_coaching_moments: list[ManagerCoachingMoment] = Field(default_factory=list)
     voice_of_customer: list[VoiceOfCustomerItem] = Field(default_factory=list)
@@ -341,6 +365,13 @@ def _validate_package_semantics(
             warnings=warnings,
         )
 
+    if evidence.call_report_summary is not None:
+        _validate_call_report_summary(
+            evidence=evidence,
+            errors=errors,
+            warnings=warnings,
+        )
+
     for index, item in enumerate(evidence.situation_candidates):
         base = f"report_evidence.situation_candidates[{index}]"
         _validate_stage_code(item.stage_code, stage_codes, f"{base}.stage_code", errors)
@@ -434,6 +465,68 @@ def _validate_package_semantics(
             errors=errors,
             warnings=warnings,
         )
+
+
+def _validate_call_report_summary(
+    *,
+    evidence: ReportEvidence,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    summary = evidence.call_report_summary
+    if summary is None:
+        return
+    if summary.client_display_name is None and summary.client_name_confidence is not None:
+        warnings.append(
+            _issue(
+                code="client_name_confidence_without_name",
+                path="report_evidence.call_report_summary.client_name_confidence",
+                message="client_name_confidence should be omitted or null when client_display_name is null.",
+            )
+        )
+
+    phrase = _normalized_text(summary.suggested_manager_phrase)
+    if phrase:
+        client_quotes = _known_client_quote_texts(evidence)
+        if phrase in client_quotes:
+            errors.append(
+                _issue(
+                    code="suggested_manager_phrase_copies_client_quote",
+                    path="report_evidence.call_report_summary.suggested_manager_phrase",
+                    message="suggested_manager_phrase must be phrased as the manager and must not copy a client quote.",
+                )
+            )
+        status = evidence.business_outcome.status if evidence.business_outcome else None
+        has_follow_up = any(item.usable_in_report for item in evidence.follow_up_candidates)
+        if status in {
+            BusinessOutcomeStatus.REFUSAL,
+            BusinessOutcomeStatus.TECH_SERVICE,
+            BusinessOutcomeStatus.NOT_SUITABLE,
+        } and not has_follow_up:
+            warnings.append(
+                _issue(
+                    code="suggested_manager_phrase_on_non_follow_up_outcome",
+                    path="report_evidence.call_report_summary.suggested_manager_phrase",
+                    message="Refusal, tech/service, and not_suitable outcomes usually should not include a commercial suggested_manager_phrase.",
+                )
+            )
+
+
+def _known_client_quote_texts(evidence: ReportEvidence) -> set[str]:
+    quotes: set[str] = set()
+    if (
+        evidence.business_outcome
+        and evidence.business_outcome.evidence_speaker == Speaker.CLIENT
+        and evidence.business_outcome.evidence_quote
+    ):
+        quotes.add(_normalized_text(evidence.business_outcome.evidence_quote))
+    for item in evidence.voice_of_customer:
+        if item.speaker == Speaker.CLIENT:
+            quotes.add(_normalized_text(item.quote))
+    for item in evidence.quote_bank:
+        if item.speaker == Speaker.CLIENT:
+            quotes.add(_normalized_text(item.quote))
+    return {quote for quote in quotes if quote}
 
 
 def _validate_stage_code(
