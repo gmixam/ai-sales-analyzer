@@ -5176,25 +5176,38 @@ def _artifact_call_metadata(artifact: ReportArtifact) -> dict[str, Any]:
     detail = _artifact_scores_detail(artifact)
     call_meta = dict(detail.get("call") or {})
     interaction_meta = dict(artifact.interaction.metadata_ or {})
+    raw_phone = _clean_display_part(
+        call_meta.get("contact_phone")
+        or call_meta.get("client_phone")
+        or call_meta.get("phone")
+        or interaction_meta.get("contact_phone")
+        or interaction_meta.get("client_phone")
+        or interaction_meta.get("phone")
+    )
+    name_candidates = (
+        call_meta.get("contact_name"),
+        call_meta.get("client_name"),
+        call_meta.get("name"),
+        interaction_meta.get("contact_name"),
+        interaction_meta.get("client_name"),
+        interaction_meta.get("contact_label"),
+        interaction_meta.get("customer_name"),
+        _safe_persisted_transcript_contact_name(artifact),
+    )
+    safe_name = next(
+        (
+            name
+            for name in (
+                _safe_client_display_name(candidate, phone=raw_phone)
+                for candidate in name_candidates
+            )
+            if name
+        ),
+        "",
+    )
     return {
-        "contact_name": _clean_display_part(
-            call_meta.get("contact_name")
-            or call_meta.get("client_name")
-            or call_meta.get("name")
-            or interaction_meta.get("contact_name")
-            or interaction_meta.get("client_name")
-            or interaction_meta.get("contact_label")
-            or interaction_meta.get("customer_name")
-            or _safe_persisted_transcript_contact_name(artifact)
-        ),
-        "contact_phone": _clean_display_part(
-            call_meta.get("contact_phone")
-            or call_meta.get("client_phone")
-            or call_meta.get("phone")
-            or interaction_meta.get("contact_phone")
-            or interaction_meta.get("client_phone")
-            or interaction_meta.get("phone")
-        ),
+        "contact_name": safe_name,
+        "contact_phone": raw_phone,
     }
 
 
@@ -8105,6 +8118,60 @@ def _same_phone_display(left: Any, right: Any) -> bool:
     return bool(left_digits and right_digits and left_digits == right_digits)
 
 
+UNSAFE_CLIENT_DISPLAY_NAME_VALUES = {
+    "абонент",
+    "алло",
+    "да",
+    "договор",
+    "добрый день",
+    "заявка",
+    "здравствуйте",
+    "клиент",
+    "менеджер",
+    "не знаю",
+    "неизвестно",
+    "нет",
+    "поддержка",
+    "продажи",
+    "ага",
+    "слушаю",
+    "техподдержка",
+    "угу",
+    "ужас",
+    "эдо",
+}
+
+
+def _safe_client_display_name(
+    value: Any,
+    *,
+    phone: Any = None,
+    confidence: Any = None,
+    allow_low_confidence_without_phone: bool = True,
+) -> str | None:
+    """Return a manager-facing client name only when it is safe enough to show."""
+    text = _clean_display_part(value).strip(".,:;!?«»\"'()[]{} ")
+    if not text or _is_phone_like_display(text) or _same_phone_display(text, phone):
+        return None
+    normalized = text.lower().replace("ё", "е")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if normalized in UNSAFE_CLIENT_DISPLAY_NAME_VALUES:
+        return None
+    if str(confidence or "").strip().lower() == "low" and (phone or not allow_low_confidence_without_phone):
+        return None
+    if len(text) > 60:
+        return None
+    if len(normalized) < 2:
+        return None
+    if any(marker in normalized for marker in ("http://", "https://", "www.", "@")):
+        return None
+    if re.search(r"\d", text):
+        return None
+    if not re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё -]{1,59}", text):
+        return None
+    return text
+
+
 def _format_call_started_human(value: datetime | None) -> str | None:
     """Format call start as '4 мая 2026, 11:46' for unified call references."""
     if value is None:
@@ -8125,8 +8192,8 @@ def _build_client_call_reference(
     Format: name/label · phone · date, time. The helper does not invent a
     fallback name and avoids repeating the phone when the label already is one.
     """
-    label = _clean_display_part(client_name_or_label)
     phone_text = _clean_display_part(phone)
+    label = _safe_client_display_name(client_name_or_label, phone=phone_text) or ""
     if label in {"Клиент", "Клиент не определён", "—"}:
         label = ""
     if phone_text in {"Клиент", "Клиент не определён", "—"}:
@@ -8167,15 +8234,8 @@ def _safe_persisted_transcript_contact_name(artifact: ReportArtifact) -> str | N
 
 def _safe_contact_name_candidate(value: Any) -> str | None:
     """Validate a short persisted transcript answer as a name/label, not a guessed identity."""
-    text = _clean_display_part(value).strip(".,:;!?«»\"'()[]{} ")
-    if not text or _is_phone_like_display(text):
-        return None
-    lowered = text.lower().replace("ё", "е")
-    if lowered in {"алло", "да", "нет", "добрый день", "здравствуйте", "слушаю", "угу", "ага"}:
-        return None
-    if len(text) > 40:
-        return None
-    if not re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё -]{1,39}", text):
+    text = _safe_client_display_name(value)
+    if not text or len(text) > 40:
         return None
     return text
 

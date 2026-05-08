@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import unittest
 from contextlib import contextmanager
@@ -936,6 +937,73 @@ class ManualReportingPayloadTests(unittest.TestCase):
             payload["call_list"][0]["client_call_reference"],
             "Нур-Султан · +77071523663 · 4 мая 2026, 11:46",
         )
+
+    def test_step8ah8b_rejects_unsafe_client_display_name(self) -> None:
+        """Step 8AH-8B: unsafe extracted names fall back to phone/date in unified references."""
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 06:37:00")
+        artifact.interaction.text = "Как могу к вам обращаться? Ужас. Менеджер продолжил звонок."
+        artifact.interaction.metadata_["contact_name"] = "Ужас"
+        artifact.interaction.metadata_["contact_phone"] = "+77774745093"
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "Как могу к вам обращаться?"},
+            {"speaker": "B", "text": "Ужас."},
+        ]
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"] = {"contact_name": "Ужас", "contact_phone": "+77774745093"}
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        expected = "+77774745093 · 4 мая 2026, 06:37"
+        rendered = json.dumps(payload, ensure_ascii=False)
+        self.assertEqual(payload["call_list"][0]["client_call_reference"], expected)
+        self.assertEqual(payload["call_list"][0]["client_name"], None)
+        self.assertNotIn("Ужас · +77774745093", rendered)
+
+    def test_step8ah8b_keeps_safe_client_display_names(self) -> None:
+        """Step 8AH-8B: valid persisted names continue to render in unified references."""
+        safe_names = ["Надежда Анатольевна", "Агирим", "Акмарал", "Екатерина", "Максим", "Нур-Султан"]
+        for name in safe_names:
+            with self.subTest(name=name):
+                artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")
+                artifact.interaction.metadata_["contact_name"] = name
+                artifact.interaction.metadata_["contact_phone"] = "+77071523663"
+                detail = artifact.analysis.scores_detail
+                detail["classification"] = {
+                    "call_type": "sales_primary",
+                    "scenario_type": "cold_outbound",
+                    "analysis_eligibility": "eligible",
+                }
+                detail["call"] = {"contact_name": name, "contact_phone": "+77071523663"}
+                detail["follow_up"] = {"next_step_fixed": True, "next_step_text": "Отправить информацию."}
+
+                payload = build_manager_daily_payload(
+                    department_id=str(uuid4()),
+                    department_name="Отдел продаж",
+                    artifacts=[artifact],
+                    period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+                    filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+                    mode="report_from_ready_data_only",
+                    model_override=None,
+                )
+
+                self.assertEqual(
+                    payload["call_list"][0]["client_call_reference"],
+                    f"{name} · +77071523663 · 4 мая 2026, 11:46",
+                )
 
     def test_step8ah3_call_tomorrow_uses_hotness_not_final_open_label(self) -> None:
         def contact(name: str, text: str, follow_up: dict[str, Any], call_date: str) -> ReportArtifact:

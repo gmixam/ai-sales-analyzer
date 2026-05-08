@@ -598,3 +598,12 @@
 - **Reason:** Step 8AH-8A audited Тимур `12:09 / +77470957591`: latest v8 analysis and transcript both supported `Открыт`, but final reporting rendered `Отказ` because the resolver matched `неактуально` inside a coaching recommendation about possible risk, not inside client refusal evidence.
 - **Scope:** Reporting-layer `BusinessOutcomeResolver` false-refusal guard only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, PDF layout, money rules, selection/inclusion rules, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-059: `manager_daily` rejects unsafe client display names
+- **Decision:** Unified `manager_daily` client/call references must render a client name/label only after a safe display-name guard accepts it.
+- **Decision:** Unsafe exact labels such as `ужас`, `алло`, `да`, `нет`, `не знаю`, `клиент`, `абонент`, `заявка`, `договор`, `эдо`, `поддержка`, `продажи`, `техподдержка`, `менеджер`, and `неизвестно` are not manager-facing names. Phone-like, duplicate-phone, digit-bearing, URL/email-like, too-long, or symbol-noisy values are also rejected.
+- **Decision:** When a candidate name is rejected, reporting falls back to `phone · date, time` or date/time only. It must not invent a replacement name.
+- **Decision:** Valid persisted names/FIO/name fragments remain allowed. If future display paths consume `report_evidence.call_report_summary.client_display_name`, `client_name_confidence=low` must not become the primary label when a phone is available.
+- **Reason:** Step 8AH-8B human-review blocker showed `Ужас · +77774745093 · 4 мая 2026, 06:37` in a final PDF. A wrong or embarrassing client name is worse than showing only phone/date/time.
+- **Scope:** Reporting display-name/reference generation only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, selection/inclusion, PDF layout, money rules, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

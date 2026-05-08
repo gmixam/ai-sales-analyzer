@@ -176,12 +176,19 @@ Fallback rules:
 - если имени/label нет: `телефон · дата, время`;
 - если телефона нет: `имя · дата, время`;
 - если имя/label уже является тем же телефоном, телефон не дублируется;
-- reporting layer не выдумывает ФИО и не извлекает новое имя из transcript ad hoc.
+- reporting layer не выдумывает ФИО и не извлекает новое имя из transcript ad hoc;
+- unsafe / suspicious labels are rejected before display and fall back to phone/date/time.
 
 Source priority:
 1. persisted analysis call metadata (`scores_detail.call.contact_name` / `contact_phone` and compatible aliases);
 2. persisted interaction metadata (`contact_name`, `contact_label`, `customer_name`, `contact_phone` and compatible aliases);
 3. existing call reference fields already assembled in the reporting payload.
+
+Since Step 8AH-8B, candidate names/labels are rendered only if they pass the safe display-name guard:
+- exact unsafe/generic labels such as `ужас`, `алло`, `да`, `нет`, `не знаю`, `клиент`, `абонент`, `заявка`, `договор`, `эдо`, `поддержка`, `продажи`, `техподдержка`, `менеджер`, and `неизвестно` are rejected;
+- phone-like values, duplicate phone labels, digit-bearing labels, URL/email-like values, too-long values, and symbol-noisy values are rejected;
+- valid persisted names/FIO/name fragments such as `Надежда Анатольевна`, `Агирим`, `Акмарал`, `Екатерина`, `Максим`, and `Нур-Султан` remain allowed;
+- if `report_evidence.call_report_summary.client_display_name` is used by future display paths, `client_name_confidence=low` must not become the primary label when a phone is available.
 
 Этот display contract применяется к `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` и client column in `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. Структурное объединение колонок call list остаётся отдельным layout step.
 

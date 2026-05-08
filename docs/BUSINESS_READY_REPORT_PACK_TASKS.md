@@ -1834,6 +1834,26 @@ Verification checks passed: outcome totals unchanged; `call_list_dates=["2026-05
 
 **Next:** run a bounded Step 8AH-8B to rebuild all three final PDFs after the fix and resend Telegram test before Step 8AH-9 human review.
 
+## Step 8AH-8B — Protect manager_daily from unsafe client names
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** safe display-name validation / unified call-reference generation only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, money rules, delivery semantics, Telegram, or business email changes.
+
+**Fix:** unified client/call references now use a safe client-display-name helper before rendering any persisted name/label. Unsafe labels are rejected and the reference falls back to phone/date/time. The minimal reject set includes `ужас`, `алло`, `да`, `нет`, `не знаю`, `клиент`, `абонент`, `заявка`, `договор`, `эдо`, `поддержка`, `продажи`, `техподдержка`, `менеджер`, and `неизвестно`; phone-like, digit-bearing, URL/email-like, too-long, or symbol-noisy values are also rejected.
+
+**Before / after:** Толеген `06:37 / +77774745093` changed from unsafe `Ужас · +77774745093 · 4 мая 2026, 06:37` to `+77774745093 · 4 мая 2026, 06:37`.
+
+**Verification:** direct persisted-artifact ready-only rebuild produced:
+- `/tmp/step8ah8b_Эльмира_2026-05-04.pdf` (`136442` bytes)
+- `/tmp/step8ah8b_Тимур_2026-05-04.pdf` (`149557` bytes)
+- `/tmp/step8ah8b_Толеген_2026-05-04.pdf` (`124551` bytes)
+- `/tmp/step8ah8b_summary_2026-05-04.json`
+
+Checks passed: `Ужас` absent from PDFs and payload; available valid names such as `Агирим`, `Акмарал`, `Надежда Анатольевна`, `Максим`, `Екатерина`, and `Нур-Султан` remain rendered; outcome totals unchanged (`Эльмира 12/1/1/2/2/6/0`, `Тимур 15/3/1/2/6/2/1`, `Толеген 6/0/0/1/3/2/0`); `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `manager_facing_completeness.status=passed`; `transcripts_built=0`; `analyses_built=0`; delivery not run.
+
+**Next:** continue the human-review blocker list with bounded fixes for `Ситуация дня` Эльмиры, recommendations in `Голос клиента` / `Кого взять завтра`, and Тимур `Разбор звонка`; only after those, rebuild final PDFs and resend Telegram test.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract
