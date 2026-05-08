@@ -1922,6 +1922,30 @@ Checks passed: tomorrow recommendations are signal-specific; no copied client qu
 
 **Next:** continue bounded human-review fixes with Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later steps.
 
+## Step 8AH-8F — Improve Call Breakdown evidence selection and weak-evidence handling
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** general `РАЗБОР ЗВОНКА` evidence selection/ranking and weak-evidence rendering only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, Telegram, or business email changes.
+
+**Mechanism:** `РАЗБОР ЗВОНКА` now treats a concrete persisted fragment as part of candidate strength:
+- valid `report_evidence.manager_coaching_moments` with a usable dialogue fragment rank above fragmentless moments, even when the fragmentless moment has higher priority;
+- legacy fallback extracts the strongest persisted fragment from `evidence_fragments`, transcript segments, or transcript text before rendering;
+- when no meaningful fragment exists, the renderer shows `Нет подтверждающего фрагмента в сохранённых данных.` rather than a bare `—`;
+- weak/missing evidence uses softer summary wording (`зона для разбора; подтверждающий фрагмент ограничен`) and is not presented as strong proof.
+
+**Diagnostics:** payload exposes `call_breakdown_source`, `call_breakdown_evidence_strength`, and `call_breakdown_fragment_present` so verification can distinguish strong, weak, and missing-fragment cases.
+
+**Verification:** direct persisted-artifact ready-only rebuild produced:
+- `/tmp/step8ah8f_Эльмира_2026-05-04.pdf` (`143928` bytes)
+- `/tmp/step8ah8f_Тимур_2026-05-04.pdf` (`151562` bytes)
+- `/tmp/step8ah8f_Толеген_2026-05-04.pdf` (`126322` bytes)
+- `/tmp/step8ah8f_summary_2026-05-04.json`
+
+Checks passed: all three call-breakdown render rows have `bare_fragment_dash_count=0`; Тимур no longer renders a bare fragment dash and selects a persisted legacy fragment with `call_breakdown_evidence_strength=strong`; Эльмира and Толеген stay on `report_evidence.manager_coaching_moments` with strong fragments; outcome totals unchanged (`Эльмира 12/1/1/2/2/6/0`, `Тимур 15/3/1/2/6/2/1`, `Толеген 6/0/0/1/3/2/0`); `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `manager_facing_completeness.status=passed`; `transcripts_built=0`; `analyses_built=0`; delivery not run.
+
+**Next:** rebuild final PDFs after all blocker fixes and send to Telegram test before Step 8AH human review.
+
 ## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
 
 **Status:** DONE 2026-05-08.

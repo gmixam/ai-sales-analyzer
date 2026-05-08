@@ -865,6 +865,69 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertIn("call_report_summary_used_count", payload["call_report_summary_diagnostics"]["summary"])
 
+    def test_call_breakdown_prefers_report_evidence_moment_with_fragment(self) -> None:
+        artifact = _artifact(70.0, "basic")
+        artifact.interaction.text = (
+            "Менеджер начал с общего вопроса. "
+            "Скиньте в WhatsApp, я посмотрю. "
+            "Хорошо, отправлю информацию. "
+            "Клиент попросил коммерческое предложение в WhatsApp."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Legacy gap"}]
+        evidence_detail = _valid_report_evidence_detail()
+        evidence_detail["report_evidence"]["manager_coaching_moments"] = [
+            {
+                "stage_code": "completion_next_step",
+                "moment_type": "missed",
+                "priority": "high",
+                "evidence_quality": "direct",
+                "dialogue_fragment": [],
+                "what_happened": "Следующий шаг описан общо.",
+                "what_better": "Зафиксировать срок возврата.",
+                "usable_in_report": True,
+            },
+            {
+                "stage_code": "qualification_primary",
+                "moment_type": "missed",
+                "priority": "low",
+                "evidence_quality": "direct",
+                "dialogue_fragment": [
+                    {
+                        "speaker": "client",
+                        "text": "Клиент попросил коммерческое предложение в WhatsApp.",
+                    }
+                ],
+                "what_happened": "Клиент попросил КП, но срок обсуждения не был закреплён.",
+                "what_better": "Отправить КП и сразу согласовать дату возврата к обсуждению.",
+                "usable_in_report": True,
+            },
+        ]
+        detail.update(evidence_detail)
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        breakdown = payload["call_breakdown"]
+        self.assertEqual(breakdown["source_note"], "report_evidence.manager_coaching_moments")
+        self.assertTrue(breakdown["call_breakdown_fragment_present"])
+        self.assertEqual(breakdown["call_breakdown_evidence_strength"], "strong")
+        self.assertIn("Клиент попросил КП", breakdown["rows"][0][1])
+        self.assertIn("коммерческое предложение", breakdown["rows"][0][2])
+        self.assertNotEqual(breakdown["rows"][0][2], "—")
+
     def test_situation_client_reaction_prefers_client_grounded_evidence(self) -> None:
         artifact = _artifact(64.0, "basic")
         client_quote = "Лучше напишите в WhatsApp, я не отвечаю на незнакомые звонки."
@@ -1579,6 +1642,46 @@ class ManualReportingPayloadTests(unittest.TestCase):
             payload["analysis_improve"][0]["label"],
             "Менеджер не выяснил, как устроен текущий процесс у клиента.",
         )
+
+    def test_call_breakdown_missing_fragment_renders_explicit_weak_evidence_note(self) -> None:
+        artifact = _artifact(42.0, "problematic")
+        artifact.interaction.text = "Текст звонка."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [],
+            }
+        ]
+        detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Текущий процесс не уточнён"}]
+        detail["recommendations"] = [{"recommendation": "Уточнить текущий процесс клиента."}]
+        detail["evidence_fragments"] = []
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertFalse(payload["call_breakdown"]["call_breakdown_fragment_present"])
+        self.assertEqual(payload["call_breakdown"]["call_breakdown_evidence_strength"], "missing")
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        row = sections["call_breakdown"]["rows"][0]
+        self.assertEqual(row[2], "Нет подтверждающего фрагмента в сохранённых данных.")
+        self.assertNotEqual(row[2], "—")
+        self.assertIn("подтверждающий фрагмент ограничен", sections["call_breakdown"]["summary_line"])
 
     def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
         artifact = _artifact(50.0, "problematic")

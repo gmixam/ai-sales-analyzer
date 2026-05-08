@@ -321,13 +321,21 @@ function normalizeBreakdownMoment(value, index) {
   return text;
 }
 
+const CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных.";
+
+function breakdownFragmentOrNote(value) {
+  const text = cleanText(value);
+  if (!text || text === "—") return CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE;
+  return text;
+}
+
 function splitBreakdownFragment(value) {
   const text = cleanText(value);
   const match = text.match(/\s*Фрагмент:\s*[«"](.+?)[»"]\.?\s*$/);
-  if (!match) return { what: text, fragment: "—" };
+  if (!match) return { what: text, fragment: CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE };
   return {
     what: text.slice(0, match.index).replace(/[.\s]+$/, "") || "—",
-    fragment: match[1] || "—",
+    fragment: breakdownFragmentOrNote(match[1]),
   };
 }
 
@@ -336,7 +344,7 @@ function normalizeBreakdownRow(row, index) {
     return {
       moment: normalizeBreakdownMoment(row[0], index),
       what: row[1] || "—",
-      fragment: row[2] || "—",
+      fragment: breakdownFragmentOrNote(row[2]),
       better: row[3] || "—",
     };
   }
@@ -627,6 +635,7 @@ function dataFromBundle(bundle) {
       client: payload.call_breakdown?.client_label || "Клиент",
       time: payload.call_breakdown?.time_label || "—",
       reference: payload.call_breakdown?.client_call_reference || "",
+      summary: payload.call_breakdown?.summary_line || "",
       stages: (callBreakdown.rows || []).map((row, index) => normalizeBreakdownRow(row, index + 1)),
     },
     voice_of_customer: (voice.rows || []).map((row) => ({
@@ -1244,15 +1253,19 @@ function buildSituatsiya() {
 // ──────────────────────────────────────────────────────────────
 
 function buildRazbor() {
-  const { client, time, reference, stages } = DATA.call_breakdown;
+  const { client, time, reference, summary, stages } = DATA.call_breakdown;
   const callReference = reference || `${client} · ${time}`;
+  const summaryLine = summary || callReference;
   if (!stages || stages.length === 0) {
     return [
       blockHeading("🔍", "РАЗБОР ЗВОНКА"),
-      bodyPara(callReference, { color: COLORS.gray }),
+      bodyPara(summaryLine, { color: COLORS.gray }),
       bodyPara("Недостаточно данных для детального разбора звонка.", { color: COLORS.gray }),
     ];
   }
+  const introLine = summaryLine.includes("подтверждающий фрагмент ограничен")
+    ? summaryLine
+    : `${summaryLine} · Звонок выбран как наиболее показательный для основного паттерна дня.`;
   const headerRows = [
     new TableRow({
       children: [
@@ -1277,7 +1290,7 @@ function buildRazbor() {
 
   return [
     blockHeading("🔍", "РАЗБОР ЗВОНКА"),
-    bodyPara(`${callReference} · Звонок выбран как наиболее показательный для основного паттерна дня.`, { color: COLORS.gray }),
+    bodyPara(introLine, { color: COLORS.gray }),
     spacer(4),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },

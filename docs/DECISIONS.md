@@ -645,3 +645,12 @@
 - **Reason:** Human review found that tomorrow follow-up rows could say “Понять текущий интерес клиента...” even when persisted evidence clearly showed a specific invoice, meeting, materials request, internal discussion, reschedule, or trust-channel situation.
 - **Scope:** Reporting payload/render recommendation/context generation only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-064: `manager_daily` Call Breakdown must not render missing fragments as strong proof
+- **Decision:** `РАЗБОР ЗВОНКА` must prefer coaching moments with concrete persisted evidence fragments over fragmentless moments.
+- **Decision:** Candidate ranking first considers call-breakdown evidence strength (`strong`, `medium`, `weak`, `missing`) before the existing stage/priority/quality/score/time ordering.
+- **Decision:** Legacy fallback may use persisted `evidence_fragments`, transcript segments, or transcript text to find the strongest meaningful fragment; greeting-only, IVR-like, or empty fragments remain weak/missing.
+- **Decision:** If no meaningful fragment exists, the renderer must show `Нет подтверждающего фрагмента в сохранённых данных.` instead of a bare `—`. Weak/missing evidence must use softer wording and must not be described as strong call-specific proof.
+- **Reason:** Human review found `РАЗБОР ЗВОНКА` rows where the block selected a coaching moment but rendered `Фрагмент: —`, making generic advice look like evidence-backed call analysis.
+- **Scope:** Reporting payload/render evidence ranking and weak-fragment display only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

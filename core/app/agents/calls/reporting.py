@@ -5415,33 +5415,10 @@ def _build_situation_dialogue_excerpt_from_call_breakdown(
 
 def _artifact_fallback_evidence_score(artifact: ReportArtifact) -> int:
     """Best deterministic evidence score available for legacy report fallbacks."""
-    texts: list[str] = []
-    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-
-    for frag in detail.get("evidence_fragments") or []:
-        if not isinstance(frag, dict):
-            continue
-        texts.extend(
-            str(frag.get(key) or "").strip()
-            for key in ("client_text", "manager_text", "manager_phrase", "evidence")
-            if str(frag.get(key) or "").strip()
-        )
-
-    for segment in (artifact.interaction.metadata_ or {}).get("segments") or []:
-        if isinstance(segment, dict):
-            text = str(segment.get("text") or "").strip()
-            if text:
-                texts.append(text)
-
-    transcript = str(artifact.interaction.text or "").strip()
-    if transcript:
-        texts.extend(
-            chunk.strip()
-            for chunk in re.split(r"(?<=[.!?])\s+", transcript)
-            if chunk.strip()
-        )
-
-    return max((fragment_information_score(text) for text in texts), default=0)
+    return max(
+        (fragment_information_score(text) for text in _artifact_fallback_evidence_texts(artifact)),
+        default=0,
+    )
 
 
 _FOCUS_STAGE_WHY_FALLBACKS: dict[str, str] = {
@@ -6808,6 +6785,8 @@ CALL_TOMORROW_HOTNESS_LABELS = {
 REPORT_EVIDENCE_USABLE_QUALITIES = {"direct", "indirect", "weak"}
 REPORT_EVIDENCE_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 REPORT_EVIDENCE_QUALITY_RANK = {"direct": 0, "indirect": 1, "weak": 2, "insufficient": 9}
+CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
+CALL_BREAKDOWN_EVIDENCE_STRENGTH_RANK = {"strong": 0, "medium": 1, "weak": 2, "missing": 3}
 
 
 def _call_list_rows_by_interaction_id(call_list: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -7381,6 +7360,34 @@ def _report_evidence_quote_text(turns: list[dict[str, str]]) -> str:
     return ""
 
 
+def _call_breakdown_fragment_strength(
+    *,
+    fragment: str | None,
+    evidence_quality: str | None,
+) -> str:
+    """Classify how safe a call-breakdown fragment is as proof."""
+    text = _dialogue_turn_text(str(fragment or ""), limit=220)
+    if not text:
+        return "missing"
+    quality = str(evidence_quality or "").strip().lower()
+    if is_greeting_only_fragment(text) or _dialogue_compact(text) == "телефонныйзвонок":
+        return "weak"
+    info_score = fragment_information_score(text)
+    if quality in {"direct", "indirect"} and info_score >= 4:
+        return "strong"
+    if quality in {"direct", "indirect"}:
+        return "medium"
+    return "weak"
+
+
+def _call_breakdown_fragment_from_turns(turns: list[dict[str, str]]) -> str | None:
+    """Pick a bounded dialogue line for `РАЗБОР ЗВОНКА` without inventing evidence."""
+    quote = _report_evidence_quote_text(turns)
+    if not quote:
+        return None
+    return _dialogue_turn_text(quote, limit=180) or None
+
+
 def _manager_text_from_turns(turns: list[dict[str, str]]) -> str | None:
     found = next((turn for turn in turns if turn.get("speaker") == "manager"), None)
     return str(found.get("text") or "").strip() if found else None
@@ -7402,6 +7409,63 @@ def _report_evidence_candidate_rank(
         _extract_score_percent(artifact.analysis),
         artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
     )
+
+
+def _call_breakdown_summary_line(
+    *,
+    ref: dict[str, Any],
+    evidence_strength: str,
+) -> str:
+    summary = str(ref.get("client_call_reference") or "").strip()
+    if not summary:
+        summary = f"{ref.get('client_label') or 'Клиент'} · {ref.get('time_label') or '—'}"
+    if evidence_strength in {"weak", "missing"}:
+        return f"{summary} · зона для разбора; подтверждающий фрагмент ограничен"
+    return summary
+
+
+def _artifact_fallback_evidence_texts(artifact: ReportArtifact) -> list[str]:
+    """Return persisted text fragments that may prove a legacy call-breakdown row."""
+    texts: list[str] = []
+    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+
+    for frag in detail.get("evidence_fragments") or []:
+        if not isinstance(frag, dict):
+            continue
+        texts.extend(
+            str(frag.get(key) or "").strip()
+            for key in ("client_text", "manager_text", "manager_phrase", "evidence")
+            if str(frag.get(key) or "").strip()
+        )
+
+    for segment in (artifact.interaction.metadata_ or {}).get("segments") or []:
+        if isinstance(segment, dict):
+            text = str(segment.get("text") or "").strip()
+            if text:
+                texts.append(text)
+
+    transcript = str(artifact.interaction.text or "").strip()
+    if transcript:
+        texts.extend(
+            chunk.strip()
+            for chunk in re.split(r"(?<=[.!?])\s+", transcript)
+            if chunk.strip()
+        )
+    return texts
+
+
+def _artifact_fallback_evidence_fragment(artifact: ReportArtifact) -> str | None:
+    """Pick the strongest persisted legacy fragment, excluding boilerplate."""
+    best_text = ""
+    best_score = 0
+    for text in _artifact_fallback_evidence_texts(artifact):
+        score = fragment_information_score(text)
+        if score > best_score:
+            best_text = text
+            best_score = score
+    if best_score < 4:
+        return None
+    return _dialogue_turn_text(best_text, limit=180) or None
 
 
 CLIENT_REACTION_SITUATION_MARKERS = (
@@ -7787,7 +7851,16 @@ def _build_call_breakdown_from_report_evidence(
     score_by_stage: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Build РАЗБОР ЗВОНКА from valid manager_coaching_moments when available."""
-    candidates: list[tuple[tuple[int, int, int, float, datetime], ReportArtifact, dict[str, Any], list[dict[str, str]]]] = []
+    candidates: list[
+        tuple[
+            tuple[int, int, int, int, float, datetime],
+            ReportArtifact,
+            dict[str, Any],
+            list[dict[str, str]],
+            str | None,
+            str,
+        ]
+    ] = []
     for artifact in artifacts:
         if not _is_report_evidence_sales_like(
             artifact=artifact,
@@ -7807,41 +7880,51 @@ def _build_call_breakdown_from_report_evidence(
             if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
                 continue
             turns = _report_evidence_turns(moment)
-            if not turns:
-                continue
+            fragment = _call_breakdown_fragment_from_turns(turns)
+            evidence_strength = _call_breakdown_fragment_strength(
+                fragment=fragment,
+                evidence_quality=quality,
+            )
             candidates.append(
                 (
-                    _report_evidence_candidate_rank(
-                        candidate=moment,
-                        score_by_stage=score_by_stage,
-                        artifact=artifact,
+                    (
+                        CALL_BREAKDOWN_EVIDENCE_STRENGTH_RANK.get(evidence_strength, 9),
+                        *_report_evidence_candidate_rank(
+                            candidate=moment,
+                            score_by_stage=score_by_stage,
+                            artifact=artifact,
+                        ),
                     ),
                     artifact,
                     moment,
                     turns,
+                    fragment,
+                    evidence_strength,
                 )
             )
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
-    _rank, best_artifact, _best_moment, _turns = candidates[0]
+    _rank, best_artifact, _best_moment, _turns, _best_fragment, best_strength = candidates[0]
     best_candidates = [
-        (rank, moment, turns)
-        for rank, artifact, moment, turns in candidates
+        (rank, moment, turns, fragment, strength)
+        for rank, artifact, moment, turns, fragment, strength in candidates
         if str(artifact.interaction.id) == str(best_artifact.interaction.id)
     ]
     best_candidates.sort(key=lambda item: item[0])
     rows: list[list[str]] = []
-    for index, (_moment_rank, moment, turns) in enumerate(best_candidates[:3], start=1):
+    fragment_present = False
+    for index, (_moment_rank, moment, _turns, fragment, _strength) in enumerate(best_candidates[:3], start=1):
         stage_name = _stage_name_for_code(str(moment.get("stage_code") or ""), score_by_stage)
-        quote = _report_evidence_quote_text(turns)
-        quote_part = f" Фрагмент: «{_dialogue_turn_text(quote, limit=180)}»." if quote else ""
+        if fragment:
+            fragment_present = True
         what = _first_sentence(str(moment.get("what_happened") or ""), limit=220)
         better = _first_sentence(str(moment.get("what_better") or ""), limit=240)
         rows.append(
             [
                 f"{index}",
-                f"{stage_name}: {what}{quote_part}".strip(),
+                f"{stage_name}: {what}".strip(),
+                fragment or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
                 better or "Закрепить следующий шаг конкретной формулировкой.",
             ]
         )
@@ -7861,9 +7944,11 @@ def _build_call_breakdown_from_report_evidence(
         "to_fix": [],
         "recommendation": None,
         "rows": rows,
-        "summary_line": ref["client_call_reference"]
-        or f"{ref['client_label']} · {ref['time_label']}",
+        "summary_line": _call_breakdown_summary_line(ref=ref, evidence_strength=best_strength),
         "source_note": "report_evidence.manager_coaching_moments",
+        "call_breakdown_source": "report_evidence.manager_coaching_moments",
+        "call_breakdown_evidence_strength": best_strength,
+        "call_breakdown_fragment_present": fragment_present,
     }
 
 
@@ -8613,6 +8698,11 @@ def _build_call_breakdown(
 
     detail = dict((best_artifact.analysis.scores_detail or {}) if best_artifact.analysis is not None else {})
     ref = _artifact_call_reference(best_artifact)
+    fallback_fragment = _artifact_fallback_evidence_fragment(best_artifact)
+    fallback_strength = _call_breakdown_fragment_strength(
+        fragment=fallback_fragment,
+        evidence_quality="indirect" if best_evidence_rank == 0 else "weak",
+    )
 
     # Build stage steps ordered by funnel
     raw_stages = detail.get("score_by_stage") or []
@@ -8661,6 +8751,37 @@ def _build_call_breakdown(
                 "better_phrasing": better_phrase,
             }
 
+    rows: list[list[str]] = []
+    for idx, item in enumerate(to_fix[:3], start=1):
+        row_recommendation = ""
+        if idx - 1 < len(recs):
+            rec = recs[idx - 1]
+            row_recommendation = str(
+                rec.get("better_phrase")
+                or rec.get("recommendation")
+                or rec.get("problem")
+                or ""
+            ).strip()
+        if not row_recommendation:
+            row_recommendation = str((recommendation or {}).get("better_phrasing") or "").strip()
+        rows.append(
+            [
+                f"{idx}",
+                f"{item.get('label') or 'Момент разговора'}: {item.get('interpretation') or 'Требует уточнения.'}",
+                fallback_fragment if idx == 1 and fallback_fragment else CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
+                row_recommendation or "Следующий шаг нужно формулировать конкретнее.",
+            ]
+        )
+    if not rows:
+        rows.append(
+            [
+                "1",
+                "Недостаточно данных для детального покадрового разбора звонка.",
+                fallback_fragment or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
+                str((recommendation or {}).get("better_phrasing") or "Повторите разбор после следующего полного запуска."),
+            ]
+        )
+
     return {
         "is_placeholder": not stage_steps and not worked and not to_fix,
         "call_id": str(best_artifact.interaction.id),
@@ -8673,8 +8794,14 @@ def _build_call_breakdown(
         "worked": worked,
         "to_fix": to_fix,
         "recommendation": recommendation,
+        "rows": rows,
+        "summary_line": _call_breakdown_summary_line(ref=ref, evidence_strength=fallback_strength),
+        "source_note": "legacy_fallback",
         "fallback_evidence_score": best_evidence_score,
         "fallback_evidence_quality": "weak" if best_evidence_rank else "indirect",
+        "call_breakdown_source": "legacy_fallback",
+        "call_breakdown_evidence_strength": fallback_strength,
+        "call_breakdown_fragment_present": fallback_fragment is not None,
     }
 
 

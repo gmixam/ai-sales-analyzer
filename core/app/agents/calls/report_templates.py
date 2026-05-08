@@ -2918,7 +2918,7 @@ def _build_v5_call_breakdown_section(
             [
                 f"Момент {idx + 1}",
                 f"{item.get('label') or 'Момент разговора'}: {item.get('interpretation') or 'Требует уточнения.'}",
-                "—",
+                CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
                 better,
             ]
         )
@@ -2927,7 +2927,7 @@ def _build_v5_call_breakdown_section(
             [
                 "Момент 1",
                 "Недостаточно данных для детального покадрового разбора звонка.",
-                "—",
+                CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
                 _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Повторите разбор после следующего полного запуска.")),
             ]
         )
@@ -2948,14 +2948,24 @@ def _normalize_call_breakdown_row(*, row: list[Any] | tuple[Any, ...], index: in
         return [
             _call_breakdown_moment_label(values[0], index=index),
             values[1] or "—",
-            values[2] or "—",
+            _call_breakdown_fragment_or_note(values[2]),
             values[3] or "—",
         ]
     moment = _call_breakdown_moment_label(values[0] if values else "", index=index)
     what_raw = values[1] if len(values) > 1 else ""
     recommendation = values[2] if len(values) > 2 else ""
     what, fragment = _split_call_breakdown_fragment(what_raw)
-    return [moment, what or "—", fragment or "—", recommendation or "—"]
+    return [moment, what or "—", _call_breakdown_fragment_or_note(fragment), recommendation or "—"]
+
+
+CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
+
+
+def _call_breakdown_fragment_or_note(value: str) -> str:
+    text = _clean_reader_text(value).strip()
+    if not text or text == "—":
+        return CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE
+    return text
 
 
 def _call_breakdown_moment_label(value: str, *, index: int) -> str:
