@@ -437,11 +437,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "call_list"),
-            "columns": ["#", "Время", "Клиент", "Тема", "Контекст", "Статус"],
+            "columns": ["#", "Клиент", "Тип / суть", "Контекст", "Статус"],
             "rows": [
                 [
                     str(idx + 1),
-                    _short_time(row.get("time")),
                     _manager_reader_value(
                         row.get("client_call_reference") or row.get("client_or_phone"),
                         "Клиент не определён",
@@ -784,7 +783,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         lines = [str(section.get("summary_line") or "Разбор звонка")]
         rows = section.get("rows") or []
         if rows:
-            lines.append("Момент | Что было | Что лучше")
+            lines.append("Момент / время | Что было | Фрагмент | Рекомендация")
             lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
         else:
             lines.append("—")
@@ -795,7 +794,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append(str(section["intro"]))
         rows = section.get("rows") or []
         if rows:
-            lines.append("Паттерн | Подтверждающие цитаты | Смысл → Как ответить")
+            lines.append("Клиент / звонок | Что сказал клиент | Что это значит / Что делать")
             lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
         else:
             lines.append("—")
@@ -824,7 +823,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     if kind == "call_tomorrow":
         rows = section.get("rows") or []
         if rows:
-            return ["Приоритет | Клиент | Срок/повод | Цель звонка | Первая фраза"] + [
+            return ["Приоритет | Клиент | Контекст | Рекомендация"] + [
                 " | ".join(_value(cell) for cell in row) for row in rows
             ]
         return [
@@ -1135,7 +1134,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Момент</th><th>Что было</th><th>Что лучше</th></tr></thead>"
+            "<table><thead><tr><th>Момент / время</th><th>Что было</th><th>Фрагмент</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "voice_of_customer":
@@ -1155,7 +1154,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Паттерн</th><th>Подтверждающие цитаты</th><th>Смысл → Как ответить</th></tr></thead>"
+            "<table><thead><tr><th>Клиент / звонок</th><th>Что сказал клиент</th><th>Что это значит / Что делать</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
@@ -1204,7 +1203,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Срок/повод</th><th>Цель звонка</th><th>Первая фраза</th></tr></thead>"
+            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "morning_card":
@@ -1720,10 +1719,10 @@ def _render_manager_daily_pdf_report(
         breakdown_bottom = draw_table(
             page3,
             top=104,
-            columns=["Момент", "Что было", "Что лучше"],
+            columns=["Момент / время", "Что было", "Фрагмент", "Рекомендация"],
             rows=[list(map(str, row)) for row in (call_breakdown.get("rows") or [])],
-            col_widths=[56, 208, 247],
-            body_size=7.5,
+            col_widths=[66, 152, 138, 155],
+            body_size=7.0,
         )
     else:
         draw_text(page3, left=margin, top=106, text="Недостаточно данных для детального разбора звонка.", size=8.6, color=muted, max_width=width - (margin * 2))
@@ -1739,7 +1738,7 @@ def _render_manager_daily_pdf_report(
         draw_table(
             page3,
             top=voice_table_top,
-            columns=["Паттерн", "Подтверждающие цитаты", "Смысл → Как ответить"],
+            columns=["Клиент / звонок", "Что сказал клиент", "Что это значит / Что делать"],
             rows=[list(map(str, row)) for row in (voice.get("rows") or [])],
             col_widths=[116, 170, 225],
             body_size=7.2,
@@ -1782,9 +1781,9 @@ def _render_manager_daily_pdf_report(
         draw_table(
             page5,
             top=92,
-            columns=["Приоритет", "Клиент", "Срок/повод", "Цель звонка", "Первая фраза"],
+            columns=["Приоритет", "Клиент", "Контекст", "Рекомендация"],
             rows=[list(map(str, row)) for row in (call_tomorrow.get("rows") or [])],
-            col_widths=[66, 96, 90, 120, 139],
+            col_widths=[66, 130, 105, 210],
             body_size=6.9,
         )
     else:
@@ -1809,7 +1808,7 @@ def _render_manager_daily_pdf_report(
         top=92,
         columns=[str(column) for column in (call_list.get("columns") or [])],
         rows=[list(map(str, row)) for row in (call_list.get("rows") or [])] or [["—"] * max(1, len(call_list.get("columns") or []))],
-        col_widths=[22, 44, 112, 110, 126, 97],
+        col_widths=[24, 188, 110, 112, 77],
         body_size=7.2,
     )
     if call_list.get("note"):
@@ -2880,8 +2879,12 @@ def _build_v5_call_breakdown_section(
     section: dict[str, Any],
     recommendations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Map legacy call_breakdown payload to the approved v5 3-column structure."""
-    explicit_rows = [list(map(str, row)) for row in (section.get("rows") or []) if isinstance(row, (list, tuple))]
+    """Map legacy call_breakdown payload to the Step 8AH-2 4-column structure."""
+    explicit_rows = [
+        _normalize_call_breakdown_row(row=row, index=index)
+        for index, row in enumerate(section.get("rows") or [], start=1)
+        if isinstance(row, (list, tuple))
+    ]
     if explicit_rows:
         return {
             "summary_line": str(
@@ -2905,16 +2908,18 @@ def _build_v5_call_breakdown_section(
             better = _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Следующий шаг нужно формулировать конкретнее."))
         rows.append(
             [
-                "—",
+                f"Момент {idx + 1}",
                 f"{item.get('label') or 'Момент разговора'}: {item.get('interpretation') or 'Требует уточнения.'}",
+                "—",
                 better,
             ]
         )
     if not rows:
         rows.append(
             [
-                "—",
+                "Момент 1",
                 "Недостаточно данных для детального покадрового разбора звонка.",
+                "—",
                 _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Повторите разбор после следующего полного запуска.")),
             ]
         )
@@ -2926,6 +2931,45 @@ def _build_v5_call_breakdown_section(
         ),
         "rows": rows[:5],
     }
+
+
+def _normalize_call_breakdown_row(*, row: list[Any] | tuple[Any, ...], index: int) -> list[str]:
+    """Return `Момент / время | Что было | Фрагмент | Рекомендация` from old/new rows."""
+    values = [str(item or "").strip() for item in row]
+    if len(values) >= 4:
+        return [
+            _call_breakdown_moment_label(values[0], index=index),
+            values[1] or "—",
+            values[2] or "—",
+            values[3] or "—",
+        ]
+    moment = _call_breakdown_moment_label(values[0] if values else "", index=index)
+    what_raw = values[1] if len(values) > 1 else ""
+    recommendation = values[2] if len(values) > 2 else ""
+    what, fragment = _split_call_breakdown_fragment(what_raw)
+    return [moment, what or "—", fragment or "—", recommendation or "—"]
+
+
+def _call_breakdown_moment_label(value: str, *, index: int) -> str:
+    """Keep real timestamps, otherwise show a readable moment number."""
+    text = _clean_reader_text(value).strip()
+    if not text or text == "—":
+        return f"Момент {index}"
+    if re.fullmatch(r"\d+", text):
+        return f"Момент {text}"
+    return text
+
+
+def _split_call_breakdown_fragment(value: str) -> tuple[str, str]:
+    """Split old 'Что было' text when it embeds a `Фрагмент: ...` quote."""
+    text = _clean_reader_text(value)
+    if not text:
+        return "", ""
+    match = re.search(r"\s*Фрагмент:\s*[«\"](.+?)[»\"]\.?\s*$", text)
+    if not match:
+        return text, ""
+    what = text[: match.start()].strip(" .")
+    return what, match.group(1).strip()
 
 
 def _build_voice_reply_line(context: str | None, quote: str | None) -> str:
@@ -2969,7 +3013,7 @@ def _group_voice_rows_by_intent(rows: list[list[str]]) -> list[list[str]]:
         item = grouped[key]
         clients = "; ".join(item["clients"][:3]) or "Клиенты"
         quotes = " / ".join(item["quotes"][:3]) or "—"
-        result.append([f"Паттерн {index}: {clients}", quotes, item["intent"] or "Смысл требует уточнения на разборе."])
+        result.append([clients, quotes, item["intent"] or "Смысл требует уточнения на разборе."])
     return result
 
 
@@ -3108,7 +3152,7 @@ def _first_phrase_for_contact(item: dict[str, Any]) -> str:
 
 
 def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any]:
-    """Map legacy call_tomorrow payload to the approved v5 table structure."""
+    """Map legacy call_tomorrow payload to the Step 8AH-2 4-column structure."""
     contacts = list(section.get("contacts") or [])
     rows = [
         [
@@ -3118,8 +3162,7 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
                 "Клиент",
             ),
             _deadline_label_for_contact(item),
-            _call_goal_for_contact(item),
-            _first_phrase_for_contact(item),
+            _call_tomorrow_recommendation(item),
         ]
         for item in contacts
     ]
@@ -3131,6 +3174,15 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
             or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
         ),
     }
+
+
+def _call_tomorrow_recommendation(item: dict[str, Any]) -> str:
+    """Combine action and opening script without keeping a separate 'first phrase' column."""
+    goal = _call_goal_for_contact(item)
+    phrase = _first_phrase_for_contact(item).strip(" «»\"")
+    if phrase:
+        return f"{goal} Можно начать: «{phrase}»."
+    return goal
 
 
 def _build_morning_card_data(
@@ -3560,7 +3612,7 @@ def _manager_status_text_color(
         )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Момент</th><th>Что было</th><th>Что лучше</th></tr></thead>"
+            "<table><thead><tr><th>Момент / время</th><th>Что было</th><th>Фрагмент</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "voice_of_customer":
@@ -3574,7 +3626,7 @@ def _manager_status_text_color(
         ) or "<tr><td colspan=\"3\">Ситуации появятся после накопления материала по звонкам.</td></tr>"
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Клиент</th><th>Что сказал</th><th>Смысл → Как ответить</th></tr></thead>"
+            "<table><thead><tr><th>Клиент / звонок</th><th>Что сказал клиент</th><th>Что это значит / Что делать</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
@@ -3611,7 +3663,7 @@ def _manager_status_text_color(
         ) or f"<tr><td colspan=\"4\">{empty_state}</td></tr>"
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Скрипт открытия</th></tr></thead>"
+            "<table><thead><tr><th>Приоритет</th><th>Клиент</th><th>Контекст</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "morning_card":

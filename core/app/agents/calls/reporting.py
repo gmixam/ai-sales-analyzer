@@ -5946,20 +5946,57 @@ def _is_next_step_fixed(analysis: Analysis | None) -> bool:
     return bool(follow_up.get("next_step_fixed"))
 
 
+CALL_LIST_STATUS_SORT_ORDER = {
+    "agreed": 0,
+    "rescheduled": 1,
+    "refusal": 2,
+    "open": 3,
+    "tech_service": 4,
+}
+
+CALL_LIST_UNCLASSIFIED_SORT_ORDER = {
+    "Тех/сервис": 4,
+    "Не подходит для разбора": 5,
+    "Без транскрипта": 6,
+    "Без анализа": 6,
+    "Ошибка анализа": 6,
+    "Ошибка провайдера": 6,
+    "Нет итога": 6,
+    "Нет классификации": 6,
+    "Без разбора": 6,
+}
+
+
+def _call_list_sort_key(row: dict[str, Any]) -> tuple[int, datetime]:
+    """Sort call list by manager-facing status group, then by call time."""
+    status = row.get("status")
+    if status is not None:
+        status_rank = CALL_LIST_STATUS_SORT_ORDER.get(str(status), 6)
+    else:
+        status_rank = CALL_LIST_UNCLASSIFIED_SORT_ORDER.get(
+            str(row.get("unclassified_status_label") or ""),
+            6,
+        )
+    started_at = parse_call_started_at({"call_date": row.get("time")}) or datetime.max.replace(tzinfo=UTC)
+    return status_rank, started_at
+
+
 def _build_meaningful_call_list(*, window_artifacts: list[ReportArtifact]) -> list[dict[str, Any]]:
     """Build СПИСОК ЗВОНКОВ ДНЯ from meaningful_calls layer (SM-3).
 
     Includes all calls that pass _classify_meaningful_call — sales, follow-up,
     and meaningful support/service. Excludes beep, IVR, autoanswer, no-speech noise.
-    Sorted by call time ascending. Coaching blocks are unaffected (use usable/coaching_core).
+    Sorted by manager-facing outcome order, then call time. Coaching blocks are unaffected
+    (use usable/coaching_core).
     """
     meaningful: list[ReportArtifact] = []
     for artifact in window_artifacts:
         is_meaningful, _ = _classify_meaningful_call(artifact)
         if is_meaningful:
             meaningful.append(artifact)
-    meaningful.sort(key=lambda a: a.call_started_at or datetime.min.replace(tzinfo=UTC))
-    return [_build_daily_call_row(item) for item in meaningful]
+    rows = [_build_daily_call_row(item) for item in meaningful]
+    rows.sort(key=_call_list_sort_key)
+    return rows
 
 
 def _reason_label(reason_code: str | None) -> str | None:

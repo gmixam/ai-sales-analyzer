@@ -1644,6 +1644,24 @@ Fallbacks:
 
 **Follow-up for Step 8AH-2:** call-list structure/width can be polished separately, including potential regrouping of `Время` + `Клиент` if human review finds the unified label too wide in dense PDFs. Step 8AH-1 intentionally did not redesign table columns.
 
+## Step 8AH-2 — Manager_daily table layout wording cleanup
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** payload/render model/docx/html/PDF table layout only for `manager_daily`. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt changes, `report_evidence` contract changes, `BusinessOutcomeResolver` changes, delivery semantics changes, or block inclusion/exclusion changes.
+
+**Implemented layout contract:**
+- `РАЗБОР ЗВОНКА`: `Момент / время | Что было | Фрагмент | Рекомендация`; old 3-cell rows are mapped backward-compatibly by splitting embedded `Фрагмент: ...` where possible, otherwise fragment is `—`.
+- `ГОЛОС КЛИЕНТА`: `Клиент / звонок | Что сказал клиент | Что это значит / Что делать`; old technical column wording is not rendered.
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`: `Приоритет | Клиент | Контекст | Рекомендация`; opening script is appended inside recommendation as `Можно начать: ...`, not shown as a separate column.
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`: `# | Клиент | Тип / суть | Контекст | Статус`; `Клиент` contains the Step 8AH-1 unified call reference, so separate `Время` is removed.
+
+**Call-list sort:** `Договорённость -> Перенос -> Отказ -> Открыт -> Тех/сервис -> Не подходит для разбора -> technical/unclassified`, then by call time inside each status group.
+
+**Ready-only verification:** `/tmp/step8ah2_Эльмира_2026-05-04.pdf`, `/tmp/step8ah2_Тимур_2026-05-04.pdf`, `/tmp/step8ah2_Толеген_2026-05-04.pdf`, summary `/tmp/step8ah2_summary_2026-05-04.json`. All three kept `call_list_dates=["2026-05-04"]`, rolling-window calls absent from call list, `manager_facing_completeness.status=passed`, delivery skipped/disabled, and outcome totals unchanged. PDF text extraction confirmed new labels and absence of old technical labels.
+
+**Follow-up:** `Тип / суть` and `Контекст` are intentionally conservative in this step. Rich short topic, richer context, hotness and recommendation quality belong to later LLM2/report-evidence enrichment steps, not to Step 8AH-2.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract

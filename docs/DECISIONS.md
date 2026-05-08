@@ -559,3 +559,14 @@
 - **Reason:** Step 8AG human review showed the same call rendered inconsistently across blocks: sometimes phone only, sometimes name only, sometimes time without date. A single reference makes final PDFs readable for managers and ROP without changing analysis, selection, outcomes, or delivery behavior.
 - **Scope:** Reporting payload / render display layer only. No analyzer prompt, STT/LLM, `report_evidence` contract, `BusinessOutcomeResolver`, source discovery, `build_missing`, readiness, delivery semantics, or radical call-list column redesign.
 - **Date:** 2026-05-08
+
+## ADR-055: `manager_daily` tables use human-readable layout labels and status-order call-list sorting
+- **Decision:** `manager_daily` table layouts must use manager-facing column labels rather than technical/reporting labels.
+- **Decision:** `РАЗБОР ЗВОНКА` renders `Момент / время | Что было | Фрагмент | Рекомендация`. If no timestamp exists, the reporting layer uses `Момент N`; it must not invent precise timestamps.
+- **Decision:** `ГОЛОС КЛИЕНТА` renders `Клиент / звонок | Что сказал клиент | Что это значит / Что делать`, not `Паттерн` / `Подтверждающие цитаты`.
+- **Decision:** `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` renders `Приоритет | Клиент | Контекст | Рекомендация`; opening script belongs inside the recommendation as `Можно начать: ...`, not as a separate `Первая фраза` column.
+- **Decision:** `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` renders `# | Клиент | Тип / суть | Контекст | Статус`. `Клиент` contains the unified client/call reference, including date/time, so a separate `Время` column is not rendered.
+- **Decision:** The call list is sorted by manager-facing status order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets; calls inside the same status group are sorted by time.
+- **Reason:** Step 8AG/8AH human review showed that table labels and mixed columns were harder for managers and ROP to read than the underlying content warranted. This presentation cleanup improves readability without changing analysis, outcomes, selection, inclusion/exclusion, or delivery.
+- **Scope:** Reporting payload/render model/docx/html/PDF table layout only. No analyzer prompt, STT/LLM, `report_evidence` contract, `BusinessOutcomeResolver`, source discovery, `build_missing`, readiness, delivery semantics, hotness rules, or new short-topic/context generation.
+- **Date:** 2026-05-08

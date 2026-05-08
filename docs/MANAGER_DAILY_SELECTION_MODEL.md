@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting.
 
 ---
 
@@ -156,7 +156,11 @@ Service note должна отображать полную воронку от�
 - Использует **`meaningful_calls`**, а не только `coaching_core`.
 - Включает все содержательные звонки дня, вне зависимости от их coaching-eligibility.
 - Звонки, не вошедшие в coaching core, показываются в списке без глубокого coaching-блока, но присутствуют.
-- Колонки: `#` / `Время` / `Клиент` / `Тема` / `Статус` / `Следующий шаг` / `Контекст`.
+- Колонки since Step 8AH-2: `#` / `Клиент` / `Тип / суть` / `Контекст` / `Статус`.
+- `Клиент` содержит unified client/call reference from Step 8AH-1, including date/time, so separate `Время` column is no longer rendered.
+- `Тип / суть` remains a deterministic label from existing `classification.call_type` / `scenario_type`; richer short topic is future LLM2/report-evidence enrichment.
+- If `Контекст` is not available from existing follow-up/outcome fields, render `—` or the existing manager-facing unclassified context; do not generate new context in reporting layer.
+- Sort order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets. Within each status group, sort by call time.
 
 ---
 
@@ -180,6 +184,8 @@ Source priority:
 3. existing call reference fields already assembled in the reporting payload.
 
 Этот display contract применяется к `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` и client column in `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. Структурное объединение колонок call list остаётся отдельным layout step.
+
+Since Step 8AH-2, that structural call-list layout step is complete: `Время` is merged into `Клиент` through the unified display reference, while richer per-call topic/context generation remains out of scope until LLM2/report-evidence enrichment.
 
 ---
 

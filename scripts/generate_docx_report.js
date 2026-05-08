@@ -302,9 +302,51 @@ function tomorrowRecommendation(contact, row) {
 function tomorrowFirstPhrase(contact, row) {
   return firstNonEmpty(
     contact.opening_script,
+    extractOpeningScript(row[3]),
     row[4],
     "Добрый день! Хочу коротко уточнить актуальность и договориться о следующем шаге.",
   );
+}
+
+function extractOpeningScript(value) {
+  const text = cleanText(value);
+  const match = text.match(/Можно начать:\s*[«"](.+?)[»"]\.?$/);
+  return match ? match[1] : "";
+}
+
+function normalizeBreakdownMoment(value, index) {
+  const text = cleanText(value);
+  if (!text || text === "—") return `Момент ${index}`;
+  if (/^\d+$/.test(text)) return `Момент ${text}`;
+  return text;
+}
+
+function splitBreakdownFragment(value) {
+  const text = cleanText(value);
+  const match = text.match(/\s*Фрагмент:\s*[«"](.+?)[»"]\.?\s*$/);
+  if (!match) return { what: text, fragment: "—" };
+  return {
+    what: text.slice(0, match.index).replace(/[.\s]+$/, "") || "—",
+    fragment: match[1] || "—",
+  };
+}
+
+function normalizeBreakdownRow(row, index) {
+  if (row.length >= 4) {
+    return {
+      moment: normalizeBreakdownMoment(row[0], index),
+      what: row[1] || "—",
+      fragment: row[2] || "—",
+      better: row[3] || "—",
+    };
+  }
+  const split = splitBreakdownFragment(row[1] || "");
+  return {
+    moment: normalizeBreakdownMoment(row[0], index),
+    what: split.what || "—",
+    fragment: split.fragment || "—",
+    better: row[2] || "—",
+  };
 }
 
 function stageStatus(stage) {
@@ -437,6 +479,7 @@ function dataFromBundle(bundle) {
     unknown: "Нет готового разбора",
   };
   const allCalls = (callList.rows || []).map((row) => {
+    const oldShape = row.length >= 6;
     const payloadCall = (payload.call_list || [])[Number(row[0]) - 1];
     let status;
     if (payloadCall) {
@@ -449,17 +492,16 @@ function dataFromBundle(bundle) {
       }
     } else {
       // Fallback to pre-rendered section row for forward/backward compatibility
-      status = row[5] || "Без разбора";
+      status = (oldShape ? row[5] : row[4]) || "Без разбора";
     }
-    const rawContext = row[4] || "—";
+    const rawContext = (oldShape ? row[4] : row[3]) || "—";
     const context = (payloadCall && !payloadCall.status)
       ? (payloadCall.unclassified_context_label || unclassifiedContextMap[payloadCall.unclassified_reason_code] || "Нет готового разбора")
       : ((status === "Без разбора" && rawContext === "—") ? "Нет готового разбора" : rawContext);
     return {
       n: row[0] || "—",
-      time: row[1] || "—",
-      client: row[2] || "—",
-      topic: row[3] || "—",
+      client: (oldShape ? row[2] : row[1]) || "—",
+      topic: (oldShape ? row[3] : row[2]) || "—",
       context,
       status,
     };
@@ -585,11 +627,7 @@ function dataFromBundle(bundle) {
       client: payload.call_breakdown?.client_label || "Клиент",
       time: payload.call_breakdown?.time_label || "—",
       reference: payload.call_breakdown?.client_call_reference || "",
-      stages: (callBreakdown.rows || []).map((row) => ({
-        moment: row[0] || "—",
-        what: row[1] || "—",
-        better: row[2] || "—",
-      })),
+      stages: (callBreakdown.rows || []).map((row, index) => normalizeBreakdownRow(row, index + 1)),
     },
     voice_of_customer: (voice.rows || []).map((row) => ({
       client: row[0] || "Клиент",
@@ -633,8 +671,8 @@ function dataFromBundle(bundle) {
         client: firstNonEmpty(contact.client_call_reference, row[1], contact.client_label, "Клиент"),
         phone: "",
         status: cleanText(contact.status || ""),
-        situation: tomorrowSituation(contact, row),
-        recommendation: tomorrowRecommendation(contact, row),
+        situation: row[2] || tomorrowSituation(contact, row),
+        recommendation: row[3] || `${tomorrowRecommendation(contact, row)}. Можно начать: «${tomorrowFirstPhrase(contact, row)}».`,
         first_phrase: tomorrowFirstPhrase(contact, row),
       };
     }).filter((item) => item.client && cleanText(item.situation) !== "Следующий шаг не зафиксирован"),
@@ -647,7 +685,7 @@ function dataFromBundle(bundle) {
         index: index + 1,
         client: (callTomorrow.contacts || payload.call_tomorrow?.contacts || [])[index]?.client_call_reference || row[1] || "Клиент",
         phone: "",
-        script: row[4] || row[3] || "",
+        script: extractOpeningScript(row[3]) || row[3] || "",
       })),
       challenge: morningCard.challenge || challenge.goal_line || "",
     },
@@ -1218,9 +1256,10 @@ function buildRazbor() {
   const headerRows = [
     new TableRow({
       children: [
-        headCell("Момент", { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Что было",    { width: { size: 45, type: WidthType.PERCENTAGE } }),
-        headCell("Что лучше",   { width: { size: 45, type: WidthType.PERCENTAGE } }),
+        headCell("Момент / время", { width: { size: 14, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Что было",       { width: { size: 30, type: WidthType.PERCENTAGE } }),
+        headCell("Фрагмент",       { width: { size: 26, type: WidthType.PERCENTAGE } }),
+        headCell("Рекомендация",   { width: { size: 30, type: WidthType.PERCENTAGE } }),
       ],
     }),
   ];
@@ -1230,6 +1269,7 @@ function buildRazbor() {
       children: [
         cell(s.moment, { align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
         cell(s.what,   { shading: altShading(i) }),
+        cell(s.fragment, { shading: altShading(i), italic: true, size: SZ.cell }),
         cell(s.better, { shading: altShading(i), color: COLORS.heading }),
       ],
     })
@@ -1259,9 +1299,9 @@ function buildGolos() {
   }
   const headerRow = new TableRow({
     children: [
-      headCell("Паттерн",                { width: { size: 22, type: WidthType.PERCENTAGE } }),
-      headCell("Подтверждающие цитаты",  { width: { size: 33, type: WidthType.PERCENTAGE } }),
-      headCell("Смысл → Как ответить",  { width: { size: 45, type: WidthType.PERCENTAGE } }),
+      headCell("Клиент / звонок", { width: { size: 26, type: WidthType.PERCENTAGE } }),
+      headCell("Что сказал клиент", { width: { size: 34, type: WidthType.PERCENTAGE } }),
+      headCell("Что это значит / Что делать", { width: { size: 40, type: WidthType.PERCENTAGE } }),
     ],
   });
 
@@ -1453,10 +1493,9 @@ function buildPozvoni() {
   const headerRow = new TableRow({
     children: [
       headCell("Приоритет", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Клиент",    { width: { size: 18, type: WidthType.PERCENTAGE } }),
-      headCell("Ситуация или договорённость", { width: { size: 26, type: WidthType.PERCENTAGE } }),
-      headCell("Рекомендация", { width: { size: 22, type: WidthType.PERCENTAGE } }),
-      headCell("Первая фраза", { width: { size: 22, type: WidthType.PERCENTAGE } }),
+      headCell("Клиент",    { width: { size: 28, type: WidthType.PERCENTAGE } }),
+      headCell("Контекст", { width: { size: 22, type: WidthType.PERCENTAGE } }),
+      headCell("Рекомендация", { width: { size: 38, type: WidthType.PERCENTAGE } }),
     ],
   });
 
@@ -1471,7 +1510,6 @@ function buildPozvoni() {
         cell(c.client, { shading: altShading(i) }),
         cell(c.situation, { shading: altShading(i), color: COLORS.gray, size: SZ.cell }),
         cell(c.recommendation, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
-        cell(c.first_phrase, { shading: altShading(i), italic: true, color: COLORS.heading, size: SZ.cell }),
       ],
     });
   });
@@ -1500,11 +1538,10 @@ function buildSpisokZvonkov() {
   const headerRow = new TableRow({
     children: [
       headCell("#",       { width: { size: 5, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Время",   { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Клиент",  { width: { size: 22, type: WidthType.PERCENTAGE } }),
-      headCell("Тема",    { width: { size: 22, type: WidthType.PERCENTAGE } }),
+      headCell("Клиент",  { width: { size: 38, type: WidthType.PERCENTAGE } }),
+      headCell("Тип / суть", { width: { size: 22, type: WidthType.PERCENTAGE } }),
       headCell("Контекст",{ width: { size: 20, type: WidthType.PERCENTAGE } }),
-      headCell("Статус",  { width: { size: 21, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Статус",  { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
     ],
   });
 
@@ -1512,7 +1549,6 @@ function buildSpisokZvonkov() {
     new TableRow({
       children: [
         cell(String(c.n),   { align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
-        cell(c.time,        { align: AlignmentType.CENTER, shading: altShading(i) }),
         cell(c.client,      { shading: altShading(i) }),
         cell(c.topic,       { shading: altShading(i), size: SZ.cell, color: COLORS.gray }),
         cell(c.context,     { shading: altShading(i), size: SZ.cell, color: COLORS.gray }),
@@ -1702,9 +1738,9 @@ async function main() {
   console.log("  [✓] ДЕНЬГИ НА СТОЛЕ block added");
   console.log("  [✓] Warm-lead CRM block omitted for manager-facing clarity");
   console.log("  [✓] СИТУАЦИЯ ДНЯ: interpretation + 3 scripts + why");
-  console.log("  [✓] ГОЛОС КЛИЕНТА: 3 columns with Смысл → Как ответить");
+  console.log("  [✓] ГОЛОС КЛИЕНТА: 3 human-readable columns");
   console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
-  console.log("  [✓] РАЗБОР ЗВОНКА: 3 columns with Момент");
+  console.log("  [✓] РАЗБОР ЗВОНКА: 4 columns with Фрагмент");
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: filtered valid only, dynamic heading, reference-style cards");
   console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: card with Цель / Фокус / Фраза");
   console.log("  [✓] УТРЕННЯЯ КАРТОЧКА removed from PDF/DOCX (payload preserved)");

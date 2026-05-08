@@ -1707,24 +1707,40 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload_with_support["analysis_worked"], payload_coaching_only["analysis_worked"])
         self.assertEqual(payload_with_support["analysis_improve"], payload_coaching_only["analysis_improve"])
 
-    def test_sm3_call_list_sorted_by_time(self) -> None:
-        """SM-3: call_list rows are sorted by call time ascending."""
-        a1 = _artifact(82.0, "strong", call_date="2026-03-25 11:00:00")
-        a2 = _artifact(70.0, "basic", call_date="2026-03-25 09:00:00")
-        a3 = _artifact(65.0, "basic", call_date="2026-03-25 15:00:00")
+    def test_sm3_call_list_sorted_by_status_order_then_time(self) -> None:
+        """Step 8AH-2: call_list rows are grouped by status order, then by time."""
+        agreed = _artifact(82.0, "strong", call_date="2026-03-25 11:00:00")
+        refusal = _artifact(70.0, "basic", call_date="2026-03-25 09:00:00")
+        open_early = _artifact(65.0, "basic", call_date="2026-03-25 08:00:00")
+        open_late = _artifact(65.0, "basic", call_date="2026-03-25 15:00:00")
+        refusal.interaction.text = "Клиент: сейчас не рассматриваем, нет необходимости."
+        refusal.analysis.scores_detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент не заинтересован.",
+        }
+        for item in (open_early, open_late):
+            item.interaction.text = "Клиент: скиньте на WhatsApp, я посмотрю."
+            item.analysis.scores_detail["follow_up"] = {
+                "next_step_fixed": False,
+                "next_step_text": "Скиньте на WhatsApp, клиент посмотрит.",
+            }
 
         payload = build_manager_daily_payload(
             department_id=str(uuid4()),
             department_name="Отдел продаж",
-            artifacts=[a1, a2, a3],
+            artifacts=[open_late, refusal, agreed, open_early],
             period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
             filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
             mode="report_from_ready_data_only",
             model_override=None,
         )
 
-        times = [row["time"] for row in payload["call_list"] if row["time"]]
-        self.assertEqual(times, sorted(times), "call_list rows must be sorted by time ascending")
+        self.assertEqual([row["status"] for row in payload["call_list"]], ["agreed", "refusal", "open", "open"])
+        self.assertEqual(
+            [row["time"] for row in payload["call_list"][2:]],
+            sorted(row["time"] for row in payload["call_list"][2:]),
+            "rows inside the same status group must stay sorted by time",
+        )
 
     def test_sm3_build_meaningful_call_list_direct(self) -> None:
         """SM-3: _build_meaningful_call_list excludes non-meaningful, includes support with transcript."""
@@ -1998,11 +2014,17 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["call_breakdown"]["client_call_reference"], expected)
         self.assertEqual(payload["voice_of_customer"]["situations"][0]["client_call_reference"], expected)
         self.assertEqual(payload["call_tomorrow"]["contacts"][0]["client_call_reference"], expected)
-        self.assertEqual(sections["call_list"]["rows"][0][2], expected)
+        self.assertEqual(sections["call_list"]["rows"][0][1], expected)
         self.assertEqual(sections["call_tomorrow"]["rows"][0][1], expected)
         self.assertEqual(sections["call_breakdown"]["summary_line"], expected)
         self.assertIn(expected, sections["voice_of_customer"]["rows"][0][0])
         self.assertNotIn("+77071523663 · +77071523663", expected)
+
+        self.assertEqual(sections["call_breakdown"]["rows"][0][0], "Момент 1")
+        self.assertEqual(len(sections["call_breakdown"]["rows"][0]), 4)
+        self.assertTrue(sections["call_tomorrow"]["rows"][0][2].startswith(("Повод:", "Срок:")))
+        self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
+        self.assertEqual(sections["call_list"]["columns"], ["#", "Клиент", "Тип / суть", "Контекст", "Статус"])
 
     def test_step8ah1_uses_safe_persisted_transcript_name_when_metadata_name_missing(self) -> None:
         artifact = self._business_artifact(
@@ -2107,7 +2129,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["call_breakdown"]["client_label"], "Открытый клиент")
         self.assertEqual(payload["situation_evidence_quote"]["client_label"], "Открытый клиент")
-        self.assertEqual([row["status"] for row in payload["call_list"]], ["tech_service", "open"])
+        self.assertEqual([row["status"] for row in payload["call_list"]], ["open", "tech_service"])
 
     # --- SM-4 acceptance tests ---
 
@@ -3078,9 +3100,10 @@ class ManualReportingStatusTests(unittest.TestCase):
             sections["call_tomorrow"]["rows"][0][:3],
             ["🔴 Горячий", "+77070000000 · 25 марта 2026, 10:00", "Повод: подтвердить договорённость"],
         )
-        self.assertEqual(len(sections["call_tomorrow"]["rows"][0]), 5)
+        self.assertEqual(len(sections["call_tomorrow"]["rows"][0]), 4)
         self.assertIn("Подтвердить договорённость", sections["call_tomorrow"]["rows"][0][3])
-        self.assertIn("Хочу подтвердить", sections["call_tomorrow"]["rows"][0][4])
+        self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
+        self.assertIn("Хочу подтвердить", sections["call_tomorrow"]["rows"][0][3])
 
     def test_manager_daily_group_result_returns_skip_accumulate_when_readiness_is_not_met(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
