@@ -1660,7 +1660,23 @@ Fallbacks:
 
 **Ready-only verification:** `/tmp/step8ah2_Эльмира_2026-05-04.pdf`, `/tmp/step8ah2_Тимур_2026-05-04.pdf`, `/tmp/step8ah2_Толеген_2026-05-04.pdf`, summary `/tmp/step8ah2_summary_2026-05-04.json`. All three kept `call_list_dates=["2026-05-04"]`, rolling-window calls absent from call list, `manager_facing_completeness.status=passed`, delivery skipped/disabled, and outcome totals unchanged. PDF text extraction confirmed new labels and absence of old technical labels.
 
-**Follow-up:** `Тип / суть` and `Контекст` are intentionally conservative in this step. Rich short topic, richer context, hotness and recommendation quality belong to later LLM2/report-evidence enrichment steps, not to Step 8AH-2.
+**Follow-up:** `Тип / суть` and `Контекст` are intentionally conservative in this step. Rich short topic, richer context, and recommendation quality belong to later LLM2/report-evidence enrichment steps, not to Step 8AH-2. Deterministic tomorrow hotness is handled separately in Step 8AH-3.
+
+## Step 8AH-3 — Follow-up hotness rules for `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** deterministic follow-up priority/hotness calculation and rendering only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt changes, `report_evidence` contract changes, `BusinessOutcomeResolver` changes, delivery semantics changes, or inclusion/exclusion rule changes.
+
+**Implemented hotness contract:**
+- `hot -> Горячий`: final `Договорённость`, with commercial signals such as invoice/payment/meeting/Zoom/demo/date/deadline/purchase/connection/commercial proposal treated as explicit evidence when present.
+- `rescheduled -> Перенос`: final `Перенос`.
+- `warm -> Тёплый`: final `Открыт` with existing deterministic interest signal such as materials/information/KP/WhatsApp request, "посмотрю", "подумаем", "посоветуюсь", or explicit interest.
+- `low -> Низкий`: final `Открыт` without clear deadline, commitment, or follow-up signal.
+
+**Sorting:** `Горячий -> Перенос -> Тёплый -> Низкий`, then nearest deadline, then call time.
+
+**Important:** final outcome remains deterministic and unchanged. `Открытый` remains a final call status where appropriate, but is no longer rendered as a priority label in `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`.
 
 ## Out of scope для этой вехи
 

@@ -844,6 +844,66 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "Нур-Султан · +77071523663 · 4 мая 2026, 11:46",
         )
 
+    def test_step8ah3_call_tomorrow_uses_hotness_not_final_open_label(self) -> None:
+        def contact(name: str, text: str, follow_up: dict[str, Any], call_date: str) -> ReportArtifact:
+            artifact = _artifact(70.0, "basic", call_date=call_date)
+            artifact.interaction.text = text
+            artifact.interaction.metadata_["contact_name"] = name
+            detail = artifact.analysis.scores_detail
+            detail["call"] = {"contact_name": name, "contact_phone": "+77070000000"}
+            detail["classification"] = {
+                "call_type": "sales_primary",
+                "scenario_type": "cold_outbound",
+                "analysis_eligibility": "eligible",
+            }
+            detail["follow_up"] = follow_up
+            return artifact
+
+        agreed = contact(
+            "Счет клиент",
+            "Клиент согласился: выставляйте счет сегодня.",
+            {"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
+            "2026-05-04 12:00:00",
+        )
+        rescheduled = contact(
+            "Перенос клиент",
+            "Клиент попросил вернуться позже после просмотра.",
+            {"next_step_fixed": False, "reason_not_fixed": "Клиент попросил позже."},
+            "2026-05-04 09:00:00",
+        )
+        warm = contact(
+            "Теплый клиент",
+            "Клиент: скиньте информацию на WhatsApp, я посмотрю.",
+            {"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
+            "2026-05-04 08:00:00",
+        )
+        low = contact(
+            "Низкий клиент",
+            "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
+            {"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
+            "2026-05-04 07:00:00",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[low, warm, rescheduled, agreed],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        contacts = payload["call_tomorrow"]["contacts"]
+        self.assertEqual([item["priority_code"] for item in contacts], ["hot", "rescheduled", "warm", "low"])
+        self.assertEqual([item["priority_label"] for item in contacts], ["Горячий", "Перенос", "Тёплый", "Низкий"])
+        self.assertEqual([item["status"] for item in contacts], ["agreed", "rescheduled", "open", "open"])
+
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        priority_labels = [row[0] for row in sections["call_tomorrow"]["rows"]]
+        self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый", "⚪ Низкий"])
+        self.assertNotIn("Открытый", " ".join(priority_labels))
+
     def test_manager_daily_invalid_report_evidence_uses_step8w_fallback(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.interaction.text = "Клиент: Я просто уточняю для руководителя, сама решение не принимаю."

@@ -1976,9 +1976,62 @@ class ManualReportingPayloadTests(unittest.TestCase):
         tomorrow_rows = sections["call_tomorrow"]["rows"]
         row_by_client = {row[1].split(" · ", 1)[0]: row for row in tomorrow_rows}
         self.assertEqual(row_by_client["Счет клиент"][0], "🔴 Горячий")
-        self.assertEqual(row_by_client["Открытый клиент"][0], "🔵 Открытый")
+        self.assertEqual(row_by_client["Открытый клиент"][0], "🟠 Тёплый")
         self.assertNotIn("Отказ клиент", row_by_client)
         self.assertNotIn("Сервис клиент", row_by_client)
+
+    def test_step8ah3_call_tomorrow_uses_hotness_not_final_open_label(self) -> None:
+        agreed = self._set_business_contact(
+            self._business_artifact(
+                text="Клиент согласился на следующий шаг: выставляйте счет.",
+                follow_up={"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
+            ),
+            client="Счет клиент",
+            call_date="2026-05-04 12:00:00",
+        )
+        rescheduled = self._set_business_contact(
+            self._business_artifact(
+                text="Клиент попросил вернуться позже после просмотра.",
+                follow_up={"next_step_fixed": False, "reason_not_fixed": "Клиент попросил позже."},
+            ),
+            client="Перенос клиент",
+            call_date="2026-05-04 09:00:00",
+        )
+        warm = self._set_business_contact(
+            self._business_artifact(
+                text="Клиент: скиньте информацию на WhatsApp, я посмотрю.",
+                follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
+            ),
+            client="Теплый клиент",
+            call_date="2026-05-04 08:00:00",
+        )
+        low = self._set_business_contact(
+            self._business_artifact(
+                text="Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
+                follow_up={"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
+            ),
+            client="Низкий клиент",
+            call_date="2026-05-04 07:00:00",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[low, warm, rescheduled, agreed],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        contacts = payload["call_tomorrow"]["contacts"]
+        self.assertEqual([item["priority_code"] for item in contacts], ["hot", "rescheduled", "warm", "low"])
+        self.assertEqual([item["priority_label"] for item in contacts], ["Горячий", "Перенос", "Тёплый", "Низкий"])
+        self.assertEqual([item["status"] for item in contacts], ["agreed", "rescheduled", "open", "open"])
+
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        priority_labels = [row[0] for row in sections["call_tomorrow"]["rows"]]
+        self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый", "⚪ Низкий"])
+        self.assertNotIn("Открытый", " ".join(priority_labels))
 
     def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
         artifact = self._business_artifact(

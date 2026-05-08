@@ -3105,14 +3105,14 @@ def _build_challenge_data(
     }
 
 
-def _priority_icon_for_contact(status: str) -> str:
-    """Return v5 priority icon for call_tomorrow row."""
-    return {"agreed": "🔴", "rescheduled": "🟡", "open": "🔵"}.get(status, "🔵")
+def _priority_icon_for_contact(priority_code: str) -> str:
+    """Return v5 priority icon for call_tomorrow hotness row."""
+    return {"hot": "🔴", "rescheduled": "🟡", "warm": "🟠", "low": "⚪"}.get(priority_code, "⚪")
 
 
-def _priority_label_for_contact(status: str) -> str:
-    """Return v5 priority label for call_tomorrow row."""
-    return {"agreed": "Горячий", "rescheduled": "Перенос", "open": "Открытый"}.get(status, "Открытый")
+def _priority_label_for_contact(priority_code: str) -> str:
+    """Return manager-facing priority label for call_tomorrow hotness row."""
+    return {"hot": "Горячий", "rescheduled": "Перенос", "warm": "Тёплый", "low": "Низкий"}.get(priority_code, "Низкий")
 
 
 def _deadline_label_for_contact(item: dict[str, Any]) -> str:
@@ -3156,7 +3156,8 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
     contacts = list(section.get("contacts") or [])
     rows = [
         [
-            f"{_priority_icon_for_contact(str(item.get('status') or 'open'))} {_priority_label_for_contact(str(item.get('status') or 'open'))}",
+            f"{_priority_icon_for_contact(str(item.get('priority_code') or 'low'))} "
+            f"{item.get('priority_label') or _priority_label_for_contact(str(item.get('priority_code') or 'low'))}",
             _manager_reader_value(
                 item.get("client_call_reference") or item.get("client_label"),
                 "Клиент",

@@ -250,7 +250,13 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` строится из финального report-day `payload.call_list[]` / `BusinessOutcomeResolver` status, а не из raw `follow_up` по `coaching_core`.
 - В блок попадают только final `Договорённость`, `Перенос`, `Открыт`.
 - Final `Отказ`, `Тех/сервис`, `Не подходит для разбора`, `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера` не становятся tomorrow sales actions.
-- Priority label derived from final status: `Договорённость -> Горячий`, `Перенос -> Перенос`, `Открыт -> Открытый`.
+- Priority label is a deterministic follow-up hotness, separate from final outcome:
+  - `hot -> Горячий`: final `Договорённость`, especially when existing persisted text/follow-up fields mention invoice, payment, meeting/Zoom/demo, concrete date/deadline, purchase, connection, or commercial proposal.
+  - `rescheduled -> Перенос`: final `Перенос`.
+  - `warm -> Тёплый`: final `Открыт` with an explicit existing signal such as request for materials/information/KP/WhatsApp, "посмотрю/подумаем/посоветуюсь", or other clear interest without a hard commitment.
+  - `low -> Низкий`: final `Открыт` without a clear deadline or next commercial step.
+- Tomorrow sorting uses hotness order `Горячий -> Перенос -> Тёплый -> Низкий`, then nearest deadline, then call time.
+- `Открытый` remains a final status label in call outcomes/call list, but must not be used as a `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` priority label.
 - Если после фильтрации нет кандидатов, блок показывает safe empty state и не фабрикует follow-up.
 - Normal coaching examples for report-day calls (`РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, `ЧЕЛЛЕНДЖ`) exclude final `Отказ`, `Тех/сервис`, and unclassified technical buckets when at least one final sales-like candidate (`Договорённость`, `Перенос`, `Открыт`) exists. If no sales-like candidate exists, sparse fallback behavior may remain explicit rather than silently treating service/refusal as normal sales coaching.
 

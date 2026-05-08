@@ -524,7 +524,7 @@
 ## ADR-051: `manager_daily` post-summary blocks use final report-day business outcomes
 - **Decision:** `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` must be built from final report-day `payload.call_list[]` / `BusinessOutcomeResolver` status, not from raw `follow_up` status over `coaching_core`.
 - **Decision:** Tomorrow actions include only final `Договорённость`, `Перенос`, and `Открыт`. Final `Отказ`, `Тех/сервис`, `Не подходит для разбора`, `Без транскрипта`, `Без анализа`, `Ошибка анализа`, and `Ошибка провайдера` must not be shown as sales follow-up actions.
-- **Decision:** Tomorrow priority labels are derived from final outcome: `Договорённость -> Горячий`, `Перенос -> Перенос`, `Открыт -> Открытый`.
+- **Decision:** In Step 8U tomorrow priority labels were initially derived from final outcome: `Договорённость -> Горячий`, `Перенос -> Перенос`, `Открыт -> Открытый`. Step 8AH-3 supersedes this label mapping with deterministic hotness while keeping the same inclusion/exclusion source.
 - **Decision:** Normal report-day coaching examples (`РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, `ЧЕЛЛЕНДЖ`) must not silently select final `Отказ` or `Тех/сервис` as ordinary sales coaching examples when at least one final sales-like candidate exists.
 - **Reason:** Step 8T showed that post-summary blocks could contradict the resolver-aligned `ИТОГ ДНЯ` and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, e.g. final `Открыт` rendered as hot agreement, final `Отказ` shown as follow-up, and final `Тех/сервис` selected as normal call breakdown.
 - **Scope:** Reporting payload/post-summary block alignment only. No analyzer prompt, STT/LLM, build_missing, scoring, eligibility, selection model, rolling-window rule, Step 8R resolver priority, delivery semantics, money rule, scheduler, or `rop_weekly` changes.
@@ -569,4 +569,14 @@
 - **Decision:** The call list is sorted by manager-facing status order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets; calls inside the same status group are sorted by time.
 - **Reason:** Step 8AG/8AH human review showed that table labels and mixed columns were harder for managers and ROP to read than the underlying content warranted. This presentation cleanup improves readability without changing analysis, outcomes, selection, inclusion/exclusion, or delivery.
 - **Scope:** Reporting payload/render model/docx/html/PDF table layout only. No analyzer prompt, STT/LLM, `report_evidence` contract, `BusinessOutcomeResolver`, source discovery, `build_missing`, readiness, delivery semantics, hotness rules, or new short-topic/context generation.
+- **Date:** 2026-05-08
+
+## ADR-056: `manager_daily` tomorrow priority is deterministic follow-up hotness
+- **Decision:** `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` priority is a deterministic follow-up hotness label, separate from the final manager-facing outcome.
+- **Decision:** The only priority labels are `Горячий`, `Перенос`, `Тёплый`, and `Низкий`, backed by internal codes `hot`, `rescheduled`, `warm`, and `low`. `Открытый` remains a final status label but must not be used as a tomorrow priority label.
+- **Decision:** Inclusion stays unchanged: include only final `Договорённость`, `Перенос`, and `Открыт`; exclude final `Отказ`, `Тех/сервис`, `Не подходит для разбора`, and technical/unclassified buckets.
+- **Decision:** `Горячий` applies to final `Договорённость`; commercial persisted signals such as invoice/payment/meeting/Zoom/demo/date/deadline/purchase/connection/commercial proposal are used as supporting evidence when present. `Перенос` applies to final `Перенос`. Final `Открыт` becomes `Тёплый` only when persisted text/follow-up fields contain explicit interest/materials/KP/WhatsApp/info/consultation signals; otherwise it is `Низкий`.
+- **Decision:** Tomorrow contacts sort by `Горячий -> Перенос -> Тёплый -> Низкий`, then nearest deadline, then call time.
+- **Reason:** Human review after Step 8AH-2 showed that `Открытый` describes final outcome rather than follow-up urgency. Managers need the priority column to answer how urgently to work the contact tomorrow, while outcome totals and final statuses remain deterministic.
+- **Scope:** Reporting payload/render deterministic priority calculation only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract, `BusinessOutcomeResolver`, selection/inclusion rules, delivery semantics, or short-topic/context generation changes.
 - **Date:** 2026-05-08

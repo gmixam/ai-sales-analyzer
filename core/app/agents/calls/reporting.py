@@ -6658,7 +6658,14 @@ def _call_tomorrow_opening_script(
 
 
 FINAL_SALES_LIKE_STATUSES = {"agreed", "rescheduled", "open"}
-CALL_TOMORROW_STATUS_ORDER = ("agreed", "rescheduled", "open")
+CALL_TOMORROW_HOTNESS_ORDER = ("hot", "rescheduled", "warm", "low")
+CALL_TOMORROW_HOTNESS_RANK = {value: index for index, value in enumerate(CALL_TOMORROW_HOTNESS_ORDER)}
+CALL_TOMORROW_HOTNESS_LABELS = {
+    "hot": "Горячий",
+    "warm": "Тёплый",
+    "rescheduled": "Перенос",
+    "low": "Низкий",
+}
 REPORT_EVIDENCE_USABLE_QUALITIES = {"direct", "indirect", "weak"}
 REPORT_EVIDENCE_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 REPORT_EVIDENCE_QUALITY_RANK = {"direct": 0, "indirect": 1, "weak": 2, "insufficient": 9}
@@ -7224,6 +7231,115 @@ def _select_report_evidence_follow_up(
     return None
 
 
+def _normalize_hotness_text(*values: Any) -> str:
+    """Normalize persisted follow-up/context text for deterministic hotness checks."""
+    return re.sub(
+        r"\s+",
+        " ",
+        " ".join(str(value or "") for value in values).replace("ё", "е").strip().lower(),
+    )
+
+
+def _contains_hotness_signal(text: str, signals: tuple[str, ...]) -> bool:
+    """Return whether any normalized signal is present in text."""
+    return any(signal.replace("ё", "е").lower() in text for signal in signals)
+
+
+COMMERCIAL_HOTNESS_SIGNALS = (
+    "счет",
+    "счёт",
+    "оплат",
+    "выставить",
+    "выставляйте",
+    "zoom",
+    "зум",
+    "встреч",
+    "демо",
+    "презентац",
+    "коммерческое предложение",
+    "кп",
+    "покуп",
+    "подключ",
+    "подписк",
+)
+
+WARM_HOTNESS_SIGNALS = (
+    "скиньте",
+    "отправьте",
+    "информац",
+    "материал",
+    "whatsapp",
+    "ватсап",
+    "коммерческое предложение",
+    "кп",
+    "посмотрю",
+    "подумаем",
+    "посоветуюсь",
+    "напишите",
+    "обратной связи",
+    "интерес",
+)
+
+
+def _follow_up_hotness(
+    *,
+    final_status: str,
+    deadline: str | None,
+    next_step: str | None,
+    reason: str | None,
+    evidence_follow_up: dict[str, Any] | None,
+    row: dict[str, Any],
+) -> dict[str, str]:
+    """Return deterministic follow-up hotness without changing final business outcome."""
+    evidence = dict(evidence_follow_up or {})
+    text = _normalize_hotness_text(
+        next_step,
+        reason,
+        evidence.get("next_step"),
+        evidence.get("why_follow_up"),
+        evidence.get("first_phrase"),
+        row.get("business_outcome_evidence"),
+        row.get("next_step"),
+        row.get("reason"),
+    )
+    if final_status == "agreed":
+        return {
+            "code": "hot",
+            "label": CALL_TOMORROW_HOTNESS_LABELS["hot"],
+            "reason": (
+                "final_agreed_commercial_signal"
+                if _contains_hotness_signal(text, COMMERCIAL_HOTNESS_SIGNALS) or deadline
+                else "final_agreed"
+            ),
+        }
+    if final_status == "rescheduled":
+        return {
+            "code": "rescheduled",
+            "label": CALL_TOMORROW_HOTNESS_LABELS["rescheduled"],
+            "reason": "final_rescheduled",
+        }
+    if final_status == "open" and (
+        _contains_hotness_signal(text, WARM_HOTNESS_SIGNALS)
+        or str(evidence.get("status") or "").strip().lower() == "open"
+    ):
+        return {
+            "code": "warm",
+            "label": CALL_TOMORROW_HOTNESS_LABELS["warm"],
+            "reason": "open_with_explicit_interest_or_materials_request",
+        }
+    return {
+        "code": "low",
+        "label": CALL_TOMORROW_HOTNESS_LABELS["low"],
+        "reason": "open_without_clear_follow_up_signal",
+    }
+
+
+def _follow_up_deadline_sort_value(value: str | None) -> str:
+    """Return a stable value where empty deadlines sort after explicit deadlines."""
+    raw = str(value or "").strip()
+    return raw or "9999-12-31"
+
+
 def _build_call_tomorrow(
     *,
     call_list: list[dict[str, Any]],
@@ -7234,12 +7350,12 @@ def _build_call_tomorrow(
     Selection rule (deterministic):
     - Include only final Договорённость, Перенос, Открыт
     - Exclude final Отказ, Тех/сервис and unclassified technical buckets
-    - Priority groups: agreed → rescheduled → open
+    - Priority groups: Горячий → Перенос → Тёплый → Низкий
     - Within group: soonest deadline first, then call time
     - Deduplicate by client_label
     - Cap at 5 contacts total
     """
-    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in CALL_TOMORROW_STATUS_ORDER}
+    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in CALL_TOMORROW_HOTNESS_ORDER}
 
     for row in call_list:
         status = str(row.get("status") or "")
@@ -7283,30 +7399,47 @@ def _build_call_tomorrow(
                 scenario_type=scenario_type,
             )
 
-        grouped[status].append({
+        reason = str(
+            (evidence_follow_up or {}).get("why_follow_up")
+            or row.get("reason")
+            or ""
+        ).strip() or None
+        hotness = _follow_up_hotness(
+            final_status=status,
+            deadline=deadline,
+            next_step=next_step,
+            reason=reason,
+            evidence_follow_up=evidence_follow_up,
+            row=row,
+        )
+
+        grouped[hotness["code"]].append({
             "client_label": client_label,
             "client_call_reference": str(row.get("client_call_reference") or "").strip() or client_label,
             "client_phone": row.get("client_phone"),
             "date_label": row.get("date_label"),
             "time_label": time_label,
             "status": status,
+            "priority_code": hotness["code"],
+            "priority_label": hotness["label"],
+            "priority_reason": hotness["reason"],
             "deadline": deadline,
             "next_step": next_step,
-            "reason": str(
-                (evidence_follow_up or {}).get("why_follow_up")
-                or row.get("reason")
-                or ""
-            ).strip() or None,
+            "reason": reason,
             "scenario_type": scenario_type,
             "opening_script": opening_script,
             "source": "report_evidence.follow_up_candidates" if evidence_follow_up else "final_call_list",
-            "_sort_key": (str(deadline or "z"), time_label),
+            "_sort_key": (
+                CALL_TOMORROW_HOTNESS_RANK.get(hotness["code"], 99),
+                _follow_up_deadline_sort_value(deadline),
+                time_label,
+            ),
         })
 
     seen: set[str] = set()
     contacts: list[dict[str, Any]] = []
-    for status in CALL_TOMORROW_STATUS_ORDER:
-        for item in sorted(grouped[status], key=lambda x: x["_sort_key"]):
+    for priority_code in CALL_TOMORROW_HOTNESS_ORDER:
+        for item in sorted(grouped[priority_code], key=lambda x: x["_sort_key"]):
             if item["client_label"] in seen:
                 continue
             seen.add(item["client_label"])
@@ -7317,6 +7450,9 @@ def _build_call_tomorrow(
                 "date_label": item["date_label"],
                 "time_label": item["time_label"],
                 "status": item["status"],
+                "priority_code": item["priority_code"],
+                "priority_label": item["priority_label"],
+                "priority_reason": item["priority_reason"],
                 "deadline": item["deadline"],
                 "next_step": item["next_step"],
                 "reason": item["reason"],
