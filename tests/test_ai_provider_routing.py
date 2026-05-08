@@ -109,6 +109,22 @@ class AIProviderRoutingTests(unittest.TestCase):
         )
         self.assertIn("report_evidence", report_evidence_source)
 
+    def test_analyzer_score_population_handles_dict_wrapped_stage_scores(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        contract = {
+            "score": {"checklist_score": {}},
+            "score_by_stage": [
+                {"stage_score": {"score": 2}, "max_stage_score": {"max_score": 4}},
+                {"stage_score": {"value": 1}, "max_stage_score": {"value": 2}},
+            ],
+        }
+
+        analyzer._populate_checklist_score(contract)
+
+        self.assertEqual(contract["score"]["checklist_score"]["total_points"], 3)
+        self.assertEqual(contract["score"]["checklist_score"]["max_points"], 6)
+        self.assertEqual(contract["score"]["checklist_score"]["score_percent"], 50.0)
+
     def test_fixed_policy_resolves_configured_alias(self) -> None:
         settings = _build_settings(
             ai_stt_routing_policy="fixed",

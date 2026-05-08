@@ -1725,6 +1725,30 @@ Fallbacks:
 
 **Instruction version:** fresh analyses now use `edo_sales_mvp1_call_analysis_v8_report_summary`.
 
+## Step 8AH-6 — Controlled LLM2 sample for `call_report_summary`
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** controlled runtime verification only. Direct `CallsAnalyzer.analyze_call()` was run on 7 exact persisted interactions from `2026-05-04` using existing transcripts; no STT, source discovery, `build_missing`, mass re-analysis, report runner/rendering, delivery, `BusinessOutcomeResolver`, or delivery semantics changes.
+
+**Sample result:**
+- `call_report_summary` present in 7/7 fresh analyses.
+- `validate_report_evidence(scores_detail, transcript)` passed 6/7.
+- The one validation failure was outside the new summary object: Тимур `09:14 / +77074440733` returned an invalid `voice_of_customer.topic` enum while its `call_report_summary` itself was populated and usable.
+- No invalid summary hotness enum was observed; summary hotness stayed within `hot|warm|low`.
+- No `suggested_manager_phrase` copied a client quote.
+- Agreement/open cases produced specific `manager_next_action`; tech/service produced `suggested_manager_phrase=null`.
+
+**Quality notes for Step 8AH-7 wiring:**
+- Use `call_report_summary` only when the containing `report_evidence` package validates; otherwise fall back to deterministic/legacy report fields.
+- Treat LLM2 summary hotness as a signal only; deterministic Step 8AH-3 priority remains final authority.
+- Guard rendering against broad `short_topic` values that start like `Обсуждение ...`.
+- Do not render suggested phrases containing phone/date/time unless future product copy explicitly allows scheduling details in manager phrase.
+
+**Runtime fix:** the sample exposed one analyzer normalization edge case where LLM returned stage totals as dict-wrapped score objects. Analyzer checklist aggregation now safely extracts scalar scores from common wrapper shapes; this is covered by provider-routing regression tests. No prompt or contract change was needed.
+
+**Artifact:** `/tmp/step8ah6_call_report_summary_sample.json`.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract

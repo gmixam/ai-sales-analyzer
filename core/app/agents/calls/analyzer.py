@@ -1627,13 +1627,32 @@ class CallsAnalyzer:
                 criterion["max_score"] = 2
 
     @staticmethod
+    def _score_int(value: Any) -> int:
+        """Return a safe integer score from scalar or common LLM-wrapped score shapes."""
+        if isinstance(value, dict):
+            for key in ("score", "value", "points", "stage_score", "max_score", "max_stage_score"):
+                if key in value:
+                    return CallsAnalyzer._score_int(value.get(key))
+            return 0
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
     def _populate_stage_scores(stage: dict[str, Any]) -> None:
         """Derive stage-level scores from criterion rows when they are omitted."""
         criteria_results = stage.get("criteria_results") or []
-        stage_score = sum(int(item.get("score") or 0) for item in criteria_results)
-        max_stage_score = sum(int(item.get("max_score") or 0) for item in criteria_results)
-        stage.setdefault("stage_score", stage_score)
-        stage.setdefault("max_stage_score", max_stage_score)
+        stage_score = sum(CallsAnalyzer._score_int(item.get("score")) for item in criteria_results)
+        max_stage_score = sum(CallsAnalyzer._score_int(item.get("max_score")) for item in criteria_results)
+        if not isinstance(stage.get("stage_score"), (int, float, str)):
+            stage["stage_score"] = stage_score
+        else:
+            stage.setdefault("stage_score", stage_score)
+        if not isinstance(stage.get("max_stage_score"), (int, float, str)):
+            stage["max_stage_score"] = max_stage_score
+        else:
+            stage.setdefault("max_stage_score", max_stage_score)
 
     @staticmethod
     def _build_criterion_name_map(score_by_stage: list[dict[str, Any]]) -> dict[str, str]:
@@ -1899,8 +1918,8 @@ class CallsAnalyzer:
     def _populate_checklist_score(self, contract: dict[str, Any]) -> None:
         """Recompute checklist score aggregates from normalized stage rows."""
         stages = contract.get("score_by_stage") or []
-        total_points = sum(int(stage.get("stage_score") or 0) for stage in stages)
-        max_points = sum(int(stage.get("max_stage_score") or 0) for stage in stages)
+        total_points = sum(self._score_int(stage.get("stage_score")) for stage in stages)
+        max_points = sum(self._score_int(stage.get("max_stage_score")) for stage in stages)
         score_percent = round((total_points / max_points) * 100, 2) if max_points else 0.0
 
         level = "problematic"
