@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in.
 
 ---
 
@@ -263,7 +263,7 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - Сумма всех категорий (включая `БЕЗ РАЗБОРА`) обязана равняться `meaningful_calls_total`.
 
 **Business outcome resolver (Step 8R):**
-- Финальный `status` для `call_list[]` и `call_outcomes_summary` определяется deterministic reporting-layer resolver из уже сохранённых данных: transcript / `interaction.text`, latest reusable or persisted failed analysis, `scores_detail.classification`, `scores_detail.follow_up`, fail reason and metadata.
+- Финальный `status` для `call_list[]` и `call_outcomes_summary` определяется deterministic reporting-layer resolver из уже сохранённых данных: transcript / `interaction.text`, selected stable reusable or persisted failed analysis, `scores_detail.classification`, `scores_detail.follow_up`, fail reason and metadata.
 - Resolver не запускает STT/LLM, не меняет analyzer prompt, scoring, eligibility, selection model, rolling window, delivery или PDF layout.
 - Приоритет категорий:
   1. technical blockers: `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера`;
@@ -275,6 +275,15 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
   7. `Не подходит для разбора` только для truly semantic-empty / no business signal.
 - `not_coachable_or_reportable` больше не означает автоматическое `Не подходит для разбора` в manager-facing outcome. Сначала resolver пытается найти business outcome; если найден сервис, отказ, перенос, договорённость или open/follow-up, в отчёт попадает бизнес-категория. Если business signal отсутствует, остаётся `Не подходит для разбора`.
 - `duration_below_threshold` / coaching non-eligibility не должны перебивать business outcome в report-day call list, если transcript or persisted analysis содержит бизнес-смысл.
+
+**Stable analysis selection (Step 8-STABLE):**
+- Normal `manager_daily` report runs do not use raw latest-by-`created_at` blindly.
+- Analysis rows may carry purpose in existing JSON without migration: `scores_detail.analysis_purpose` and `scores_detail.meta.analysis_purpose`.
+- Allowed purpose values are `production`, `controlled_sample`, and `verification`; unmarked legacy rows are treated as `production`.
+- Default manager_daily behavior is `include_controlled_samples=false`: rows marked `controlled_sample` or `verification` are excluded from normal reporting.
+- The selected row is the newest reusable stable analysis. If the newest stable row is invalid/non-reusable, reporting falls back to an older reusable stable row. If no reusable stable row exists, the newest allowed non-reusable row is returned for existing rejection diagnostics.
+- Explicit opt-in (`include_controlled_samples=true` / `--include-controlled-samples`) allows controlled rows to participate in selection for bounded verification only.
+- Future controlled sample / verification persistence must mark purpose explicitly. Controlled/verification rows must not overwrite a production row with the same `instruction_version`.
 
 **`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
 

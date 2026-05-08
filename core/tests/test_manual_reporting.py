@@ -32,6 +32,7 @@ if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
 from app.agents.calls.reporting import (  # noqa: E402
+    BusinessOutcomeResolver,
     CallsManualReportingOrchestrator,
     MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC,
     ReportArtifact,
@@ -39,11 +40,20 @@ from app.agents.calls.reporting import (  # noqa: E402
     _build_meaningful_call_list,
     _build_selection_model_counters,
     _classify_meaningful_call,
+    _select_stable_analysis_for_reporting,
     build_manager_daily_payload,
     build_rop_weekly_payload,
     render_report_email,
     resolve_report_delivery_options,
     resolve_report_preset,
+)
+from app.agents.calls.analysis_purpose import (  # noqa: E402
+    ANALYSIS_PURPOSE_CONTROLLED_SAMPLE,
+    ANALYSIS_PURPOSE_PRODUCTION,
+    ANALYSIS_PURPOSE_VERIFICATION,
+    analysis_purpose_from_analysis,
+    is_controlled_analysis,
+    mark_scores_detail_analysis_purpose,
 )
 from app.agents.calls.report_evidence import validate_report_evidence  # noqa: E402
 from app.agents.calls.report_templates import build_report_render_model  # noqa: E402
@@ -3699,6 +3709,131 @@ class ManualReportingStatusTests(unittest.TestCase):
         )
 
         self.assertIn("no_ready_artifacts_for_ready_only_mode", diagnostics["reason_codes"])
+
+    def _stable_selection_analysis(
+        self,
+        *,
+        status_hint: str = "open",
+        purpose: str | None = None,
+        reusable: bool = True,
+    ) -> SimpleNamespace:
+        follow_up = {
+            "next_step_fixed": False,
+            "next_step_text": "Отправить предложение на почту",
+            "reason_not_fixed": "",
+        }
+        if status_hint == "refusal":
+            follow_up = {
+                "next_step_fixed": False,
+                "next_step_text": "",
+                "reason_not_fixed": "Клиент сказал, что не актуально.",
+            }
+        detail = {
+            "classification": {
+                "call_type": "sales_primary",
+                "analysis_eligibility": "eligible",
+            },
+            "call": {"contact_phone": "+77070000000"},
+            "summary": {"short_summary": "Синтетический тестовый звонок"},
+            "score": {"checklist_score": {"score_percent": 72.0, "level": "basic"}},
+            "score_by_stage": [
+                {
+                    "stage_code": "completion_next_step",
+                    "stage_name": "Завершение и следующий шаг",
+                    "criteria_results": [],
+                }
+            ],
+            "strengths": [{"title": "Структура", "comment": "Звонок разобран."}],
+            "gaps": [],
+            "recommendations": [],
+            "follow_up": follow_up,
+        }
+        if not reusable:
+            detail["score_by_stage"] = []
+            detail["strengths"] = []
+            detail["gaps"] = []
+            detail["recommendations"] = []
+        if purpose:
+            detail = mark_scores_detail_analysis_purpose(detail, analysis_purpose=purpose)
+        return SimpleNamespace(
+            id=uuid4(),
+            interaction_id=uuid4(),
+            instruction_version="analysis_v_synthetic",
+            score_total=72.0,
+            is_failed=False,
+            scores_detail=detail,
+        )
+
+    def test_stable_analysis_selection_excludes_latest_controlled_sample_from_business_outcome(self) -> None:
+        older_stable = self._stable_selection_analysis(status_hint="open")
+        newer_sample = self._stable_selection_analysis(
+            status_hint="refusal",
+            purpose=ANALYSIS_PURPOSE_CONTROLLED_SAMPLE,
+        )
+
+        selected = _select_stable_analysis_for_reporting([newer_sample, older_stable])
+
+        self.assertIs(selected, older_stable)
+        interaction = _interaction(text="Клиент попросил отправить предложение на почту.")
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=selected,
+            manager=None,
+            call_started_at=datetime(2026, 3, 25, 10, 0, tzinfo=UTC),
+        )
+        outcome = BusinessOutcomeResolver().resolve(artifact)
+        self.assertEqual(outcome.final_status, "open")
+
+    def test_stable_analysis_selection_falls_back_past_latest_invalid_row(self) -> None:
+        older_stable = self._stable_selection_analysis(status_hint="open")
+        newer_invalid = self._stable_selection_analysis(status_hint="refusal", reusable=False)
+
+        selected = _select_stable_analysis_for_reporting([newer_invalid, older_stable])
+
+        self.assertIs(selected, older_stable)
+
+    def test_stable_analysis_selection_opt_in_can_use_controlled_sample(self) -> None:
+        older_stable = self._stable_selection_analysis(status_hint="open")
+        newer_sample = self._stable_selection_analysis(
+            status_hint="refusal",
+            purpose=ANALYSIS_PURPOSE_CONTROLLED_SAMPLE,
+        )
+
+        normal_selected = _select_stable_analysis_for_reporting([newer_sample, older_stable])
+        opt_in_selected = _select_stable_analysis_for_reporting(
+            [newer_sample, older_stable],
+            include_controlled_samples=True,
+        )
+
+        self.assertIs(normal_selected, older_stable)
+        self.assertIs(opt_in_selected, newer_sample)
+
+    def test_stable_analysis_selection_preserves_latest_unmarked_production_behavior(self) -> None:
+        older_stable = self._stable_selection_analysis(status_hint="open")
+        newer_production = self._stable_selection_analysis(status_hint="refusal")
+
+        selected = _select_stable_analysis_for_reporting([newer_production, older_stable])
+
+        self.assertIs(selected, newer_production)
+
+    def test_controlled_sample_analysis_purpose_marker_identifies_verification_without_real_call_ids(self) -> None:
+        sample_detail = mark_scores_detail_analysis_purpose(
+            {"instruction_version": "analysis_v_synthetic"},
+            analysis_purpose=ANALYSIS_PURPOSE_CONTROLLED_SAMPLE,
+        )
+        verification_analysis = SimpleNamespace(
+            instruction_version="verification_only_v0",
+            scores_detail={"provenance": "manual_verification_fixture"},
+        )
+        production_analysis = SimpleNamespace(
+            instruction_version="analysis_v_synthetic",
+            scores_detail={"meta": {"analysis_purpose": ANALYSIS_PURPOSE_PRODUCTION}},
+        )
+
+        self.assertEqual(sample_detail["analysis_purpose"], ANALYSIS_PURPOSE_CONTROLLED_SAMPLE)
+        self.assertEqual(analysis_purpose_from_analysis(verification_analysis), ANALYSIS_PURPOSE_VERIFICATION)
+        self.assertTrue(is_controlled_analysis(verification_analysis))
+        self.assertFalse(is_controlled_analysis(production_analysis))
 
     def test_prepare_artifacts_keeps_rop_weekly_persisted_only_even_in_build_missing_mode(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)

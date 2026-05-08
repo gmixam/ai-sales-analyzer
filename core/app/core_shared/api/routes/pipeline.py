@@ -123,6 +123,7 @@ class RunManualReportRequest(BaseModel):
     delivery_mode: str | None = None
     send_telegram_test: bool = False
     force_retry_quota_blocked: bool = False
+    include_controlled_samples: bool = False
 
 
 class SyncReportManagersRequest(BaseModel):
@@ -182,6 +183,7 @@ def _build_report_filters(request: RunManualReportRequest) -> ReportRunFilters:
         min_duration_sec=request.min_duration_sec,
         max_duration_sec=request.max_duration_sec,
         force_retry_quota_blocked=request.force_retry_quota_blocked,
+        include_controlled_samples=request.include_controlled_samples,
     )
 
 
@@ -520,6 +522,7 @@ async def run_calls_report_manual(request: RunManualReportRequest) -> dict:
                     min_duration_sec=request.min_duration_sec,
                     max_duration_sec=request.max_duration_sec,
                     force_retry_quota_blocked=request.force_retry_quota_blocked,
+                    include_controlled_samples=request.include_controlled_samples,
                 ),
                 model_override=request.model,
                 send_email=request.send_email,

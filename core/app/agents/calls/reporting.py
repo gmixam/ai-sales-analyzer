@@ -12,6 +12,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.agents.calls.analysis_purpose import is_controlled_analysis
 from app.agents.calls.analyzer import (
     APPROVED_CHECKLIST_VERSION,
     CallsAnalyzer,
@@ -141,6 +142,7 @@ class ReportRunFilters:
     min_duration_sec: int | None = None
     max_duration_sec: int | None = None
     force_retry_quota_blocked: bool = False
+    include_controlled_samples: bool = False
 
 
 @dataclass(slots=True)
@@ -943,6 +945,7 @@ class CallsManualReportingOrchestrator:
             preset=preset,
             mode=normalized_mode,
             force_retry_quota_blocked=filters.force_retry_quota_blocked,
+            include_controlled_samples=filters.include_controlled_samples,
         )
 
         reports = self._group_and_build_reports(
@@ -1376,9 +1379,13 @@ class CallsManualReportingOrchestrator:
         preset: ReportPreset,
         mode: str,
         force_retry_quota_blocked: bool = False,
+        include_controlled_samples: bool = False,
     ) -> tuple[list[ReportArtifact], dict[str, Any], list[str]]:
         """Reuse persisted artifacts and optionally build only missing ones."""
-        analyses_by_interaction = self._load_latest_analyses_by_interaction(interactions=interactions)
+        analyses_by_interaction = self._load_latest_analyses_by_interaction(
+            interactions=interactions,
+            include_controlled_samples=include_controlled_samples,
+        )
         managers_by_id = self._load_managers_by_id(interactions=interactions)
 
         built_transcripts = 0
@@ -1563,6 +1570,12 @@ class CallsManualReportingOrchestrator:
                 "missing_analyses_before_build": missing_analyses_before_build,
                 "transcript_build_failed": failed_transcripts,
                 "analysis_build_failed": failed_analyses,
+                "include_controlled_samples": include_controlled_samples,
+                "analysis_selection_policy": (
+                    "latest_reusable_including_controlled_samples"
+                    if include_controlled_samples
+                    else "latest_reusable_stable_excluding_controlled_samples"
+                ),
                 "skipped_due_to_quota": skipped_due_to_quota,
                 "quota_blocked_previous_run": quota_blocked_previous_run,
                 "quota_blocker": quota_blocker,
@@ -3030,8 +3043,13 @@ class CallsManualReportingOrchestrator:
         self,
         *,
         interactions: list[Interaction],
+        include_controlled_samples: bool = False,
     ) -> dict[UUID, Analysis]:
-        """Return the latest analysis row for each selected interaction."""
+        """Return the best stable analysis row for each selected interaction.
+
+        Normal manager_daily runs ignore controlled sample / verification rows
+        and fall back past invalid latest rows to an older reusable stable row.
+        """
         interaction_ids = [item.id for item in interactions]
         if not interaction_ids:
             return {}
@@ -3044,10 +3062,18 @@ class CallsManualReportingOrchestrator:
             .order_by(Analysis.interaction_id, Analysis.created_at.desc())
             .all()
         )
-        latest: dict[UUID, Analysis] = {}
+        grouped: dict[UUID, list[Analysis]] = {}
         for row in rows:
-            latest.setdefault(row.interaction_id, row)
-        return latest
+            grouped.setdefault(row.interaction_id, []).append(row)
+        selected: dict[UUID, Analysis] = {}
+        for interaction_id, candidates in grouped.items():
+            analysis = _select_stable_analysis_for_reporting(
+                candidates,
+                include_controlled_samples=include_controlled_samples,
+            )
+            if analysis is not None:
+                selected[interaction_id] = analysis
+        return selected
 
     def _load_managers_by_id(self, *, interactions: list[Interaction]) -> dict[UUID, Manager]:
         """Load manager rows referenced by the selected interactions."""
@@ -6492,6 +6518,32 @@ def _build_rop_tasks(
             }
         )
     return tasks
+
+
+def _select_stable_analysis_for_reporting(
+    analyses: list[Analysis],
+    *,
+    include_controlled_samples: bool = False,
+) -> Analysis | None:
+    """Pick the newest reusable analysis allowed by the reporting selection policy.
+
+    Input rows must be sorted newest first. If no reusable allowed row exists,
+    return the newest allowed row so the existing rejection diagnostics can
+    explain why the call has no reusable analysis.
+    """
+    allowed = [
+        analysis
+        for analysis in analyses
+        if include_controlled_samples or not is_controlled_analysis(analysis)
+    ]
+    if not allowed:
+        return None
+    fallback = allowed[0]
+    for analysis in allowed:
+        reusable, _reason = _is_analysis_reusable_for_reporting(analysis)
+        if reusable:
+            return analysis
+    return fallback
 
 
 def _is_analysis_reusable_for_reporting(analysis: Analysis | None) -> tuple[bool, str]:

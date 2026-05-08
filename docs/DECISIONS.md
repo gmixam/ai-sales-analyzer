@@ -607,3 +607,14 @@
 - **Reason:** Step 8AH-8B human-review blocker showed `Ужас · +77774745093 · 4 мая 2026, 06:37` in a final PDF. A wrong or embarrassing client name is worse than showing only phone/date/time.
 - **Scope:** Reporting display-name/reference generation only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, selection/inclusion, PDF layout, money rules, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-060: `manager_daily` uses stable analysis selection by default
+- **Decision:** Normal `manager_daily` selection must not blindly use the latest persisted `Analysis` row when that row belongs to a controlled sample or verification run.
+- **Decision:** Analysis purpose is stored without DB migration in existing JSON fields: `scores_detail.analysis_purpose` and `scores_detail.meta.analysis_purpose`.
+- **Decision:** Allowed purpose values are `production`, `controlled_sample`, and `verification`. Legacy rows without a purpose marker are treated as `production`.
+- **Decision:** Default reporting behavior excludes `controlled_sample` and `verification` rows, then selects the newest reusable stable analysis. If the latest stable row is invalid/non-reusable, reporting falls back to an older reusable stable row. If none is reusable, the newest allowed non-reusable row remains available for rejection diagnostics.
+- **Decision:** Controlled rows may participate only through explicit opt-in (`include_controlled_samples=true` / `--include-controlled-samples`) for bounded verification.
+- **Decision:** Future controlled sample / verification persistence must mark purpose explicitly and must not overwrite an existing production analysis row with the same `instruction_version`.
+- **Reason:** Step 8 audit found that controlled exact-call samples can create newer persisted analysis rows and silently change future `manager_daily` reports through latest-by-created-at selection; this already surfaced as the Timur outcome-stability blocker.
+- **Scope:** Analysis selection / persistence marker convention only. No DB migration, analyzer prompt change, STT/LLM run, source discovery, `build_missing`, `BusinessOutcomeResolver` semantics, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

@@ -1854,6 +1854,37 @@ Checks passed: `Ужас` absent from PDFs and payload; available valid names su
 
 **Next:** continue the human-review blocker list with bounded fixes for `Ситуация дня` Эльмиры, recommendations in `Голос клиента` / `Кого взять завтра`, and Тимур `Разбор звонка`; only after those, rebuild final PDFs and resend Telegram test.
 
+## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** analysis selection policy, future sample isolation convention, docs, and synthetic regression tests only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `BusinessOutcomeResolver` semantics, PDF layout, delivery semantics, PDF rebuild, Telegram, or business email changes.
+
+**Design decision:**
+- Analysis purpose is stored without DB migration in existing JSON: `scores_detail.analysis_purpose` and mirrored `scores_detail.meta.analysis_purpose`.
+- Allowed purpose values: `production`, `controlled_sample`, `verification`.
+- Legacy analyses without purpose marker are treated as `production` / stable.
+- Normal `manager_daily` excludes `controlled_sample` and `verification` rows by default.
+- Explicit opt-in is available through `include_controlled_samples=true` in API filters or `--include-controlled-samples` in the manual reporting runner.
+
+**Selection policy:**
+- Old behavior: `_load_latest_analyses_by_interaction()` selected the newest row by `created_at desc`, then `_prepare_artifacts()` reused or rejected that single row.
+- New behavior: rows are still read newest-first, but normal reporting first filters out controlled sample / verification rows, then chooses the newest reusable stable row.
+- If the newest stable row is invalid or non-reusable, selection falls back to an older reusable stable row.
+- If no reusable stable row exists, reporting returns the newest allowed non-reusable row so existing diagnostics can explain the rejection.
+- Future controlled/verification `persist_analysis()` calls can mark purpose explicitly and no longer overwrite an existing production row with the same `instruction_version`.
+
+**Regression coverage:**
+- latest `controlled_sample` row does not override an older stable row;
+- latest invalid/non-reusable stable row falls back to an older reusable stable row;
+- explicit opt-in can include controlled sample rows;
+- unmarked latest production behavior is preserved;
+- tests use synthetic fixture data, not real Timur/Elimira/Tolegen phones or interaction IDs.
+
+**Known limitation:** historical Step 8AB/8AC/8AH-6 sample rows were not mass-updated in the DB. The mechanism is future-safe and applies to new marked samples plus any rows already marked as `controlled_sample` / `verification`.
+
+**Next:** continue human-review blocker fixes only after this stable selection policy is in place: `Ситуация дня`, recommendation quality in `Голос клиента` / `Кого взять завтра`, and Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later bounded steps.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract

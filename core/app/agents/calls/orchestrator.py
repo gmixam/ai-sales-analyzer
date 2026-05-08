@@ -11,6 +11,13 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy.orm import Session
 
+from app.agents.calls.analysis_purpose import (
+    ANALYSIS_PURPOSE_PRODUCTION,
+    is_controlled_analysis,
+    is_controlled_analysis_purpose,
+    mark_scores_detail_analysis_purpose,
+    normalize_analysis_purpose,
+)
 from app.agents.calls.analyzer import APPROVED_INSTRUCTION_VERSION, CallsAnalyzer
 from app.agents.calls.delivery import CallsDelivery
 from app.agents.calls.extractor import CallsExtractor
@@ -315,11 +322,24 @@ class CallsManualPilotOrchestrator:
             "delivery": delivery_result,
         }
 
-    def persist_analysis(self, *, interaction: Interaction, result: dict[str, Any]) -> Analysis:
+    def persist_analysis(
+        self,
+        *,
+        interaction: Interaction,
+        result: dict[str, Any],
+        analysis_purpose: str | None = None,
+    ) -> Analysis:
         """Store the analysis contract and derived entities in PostgreSQL."""
+        result = mark_scores_detail_analysis_purpose(
+            result,
+            analysis_purpose=analysis_purpose,
+            write_default=bool(analysis_purpose),
+        )
+        purpose = normalize_analysis_purpose(result.get("analysis_purpose")) or ANALYSIS_PURPOSE_PRODUCTION
         analysis = self._get_or_create_analysis(
             interaction=interaction,
             instruction_version=result["instruction_version"],
+            analysis_purpose=purpose,
         )
         forensics = CallsAnalyzer.consume_analysis_forensics(interaction)
         analysis.score_total = result["score"]["checklist_score"].get("score_percent")
@@ -345,6 +365,7 @@ class CallsManualPilotOrchestrator:
         interaction: Interaction,
         error: LLMResponseError,
         fail_reason: str | None = None,
+        analysis_purpose: str | None = None,
     ) -> Analysis:
         """Persist a non-reusable failed analysis attempt for bounded forensics."""
         forensics = CallsAnalyzer.consume_analysis_forensics(interaction)
@@ -357,9 +378,19 @@ class CallsManualPilotOrchestrator:
             normalized_result.get("instruction_version")
             or APPROVED_INSTRUCTION_VERSION
         )
+        if normalized_result or analysis_purpose:
+            normalized_result = mark_scores_detail_analysis_purpose(
+                normalized_result,
+                analysis_purpose=analysis_purpose,
+                write_default=bool(analysis_purpose),
+            )
+        purpose = normalize_analysis_purpose(
+            normalized_result.get("analysis_purpose") if normalized_result else analysis_purpose
+        ) or ANALYSIS_PURPOSE_PRODUCTION
         analysis = self._get_or_create_analysis(
             interaction=interaction,
             instruction_version=instruction_version,
+            analysis_purpose=purpose,
         )
 
         checklist_score = dict(dict(normalized_result.get("score") or {}).get("checklist_score") or {})
@@ -381,16 +412,29 @@ class CallsManualPilotOrchestrator:
         self.db.refresh(analysis)
         return analysis
 
-    def _get_or_create_analysis(self, *, interaction: Interaction, instruction_version: str) -> Analysis:
+    def _get_or_create_analysis(
+        self,
+        *,
+        interaction: Interaction,
+        instruction_version: str,
+        analysis_purpose: str | None = None,
+    ) -> Analysis:
         """Return one analysis row keyed by interaction and instruction version."""
-        analysis = (
-            self.db.query(Analysis)
-            .filter(
-                Analysis.interaction_id == interaction.id,
-                Analysis.instruction_version == instruction_version,
-            )
-            .first()
+        purpose = normalize_analysis_purpose(analysis_purpose) or ANALYSIS_PURPOSE_PRODUCTION
+        query = self.db.query(Analysis).filter(
+            Analysis.interaction_id == interaction.id,
+            Analysis.instruction_version == instruction_version,
         )
+        if hasattr(query, "order_by") and hasattr(query, "all"):
+            existing_rows = query.order_by(Analysis.created_at.desc()).all()
+        elif hasattr(query, "all"):
+            existing_rows = query.all()
+        else:
+            first = query.first() if hasattr(query, "first") else None
+            existing_rows = [first] if first is not None else []
+        analysis = None
+        if not is_controlled_analysis_purpose(purpose):
+            analysis = next((row for row in existing_rows if not is_controlled_analysis(row)), None)
         if analysis is None:
             analysis = Analysis(
                 id=uuid4(),
