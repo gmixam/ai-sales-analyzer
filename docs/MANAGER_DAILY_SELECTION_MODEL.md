@@ -193,6 +193,24 @@ Since Step 8AH-7, richer per-call topic/context may come from valid `report_evid
 - broad `short_topic` values such as `Обсуждение...`, `Разговор...`, `Звонок...`, `Продажи...`, or `Холодный звонок...` fall back to deterministic type/scenario labels;
 - missing or invalid `report_evidence` falls back to the previous deterministic/legacy fields.
 
+### Outcome resolver grounded-source rule
+
+Since Step 8AH-8A, hard `Отказ` matching in `BusinessOutcomeResolver` must be grounded in the transcript / classification / follow-up surface, not in synthetic coaching narrative.
+
+Allowed sources for hard refusal tokens:
+- transcript text;
+- classification fields;
+- persisted `follow_up` fields such as `reason_not_fixed` / `next_step_text`.
+
+Excluded from hard refusal token matching:
+- `recommendations`;
+- `gaps`;
+- `strengths`;
+- `report_evidence.situation_candidates[].what_it_means`;
+- other LLM-written coaching explanations that describe a risk such as “предложение будет неактуально” rather than a client refusal.
+
+Reason: Step 8AH-8A showed that a valid open follow-up (`Вы можете отправить предложение, я вам написала почту`) can be incorrectly flipped to `Отказ` if the resolver treats synthetic coaching guidance as client outcome evidence. Other legacy resolver paths may still use broader analysis text where already established, but hard refusal requires grounded outcome evidence.
+
 ---
 
 ### Коучинговые блоки

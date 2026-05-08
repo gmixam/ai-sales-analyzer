@@ -32,6 +32,7 @@ if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
 from app.agents.calls.reporting import (  # noqa: E402
+    BusinessOutcomeResolver,
     CallsManualReportingOrchestrator,
     MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC,
     MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC,
@@ -2936,6 +2937,44 @@ class ManualReportingPayloadTests(unittest.TestCase):
             sorted(row["time"] for row in payload["call_list"][2:]),
             "rows inside the same status group must stay sorted by time",
         )
+
+    def test_step8ah8a_business_outcome_ignores_synthetic_recommendation_refusal_terms(self) -> None:
+        """Step 8AH-8A: synthetic coaching text must not flip an open follow-up to refusal."""
+        artifact = _artifact(70.0, "basic", call_date="2026-05-04 12:09:44")
+        artifact.interaction.text = (
+            "Менеджер: хотел предложить вам посотрудничать по ЭДО. "
+            "Клиент: Вы можете отправить предложение, я вам написала почту. "
+            "Менеджер: Хорошо, сейчас посмотрю."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["summary"] = {
+            "outcome_code": "callback_planned",
+            "outcome_text": "Клиент согласился на получение предложения по электронной почте.",
+            "next_step_text": "Клиенту будет отправлено предложение по электронной почте.",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_type": "email_follow_up",
+            "next_step_text": "Отправить предложение по электронной почте.",
+            "due_date_text": "2026-05-05",
+            "reason_not_fixed": None,
+        }
+        detail["recommendations"] = [
+            {
+                "recommendation": "Сначала уточнить процесс клиента.",
+                "why_it_matters": "Это может привести к тому, что предложение будет неактуально для клиента.",
+            }
+        ]
+
+        outcome = BusinessOutcomeResolver().resolve(artifact)
+
+        self.assertEqual(outcome.final_status, "open")
+        self.assertEqual(outcome.reason_code, "business_outcome_open_follow_up")
 
     def test_sm3_build_meaningful_call_list_direct(self) -> None:
         """SM-3: _build_meaningful_call_list excludes non-meaningful, includes support with transcript."""

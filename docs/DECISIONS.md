@@ -590,3 +590,11 @@
 - **Reason:** Human review after Step 8AH-1..8AH-3 showed that table layout and deterministic priority are now cleaner, but future report quality needs LLM2-prepared short topic, context, recommendation, and manager phrase fields without changing rendering or prompts in this bounded step.
 - **Scope:** `report_evidence` schema/validator/docs/tests only. No analyzer prompt change, STT/LLM run, source discovery, `build_missing`, report rendering, `BusinessOutcomeResolver`, delivery semantics, or persisted data migration.
 - **Date:** 2026-05-08
+
+## ADR-058: `manager_daily` hard refusal matching uses grounded outcome text
+- **Decision:** `BusinessOutcomeResolver` must not classify a call as final `Отказ` from synthetic coaching narrative alone.
+- **Decision:** Hard refusal keyword matching is grounded in transcript text, classification fields, and persisted follow-up fields. LLM-written coaching text such as `recommendations`, `gaps`, `strengths`, situation meanings, and other risk explanations may not by itself trigger final `Отказ`.
+- **Decision:** Broader legacy analysis text may remain available to other established resolver paths in this bounded step; this ADR only narrows hard refusal matching to prevent synthetic-analysis false positives.
+- **Reason:** Step 8AH-8A audited Тимур `12:09 / +77470957591`: latest v8 analysis and transcript both supported `Открыт`, but final reporting rendered `Отказ` because the resolver matched `неактуально` inside a coaching recommendation about possible risk, not inside client refusal evidence.
+- **Scope:** Reporting-layer `BusinessOutcomeResolver` false-refusal guard only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, PDF layout, money rules, selection/inclusion rules, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

@@ -328,6 +328,11 @@ class BusinessOutcomeResolver:
             follow_up=follow_up,
             detail=detail,
         )
+        grounded_text = self._grounded_outcome_text(
+            transcript=transcript,
+            classification=classification,
+            follow_up=follow_up,
+        )
         deadline = _format_iso_deadline(
             str(follow_up.get("due_date_text") or follow_up.get("due_date_iso") or "").strip() or None
         )
@@ -336,7 +341,7 @@ class BusinessOutcomeResolver:
         if tech is not None:
             return tech
 
-        refusal = self._resolve_refusal(text=text, follow_up=follow_up)
+        refusal = self._resolve_refusal(text=grounded_text, follow_up=follow_up)
         if refusal is not None:
             return refusal
 
@@ -623,6 +628,19 @@ class BusinessOutcomeResolver:
                         parts.extend(str(child or "") for child in item.values())
                     else:
                         parts.append(str(item or ""))
+        return cls._normalize(" ".join(parts))
+
+    @classmethod
+    def _grounded_outcome_text(
+        cls,
+        *,
+        transcript: str,
+        classification: dict[str, Any],
+        follow_up: dict[str, Any],
+    ) -> str:
+        parts: list[str] = [transcript]
+        parts.extend(str(value or "") for value in classification.values())
+        parts.extend(str(value or "") for value in follow_up.values())
         return cls._normalize(" ".join(parts))
 
     @classmethod

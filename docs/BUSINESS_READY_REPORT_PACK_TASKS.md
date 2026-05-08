@@ -1808,6 +1808,32 @@ Verification checks passed: outcome totals unchanged; `call_list_dates=["2026-05
 
 **Follow-up before human review:** run a bounded outcome-stability decision/fix for Тимур `12:09 / +77470957591`: decide whether final PDFs should use latest v8 analysis, restore stable analysis selection for this report-day handoff, or handle this as a resolver/policy issue in a separate bounded step. Do not silently change resolver semantics during review handoff.
 
+## Step 8AH-8A — Тимур outcome stability before human review
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** one exact outcome-stability blocker only: Тимур `12:09 / +77470957591`, `interaction_id=ba0fbc39-33f3-4f27-b978-dc2ef9ab75d0`. No STT, no `build_missing`, no mass LLM, no delivery, no PDF layout, no money-rule change, and no report_evidence / LLM2 prompt / validator change.
+
+**Audit result:**
+- v1 `9ff89053-263f-4297-98e0-cff60295853a` resolved `open`.
+- v7 `2ae15a76-cf82-46c6-8472-d908a9cc3861` resolved `open`.
+- latest v8 `5e6c63c5-dead-461d-a2dc-5b7e9f44f459` had `summary.outcome_code=callback_planned`, `follow_up.next_step_text=Отправить предложение по электронной почте`, `report_evidence.business_outcome.status=open`, and `call_report_summary.hotness=warm`, but Step 8AH-8 rendered it as `refusal`.
+- The false refusal came from matching the token `неактуально` inside synthetic coaching text (`recommendations[].why_it_matters` / situation meaning), not from transcript or follow-up evidence.
+
+**Decision:** baseline `open` is correct; latest v8 refusal was not a genuine correction. Issue type: resolver policy / synthetic-analysis-text contamination.
+
+**Fix:** `BusinessOutcomeResolver` now evaluates hard `refusal` terms against grounded outcome text only: transcript, classification, and follow-up fields. Existing combined analysis text remains available to the other legacy resolver paths, so this is a bounded false-refusal fix rather than a broad resolver rewrite. Regression test added for the exact Step 8AH-8A failure mode.
+
+**Verification:** direct persisted-artifact ready-only rebuild produced:
+- `/tmp/step8ah8a_Тимур_2026-05-04.pdf` (`149557` bytes)
+- `/tmp/step8ah8a_timur_summary_2026-05-04.json`
+
+Тимур totals restored to `15/3/1/2/6/2/1`; `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `manager_facing_completeness.status=passed`; `transcripts_built=0`; `analyses_built=0`; delivery not run.
+
+**Operational note:** one initial verification attempt accidentally used the normal orchestrator entrypoint and invoked CDR intake (`created=0`). The accepted Step 8AH-8A artifact/summary were regenerated through direct persisted-artifact selection without source fetch/build/delivery.
+
+**Next:** run a bounded Step 8AH-8B to rebuild all three final PDFs after the fix and resend Telegram test before Step 8AH-9 human review.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract
