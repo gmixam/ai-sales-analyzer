@@ -1874,6 +1874,27 @@ Checks passed: Эльмира Situation Day evidence source is `report_evidence.
 
 **Next:** continue bounded human-review fixes for recommendation quality in `Голос клиента` / `Кого взять завтра` and Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later steps.
 
+## Step 8AH-8D — Improve Voice of Customer manager recommendations
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** manager recommendation text in `ГОЛОС КЛИЕНТА` only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, Telegram, or business email changes.
+
+**Mechanism:** each Voice of Customer item now builds `Что сделать` through a signal-specific helper:
+- specific and safe `call_report_summary.manager_next_action` is used only when it aligns with the detected client signal;
+- otherwise deterministic mapping handles internal discussion / thinking, current solution is enough, trust barrier / unknown calls, materials/KP/WhatsApp/price request, refusal, and service/signing/QR/NCALayer issues;
+- generic fallback remains only when no specific signal is detected.
+
+**Verification:** direct persisted-artifact ready-only rebuild produced:
+- `/tmp/step8ah8d_Эльмира_2026-05-04.pdf` (`137076` bytes)
+- `/tmp/step8ah8d_Тимур_2026-05-04.pdf` (`149527` bytes)
+- `/tmp/step8ah8d_Толеген_2026-05-04.pdf` (`124899` bytes)
+- `/tmp/step8ah8d_summary_2026-05-04.json`
+
+Checks passed: client quotes remain unchanged in rendered rows; recommendations are signal-specific for trust barrier, internal discussion, materials request, and current-solution-enough cases; generic `уточнить задачу клиента` fallback did not render for checked VOC rows; outcome totals unchanged (`Эльмира 12/1/1/2/2/6/0`, `Тимур 15/3/1/2/6/2/1`, `Толеген 6/0/0/1/3/2/0`); `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `manager_facing_completeness.status=passed`; `transcripts_built=0`; `analyses_built=0`; delivery not run.
+
+**Next:** continue bounded human-review fixes for `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` recommendation quality and Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later steps.
+
 ## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
 
 **Status:** DONE 2026-05-08.

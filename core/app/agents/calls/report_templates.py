@@ -2983,9 +2983,28 @@ def _split_call_breakdown_fragment(value: str) -> tuple[str, str]:
 def _build_voice_reply_line(context: str | None, quote: str | None) -> str:
     """Build a safe fallback reply suggestion for voice-of-customer."""
     context_text = _clean_reader_text(str(context or ""))
+    if "Что сделать:" in context_text or "Ответить:" in context_text:
+        return context_text
+    quote_text = _clean_reader_text(str(quote or ""))
+    normalized = re.sub(r"\s+", " ", f"{context_text} {quote_text}".lower()).replace("ё", "е")
+    if any(marker in normalized for marker in ("совет", "обсуд", "подума", "руковод", "коллег")):
+        action = "Уточнить, с кем клиент будет обсуждать решение, отправить короткие аргументы и договориться о дате следующего контакта."
+    elif any(marker in normalized for marker in ("достаточ", "хватает", "устраива", "используем", "текущее решение")):
+        action = "Уточнить, что закрывает текущее решение, какие ограничения остаются и когда клиент готов вернуться к альтернативе."
+    elif any(marker in normalized for marker in ("мошен", "незнаком", "довер", "безопас", "провер")):
+        action = "Подтвердить компанию и цель звонка, затем предложить безопасный канал продолжения."
+    elif any(marker in normalized for marker in ("whatsapp", "ватс", "материал", "кп", "коммерчес", "информац", "прайс", "стоимост", "цен", "счет", "счёт", "почт", "email")):
+        action = "Отправить материал в согласованный канал и сразу зафиксировать дату возврата к обсуждению."
+    elif any(marker in normalized for marker in ("не актуал", "неактуал", "не интерес", "не надо", "не нужно", "отказ", "нет потребност", "не рассматри")):
+        action = "Коротко уточнить причину отказа, не продолжать коммерческое давление и зафиксировать причину в CRM."
+    elif any(marker in normalized for marker in ("подписать", "подписание", "подписан", "подписыв", "qr", "ncalayer", "нцал", "эцп", "документ", "ошиб", "сервис", "тех", "помог")):
+        action = "Закрыть сервисный вопрос и убедиться, что клиент смог подписать или отправить документ."
+    else:
+        action = ""
+    if action:
+        return f"{context_text} Что сделать: {action}" if context_text else f"Что сделать: {action}"
     if context_text:
         return f"{context_text} Ответить: уточнить задачу клиента и привязать предложение к его процессу."
-    quote_text = _clean_reader_text(str(quote or ""))
     if quote_text:
         return "Смысл: клиенту не хватило конкретики. Ответить: сначала уточнить контекст, затем давать решение."
     return "Смысл: нужен более точный ответ под ситуацию клиента."

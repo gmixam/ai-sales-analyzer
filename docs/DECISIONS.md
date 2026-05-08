@@ -627,3 +627,12 @@
 - **Reason:** Human review found Situation Day conclusions about client reaction where the rendered fragment showed only a manager question, hiding the client response that justified the conclusion.
 - **Scope:** Reporting payload evidence selection and deterministic fallback text only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-062: `manager_daily` Voice of Customer recommendations are signal-specific
+- **Decision:** `ГОЛОС КЛИЕНТА` must preserve the actual client quote and build the manager action from the quote's client signal rather than using a generic answer fallback when the signal is clear.
+- **Decision:** A valid `call_report_summary.manager_next_action` may be used only when it is specific, safe, and aligned with the detected customer signal. Passive instructions such as only waiting for the client do not override stronger deterministic guidance.
+- **Decision:** Deterministic Voice of Customer action mapping covers internal discussion / thinking, current-solution-enough, trust or unknown-call barrier, materials/KP/WhatsApp/price request, refusal, and service/signing/QR/NCALayer issues.
+- **Decision:** Generic fallback remains allowed only when no specific customer signal is detected.
+- **Reason:** Human review found useful client quotes paired with broad recommendations such as passively waiting or generally clarifying the task. Managers need the recommendation to answer what to do next for that exact client signal.
+- **Scope:** Reporting payload/render fallback recommendation text only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

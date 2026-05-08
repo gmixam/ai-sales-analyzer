@@ -939,6 +939,121 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("довер", result["coaching_view"]["what_happened"].lower())
         self.assertIn("безопас", result["coaching_view"]["next_time_action"].lower())
 
+    def test_voice_of_customer_manager_action_is_signal_specific(self) -> None:
+        cases = [
+            (
+                "Я посоветуюсь с руководителем и перезвоню.",
+                "timing",
+                "Client needs an internal discussion before a decision.",
+                "Ожидать звонка клиента.",
+                "с кем клиент будет обсуждать",
+                "Ожидать звонка клиента",
+            ),
+            (
+                "Нам текущей системы достаточно.",
+                "process",
+                "Client says the current setup covers the need.",
+                None,
+                "что именно закрывает текущее решение",
+                "уточнить задачу клиента",
+            ),
+            (
+                "Напишите в WhatsApp, я не отвечаю на незнакомые звонки.",
+                "risk",
+                "Client has a trust barrier around unknown calls.",
+                None,
+                "безопасный канал",
+                "уточнить задачу клиента",
+            ),
+            (
+                "Скиньте КП в WhatsApp, я посмотрю.",
+                "product_interest",
+                "Client asked for proposal materials.",
+                "Отправить КП и завтра уточнить, появились ли вопросы.",
+                "Отправить КП и завтра уточнить",
+                "уточнить задачу клиента",
+            ),
+        ]
+        for quote, topic, meaning, summary_action, expected, forbidden in cases:
+            with self.subTest(topic=topic):
+                artifact = _artifact(64.0, "basic")
+                artifact.interaction.text = (
+                    "Клиент: Скиньте в WhatsApp, я посмотрю. "
+                    f"Клиент: {quote} "
+                    "Менеджер: Хорошо, отправлю информацию."
+                )
+                detail = artifact.analysis.scores_detail
+                detail["classification"] = {
+                    "call_type": "sales_primary",
+                    "scenario_type": "cold_outbound",
+                    "analysis_eligibility": "eligible",
+                }
+                detail.update(_valid_report_evidence_detail())
+                detail["report_evidence"]["voice_of_customer"][0].update(
+                    {
+                        "quote": quote,
+                        "topic": topic,
+                        "meaning": meaning,
+                        "business_signal": "medium",
+                    }
+                )
+                if summary_action is not None:
+                    detail["report_evidence"]["call_report_summary"]["manager_next_action"] = summary_action
+
+                payload = build_manager_daily_payload(
+                    department_id=str(uuid4()),
+                    department_name="Отдел продаж",
+                    artifacts=[artifact],
+                    period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                    filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+                    mode="report_from_ready_data_only",
+                    model_override=None,
+                )
+                row = {
+                    section["id"]: section
+                    for section in build_report_render_model(payload)["sections"]
+                }["voice_of_customer"]["rows"][0]
+
+                self.assertEqual(row[1], quote)
+                self.assertIn(expected, row[2])
+                self.assertNotIn(forbidden, row[2])
+
+    def test_voice_of_customer_legacy_fallback_uses_customer_signal_action(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = "Клиент: Нам текущей системы достаточно. Менеджер: Понял."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail.pop("report_evidence", None)
+        detail.pop("report_evidence_version", None)
+        detail["product_signals"] = [
+            {
+                "quote": "Нам текущей системы достаточно.",
+                "topic": "process",
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        row = {
+            section["id"]: section
+            for section in build_report_render_model(payload)["sections"]
+        }["voice_of_customer"]["rows"][0]
+
+        self.assertEqual(row[1], "Нам текущей системы достаточно.")
+        self.assertIn("что именно закрывает текущее решение", row[2])
+        self.assertNotIn("уточнить задачу клиента", row[2])
+
     def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
         artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")
         artifact.interaction.text = (

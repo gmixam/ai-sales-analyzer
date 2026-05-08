@@ -280,7 +280,7 @@ class BusinessOutcomeResolver:
         "на ватсап",
         "посмотрю",
         "подумаем",
-        "посоветуюсь",
+        "совет",
         "перезвоню",
         "может быть",
         "возможно",
@@ -6658,6 +6658,13 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                 seen.add(client_text)
                 ref = _client_meta(artifact)
                 why = str(frag.get("why") or "").strip()
+                action, action_source, category = _voice_customer_manager_action(
+                    quote=client_text,
+                    topic=frag.get("fragment_type"),
+                    meaning=why,
+                    context=why,
+                )
+                context = _voice_customer_context_with_action(meaning=why, action=action)
                 situations.append({
                     "client_label": ref["client_label"],
                     "client_phone": ref["client_phone"],
@@ -6665,7 +6672,11 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                     "time_label": ref["time_label"],
                     "client_call_reference": ref["client_call_reference"],
                     "quote": client_text[:120] + ("…" if len(client_text) > 120 else ""),
-                    "context": why[:100] + ("…" if len(why) > 100 else "") if why else None,
+                    "context": context[:257].rstrip() + "…" if context and len(context) > 260 else context,
+                    "interpretation": context[:257].rstrip() + "…" if context and len(context) > 260 else context,
+                    "manager_action": action,
+                    "manager_action_source": action_source,
+                    "customer_signal": category,
                 })
                 if len(situations) >= 3:
                     return
@@ -6684,6 +6695,12 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                     continue
                 seen.add(quote)
                 topic = str(sig.get("topic") or "").strip()
+                action, action_source, category = _voice_customer_manager_action(
+                    quote=quote,
+                    topic=topic,
+                    meaning=topic,
+                )
+                context = _voice_customer_context_with_action(meaning=topic, action=action)
                 situations.append({
                     "client_label": ref["client_label"],
                     "client_phone": ref["client_phone"],
@@ -6691,7 +6708,11 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                     "time_label": ref["time_label"],
                     "client_call_reference": ref["client_call_reference"],
                     "quote": quote[:120] + ("…" if len(quote) > 120 else ""),
-                    "context": topic[:100] if topic else None,
+                    "context": context[:257].rstrip() + "…" if context and len(context) > 260 else context,
+                    "interpretation": context[:257].rstrip() + "…" if context and len(context) > 260 else context,
+                    "manager_action": action,
+                    "manager_action_source": action_source,
+                    "customer_signal": category,
                 })
                 if len(situations) >= 3:
                     break
@@ -7069,9 +7090,202 @@ def _safe_manager_phrase_from_summary(
         return None
     if MANAGER_PHRASE_PHONE_RE.search(phrase) or MANAGER_PHRASE_DATETIME_RE.search(phrase):
         return None
-    if normalized.startswith(("да,", "выставляйте", "отправьте", "скиньте", "посоветуюсь", "не нужно", "нет,")):
+    if normalized.startswith(("да,", "выставляйте", "отправьте", "скиньте", "посовет", "не нужно", "нет,")):
         return None
     return phrase.strip(" «»\"")
+
+
+VOICE_CUSTOMER_INTERNAL_DISCUSSION_MARKERS = (
+    "совет",
+    "обсуд",
+    "подума",
+    "руковод",
+    "коллег",
+)
+VOICE_CUSTOMER_CURRENT_SOLUTION_MARKERS = (
+    "достаточ",
+    "хватает",
+    "устраива",
+    "используем",
+    "текущее решение",
+    "свое решение",
+    "свое решение",
+)
+VOICE_CUSTOMER_TRUST_MARKERS = (
+    "мошен",
+    "незнаком",
+    "довер",
+    "безопас",
+    "подтверд",
+    "провер",
+)
+VOICE_CUSTOMER_MATERIALS_MARKERS = (
+    "whatsapp",
+    "ватс",
+    "уатс",
+    "материал",
+    "кп",
+    "коммерчес",
+    "информац",
+    "прайс",
+    "стоимост",
+    "цен",
+    "счет",
+    "счёт",
+    "почт",
+    "email",
+)
+VOICE_CUSTOMER_REFUSAL_MARKERS = (
+    "не актуал",
+    "неактуал",
+    "не интерес",
+    "не надо",
+    "не нужно",
+    "отказ",
+    "нет потребност",
+    "не рассматри",
+)
+VOICE_CUSTOMER_SERVICE_MARKERS = (
+    "подписать",
+    "подписание",
+    "подписан",
+    "подписыв",
+    "qr",
+    "ncalayer",
+    "нцал",
+    "эцп",
+    "документ",
+    "ошиб",
+    "сервис",
+    "тех",
+    "помог",
+)
+
+VOICE_CUSTOMER_SIGNAL_ACTIONS = {
+    "internal_discussion": (
+        "Уточнить, с кем клиент будет обсуждать решение, отправить короткие аргументы "
+        "для коллег и договориться о дате следующего контакта."
+    ),
+    "current_solution": (
+        "Уточнить, что именно закрывает текущее решение, какие ограничения остаются "
+        "и при каких условиях клиент готов рассмотреть альтернативу."
+    ),
+    "trust_barrier": (
+        "Подтвердить компанию и цель звонка, предложить безопасный канал продолжения — "
+        "WhatsApp, email или звонок в согласованное время."
+    ),
+    "materials_request": (
+        "Отправить материал в согласованный канал и сразу зафиксировать дату возврата к обсуждению."
+    ),
+    "refusal": (
+        "Коротко уточнить причину отказа и не продолжать коммерческое давление; зафиксировать причину в CRM."
+    ),
+    "service_issue": (
+        "Закрыть сервисный вопрос, убедиться, что клиент смог подписать или отправить документ, "
+        "и не переводить разговор в продажу без нового запроса."
+    ),
+}
+VOICE_CUSTOMER_ACTION_ALIGNMENT_MARKERS = {
+    "internal_discussion": ("обсуд", "совет", "коллег", "руковод", "аргумент", "дата следующ"),
+    "current_solution": ("текущее", "огранич", "альтернатив", "закрыва", "хватает", "устраива"),
+    "trust_barrier": ("безопас", "канал", "довер", "подтверд", "провер"),
+    "materials_request": ("отправ", "материал", "кп", "коммерчес", "информац", "whatsapp", "почт", "email"),
+    "refusal": ("причин", "отказ", "давлен", "crm"),
+    "service_issue": ("сервис", "подпис", "документ", "ошиб", "помог"),
+}
+
+
+def _voice_customer_signal_category(
+    *,
+    quote: Any,
+    topic: Any = None,
+    meaning: Any = None,
+    context: Any = None,
+) -> str | None:
+    """Classify a client quote into a deterministic manager-action signal."""
+    normalized = _summary_norm(" ".join(str(part or "") for part in (quote, topic, meaning, context)))
+    topic_norm = _summary_norm(topic)
+    if topic_norm == "service_issue" or any(marker in normalized for marker in VOICE_CUSTOMER_SERVICE_MARKERS):
+        return "service_issue"
+    if topic_norm == "refusal" or any(marker in normalized for marker in VOICE_CUSTOMER_REFUSAL_MARKERS):
+        return "refusal"
+    if any(marker in normalized for marker in VOICE_CUSTOMER_TRUST_MARKERS):
+        return "trust_barrier"
+    if any(marker in normalized for marker in VOICE_CUSTOMER_CURRENT_SOLUTION_MARKERS):
+        return "current_solution"
+    if any(marker in normalized for marker in VOICE_CUSTOMER_INTERNAL_DISCUSSION_MARKERS):
+        return "internal_discussion"
+    if topic_norm in {"product_interest", "price"} or any(
+        marker in normalized for marker in VOICE_CUSTOMER_MATERIALS_MARKERS
+    ):
+        return "materials_request"
+    return None
+
+
+def _voice_customer_summary_action_specific(action: Any, *, category: str | None) -> bool:
+    if not _call_summary_action_usable(action):
+        return False
+    normalized = _summary_norm(action)
+    passive_only = (
+        "ждать" in normalized
+        or "ожид" in normalized
+        or "дождаться" in normalized
+        or normalized in {"перезвонить клиенту", "связаться с клиентом", "продолжить общение"}
+    )
+    generic_only = any(
+        marker in normalized
+        for marker in (
+            "уточнить задачу клиента",
+            "выяснить потребность",
+            "привязать предложение",
+            "дать больше конкретики",
+        )
+    )
+    if category is not None and (passive_only or generic_only):
+        return False
+    if category == "materials_request":
+        has_send = any(
+            marker in normalized
+            for marker in ("отправ", "материал", "кп", "коммерчес", "информац", "whatsapp", "почт", "email")
+        )
+        has_return = any(
+            marker in normalized
+            for marker in ("дат", "завтра", "уточн", "вернут", "возврат", "следующ", "обсужд", "вопрос")
+        )
+        return has_send and has_return
+    alignment_markers = VOICE_CUSTOMER_ACTION_ALIGNMENT_MARKERS.get(category or "")
+    if alignment_markers and not any(marker in normalized for marker in alignment_markers):
+        return False
+    return True
+
+
+def _voice_customer_manager_action(
+    *,
+    quote: Any,
+    topic: Any = None,
+    meaning: Any = None,
+    context: Any = None,
+    summary_action: Any = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Return a quote-specific manager action, preferring specific safe summary action."""
+    category = _voice_customer_signal_category(
+        quote=quote,
+        topic=topic,
+        meaning=meaning,
+        context=context,
+    )
+    if _voice_customer_summary_action_specific(summary_action, category=category):
+        return _summary_text(summary_action, limit=220), "call_report_summary.manager_next_action", category
+    if category is not None:
+        return VOICE_CUSTOMER_SIGNAL_ACTIONS[category], "deterministic_customer_signal", category
+    return None, None, None
+
+
+def _voice_customer_context_with_action(*, meaning: Any, action: str | None) -> str | None:
+    meaning_text = _first_sentence(str(meaning or ""), limit=180)
+    if action:
+        return f"{meaning_text} Что сделать: {action}" if meaning_text else f"Что сделать: {action}"
+    return meaning_text or None
 
 
 def _valid_report_evidence_for_artifact(
@@ -7236,7 +7450,7 @@ CLIENT_PROCESS_MARKERS = (
     "документ",
     "процесс",
     "использ",
-    "достаточно",
+    "достаточ",
     "электрон",
     "эдо",
 )
@@ -7686,12 +7900,20 @@ def _build_voice_of_customer_from_report_evidence(
                 continue
             seen.add(quote)
             meaning = _first_sentence(str(item.get("meaning") or ""), limit=180)
-            if _call_summary_action_usable(summary_action):
-                context = f"{meaning} Что сделать: {summary_action}" if meaning else str(summary_action)
+            action, action_source, category = _voice_customer_manager_action(
+                quote=quote,
+                topic=item.get("topic"),
+                meaning=meaning,
+                summary_action=summary_action,
+            )
+            context = _voice_customer_context_with_action(meaning=meaning, action=action)
+            if action_source == "call_report_summary.manager_next_action":
                 source = "report_evidence.voice_of_customer+call_report_summary.manager_next_action"
+            elif action_source == "deterministic_customer_signal":
+                source = "report_evidence.voice_of_customer+deterministic_customer_signal"
             else:
-                context = meaning
                 source = "report_evidence.voice_of_customer"
+            context_value = context[:257].rstrip() + "…" if context and len(context) > 260 else context
             rows.append(
                 (
                     (
@@ -7706,7 +7928,11 @@ def _build_voice_of_customer_from_report_evidence(
                         "time_label": ref["time_label"],
                         "client_call_reference": ref["client_call_reference"],
                         "quote": quote,
-                        "context": context[:257].rstrip() + "…" if len(context) > 260 else context,
+                        "context": context_value,
+                        "interpretation": context_value,
+                        "manager_action": action,
+                        "manager_action_source": action_source,
+                        "customer_signal": category,
                         "source": source,
                     },
                 )
@@ -7857,7 +8083,7 @@ WARM_HOTNESS_SIGNALS = (
     "кп",
     "посмотрю",
     "подумаем",
-    "посоветуюсь",
+    "совет",
     "напишите",
     "обратной связи",
     "интерес",
