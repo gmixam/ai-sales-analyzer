@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback.
 
 ---
 
@@ -185,7 +185,13 @@ Source priority:
 
 Этот display contract применяется к `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` и client column in `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. Структурное объединение колонок call list остаётся отдельным layout step.
 
-Since Step 8AH-2, that structural call-list layout step is complete: `Время` is merged into `Клиент` through the unified display reference, while richer per-call topic/context generation remains out of scope until LLM2/report-evidence enrichment.
+Since Step 8AH-2, that structural call-list layout step is complete: `Время` is merged into `Клиент` through the unified display reference.
+
+Since Step 8AH-7, richer per-call topic/context may come from valid `report_evidence.call_report_summary`:
+- `short_topic` can fill `Тип / суть` only when specific and non-generic;
+- `short_context` can fill `Контекст` when useful;
+- broad `short_topic` values such as `Обсуждение...`, `Разговор...`, `Звонок...`, `Продажи...`, or `Холодный звонок...` fall back to deterministic type/scenario labels;
+- missing or invalid `report_evidence` falls back to the previous deterministic/legacy fields.
 
 ---
 
@@ -206,6 +212,7 @@ Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `rep
 - `ГОЛОС КЛИЕНТА` prefers usable grounded `report_evidence.voice_of_customer`;
 - `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` prefers usable high/medium `report_evidence.additional_situations`;
 - `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` may use `report_evidence.follow_up_candidates` for text enrichment, but only after the final `payload.call_list[]` status allows inclusion.
+- Since Step 8AH-7, `call_report_summary.manager_next_action`, `short_context`, `hotness_reason`, and safe `suggested_manager_phrase` may enrich `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and `manager_next_action` may enrich `ГОЛОС КЛИЕНТА`; deterministic final outcome and Step 8AH-3 hotness priority remain final authority.
 
 If `report_evidence` is missing or invalid, the report uses the current Step 8W persisted evidence/transcript fallback. Reporting diagnostics must expose `report_evidence_available`, `report_evidence_valid`, validation issues, and `report_evidence_source=report_evidence|legacy_fallback`.
 

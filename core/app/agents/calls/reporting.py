@@ -4260,18 +4260,19 @@ def build_manager_daily_payload(
     operational_meaningful_artifacts = [
         a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
     ]
+    report_evidence_index = _build_report_evidence_index(artifacts=operational_meaningful_artifacts)
+    report_evidence_diagnostics = _build_report_evidence_diagnostics(index=report_evidence_index)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
     unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
     call_list = _build_meaningful_call_list(
         window_artifacts=operational_day_artifacts,
+        report_evidence_index=report_evidence_index,
     )
     call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
     coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
         artifacts=artifacts,
         call_list_by_interaction_id=call_list_by_interaction_id,
     )
-    report_evidence_index = _build_report_evidence_index(artifacts=operational_meaningful_artifacts)
-    report_evidence_diagnostics = _build_report_evidence_diagnostics(index=report_evidence_index)
     manager_facing_completeness = _build_manager_facing_completeness_gate(call_list=call_list)
     worked_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="strengths")
     improve_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="gaps")
@@ -4324,6 +4325,11 @@ def build_manager_daily_payload(
     call_tomorrow = _build_call_tomorrow(
         call_list=call_list,
         report_evidence_index=report_evidence_index,
+    )
+    call_report_summary_diagnostics = _build_call_report_summary_diagnostics(
+        call_list=call_list,
+        call_tomorrow=call_tomorrow,
+        voice_of_customer=voice_of_customer,
     )
     situation_evidence_quote = (report_evidence_situation or {}).get("evidence_quote")
     if situation_evidence_quote is None:
@@ -4453,6 +4459,7 @@ def build_manager_daily_payload(
         "focus_stage_recommendation": focus_stage_recommendation,
         "situation_day_coaching_view": situation_day_coaching_view,
         "report_evidence_diagnostics": report_evidence_diagnostics,
+        "call_report_summary_diagnostics": call_report_summary_diagnostics,
         "call_list": call_list,
         "focus_criterion_dynamics": focus_dynamics,
         "memo_legend": {
@@ -5981,7 +5988,11 @@ def _call_list_sort_key(row: dict[str, Any]) -> tuple[int, datetime]:
     return status_rank, started_at
 
 
-def _build_meaningful_call_list(*, window_artifacts: list[ReportArtifact]) -> list[dict[str, Any]]:
+def _build_meaningful_call_list(
+    *,
+    window_artifacts: list[ReportArtifact],
+    report_evidence_index: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Build СПИСОК ЗВОНКОВ ДНЯ from meaningful_calls layer (SM-3).
 
     Includes all calls that pass _classify_meaningful_call — sales, follow-up,
@@ -5994,7 +6005,10 @@ def _build_meaningful_call_list(*, window_artifacts: list[ReportArtifact]) -> li
         is_meaningful, _ = _classify_meaningful_call(artifact)
         if is_meaningful:
             meaningful.append(artifact)
-    rows = [_build_daily_call_row(item) for item in meaningful]
+    rows = [
+        _build_daily_call_row(item, report_evidence_index=report_evidence_index)
+        for item in meaningful
+    ]
     rows.sort(key=_call_list_sort_key)
     return rows
 
@@ -6243,7 +6257,11 @@ def _short_time_label(value: Any) -> str | None:
         return raw
 
 
-def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
+def _build_daily_call_row(
+    artifact: ReportArtifact,
+    *,
+    report_evidence_index: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Build one short daily call row."""
     source_analysis = artifact.analysis or artifact.original_analysis
     detail = dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
@@ -6262,6 +6280,15 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
     unclassified_status_label = _manager_unclassified_status(unclassified_reason_code)
     unclassified_context_label = _manager_unclassified_context(unclassified_reason_code)
     ref = _artifact_call_reference(artifact)
+    summary, _summary_evidence = _valid_call_report_summary_for_interaction(
+        interaction_id=str(artifact.interaction.id),
+        report_evidence_index=report_evidence_index,
+    )
+    summary_topic_raw = _summary_text((summary or {}).get("short_topic"), limit=120) if summary else None
+    summary_topic = summary_topic_raw.rstrip(".") if summary_topic_raw else None
+    summary_context = _summary_text((summary or {}).get("short_context"), limit=280) if summary else None
+    topic_used = bool(summary_topic and _call_summary_topic_usable(summary_topic))
+    context_used = bool(summary_context and _call_summary_context_usable(summary_context))
     return {
         "interaction_id": str(artifact.interaction.id),
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
@@ -6286,6 +6313,13 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         "business_outcome_reason_code": outcome.reason_code,
         "business_outcome_evidence": outcome.evidence,
         "business_outcome_confidence": outcome.confidence,
+        "call_report_summary_available": bool(summary),
+        "call_report_summary_short_topic": summary_topic,
+        "call_report_summary_short_context": summary_context,
+        "call_list_topic": summary_topic if topic_used else None,
+        "call_list_context": summary_context if context_used else None,
+        "call_list_topic_source": "report_evidence.call_report_summary.short_topic" if topic_used else "deterministic_fallback",
+        "call_list_context_source": "report_evidence.call_report_summary.short_context" if context_used else "deterministic_fallback",
     }
 
 
@@ -6770,6 +6804,7 @@ def _build_report_evidence_diagnostics(*, index: dict[str, dict[str, Any]]) -> d
             "report_evidence_warnings": list(item.get("report_evidence_warnings") or []),
             "report_evidence_source": item.get("report_evidence_source") or "legacy_fallback",
             "report_evidence_version": item.get("report_evidence_version"),
+            "call_report_summary_available": _valid_call_report_summary_from_entry(item) is not None,
         }
         for item in index.values()
     ]
@@ -6782,10 +6817,178 @@ def _build_report_evidence_diagnostics(*, index: dict[str, dict[str, Any]]) -> d
                 1 for item in rows if item["report_evidence_available"] and not item["report_evidence_valid"]
             ),
             "missing_count": sum(1 for item in rows if not item["report_evidence_available"]),
+            "call_report_summary_available_count": sum(1 for item in rows if item["call_report_summary_available"]),
             "source_policy": "valid_report_evidence_preferred_else_step8w_fallback",
         },
         "calls": sorted(rows, key=lambda item: str(item.get("interaction_id") or "")),
     }
+
+
+def _build_call_report_summary_diagnostics(
+    *,
+    call_list: list[dict[str, Any]],
+    call_tomorrow: dict[str, Any],
+    voice_of_customer: dict[str, Any],
+) -> dict[str, Any]:
+    """Summarize guarded call_report_summary usage in manager-facing blocks."""
+    call_list_topic_used = sum(
+        1 for row in call_list
+        if row.get("call_list_topic_source") == "report_evidence.call_report_summary.short_topic"
+    )
+    call_list_context_used = sum(
+        1 for row in call_list
+        if row.get("call_list_context_source") == "report_evidence.call_report_summary.short_context"
+    )
+    tomorrow_used = sum(
+        1 for item in call_tomorrow.get("contacts") or []
+        if item.get("call_report_summary_used")
+    )
+    voice_used = sum(
+        1 for item in voice_of_customer.get("situations") or []
+        if "call_report_summary" in str(item.get("source") or "")
+    )
+    available_rows = sum(1 for row in call_list if row.get("call_report_summary_available"))
+    used_rows = sum(
+        1 for row in call_list
+        if row.get("call_list_topic_source") == "report_evidence.call_report_summary.short_topic"
+        or row.get("call_list_context_source") == "report_evidence.call_report_summary.short_context"
+    )
+    used_total = call_list_topic_used + call_list_context_used + tomorrow_used + voice_used
+    return {
+        "summary": {
+            "call_report_summary_available_count": available_rows,
+            "call_report_summary_used_count": used_total,
+            "call_report_summary_fallback_count": max(available_rows - used_rows, 0),
+            "source_policy": "use_valid_call_report_summary_else_deterministic_fallback",
+        },
+        "blocks": {
+            "call_list_topic_used_count": call_list_topic_used,
+            "call_list_context_used_count": call_list_context_used,
+            "call_tomorrow_used_count": tomorrow_used,
+            "voice_of_customer_used_count": voice_used,
+        },
+    }
+
+
+CALL_REPORT_SUMMARY_BROAD_PREFIXES = (
+    "обсуждение",
+    "разговор",
+    "звонок",
+    "продажи",
+    "холодный звонок",
+)
+CALL_REPORT_SUMMARY_GENERIC_VALUES = {
+    "—",
+    "-",
+    "нет",
+    "нет данных",
+    "нет контекста",
+    "контекст не уточнен",
+    "контекст не уточнён",
+    "не указано",
+}
+MANAGER_PHRASE_PHONE_RE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+MANAGER_PHRASE_DATETIME_RE = re.compile(
+    r"\b\d{1,2}[:.]\d{2}\b|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|\b20\d{2}-\d{2}-\d{2}\b"
+)
+
+
+def _summary_norm(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).replace("ё", "е").lower()
+
+
+def _summary_text(value: Any, *, limit: int) -> str | None:
+    text = _first_sentence(str(value or ""), limit=limit).strip()
+    return text or None
+
+
+def _call_summary_topic_usable(value: Any) -> bool:
+    text = _summary_text(value, limit=120)
+    if not text:
+        return False
+    normalized = _summary_norm(text).rstrip(".")
+    if normalized in CALL_REPORT_SUMMARY_GENERIC_VALUES:
+        return False
+    return not any(normalized.startswith(prefix) for prefix in CALL_REPORT_SUMMARY_BROAD_PREFIXES)
+
+
+def _call_summary_context_usable(value: Any) -> bool:
+    text = _summary_text(value, limit=280)
+    if not text:
+        return False
+    normalized = _summary_norm(text).rstrip(".")
+    if normalized in CALL_REPORT_SUMMARY_GENERIC_VALUES:
+        return False
+    if len(normalized) < 18:
+        return False
+    return not any(normalized == prefix for prefix in CALL_REPORT_SUMMARY_BROAD_PREFIXES)
+
+
+def _call_summary_action_usable(value: Any) -> bool:
+    text = _summary_text(value, limit=240)
+    if not text:
+        return False
+    normalized = _summary_norm(text).rstrip(".")
+    if normalized in CALL_REPORT_SUMMARY_GENERIC_VALUES:
+        return False
+    return len(normalized) >= 8
+
+
+def _valid_call_report_summary_from_entry(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not entry or not entry.get("report_evidence_valid"):
+        return None
+    evidence = entry.get("report_evidence")
+    if not isinstance(evidence, dict):
+        return None
+    summary = evidence.get("call_report_summary")
+    return dict(summary) if isinstance(summary, dict) and summary else None
+
+
+def _valid_call_report_summary_for_interaction(
+    *,
+    interaction_id: str | None,
+    report_evidence_index: dict[str, dict[str, Any]] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not interaction_id or not report_evidence_index:
+        return None, None
+    entry = report_evidence_index.get(str(interaction_id)) or {}
+    summary = _valid_call_report_summary_from_entry(entry)
+    evidence = entry.get("report_evidence") if summary is not None else None
+    return summary, dict(evidence) if isinstance(evidence, dict) else None
+
+
+def _known_client_quotes_from_evidence(evidence: dict[str, Any] | None) -> set[str]:
+    if not isinstance(evidence, dict):
+        return set()
+    quotes: set[str] = set()
+    outcome = dict(evidence.get("business_outcome") or {})
+    if str(outcome.get("evidence_speaker") or "").strip().lower() == "client":
+        quotes.add(_summary_norm(outcome.get("evidence_quote")))
+    for key in ("voice_of_customer", "quote_bank"):
+        for item in evidence.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("speaker") or "").strip().lower() == "client":
+                quotes.add(_summary_norm(item.get("quote")))
+    return {quote for quote in quotes if quote}
+
+
+def _safe_manager_phrase_from_summary(
+    *,
+    summary: dict[str, Any] | None,
+    evidence: dict[str, Any] | None,
+) -> str | None:
+    phrase = _summary_text((summary or {}).get("suggested_manager_phrase"), limit=220)
+    if not phrase:
+        return None
+    normalized = _summary_norm(phrase)
+    if normalized in _known_client_quotes_from_evidence(evidence):
+        return None
+    if MANAGER_PHRASE_PHONE_RE.search(phrase) or MANAGER_PHRASE_DATETIME_RE.search(phrase):
+        return None
+    if normalized.startswith(("да,", "выставляйте", "отправьте", "скиньте", "посоветуюсь", "не нужно", "нет,")):
+        return None
+    return phrase.strip(" «»\"")
 
 
 def _valid_report_evidence_for_artifact(
@@ -7097,6 +7300,11 @@ def _build_voice_of_customer_from_report_evidence(
         )
         if evidence is None:
             continue
+        summary, _summary_evidence = _valid_call_report_summary_for_interaction(
+            interaction_id=str(artifact.interaction.id),
+            report_evidence_index=report_evidence_index,
+        )
+        summary_action = _summary_text((summary or {}).get("manager_next_action"), limit=220)
         ref = _artifact_call_reference(artifact)
         for item in evidence.get("voice_of_customer") or []:
             if not isinstance(item, dict) or item.get("usable_in_report") is not True:
@@ -7109,6 +7317,13 @@ def _build_voice_of_customer_from_report_evidence(
             if len(quote) < 5 or quote in seen:
                 continue
             seen.add(quote)
+            meaning = _first_sentence(str(item.get("meaning") or ""), limit=180)
+            if _call_summary_action_usable(summary_action):
+                context = f"{meaning} Что сделать: {summary_action}" if meaning else str(summary_action)
+                source = "report_evidence.voice_of_customer+call_report_summary.manager_next_action"
+            else:
+                context = meaning
+                source = "report_evidence.voice_of_customer"
             rows.append(
                 (
                     (
@@ -7123,8 +7338,8 @@ def _build_voice_of_customer_from_report_evidence(
                         "time_label": ref["time_label"],
                         "client_call_reference": ref["client_call_reference"],
                         "quote": quote,
-                        "context": _first_sentence(str(item.get("meaning") or ""), limit=180),
-                        "source": "report_evidence.voice_of_customer",
+                        "context": context[:257].rstrip() + "…" if len(context) > 260 else context,
+                        "source": source,
                     },
                 )
             )
@@ -7378,8 +7593,20 @@ def _build_call_tomorrow(
             final_status=status,
             report_evidence_index=report_evidence_index,
         )
+        summary, summary_evidence = _valid_call_report_summary_for_interaction(
+            interaction_id=interaction_id,
+            report_evidence_index=report_evidence_index,
+        )
+        summary_next_action = _summary_text((summary or {}).get("manager_next_action"), limit=240)
+        summary_context = _summary_text((summary or {}).get("short_context"), limit=280)
+        summary_hotness_reason = _summary_text((summary or {}).get("hotness_reason"), limit=220)
+        safe_summary_phrase = _safe_manager_phrase_from_summary(
+            summary=summary,
+            evidence=summary_evidence,
+        )
         next_step = str(
-            (evidence_follow_up or {}).get("next_step")
+            (summary_next_action if _call_summary_action_usable(summary_next_action) else None)
+            or (evidence_follow_up or {}).get("next_step")
             or row.get("next_step")
             or ""
         ).strip()
@@ -7390,7 +7617,7 @@ def _build_call_tomorrow(
             or row.get("deadline")
             or ""
         ).strip() or None
-        opening_script = str((evidence_follow_up or {}).get("first_phrase") or "").strip()
+        opening_script = str(safe_summary_phrase or (evidence_follow_up or {}).get("first_phrase") or "").strip()
         if not opening_script:
             opening_script = _call_tomorrow_opening_script(
                 status=status,
@@ -7400,7 +7627,9 @@ def _build_call_tomorrow(
             )
 
         reason = str(
-            (evidence_follow_up or {}).get("why_follow_up")
+            (summary_context if _call_summary_context_usable(summary_context) else None)
+            or (summary_hotness_reason if _call_summary_action_usable(summary_hotness_reason) else None)
+            or (evidence_follow_up or {}).get("why_follow_up")
             or row.get("reason")
             or ""
         ).strip() or None
@@ -7428,7 +7657,14 @@ def _build_call_tomorrow(
             "reason": reason,
             "scenario_type": scenario_type,
             "opening_script": opening_script,
-            "source": "report_evidence.follow_up_candidates" if evidence_follow_up else "final_call_list",
+            "call_report_summary_used": bool(summary and (summary_next_action or summary_context or safe_summary_phrase)),
+            "source": (
+                "report_evidence.call_report_summary"
+                if summary and (summary_next_action or summary_context or safe_summary_phrase)
+                else "report_evidence.follow_up_candidates"
+                if evidence_follow_up
+                else "final_call_list"
+            ),
             "_sort_key": (
                 CALL_TOMORROW_HOTNESS_RANK.get(hotness["code"], 99),
                 _follow_up_deadline_sort_value(deadline),
@@ -7457,6 +7693,7 @@ def _build_call_tomorrow(
                 "next_step": item["next_step"],
                 "reason": item["reason"],
                 "opening_script": item["opening_script"],
+                "call_report_summary_used": item["call_report_summary_used"],
                 "source": item["source"],
             })
             if len(contacts) >= 5:

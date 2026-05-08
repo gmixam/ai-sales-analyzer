@@ -445,12 +445,20 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                         row.get("client_call_reference") or row.get("client_or_phone"),
                         "Клиент не определён",
                     ),
-                    _call_topic_label(row.get("call_type"), row.get("scenario_type")),
-                    _call_context_label(
-                        str(row.get("status") or ""),
-                        row.get("deadline"),
-                        row.get("reason"),
-                        row=row,
+                    _manager_reader_value(
+                        row.get("call_list_topic")
+                        or _call_topic_label(row.get("call_type"), row.get("scenario_type")),
+                        "—",
+                    ),
+                    _manager_reader_value(
+                        row.get("call_list_context")
+                        or _call_context_label(
+                            str(row.get("status") or ""),
+                            row.get("deadline"),
+                            row.get("reason"),
+                            row=row,
+                        ),
+                        "—",
                     ),
                     _call_list_status_label(row),
                 ]
@@ -3119,6 +3127,9 @@ def _deadline_label_for_contact(item: dict[str, Any]) -> str:
     """Return manager-facing timing/reason label for a follow-up row."""
     status = str(item.get("status") or "open")
     deadline = _format_deadline_human(str(item.get("deadline") or "").strip() or None)
+    reason = _clean_reader_text(str(item.get("reason") or "")).strip()
+    if reason:
+        return f"Контекст: {reason}"
     if deadline:
         return f"Срок: {deadline}"
     if status == "rescheduled":
@@ -3130,6 +3141,9 @@ def _deadline_label_for_contact(item: dict[str, Any]) -> str:
 
 def _call_goal_for_contact(item: dict[str, Any]) -> str:
     """Return a concrete goal for a call-tomorrow action card."""
+    next_step = _clean_reader_text(str(item.get("next_step") or "")).strip()
+    if next_step and item.get("call_report_summary_used"):
+        return next_step if next_step.endswith((".", "!", "?")) else f"{next_step}."
     status = str(item.get("status") or "open")
     if status == "rescheduled":
         return "Вернуть разговор и зафиксировать следующий шаг."

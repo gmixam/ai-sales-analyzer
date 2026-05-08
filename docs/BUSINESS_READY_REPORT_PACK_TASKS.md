@@ -1749,6 +1749,33 @@ Fallbacks:
 
 **Artifact:** `/tmp/step8ah6_call_report_summary_sample.json`.
 
+## Step 8AH-7 — Wire manager_daily to `call_report_summary`
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** report payload / render model integration only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` validator, `BusinessOutcomeResolver`, delivery semantics, or delivery run changes.
+
+**Integration contract:**
+- The report layer consumes `call_report_summary` only when the whole `report_evidence` package is available and valid.
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`: valid non-generic `short_topic` fills `Тип / суть`; useful `short_context` fills `Контекст`.
+- Broad topics that start with `Обсуждение`, `Разговор`, `Звонок`, `Продажи`, or `Холодный звонок` fall back to deterministic type/scenario labels.
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`: summary `short_context` / `hotness_reason` may enrich `Контекст`; `manager_next_action` may become the recommendation action; safe `suggested_manager_phrase` may render as `Можно начать: ...`.
+- Deterministic Step 8AH-3 hotness priority remains final; LLM2 `hotness` is not allowed to override priority.
+- `ГОЛОС КЛИЕНТА`: client quote remains unchanged; valid `manager_next_action` may enrich the manager-action text.
+- Unsafe suggested phrases containing phone/date/time or matching client quote shapes are not rendered.
+
+**Diagnostics:** payload includes `call_report_summary_diagnostics` with available/used/fallback counts and per-block use counts.
+
+**Ready-only verification:** PDFs rebuilt without delivery:
+- `/tmp/step8ah7_Эльмира_2026-05-04.pdf` (`136442` bytes)
+- `/tmp/step8ah7_Тимур_2026-05-04.pdf` (`147597` bytes)
+- `/tmp/step8ah7_Толеген_2026-05-04.pdf` (`124730` bytes)
+- summary `/tmp/step8ah7_summary_2026-05-04.json`
+
+Verification checks passed: outcome totals unchanged; `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `manager_facing_completeness.status=passed`; no broad summary topic rendered in call list; no suggested phrase with phone/date/time rendered; no copied client quote rendered as manager phrase; delivery not run.
+
+**Next:** Step 8AH-8 can run PDF + Telegram test review on the guarded wiring result. Remaining weak spots are content quality, not wiring: legacy rows without valid `call_report_summary` still fall back, and LLM2 can still produce broad-but-guarded short topics that do not improve the call list.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract

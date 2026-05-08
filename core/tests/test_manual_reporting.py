@@ -837,8 +837,22 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["voice_of_customer"]["source_note"], "report_evidence.voice_of_customer")
         self.assertEqual(payload["voice_of_customer"]["situations"][0]["quote"], "Скиньте в WhatsApp, я посмотрю.")
         self.assertEqual(payload["additional_situations"]["source_note"], "report_evidence.additional_situations")
-        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["source"], "report_evidence.follow_up_candidates")
-        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["next_step"], "Отправить материалы и вернуться с вопросом.")
+        self.assertEqual(payload["call_list"][0]["call_list_topic"], "Клиент попросил материалы в WhatsApp")
+        self.assertEqual(
+            payload["call_list"][0]["call_list_context"],
+            "Клиент готов посмотреть материалы, но срок возврата ещё не зафиксирован.",
+        )
+        self.assertIn("Что сделать: Отправить материалы", payload["voice_of_customer"]["situations"][0]["context"])
+        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["source"], "report_evidence.call_report_summary")
+        self.assertEqual(
+            payload["call_tomorrow"]["contacts"][0]["next_step"],
+            "Отправить материалы и согласовать дату следующего контакта.",
+        )
+        self.assertEqual(
+            payload["call_tomorrow"]["contacts"][0]["reason"],
+            "Клиент готов посмотреть материалы, но срок возврата ещё не зафиксирован.",
+        )
+        self.assertIn("call_report_summary_used_count", payload["call_report_summary_diagnostics"]["summary"])
 
     def test_manager_daily_invalid_report_evidence_uses_step8w_fallback(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -896,6 +910,102 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertEqual(payload["situation_evidence_quote"]["source"], "evidence_fragments")
         self.assertIn("сама решение не принимаю", payload["situation_evidence_quote"]["client_text"])
+        self.assertIsNone(payload["call_list"][0]["call_list_topic"])
+        self.assertEqual(payload["call_list"][0]["call_list_topic_source"], "deterministic_fallback")
+
+    def test_step8ah7_wires_valid_call_report_summary_with_guardrails(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["call_report_summary"]["short_topic"] = "Клиент попросил отправить КП"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = (
+            "Клиент попросил КП в WhatsApp и не зафиксировал срок возврата."
+        )
+        detail["report_evidence"]["call_report_summary"]["manager_next_action"] = (
+            "Отправить КП и завтра уточнить, появились ли вопросы."
+        )
+        detail["report_evidence"]["call_report_summary"]["suggested_manager_phrase"] = (
+            "Алия, добрый день. Отправляю КП, как договорились. Завтра уточню, появились ли вопросы."
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(sections["call_list"]["rows"][0][2], "Клиент попросил отправить КП")
+        self.assertEqual(
+            sections["call_list"]["rows"][0][3],
+            "Клиент попросил КП в WhatsApp и не зафиксировал срок возврата.",
+        )
+        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["priority_code"], "warm")
+        self.assertEqual(
+            payload["call_tomorrow"]["contacts"][0]["next_step"],
+            "Отправить КП и завтра уточнить, появились ли вопросы.",
+        )
+        self.assertIn("Отправить КП", sections["call_tomorrow"]["rows"][0][3])
+        self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
+        self.assertIn("Что сделать: Отправить КП", sections["voice_of_customer"]["rows"][0][2])
+        self.assertGreaterEqual(
+            payload["call_report_summary_diagnostics"]["summary"]["call_report_summary_used_count"],
+            3,
+        )
+
+    def test_step8ah7_falls_back_for_broad_topic_and_unsafe_phrase(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["call_report_summary"]["short_topic"] = "Обсуждение ЭДО"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = (
+            "Клиент попросил материалы без конкретного срока возврата."
+        )
+        detail["report_evidence"]["call_report_summary"]["suggested_manager_phrase"] = (
+            "Добрый день. Возвращаюсь по разговору 12 мая в 14:30."
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertIsNone(payload["call_list"][0]["call_list_topic"])
+        self.assertEqual(sections["call_list"]["rows"][0][2], "Продажи · Холодный")
+        self.assertEqual(
+            sections["call_list"]["rows"][0][3],
+            "Клиент попросил материалы без конкретного срока возврата.",
+        )
+        self.assertNotIn("12 мая", sections["call_tomorrow"]["rows"][0][3])
+        self.assertNotIn("14:30", sections["call_tomorrow"]["rows"][0][3])
 
     def test_manager_daily_payload_falls_back_to_breakdown_evidence_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -2153,7 +2263,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         self.assertEqual(sections["call_breakdown"]["rows"][0][0], "Момент 1")
         self.assertEqual(len(sections["call_breakdown"]["rows"][0]), 4)
-        self.assertTrue(sections["call_tomorrow"]["rows"][0][2].startswith(("Повод:", "Срок:")))
+        self.assertTrue(sections["call_tomorrow"]["rows"][0][2].startswith(("Повод:", "Срок:", "Контекст:")))
         self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
         self.assertEqual(sections["call_list"]["columns"], ["#", "Клиент", "Тип / суть", "Контекст", "Статус"])
 
