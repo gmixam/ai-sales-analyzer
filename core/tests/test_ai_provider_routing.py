@@ -98,7 +98,7 @@ class AIProviderRoutingTests(unittest.TestCase):
             context["analysis_result_contract_template"]["instruction_version"],
             APPROVED_INSTRUCTION_VERSION,
         )
-        self.assertEqual(APPROVED_INSTRUCTION_VERSION, "edo_sales_mvp1_call_analysis_v7_report_evidence")
+        self.assertEqual(APPROVED_INSTRUCTION_VERSION, "edo_sales_mvp1_call_analysis_v8_report_summary")
         self.assertIn("REPORT_EVIDENCE_CONTRACT.md", context["source_of_truth_priority"])
         self.assertIn("report_evidence_contract_markdown", context["approved_sources"])
         report_evidence_source = context["approved_sources"]["report_evidence_contract_markdown"]

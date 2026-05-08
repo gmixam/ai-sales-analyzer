@@ -51,6 +51,7 @@ In addition to all existing required MVP-1 fields, return these top-level fields
   "report_evidence_version": "v1",
   "report_evidence": {
     "business_outcome": null,
+    "call_report_summary": null,
     "situation_candidates": [],
     "manager_coaching_moments": [],
     "voice_of_customer": [],
@@ -86,6 +87,8 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - `evidence_quality`: `direct | indirect | weak | insufficient`
 - `speaker`: `manager | client | unknown`
 - `business_signal`: `high | medium | low`
+- `call_report_summary.client_name_confidence`: `high | medium | low`
+- `call_report_summary.hotness`: `hot | warm | low`
 - `business_outcome.status`: `agreement | rescheduled | refusal | open | tech_service | not_suitable`
 - `stage_code`: one of the checklist stage codes:
   `contact_start`, `qualification_primary`, `needs_discovery`, `presentation`,
@@ -171,6 +174,36 @@ These examples show allowed enum values and field shape. Do not copy the example
   "needs_human_review": false
 }
 ```
+
+### `call_report_summary`
+Return a compact report summary for every call when enough transcript or metadata exists. Use `null` only when the transcript is too thin to summarize safely.
+
+```json
+{
+  "short_topic": "...",
+  "short_context": "...",
+  "client_display_name": null,
+  "client_name_confidence": null,
+  "hotness": "hot|warm|low",
+  "hotness_reason": "...",
+  "manager_next_action": "...",
+  "suggested_manager_phrase": null
+}
+```
+
+Field rules:
+- `short_topic`: short call essence, max 120 chars. Good examples: `Клиент попросил счёт`, `Клиент хочет посоветоваться`, `Помощь с подписанием`, `Клиент отказался от услуги`, `Клиент попросил отправить КП`, `Клиент попросил материалы в WhatsApp`. Do not use generic labels such as `Продажи`, `Холодный звонок`, or `Разговор с клиентом`.
+- `short_context`: short context, max 280 chars. Examples: `Клиент попросил материалы в WhatsApp и не зафиксировал срок возврата.`, `Клиент готов рассмотреть ЭДО, нужно отправить счёт и уточнить сроки оплаты.`, `Клиент сказал, что текущего решения достаточно.`, `Клиенту помогали с подписанием документа через QR.`
+- `client_display_name`: fill only when a name, FIO, or name fragment is explicit in transcript or metadata. Do not invent names. Do not use company/generic words as a name. If uncertain, use `null`. Do not include phone, date, or time here; those are reporting-layer responsibilities.
+- `client_name_confidence`: use `high|medium|low` only when `client_display_name` is not null; otherwise use `null`.
+- `hotness`: semantic signal only. Use only `hot`, `warm`, or `low`. Never use `rescheduled`, `open`, `agreed`, or `cold`. Reporting remains final authority for deterministic hotness priority.
+- `hotness_reason`: explain why the contact is semantically hot/warm/low.
+- `manager_next_action`: concrete manager action, for example `Отправить счёт и согласовать дату оплаты.`, `Уточнить, удалось ли обсудить предложение с коллегами.`, `Вернуться к клиенту после указанного срока.`, `Не продолжать коммерческий follow-up, так как клиент отказался.`
+- `suggested_manager_phrase`: phrase from the manager's voice. Do not copy a client quote. Do not start with client words such as `Да, выставляйте счёт`. Use a normal manager opening such as `Добрый день. Возвращаюсь по материалам: удалось обсудить предложение с коллегами?` or `Добрый день. Отправляю счёт, как договорились. Когда удобно сверить сроки оплаты?`
+- If there is no follow-up, set `suggested_manager_phrase=null`.
+- For `refusal`, `tech_service`, and `not_suitable`, usually set `suggested_manager_phrase=null` unless there is an explicit service follow-up.
+
+`call_report_summary` is also a semantic signal, not final report authority. The deterministic reporting layer remains final authority for final outcome, call-list inclusion/exclusion, phone/date/time display, and manager-facing hotness priority.
 
 ### `situation_candidates`
 Return 0..N candidates for `СИТУАЦИЯ ДНЯ`:

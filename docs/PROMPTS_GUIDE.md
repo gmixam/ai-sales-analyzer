@@ -88,6 +88,9 @@ Standing rules:
 - Direct quotes and dialogue fragments must be transcript-grounded. If grounding is not available, the prompt must require `evidence_quality=insufficient` and `usable_in_report=false`.
 - `business_outcome.evidence_quote` must be an exact transcript substring or `null`; prompt examples are never reusable evidence unless the exact phrase appears in transcript.
 - `report_evidence.business_outcome.status` must use only the contract enum values: `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, `not_suitable`.
+- Starting with Step 8AH-5, fresh LLM2 analyses must also fill optional `report_evidence.call_report_summary` when enough transcript/metadata exists. It should provide `short_topic`, `short_context`, explicit `client_display_name` when safe, semantic `hotness=hot|warm|low`, `hotness_reason`, `manager_next_action`, and `suggested_manager_phrase`.
+- `call_report_summary.hotness` is only a semantic signal; deterministic reporting remains final authority for final outcome, call-list inclusion/exclusion, and manager-facing hotness priority.
+- `suggested_manager_phrase` must be written from the manager's voice and must not copy a client quote. If no follow-up exists, it should be `null`; for refusal/tech/not_suitable it is usually `null` unless there is an explicit service follow-up.
 - For sales-like outcomes (`agreement`, `rescheduled`, `open`), the prompt and retry instruction must require at least one `manager_coaching_moment`, and at least one of `situation_candidates` / `manager_coaching_moments` must be non-empty. Thin evidence should become explicit `insufficient` / `usable_in_report=false`, not silent empty arrays.
 - Speaker roles must stay `unknown` when transcript/segments do not make the role reliable.
 - `report_evidence.business_outcome` is only a semantic signal. Final manager-facing outcome remains owned by deterministic reporting-layer resolver rules.

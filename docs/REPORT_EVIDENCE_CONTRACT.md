@@ -418,8 +418,9 @@ Prompt behavior:
 - follow-up candidates are allowed only for `agreement`, `rescheduled`, or `open`;
 - no follow-up candidate should be returned for `refusal`, `tech_service`, or `not_suitable`;
 - `business_outcome` is a semantic signal only; deterministic resolver rules remain final authority.
+- starting with Step 8AH-5, fresh prompts also require `call_report_summary` when enough transcript/metadata exists, with `hotness=hot|warm|low` only and manager-voiced `suggested_manager_phrase` that does not copy client quotes.
 
-Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v7_report_evidence`. This marks the prompt change without changing `schema_version=call_analysis.v1` or checklist scoring.
+Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v8_report_summary`. This marks the Step 8AH-5 prompt change that asks LLM2 to fill `report_evidence.call_report_summary`, without changing `schema_version=call_analysis.v1` or checklist scoring.
 
 ### Step 8AB runtime verification note
 

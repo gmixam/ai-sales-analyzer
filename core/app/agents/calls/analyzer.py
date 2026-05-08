@@ -41,7 +41,7 @@ REPORT_EVIDENCE_SOURCE_DIR_CANDIDATES = [
 ]
 
 APPROVED_SCHEMA_VERSION = "call_analysis.v1"
-APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v7_report_evidence"
+APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v8_report_summary"
 APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
 NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
@@ -1010,6 +1010,10 @@ class CallsAnalyzer:
                 "set `classification.analysis_eligibility` to `not_eligible` and provide a clear "
                 "`eligibility_reason`.\n\n"
                 "Preserve the additive `report_evidence_version=\"v1\"` and `report_evidence` package. "
+                "When enough transcript or metadata exists, include `report_evidence.call_report_summary` "
+                "with `short_topic`, `short_context`, semantic `hotness` limited to `hot|warm|low`, "
+                "`manager_next_action`, and a manager-voiced `suggested_manager_phrase` that does not copy "
+                "client quotes. "
                 "If `report_evidence.business_outcome.status` is `agreement`, `rescheduled`, or `open`, "
                 "`manager_coaching_moments` must contain at least one item and at least one of "
                 "`situation_candidates` or `manager_coaching_moments` must be non-empty. If the transcript "

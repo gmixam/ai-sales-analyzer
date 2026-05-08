@@ -1708,6 +1708,23 @@ Fallbacks:
 
 **Validator:** legacy analyses without `call_report_summary` remain valid; new enum values are checked; length limits are enforced; `suggested_manager_phrase` copied from a known client quote fails validation; non-null phrase for refusal/tech/not_suitable without explicit follow-up emits a warning.
 
+## Step 8AH-5 — Update LLM2 prompt to produce `call_report_summary`
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** LLM2 prompt / analyzer instruction version / prompt tests / docs only. No STT, source discovery, `build_missing`, LLM/re-analysis, report rendering, `BusinessOutcomeResolver`, delivery semantics, or inclusion/exclusion changes.
+
+**Prompt update:**
+- `report_evidence.call_report_summary` is included in the additive `report_evidence v1` shape.
+- LLM2 is instructed to produce `short_topic`, `short_context`, `client_display_name`, `client_name_confidence`, `hotness`, `hotness_reason`, `manager_next_action`, and `suggested_manager_phrase`.
+- `short_topic` must be specific and non-generic.
+- `client_display_name` must come only from explicit transcript/metadata evidence; phone/date/time stay in the reporting layer.
+- `hotness` is limited to `hot|warm|low`; values such as `rescheduled`, `open`, `agreed`, and `cold` are forbidden.
+- `suggested_manager_phrase` must be phrased as the manager and must not copy client quotes.
+- Deterministic reporting remains final authority for final outcome, inclusion/exclusion, display, and manager-facing hotness priority.
+
+**Instruction version:** fresh analyses now use `edo_sales_mvp1_call_analysis_v8_report_summary`.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract
