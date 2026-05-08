@@ -40,6 +40,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     ReportArtifact,
     ReportRunFilters,
     _build_meaningful_call_list,
+    _build_report_evidence_situation,
     _build_selection_model_counters,
     _classify_meaningful_call,
     _select_stable_analysis_for_reporting,
@@ -867,6 +868,76 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "Клиент готов посмотреть материалы, но срок возврата ещё не зафиксирован.",
         )
         self.assertIn("call_report_summary_used_count", payload["call_report_summary_diagnostics"]["summary"])
+
+    def test_situation_client_reaction_prefers_client_grounded_evidence(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        client_quote = "Лучше напишите в WhatsApp, я не отвечаю на незнакомые звонки."
+        manager_fragment = "Скажите, пожалуйста, насколько актуален вопрос сейчас?"
+        evidence = {
+            "situation_candidates": [
+                {
+                    "stage_code": "contact_start",
+                    "situation_title": "Не адаптировался к ответу клиента",
+                    "priority": "high",
+                    "evidence_quality": "direct",
+                    "dialogue_fragment": [
+                        {
+                            "speaker": "manager",
+                            "text": manager_fragment,
+                            "timestamp_start": None,
+                            "timestamp_end": None,
+                        }
+                    ],
+                    "what_happened": "Менеджер не адаптировался к ответу клиента о возможности говорить.",
+                    "what_it_means": "Клиентский барьер может сорвать продолжение.",
+                    "what_was_missing": "Не хватило фиксации удобного канала связи.",
+                    "next_time_action": "Закрепить безопасный канал продолжения.",
+                    "usable_in_report": True,
+                }
+            ],
+            "voice_of_customer": [
+                {
+                    "quote": client_quote,
+                    "speaker": "client",
+                    "topic": "risk",
+                    "meaning": "Клиент обозначил барьер доверия к незнакомому звонку.",
+                    "business_signal": "medium",
+                    "stage_code": "contact_start",
+                    "usable_in_report": True,
+                }
+            ],
+        }
+
+        result = _build_report_evidence_situation(
+            artifacts=[artifact],
+            report_evidence_index={
+                str(artifact.interaction.id): {
+                    "report_evidence_available": True,
+                    "report_evidence_valid": True,
+                    "report_evidence": evidence,
+                }
+            },
+            call_list_by_interaction_id={str(artifact.interaction.id): {"status": "open"}},
+            score_by_stage=[
+                {
+                    "stage_code": "contact_start",
+                    "stage_name": "Начало контакта",
+                    "score": 4,
+                    "is_priority": True,
+                }
+            ],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["evidence_quote"]["client_text"], client_quote)
+        self.assertEqual(result["evidence_quote"]["source"], "report_evidence.client_grounded_situation")
+        self.assertTrue(result["evidence_quote"]["client_grounded"])
+        self.assertNotEqual(result["evidence_quote"]["client_text"], manager_fragment)
+        self.assertEqual(result["dialogue_excerpt"]["turns"][0]["speaker"], "client")
+        self.assertEqual(result["dialogue_excerpt"]["source"], "report_evidence.voice_of_customer")
+        self.assertEqual(result["coaching_view"]["source"], "report_evidence.client_grounded_situation")
+        self.assertIn("довер", result["coaching_view"]["what_happened"].lower())
+        self.assertIn("безопас", result["coaching_view"]["next_time_action"].lower())
 
     def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
         artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")

@@ -618,3 +618,12 @@
 - **Reason:** Step 8 audit found that controlled exact-call samples can create newer persisted analysis rows and silently change future `manager_daily` reports through latest-by-created-at selection; this already surfaced as the Timur outcome-stability blocker.
 - **Scope:** Analysis selection / persistence marker convention only. No DB migration, analyzer prompt change, STT/LLM run, source discovery, `build_missing`, `BusinessOutcomeResolver` semantics, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-061: `manager_daily` Situation Day client-reaction conclusions require client-grounded evidence when available
+- **Decision:** When `СИТУАЦИЯ ДНЯ` makes a conclusion about client reaction or state, a manager-only fragment must not be rendered as strong proof if valid persisted client-grounded evidence exists for the same focus call/package.
+- **Decision:** Client-reaction/state includes trust or distrust, convenience to talk, doubt, objection, refusal/reschedule, need, current process, and client barrier cases.
+- **Decision:** Evidence ranking for these cases prefers usable `report_evidence.situation_candidates` with client dialogue, then relevant client quotes from valid persisted `report_evidence.voice_of_customer` / `quote_bank`, then transcript/dialogue excerpt, then manager-only fallback, then explicit weak/insufficient evidence.
+- **Decision:** If a client quote replaces manager-only proof, the reporting payload marks `source=report_evidence.client_grounded_situation` and `client_grounded=true`, and the Situation Day coaching text must align to that selected client signal without inventing facts.
+- **Reason:** Human review found Situation Day conclusions about client reaction where the rendered fragment showed only a manager question, hiding the client response that justified the conclusion.
+- **Scope:** Reporting payload evidence selection and deterministic fallback text only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

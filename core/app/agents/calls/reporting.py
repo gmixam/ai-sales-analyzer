@@ -7183,6 +7183,259 @@ def _report_evidence_candidate_rank(
     )
 
 
+CLIENT_REACTION_SITUATION_MARKERS = (
+    "барьер",
+    "возраж",
+    "довер",
+    "недовер",
+    "не актуал",
+    "неактуал",
+    "не беру",
+    "не интересно",
+    "незнаком",
+    "отказ",
+    "ответ клиента",
+    "перенос",
+    "позвон",
+    "потребност",
+    "процесс клиент",
+    "реакц",
+    "сказал",
+    "сомнен",
+    "текущ",
+    "удоб",
+    "мошен",
+)
+CLIENT_TRUST_BARRIER_MARKERS = (
+    "довер",
+    "мошен",
+    "незнаком",
+    "не беру",
+    "безопас",
+)
+CLIENT_TIMING_BARRIER_MARKERS = (
+    "позвон",
+    "сейчас",
+    "позже",
+    "потом",
+    "удоб",
+    "занят",
+)
+CLIENT_OBJECTION_MARKERS = (
+    "не актуал",
+    "неактуал",
+    "не интересно",
+    "нет необходимости",
+    "нет потребности",
+    "сомнен",
+    "дорого",
+    "отказ",
+)
+CLIENT_PROCESS_MARKERS = (
+    "бумаг",
+    "документ",
+    "процесс",
+    "использ",
+    "достаточно",
+    "электрон",
+    "эдо",
+)
+
+
+def _situation_candidate_text(candidate: dict[str, Any]) -> str:
+    parts = [
+        candidate.get("situation_title"),
+        candidate.get("stage_code"),
+        candidate.get("what_happened"),
+        candidate.get("what_it_means"),
+        candidate.get("what_was_missing"),
+        candidate.get("next_time_action"),
+    ]
+    return _summary_norm(" ".join(str(part or "") for part in parts))
+
+
+def _situation_requires_client_signal(candidate: dict[str, Any]) -> bool:
+    """Return True when the situation conclusion depends on client reaction/state."""
+    text = _situation_candidate_text(candidate)
+    if any(marker in text for marker in CLIENT_REACTION_SITUATION_MARKERS):
+        return True
+    stage_code = str(candidate.get("stage_code") or "").strip()
+    return stage_code in {"contact_start", "needs_discovery", "objection_handling"}
+
+
+def _client_turn_from_turns(turns: list[dict[str, str]]) -> dict[str, str] | None:
+    for turn in turns:
+        if str(turn.get("speaker") or "").strip().lower() == "client" and str(turn.get("text") or "").strip():
+            return turn
+    return None
+
+
+def _client_signal_kind(text: Any) -> str | None:
+    normalized = _summary_norm(text)
+    if any(marker in normalized for marker in CLIENT_TRUST_BARRIER_MARKERS):
+        return "trust_barrier"
+    if any(marker in normalized for marker in CLIENT_OBJECTION_MARKERS):
+        return "objection"
+    if any(marker in normalized for marker in CLIENT_TIMING_BARRIER_MARKERS):
+        return "timing_barrier"
+    if any(marker in normalized for marker in CLIENT_PROCESS_MARKERS):
+        return "process_context"
+    return None
+
+
+def _client_quote_relevance_for_situation(*, quote: str, item: dict[str, Any], candidate: dict[str, Any]) -> int:
+    """Score whether a client quote can ground the situation candidate."""
+    normalized_quote = _summary_norm(quote)
+    if len(normalized_quote) < 8:
+        return 0
+    candidate_text = _situation_candidate_text(candidate)
+    score = 1
+    signal_kind = _client_signal_kind(normalized_quote)
+    if signal_kind:
+        score += 2
+    topic = _summary_norm(item.get("topic"))
+    if topic and topic not in {"other", "unknown"}:
+        score += 1
+    if any(marker in candidate_text for marker in ("ответ клиента", "реакц", "удоб", "позвон")) and (
+        signal_kind in {"trust_barrier", "timing_barrier"} or "позвон" in normalized_quote
+    ):
+        score += 3
+    if any(marker in candidate_text for marker in ("довер", "недовер", "барьер")) and signal_kind == "trust_barrier":
+        score += 3
+    if any(marker in candidate_text for marker in ("возраж", "отказ", "сомнен")) and signal_kind == "objection":
+        score += 3
+    if any(marker in candidate_text for marker in ("потребност", "процесс", "текущ")) and signal_kind == "process_context":
+        score += 3
+    if str(candidate.get("stage_code") or "").strip() == "contact_start" and signal_kind in {"trust_barrier", "timing_barrier"}:
+        score += 2
+    return score
+
+
+def _select_client_grounded_situation_quote(
+    *,
+    evidence: dict[str, Any],
+    candidate: dict[str, Any],
+) -> tuple[dict[str, Any] | None, int]:
+    """Pick a relevant client quote from report_evidence when the situation needs one."""
+    best: tuple[int, dict[str, Any]] | None = None
+    for source_key in ("voice_of_customer", "quote_bank"):
+        for item in evidence.get(source_key) or []:
+            if not isinstance(item, dict):
+                continue
+            if source_key == "voice_of_customer" and item.get("usable_in_report") is not True:
+                continue
+            if item.get("usable_in_report") is False:
+                continue
+            speaker = str(item.get("speaker") or "").strip().lower()
+            quote = _dialogue_turn_text(str(item.get("quote") or ""), limit=220)
+            if speaker not in {"client", "unknown"} or not quote:
+                continue
+            relevance = _client_quote_relevance_for_situation(
+                quote=quote,
+                item=item,
+                candidate=candidate,
+            )
+            if relevance < 3:
+                continue
+            speaker_rank = 0 if speaker == "client" else 1
+            signal_rank = {"high": 0, "medium": 1, "low": 2}.get(
+                str(item.get("business_signal") or "").strip().lower(),
+                1,
+            )
+            rank = relevance * -10 + speaker_rank + signal_rank
+            if best is None or rank < best[0]:
+                best = (rank, {"source_key": source_key, "item": item, "quote": quote, "relevance": relevance})
+    if best is None:
+        return None, 0
+    return best[1], int(best[1]["relevance"])
+
+
+def _client_grounded_situation_coaching_view(
+    *,
+    candidate: dict[str, Any],
+    quote: str,
+    stage_code: str,
+    stage_name: str,
+    score_by_stage: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build aligned Situation Day copy when client evidence replaces manager-only proof."""
+    signal_kind = _client_signal_kind(quote)
+    if signal_kind == "trust_barrier":
+        pattern_title = "Клиент обозначил барьер доверия к незнакомому звонку"
+        what_happened = "Клиент прямо обозначил недоверие к звонкам с незнакомых номеров."
+        meaning = "Перед продажей нужно снять риск недоверия и закрепить безопасный канал продолжения."
+        what_was_missing = "Не хватило фиксации удобного и доверенного способа связи: WhatsApp, знакомый номер или точное время следующего контакта."
+        next_time_action = "Коротко подтвердить, кто звонит и зачем, затем предложить безопасный способ продолжить разговор."
+        scripts = [
+            "Понимаю, сейчас много подозрительных звонков. Я из Договор-24, пишу вам в WhatsApp, чтобы вы могли проверить контакт.",
+            "Давайте я отправлю короткое сообщение с темой разговора, а потом созвонимся в удобное для вас время.",
+            "Какой канал для продолжения вам надёжнее: WhatsApp, email или звонок в конкретное время?",
+        ]
+    elif signal_kind == "timing_barrier":
+        pattern_title = "Клиент обозначил ограничение по времени или каналу связи"
+        what_happened = f"Клиент сказал: «{_dialogue_turn_text(quote, limit=180)}»."
+        meaning = "Интерес можно потерять, если не закрепить удобный формат и срок продолжения."
+        what_was_missing = "Не хватило конкретной договорённости о времени или канале следующего контакта."
+        next_time_action = "Уточнить удобный канал и зафиксировать конкретное время следующего касания."
+        scripts = [
+            "Поняла, сейчас неудобно. Когда лучше вернуться к разговору?",
+            "Могу отправить короткую информацию в WhatsApp и договориться о точном времени звонка.",
+            "Давайте зафиксируем удобный слот, чтобы не отвлекать вас неожиданным звонком.",
+        ]
+    else:
+        fact = f"Клиент сказал: «{_dialogue_turn_text(quote, limit=180)}»."
+        pattern_title = str(candidate.get("situation_title") or "").strip() or "Ситуация дня с клиентской репликой"
+        what_happened = fact
+        meaning = _first_sentence(str(candidate.get("what_it_means") or ""), limit=260)
+        what_was_missing = _first_sentence(str(candidate.get("what_was_missing") or ""), limit=260)
+        next_time_action = _first_sentence(str(candidate.get("next_time_action") or ""), limit=260)
+        scripts = [
+            _first_sentence(str(item or ""), limit=220)
+            for item in list(candidate.get("scripts") or [])[:3]
+            if str(item or "").strip()
+        ]
+
+    return {
+        "pattern_title": pattern_title,
+        "stage_code": stage_code,
+        "stage_label": stage_name,
+        "stage_score_label": _report_evidence_stage_score_label(stage_code, score_by_stage),
+        "what_happened": what_happened,
+        "meaning": meaning,
+        "what_was_missing": what_was_missing,
+        "next_time_action": next_time_action,
+        "scripts": scripts[:3],
+        "source": "report_evidence.client_grounded_situation",
+        "dialogue_is_partial": True,
+    }
+
+
+def _report_evidence_situation_candidate_rank(
+    *,
+    candidate: dict[str, Any],
+    turns: list[dict[str, str]],
+    evidence: dict[str, Any],
+    score_by_stage: list[dict[str, Any]],
+    artifact: ReportArtifact,
+) -> tuple[int, int, int, int, float, datetime]:
+    base = _report_evidence_candidate_rank(
+        candidate=candidate,
+        score_by_stage=score_by_stage,
+        artifact=artifact,
+    )
+    if not _situation_requires_client_signal(candidate):
+        client_grounding_rank = 0
+    elif _client_turn_from_turns(turns) is not None:
+        client_grounding_rank = 0
+    else:
+        _quote, relevance = _select_client_grounded_situation_quote(
+            evidence=evidence,
+            candidate=candidate,
+        )
+        client_grounding_rank = 1 if relevance >= 3 else 3
+    return (base[0], client_grounding_rank, *base[1:])
+
+
 def _build_report_evidence_situation(
     *,
     artifacts: list[ReportArtifact],
@@ -7191,7 +7444,7 @@ def _build_report_evidence_situation(
     score_by_stage: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Build Situation Day from valid report_evidence.situation_candidates when usable."""
-    candidates: list[tuple[tuple[int, int, int, float, datetime], ReportArtifact, dict[str, Any], list[dict[str, str]]]] = []
+    candidates: list[tuple[tuple[int, int, int, int, float, datetime], ReportArtifact, dict[str, Any], dict[str, Any], list[dict[str, str]]]] = []
     for artifact in artifacts:
         if not _is_report_evidence_sales_like(
             artifact=artifact,
@@ -7215,12 +7468,15 @@ def _build_report_evidence_situation(
                 continue
             candidates.append(
                 (
-                    _report_evidence_candidate_rank(
+                    _report_evidence_situation_candidate_rank(
                         candidate=candidate,
+                        turns=turns,
+                        evidence=evidence,
                         score_by_stage=score_by_stage,
                         artifact=artifact,
                     ),
                     artifact,
+                    evidence,
                     candidate,
                     turns,
                 )
@@ -7228,31 +7484,38 @@ def _build_report_evidence_situation(
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
-    _rank, artifact, candidate, turns = candidates[0]
+    _rank, artifact, evidence, candidate, turns = candidates[0]
     ref = _artifact_call_reference(artifact)
     stage_code = str(candidate.get("stage_code") or "").strip()
     stage_name = _stage_name_for_code(stage_code, score_by_stage)
     quote_text = _report_evidence_quote_text(turns)
-    dialogue_is_partial = any(turn.get("speaker") == "unknown" for turn in turns)
-    return {
-        "situation_title": str(candidate.get("situation_title") or "").strip(),
-        "evidence_quote": {
-            **ref,
-            "client_text": quote_text,
-            "manager_text": _manager_text_from_turns(turns),
-            "criterion_code": None,
-            "stage_code": stage_code,
-            "source": "report_evidence.situation_candidates",
-            "evidence_quality": candidate.get("evidence_quality"),
-        },
-        "dialogue_excerpt": {
-            **ref,
-            "source": "report_evidence.situation_candidates",
-            "is_partial": dialogue_is_partial,
-            "partial_reason": "speaker_roles_unavailable" if dialogue_is_partial else None,
-            "turns": turns,
-        },
-        "coaching_view": {
+    dialogue_turns = turns
+    dialogue_source = "report_evidence.situation_candidates"
+    dialogue_partial_reason = None
+    coaching_view_source = "report_evidence"
+    coaching_view: dict[str, Any] | None = None
+    selected_client_quote: dict[str, Any] | None = None
+    if _situation_requires_client_signal(candidate) and _client_turn_from_turns(turns) is None:
+        selected_client_quote, _relevance = _select_client_grounded_situation_quote(
+            evidence=evidence,
+            candidate=candidate,
+        )
+        if selected_client_quote is not None:
+            quote_text = str(selected_client_quote.get("quote") or "").strip()
+            dialogue_turns = [{"speaker": "client", "text": quote_text}]
+            dialogue_source = f"report_evidence.{selected_client_quote.get('source_key')}"
+            dialogue_partial_reason = "client_quote_without_adjacent_manager_turn"
+            coaching_view = _client_grounded_situation_coaching_view(
+                candidate=candidate,
+                quote=quote_text,
+                stage_code=stage_code,
+                stage_name=stage_name,
+                score_by_stage=score_by_stage,
+            )
+            coaching_view_source = "report_evidence.client_grounded_situation"
+    dialogue_is_partial = any(turn.get("speaker") == "unknown" for turn in dialogue_turns) or bool(dialogue_partial_reason)
+    if coaching_view is None:
+        coaching_view = {
             "pattern_title": str(candidate.get("situation_title") or "").strip()
             or "Ситуация дня из report_evidence",
             "stage_code": stage_code,
@@ -7267,9 +7530,31 @@ def _build_report_evidence_situation(
                 for item in list(candidate.get("scripts") or [])[:3]
                 if str(item or "").strip()
             ],
-            "source": "report_evidence",
+            "source": coaching_view_source,
             "dialogue_is_partial": dialogue_is_partial,
+        }
+    return {
+        "situation_title": str(candidate.get("situation_title") or "").strip(),
+        "evidence_quote": {
+            **ref,
+            "client_text": quote_text,
+            "manager_text": _manager_text_from_turns(turns),
+            "criterion_code": None,
+            "stage_code": stage_code,
+            "source": "report_evidence.client_grounded_situation"
+            if selected_client_quote is not None
+            else "report_evidence.situation_candidates",
+            "evidence_quality": "direct" if selected_client_quote is not None else candidate.get("evidence_quality"),
+            "client_grounded": selected_client_quote is not None or _client_turn_from_turns(turns) is not None,
         },
+        "dialogue_excerpt": {
+            **ref,
+            "source": dialogue_source,
+            "is_partial": dialogue_is_partial,
+            "partial_reason": dialogue_partial_reason or ("speaker_roles_unavailable" if dialogue_is_partial else None),
+            "turns": dialogue_turns,
+        },
+        "coaching_view": coaching_view,
     }
 
 

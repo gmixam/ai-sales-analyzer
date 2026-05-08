@@ -1854,6 +1854,26 @@ Checks passed: `Ужас` absent from PDFs and payload; available valid names su
 
 **Next:** continue the human-review blocker list with bounded fixes for `Ситуация дня` Эльмиры, recommendations in `Голос клиента` / `Кого взять завтра`, and Тимур `Разбор звонка`; only after those, rebuild final PDFs and resend Telegram test.
 
+## Step 8AH-8C — Improve Situation Day evidence selection for client-reaction cases
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** general `СИТУАЦИЯ ДНЯ` evidence-selection mechanism only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, Telegram, or business email changes.
+
+**Mechanism:** when a Situation Day conclusion depends on client reaction or state (trust/distrust, convenience to talk, doubt, objection, refusal/reschedule, need, current process, or client barrier), reporting no longer treats a manager-only fragment as strong proof if valid client-grounded evidence exists in the same persisted `report_evidence` package. Ranking now prefers usable `report_evidence.situation_candidates` with client dialogue, then relevant client quotes from `voice_of_customer` / `quote_bank`, then manager-only or weak fallback. If a client quote replaces a manager-only fragment, payload marks `source=report_evidence.client_grounded_situation`, `client_grounded=true`, and aligns `what_happened` / meaning / missing action / next action to the selected client signal.
+
+**Regression case:** Эльмира `06:28 / +77012172463` now uses the persisted client trust-barrier quote about fraud and unknown numbers in `СИТУАЦИЯ ДНЯ` instead of showing only the manager question. The fix is generic; production code does not hardcode this manager, phone, time, interaction id, or quote.
+
+**Verification:** direct persisted-artifact ready-only rebuild produced:
+- `/tmp/step8ah8c_Эльмира_2026-05-04.pdf` (`137605` bytes)
+- `/tmp/step8ah8c_Тимур_2026-05-04.pdf` (`149557` bytes)
+- `/tmp/step8ah8c_Толеген_2026-05-04.pdf` (`124765` bytes)
+- `/tmp/step8ah8c_summary_2026-05-04.json`
+
+Checks passed: Эльмира Situation Day evidence source is `report_evidence.client_grounded_situation`; PDF text contains the client-grounded fragment and unified call reference; Тимур and Толеген remained renderable; `manager_facing_completeness.status=passed` for all three; outcome totals unchanged (`Эльмира 12/1/1/2/2/6/0`, `Тимур 15/3/1/2/6/2/1`, `Толеген 6/0/0/1/3/2/0`); `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `transcripts_built=0`; `analyses_built=0`; delivery not run.
+
+**Next:** continue bounded human-review fixes for recommendation quality in `Голос клиента` / `Кого взять завтра` and Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later steps.
+
 ## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
 
 **Status:** DONE 2026-05-08.
