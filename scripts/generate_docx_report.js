@@ -139,21 +139,29 @@ function isPhoneLike(value) {
   return digits.length >= 7;
 }
 
+function samePhone(left, right) {
+  const l = cleanText(left).replace(/\D/g, "");
+  const r = cleanText(right).replace(/\D/g, "");
+  return Boolean(l && r && l === r);
+}
+
 function buildCallReference(quote) {
   if (!quote) return "";
+  const explicitReference = cleanText(quote.client_call_reference || quote.call_reference);
+  if (explicitReference) return `Звонок: ${explicitReference}`;
   const dateText = formatRussianDate(firstNonEmpty(quote.date_label, DATA.report_day, DATA.date));
   const timeText = cleanText(quote.time_label);
   const clientLabel = cleanText(firstNonEmpty(quote.client_name, quote.client_label));
   const phone = cleanText(quote.client_phone);
   const parts = [];
-  if (dateText && dateText !== "—") parts.push(dateText);
-  if (timeText && timeText !== "—") {
-    if (parts.length > 0) parts[0] = `${parts[0]}, ${timeText}`;
-    else parts.push(timeText);
-  }
   if (clientLabel && !isPhoneLike(clientLabel)) parts.push(clientLabel);
-  if (phone) parts.push(phone);
+  if (phone && !samePhone(clientLabel, phone)) parts.push(phone);
   else if (clientLabel && isPhoneLike(clientLabel)) parts.push(clientLabel);
+  if (dateText && dateText !== "—") {
+    parts.push(timeText && timeText !== "—" ? `${dateText}, ${timeText}` : dateText);
+  } else if (timeText && timeText !== "—") {
+    parts.push(timeText);
+  }
   return parts.length > 0 ? `Звонок: ${parts.join(" · ")}` : "";
 }
 
@@ -576,6 +584,7 @@ function dataFromBundle(bundle) {
     call_breakdown: {
       client: payload.call_breakdown?.client_label || "Клиент",
       time: payload.call_breakdown?.time_label || "—",
+      reference: payload.call_breakdown?.client_call_reference || "",
       stages: (callBreakdown.rows || []).map((row) => ({
         moment: row[0] || "—",
         what: row[1] || "—",
@@ -621,7 +630,7 @@ function dataFromBundle(bundle) {
       return {
         priority,
         label,
-        client: firstNonEmpty(contact.client_label, row[1], "Клиент"),
+        client: firstNonEmpty(contact.client_call_reference, row[1], contact.client_label, "Клиент"),
         phone: "",
         status: cleanText(contact.status || ""),
         situation: tomorrowSituation(contact, row),
@@ -636,7 +645,7 @@ function dataFromBundle(bundle) {
       financial_line: morningCard.financial_line || "",
       top_contacts: (callTomorrow.rows || []).slice(0, 3).map((row, index) => ({
         index: index + 1,
-        client: row[1] || "Клиент",
+        client: (callTomorrow.contacts || payload.call_tomorrow?.contacts || [])[index]?.client_call_reference || row[1] || "Клиент",
         phone: "",
         script: row[4] || row[3] || "",
       })),
@@ -1197,11 +1206,12 @@ function buildSituatsiya() {
 // ──────────────────────────────────────────────────────────────
 
 function buildRazbor() {
-  const { client, time, stages } = DATA.call_breakdown;
+  const { client, time, reference, stages } = DATA.call_breakdown;
+  const callReference = reference || `${client} · ${time}`;
   if (!stages || stages.length === 0) {
     return [
       blockHeading("🔍", "РАЗБОР ЗВОНКА"),
-      bodyPara(`${client} · ${time}`, { color: COLORS.gray }),
+      bodyPara(callReference, { color: COLORS.gray }),
       bodyPara("Недостаточно данных для детального разбора звонка.", { color: COLORS.gray }),
     ];
   }
@@ -1227,7 +1237,7 @@ function buildRazbor() {
 
   return [
     blockHeading("🔍", "РАЗБОР ЗВОНКА"),
-    bodyPara(`${client} · ${time} · Звонок выбран как наиболее показательный для основного паттерна дня.`, { color: COLORS.gray }),
+    bodyPara(`${callReference} · Звонок выбран как наиболее показательный для основного паттерна дня.`, { color: COLORS.gray }),
     spacer(4),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },

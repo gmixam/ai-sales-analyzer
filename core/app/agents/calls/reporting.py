@@ -4915,18 +4915,7 @@ def _build_situation_evidence_quote(
                 or frag.get("manager")
                 or ""
             ).strip() or None
-            call_meta = dict(detail.get("call") or {})
-            client_phone = str(
-                call_meta.get("contact_phone")
-                or (artifact.interaction.metadata_ or {}).get("contact_phone")
-                or ""
-            ).strip() or None
-            client_label = str(
-                call_meta.get("contact_name") or client_phone
-                or "Клиент"
-            ).strip()
-            time_label = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
-            date_label = artifact.call_started_at.date().isoformat() if artifact.call_started_at else None
+            ref = _artifact_call_reference(artifact)
             rank = 2
             if key_problem_code and criterion_code == key_problem_code:
                 rank = 0
@@ -4944,11 +4933,7 @@ def _build_situation_evidence_quote(
                         "criterion_code": criterion_code,
                         "stage_code": stage_code,
                         "source": "evidence_fragments",
-                        "call_id": str(artifact.interaction.id),
-                        "client_label": client_label,
-                        "client_phone": client_phone,
-                        "date_label": date_label,
-                        "time_label": time_label,
+                        **ref,
                     },
                 )
             )
@@ -5155,26 +5140,70 @@ def _build_situation_dialogue_excerpt(
     }
 
 
-def _artifact_client_label(artifact: ReportArtifact) -> str:
-    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+def _artifact_scores_detail(artifact: ReportArtifact) -> dict[str, Any]:
+    """Return the best persisted analysis detail available for display metadata."""
+    source_analysis = artifact.analysis or artifact.original_analysis
+    return dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
+
+
+def _artifact_call_metadata(artifact: ReportArtifact) -> dict[str, Any]:
+    """Return merged call metadata with analysis fields taking priority."""
+    detail = _artifact_scores_detail(artifact)
     call_meta = dict(detail.get("call") or {})
-    return str(
-        call_meta.get("contact_name")
-        or call_meta.get("contact_phone")
-        or (artifact.interaction.metadata_ or {}).get("contact_phone")
-        or "Клиент"
-    ).strip()
+    interaction_meta = dict(artifact.interaction.metadata_ or {})
+    return {
+        "contact_name": _clean_display_part(
+            call_meta.get("contact_name")
+            or call_meta.get("client_name")
+            or call_meta.get("name")
+            or interaction_meta.get("contact_name")
+            or interaction_meta.get("client_name")
+            or interaction_meta.get("contact_label")
+            or interaction_meta.get("customer_name")
+        ),
+        "contact_phone": _clean_display_part(
+            call_meta.get("contact_phone")
+            or call_meta.get("client_phone")
+            or call_meta.get("phone")
+            or interaction_meta.get("contact_phone")
+            or interaction_meta.get("client_phone")
+            or interaction_meta.get("phone")
+        ),
+    }
+
+
+def _artifact_client_label(artifact: ReportArtifact) -> str:
+    call_meta = _artifact_call_metadata(artifact)
+    name = call_meta.get("contact_name")
+    phone = call_meta.get("contact_phone")
+    if name and not _is_phone_like_display(name):
+        return str(name)
+    return str(phone or name or "Клиент").strip()
 
 
 def _artifact_client_phone(artifact: ReportArtifact) -> str | None:
-    detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-    call_meta = dict(detail.get("call") or {})
-    phone = str(
-        call_meta.get("contact_phone")
-        or (artifact.interaction.metadata_ or {}).get("contact_phone")
-        or ""
-    ).strip()
+    call_meta = _artifact_call_metadata(artifact)
+    phone = str(call_meta.get("contact_phone") or "").strip()
+    name = str(call_meta.get("contact_name") or "").strip()
+    if not phone and _is_phone_like_display(name):
+        phone = name
     return phone or None
+
+
+def _artifact_client_name(artifact: ReportArtifact) -> str | None:
+    call_meta = _artifact_call_metadata(artifact)
+    name = str(call_meta.get("contact_name") or "").strip()
+    if not name or _is_phone_like_display(name):
+        return None
+    return name
+
+
+def _artifact_client_call_reference(artifact: ReportArtifact) -> str | None:
+    return _build_client_call_reference(
+        client_name_or_label=_artifact_client_name(artifact),
+        phone=_artifact_client_phone(artifact),
+        call_started_at=artifact.call_started_at,
+    )
 
 
 def _artifact_call_reference(artifact: ReportArtifact) -> dict[str, Any]:
@@ -5182,10 +5211,11 @@ def _artifact_call_reference(artifact: ReportArtifact) -> dict[str, Any]:
     return {
         "call_id": str(artifact.interaction.id),
         "client_label": client_label,
-        "client_name": None if re.sub(r"\D", "", client_label).strip() else client_label,
+        "client_name": _artifact_client_name(artifact),
         "client_phone": _artifact_client_phone(artifact),
         "date_label": artifact.call_started_at.date().isoformat() if artifact.call_started_at else None,
         "time_label": artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—",
+        "client_call_reference": _artifact_client_call_reference(artifact),
     }
 
 
@@ -6193,10 +6223,16 @@ def _build_daily_call_row(artifact: ReportArtifact) -> dict[str, Any]:
         unclassified_reason_label = _reason_label(unclassified_reason_code)
     unclassified_status_label = _manager_unclassified_status(unclassified_reason_code)
     unclassified_context_label = _manager_unclassified_context(unclassified_reason_code)
+    ref = _artifact_call_reference(artifact)
     return {
         "interaction_id": str(artifact.interaction.id),
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
         "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
+        "client_name": ref.get("client_name"),
+        "client_phone": ref.get("client_phone"),
+        "client_call_reference": ref.get("client_call_reference"),
+        "date_label": ref.get("date_label"),
+        "time_label": ref.get("time_label"),
         "duration_sec": artifact.interaction.duration_sec,
         "call_type": call_type,
         "scenario_type": classification.get("scenario_type"),
@@ -6452,13 +6488,8 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
     situations: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def _client_meta(artifact: ReportArtifact) -> tuple[str, str]:
-        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-        call_meta = dict(detail.get("call") or {})
-        name = str(call_meta.get("contact_name") or call_meta.get("contact_phone")
-                   or (artifact.interaction.metadata_ or {}).get("contact_phone") or "Клиент").strip()
-        ts = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
-        return name, ts
+    def _client_meta(artifact: ReportArtifact) -> dict[str, Any]:
+        return _artifact_call_reference(artifact)
 
     def _add_from_fragments(frag_type_priority: str | None) -> None:
         for artifact in artifacts:
@@ -6470,11 +6501,14 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                 if len(client_text) < 15 or client_text in seen:
                     continue
                 seen.add(client_text)
-                name, ts = _client_meta(artifact)
+                ref = _client_meta(artifact)
                 why = str(frag.get("why") or "").strip()
                 situations.append({
-                    "client_label": name,
-                    "time_label": ts,
+                    "client_label": ref["client_label"],
+                    "client_phone": ref["client_phone"],
+                    "date_label": ref["date_label"],
+                    "time_label": ref["time_label"],
+                    "client_call_reference": ref["client_call_reference"],
                     "quote": client_text[:120] + ("…" if len(client_text) > 120 else ""),
                     "context": why[:100] + ("…" if len(why) > 100 else "") if why else None,
                 })
@@ -6488,7 +6522,7 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
     if len(situations) < 3:
         for artifact in artifacts:
             detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-            name, ts = _client_meta(artifact)
+            ref = _client_meta(artifact)
             for sig in (detail.get("product_signals") or []):
                 quote = str(sig.get("quote") or "").strip()
                 if len(quote) < 10 or quote in seen:
@@ -6496,8 +6530,11 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
                 seen.add(quote)
                 topic = str(sig.get("topic") or "").strip()
                 situations.append({
-                    "client_label": name,
-                    "time_label": ts,
+                    "client_label": ref["client_label"],
+                    "client_phone": ref["client_phone"],
+                    "date_label": ref["date_label"],
+                    "time_label": ref["time_label"],
+                    "client_call_reference": ref["client_call_reference"],
                     "quote": quote[:120] + ("…" if len(quote) > 120 else ""),
                     "context": topic[:100] if topic else None,
                 })
@@ -6981,12 +7018,14 @@ def _build_call_breakdown_from_report_evidence(
         "client_phone": ref["client_phone"],
         "date_label": ref["date_label"],
         "time_label": ref["time_label"],
+        "client_call_reference": ref["client_call_reference"],
         "stage_steps": [],
         "worked": [],
         "to_fix": [],
         "recommendation": None,
         "rows": rows,
-        "summary_line": f"{ref['client_label']} · {ref['time_label']} · report_evidence",
+        "summary_line": ref["client_call_reference"]
+        or f"{ref['client_label']} · {ref['time_label']}",
         "source_note": "report_evidence.manager_coaching_moments",
     }
 
@@ -7034,7 +7073,10 @@ def _build_voice_of_customer_from_report_evidence(
                     ),
                     {
                         "client_label": ref["client_label"],
+                        "client_phone": ref["client_phone"],
+                        "date_label": ref["date_label"],
                         "time_label": ref["time_label"],
+                        "client_call_reference": ref["client_call_reference"],
                         "quote": quote,
                         "context": _first_sentence(str(item.get("meaning") or ""), limit=180),
                         "source": "report_evidence.voice_of_customer",
@@ -7166,7 +7208,13 @@ def _build_call_tomorrow(
         if status not in FINAL_SALES_LIKE_STATUSES:
             continue
 
-        client_label = str(row.get("client_or_phone") or "").strip()
+        client_label = str(
+            row.get("client_or_phone")
+            or row.get("client_name")
+            or row.get("client_phone")
+            or row.get("client_call_reference")
+            or ""
+        ).strip()
         if not client_label:
             continue
 
@@ -7199,6 +7247,9 @@ def _build_call_tomorrow(
 
         grouped[status].append({
             "client_label": client_label,
+            "client_call_reference": str(row.get("client_call_reference") or "").strip() or client_label,
+            "client_phone": row.get("client_phone"),
+            "date_label": row.get("date_label"),
             "time_label": time_label,
             "status": status,
             "deadline": deadline,
@@ -7223,6 +7274,9 @@ def _build_call_tomorrow(
             seen.add(item["client_label"])
             contacts.append({
                 "client_label": item["client_label"],
+                "client_call_reference": item["client_call_reference"],
+                "client_phone": item["client_phone"],
+                "date_label": item["date_label"],
                 "time_label": item["time_label"],
                 "status": item["status"],
                 "deadline": item["deadline"],
@@ -7298,19 +7352,7 @@ def _build_call_breakdown(
     best_evidence_score = abs(best_negative_evidence_score)
 
     detail = dict((best_artifact.analysis.scores_detail or {}) if best_artifact.analysis is not None else {})
-    call_meta = dict(detail.get("call") or {})
-    client_label = str(
-        call_meta.get("contact_name") or call_meta.get("contact_phone")
-        or (best_artifact.interaction.metadata_ or {}).get("contact_phone")
-        or "Клиент"
-    ).strip()
-    client_phone = str(
-        call_meta.get("contact_phone")
-        or (best_artifact.interaction.metadata_ or {}).get("contact_phone")
-        or ""
-    ).strip() or None
-    date_label = best_artifact.call_started_at.date().isoformat() if best_artifact.call_started_at else None
-    time_label = best_artifact.call_started_at.strftime("%H:%M") if best_artifact.call_started_at else "—"
+    ref = _artifact_call_reference(best_artifact)
 
     # Build stage steps ordered by funnel
     raw_stages = detail.get("score_by_stage") or []
@@ -7362,10 +7404,11 @@ def _build_call_breakdown(
     return {
         "is_placeholder": not stage_steps and not worked and not to_fix,
         "call_id": str(best_artifact.interaction.id),
-        "client_label": client_label,
-        "client_phone": client_phone,
-        "date_label": date_label,
-        "time_label": time_label,
+        "client_label": ref["client_label"],
+        "client_phone": ref["client_phone"],
+        "date_label": ref["date_label"],
+        "time_label": ref["time_label"],
+        "client_call_reference": ref["client_call_reference"],
         "stage_steps": stage_steps,
         "worked": worked,
         "to_fix": to_fix,
@@ -7400,20 +7443,14 @@ def _build_problem_call_example(
         return None
     candidates.sort(key=lambda t: t[0])
     _score, best, reason_text = candidates[0]
-    detail = dict((best.analysis.scores_detail or {}) if best.analysis is not None else {})
-    call_meta = dict(detail.get("call") or {})
-    client_label = str(
-        call_meta.get("contact_name") or call_meta.get("contact_phone")
-        or (best.interaction.metadata_ or {}).get("contact_phone")
-        or "Клиент"
-    ).strip()
-    time_label = (
-        best.call_started_at.strftime("%H:%M") if best.call_started_at else "—"
-    )
+    ref = _artifact_call_reference(best)
     reason_short = reason_text[:80] + "…" if len(reason_text) > 80 else reason_text
     return {
-        "client_label": client_label,
-        "time_label": time_label,
+        "client_label": ref["client_label"],
+        "client_phone": ref["client_phone"],
+        "date_label": ref["date_label"],
+        "time_label": ref["time_label"],
+        "client_call_reference": ref["client_call_reference"],
         "reason_short": reason_short or None,
     }
 
@@ -7585,6 +7622,20 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
 
 
 _MONTH_SHORT_RU_REP = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+_MONTH_FULL_RU_REP = [
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+]
 
 
 def _format_iso_deadline(value: str | None) -> str | None:
@@ -7604,6 +7655,61 @@ def _format_iso_deadline(value: str | None) -> str | None:
         mon = _MONTH_SHORT_RU_REP[month - 1] if 1 <= month <= 12 else str(month)
         return f"{day} {mon}"
     return text
+
+
+def _clean_display_part(value: Any) -> str:
+    """Return a compact reader-facing display fragment."""
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _is_phone_like_display(value: Any) -> bool:
+    """Return True when a display fragment is effectively a phone number."""
+    text = _clean_display_part(value)
+    digits = re.sub(r"\D", "", text)
+    return len(digits) >= 7
+
+
+def _same_phone_display(left: Any, right: Any) -> bool:
+    """Return True when two values point to the same phone number."""
+    left_digits = re.sub(r"\D", "", _clean_display_part(left))
+    right_digits = re.sub(r"\D", "", _clean_display_part(right))
+    return bool(left_digits and right_digits and left_digits == right_digits)
+
+
+def _format_call_started_human(value: datetime | None) -> str | None:
+    """Format call start as '4 мая 2026, 11:46' for unified call references."""
+    if value is None:
+        return None
+    month = value.month
+    month_label = _MONTH_FULL_RU_REP[month - 1] if 1 <= month <= 12 else str(month)
+    return f"{value.day} {month_label} {value.year}, {value.strftime('%H:%M')}"
+
+
+def _build_client_call_reference(
+    *,
+    client_name_or_label: Any = None,
+    phone: Any = None,
+    call_started_at: datetime | None = None,
+) -> str | None:
+    """Build the unified manager_daily client/call display label.
+
+    Format: name/label · phone · date, time. The helper does not invent a
+    fallback name and avoids repeating the phone when the label already is one.
+    """
+    label = _clean_display_part(client_name_or_label)
+    phone_text = _clean_display_part(phone)
+    if label in {"Клиент", "Клиент не определён", "—"}:
+        label = ""
+    if phone_text in {"Клиент", "Клиент не определён", "—"}:
+        phone_text = ""
+    if _is_phone_like_display(label) and not phone_text:
+        phone_text = label
+        label = ""
+    elif label and phone_text and _same_phone_display(label, phone_text):
+        label = ""
+
+    parts = [part for part in (label, phone_text, _format_call_started_human(call_started_at)) if part]
+    return " · ".join(parts) if parts else None
 
 
 def _derive_call_status_and_deadline(*, follow_up: dict[str, Any]) -> tuple[str, str | None]:

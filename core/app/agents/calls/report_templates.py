@@ -442,7 +442,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 [
                     str(idx + 1),
                     _short_time(row.get("time")),
-                    _manager_reader_value(row.get("client_or_phone"), "Клиент не определён"),
+                    _manager_reader_value(
+                        row.get("client_call_reference") or row.get("client_or_phone"),
+                        "Клиент не определён",
+                    ),
                     _call_topic_label(row.get("call_type"), row.get("scenario_type")),
                     _call_context_label(
                         str(row.get("status") or ""),
@@ -765,9 +768,9 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             f"Наша задача: {section.get('manager_task') or 'Нет данных'}",
         ]
         example = dict(section.get("call_example") or {})
-        if example.get("client_label") or example.get("time_label"):
+        if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
             lines.append(
-                f"Пример из сегодня: {example.get('client_label') or 'Клиент'} · {example.get('time_label') or '—'}"
+                f"Пример из сегодня: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
             )
         if example.get("reason_short"):
             lines.append(str(example["reason_short"]))
@@ -841,7 +844,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append("Позвони сегодня:")
             lines.extend(
                 [
-                    f"- {item.get('client_label') or 'Клиент'} — {item.get('opening_script') or 'Скрипт не задан'}"
+                    f"- {item.get('client_call_reference') or item.get('client_label') or 'Клиент'} — {item.get('opening_script') or 'Скрипт не задан'}"
                     for item in section.get("call_tomorrow_contacts") or []
                 ]
             )
@@ -1094,13 +1097,13 @@ def _render_html_section(section: dict[str, Any]) -> str:
         example = dict(section.get("call_example") or {})
         example_html = (
             "<div class=\"mini-card\">"
-            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_label') or 'Клиент'))} · {html.escape(str(example.get('time_label') or '—'))}"
+            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_call_reference') or example.get('client_label') or 'Клиент'))}"
             + (
                 f"<div class=\"muted\">{html.escape(str(example.get('reason_short') or ''))}</div>"
                 if example.get("reason_short") else ""
             )
             + "</div>"
-            if example.get("client_label") or example.get("time_label")
+            if example.get("client_call_reference") or example.get("client_label") or example.get("time_label")
             else ""
         )
         return (
@@ -1206,7 +1209,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
         )
     if kind == "morning_card":
         calls = "".join(
-            f"<li>{html.escape(str(item.get('client_label') or 'Клиент'))} — {html.escape(str(item.get('opening_script') or 'Скрипт не задан'))}</li>"
+            f"<li>{html.escape(str(item.get('client_call_reference') or item.get('client_label') or 'Клиент'))} — {html.escape(str(item.get('opening_script') or 'Скрипт не задан'))}</li>"
             for item in section.get("call_tomorrow_contacts") or []
         ) or "".join(
             f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"
@@ -1700,8 +1703,8 @@ def _render_manager_daily_pdf_report(
     draw_text(page2, left=margin + 12, top=focus_top + 120, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
     example = dict(focus.get("call_example") or {})
     example_line = ""
-    if example.get("client_label") or example.get("time_label"):
-        example_line = f"Пример: {example.get('client_label') or 'Клиент'} · {example.get('time_label') or '—'}"
+    if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
+        example_line = f"Пример: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
     if example_line:
         draw_text(page2, left=margin + 12, top=focus_top + 150, text=example_line, size=8.3, color=accent, max_width=width - (margin * 2) - 24)
     script_top = focus_top + 170
@@ -1827,7 +1830,7 @@ def _render_manager_daily_pdf_report(
     if contacts:
         for item in contacts[:3]:
             draw_rect(page7, left=margin + 16, top=contact_top, box_width=width - (margin * 2) - 32, box_height=34, fill=white)
-            draw_text(page7, left=margin + 24, top=contact_top + 7, text=f"{item.get('client_label') or 'Клиент'}", size=8.8, color=black, max_width=150)
+            draw_text(page7, left=margin + 24, top=contact_top + 7, text=f"{item.get('client_call_reference') or item.get('client_label') or 'Клиент'}", size=8.8, color=black, max_width=150)
             draw_text(page7, left=margin + 160, top=contact_top + 7, text=str(item.get("opening_script") or "Скрипт не задан"), size=7.8, color=muted, max_width=width - (margin * 2) - 200)
             contact_top += 40
     else:
@@ -2433,7 +2436,7 @@ def _render_voice_of_customer_html(section: dict[str, Any]) -> str:
     cards = "".join(
         f"<article class=\"voice-card\">"
         f"<blockquote class=\"voice-quote\">«{html.escape(str(s.get('quote') or ''))}»</blockquote>"
-        f"<div class=\"voice-meta\">{html.escape(str(s.get('client_label') or 'Клиент'))} · {html.escape(str(s.get('time_label') or '—'))}</div>"
+        f"<div class=\"voice-meta\">{html.escape(str(s.get('client_call_reference') or s.get('client_label') or 'Клиент'))}</div>"
         + (
             f"<div class=\"voice-context\">{html.escape(str(s['context']))}</div>"
             if s.get("context")
@@ -2450,17 +2453,18 @@ def _render_voice_of_customer_html(section: dict[str, Any]) -> str:
 
 def _render_situation_call_example_html(call_example: dict[str, Any]) -> str:
     """Render one representative call example inside СИТУАЦИЯ ДНЯ block."""
+    reference = str(call_example.get("client_call_reference") or "").strip()
     client = str(call_example.get("client_label") or "").strip()
     time_label = str(call_example.get("time_label") or "").strip()
     reason = str(call_example.get("reason_short") or "").strip()
-    if not client and not time_label:
+    if not reference and not client and not time_label:
         return ""
     header_parts = []
-    if client:
+    if not reference and client:
         header_parts.append(html.escape(client))
-    if time_label and time_label != "—":
+    if not reference and time_label and time_label != "—":
         header_parts.append(html.escape(time_label))
-    header_line = " · ".join(header_parts)
+    header_line = html.escape(reference) if reference else " · ".join(header_parts)
     reason_html = f"<div class=\"situation-example-reason\">{html.escape(reason)}</div>" if reason else ""
     return (
         f"<div class=\"situation-example\">"
@@ -2536,7 +2540,7 @@ def _render_call_tomorrow_html(section: dict[str, Any]) -> str:
         status = str(c.get("status") or "open")
         status_label = _CALL_TOMORROW_STATUS_LABEL.get(status, status)
         status_class = f"ct-status-{status}"
-        client = html.escape(str(c.get("client_label") or "Клиент"))
+        client = html.escape(str(c.get("client_call_reference") or c.get("client_label") or "Клиент"))
         time_lbl = html.escape(str(c.get("time_label") or "—"))
         script = html.escape(str(c.get("opening_script") or ""))
         deadline = c.get("deadline")
@@ -2883,8 +2887,8 @@ def _build_v5_call_breakdown_section(
             "summary_line": str(
                 section.get("summary_line")
                 or (
-                    f"{section.get('client_label') or 'Клиент'} · {section.get('time_label') or '—'}"
-                    if section.get("client_label") or section.get("time_label")
+                    f"{section.get('client_call_reference') or section.get('client_label') or 'Клиент'}"
+                    if section.get("client_call_reference") or section.get("client_label") or section.get("time_label")
                     else "Звонок выбран как наиболее показательный для основного паттерна дня."
                 )
             ),
@@ -2916,8 +2920,8 @@ def _build_v5_call_breakdown_section(
         )
     return {
         "summary_line": (
-            f"{section.get('client_label') or 'Клиент'} · {section.get('time_label') or '—'}"
-            if section.get("client_label") or section.get("time_label")
+            f"{section.get('client_call_reference') or section.get('client_label') or 'Клиент'}"
+            if section.get("client_call_reference") or section.get("client_label") or section.get("time_label")
             else "Звонок выбран как наиболее показательный для основного паттерна дня."
         ),
         "rows": rows[:5],
@@ -2989,7 +2993,7 @@ def _build_v5_voice_of_customer_section(
     ) if recommendations else ""
     rows = [
         [
-            f"{item.get('client_label') or 'Клиент'} · {item.get('time_label') or '—'}",
+            f"{item.get('client_call_reference') or item.get('client_label') or 'Клиент'}",
             item.get("quote") or "—",
             str(item.get("interpretation") or "").strip()
             or (
@@ -3109,7 +3113,10 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
     rows = [
         [
             f"{_priority_icon_for_contact(str(item.get('status') or 'open'))} {_priority_label_for_contact(str(item.get('status') or 'open'))}",
-            _manager_reader_value(item.get("client_label"), "Клиент"),
+            _manager_reader_value(
+                item.get("client_call_reference") or item.get("client_label"),
+                "Клиент",
+            ),
             _deadline_label_for_contact(item),
             _call_goal_for_contact(item),
             _first_phrase_for_contact(item),
@@ -3144,7 +3151,10 @@ def _build_morning_card_data(
     open_calls = [
         {
             "time": _short_time(row.get("time")),
-            "client": _manager_reader_value(row.get("client_or_phone"), "Клиент не определён"),
+            "client": _manager_reader_value(
+                row.get("client_call_reference") or row.get("client_or_phone"),
+                "Клиент не определён",
+            ),
             "status": "Открыт",
         }
         for row in open_calls_raw
@@ -3518,13 +3528,13 @@ def _manager_status_text_color(
         example = dict(section.get("call_example") or {})
         example_html = (
             "<div class=\"mini-card\">"
-            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_label') or 'Клиент'))} · {html.escape(str(example.get('time_label') or '—'))}"
+            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_call_reference') or example.get('client_label') or 'Клиент'))}"
             + (
                 f"<div class=\"muted\">{html.escape(str(example.get('reason_short') or ''))}</div>"
                 if example.get("reason_short") else ""
             )
             + "</div>"
-            if example.get("client_label") or example.get("time_label")
+            if example.get("client_call_reference") or example.get("client_label") or example.get("time_label")
             else ""
         )
         return (
@@ -3606,7 +3616,7 @@ def _manager_status_text_color(
         )
     if kind == "morning_card":
         calls = "".join(
-            f"<li>{html.escape(str(item.get('client_label') or 'Клиент'))} — {html.escape(str(item.get('opening_script') or 'Скрипт не задан'))}</li>"
+            f"<li>{html.escape(str(item.get('client_call_reference') or item.get('client_label') or 'Клиент'))} — {html.escape(str(item.get('opening_script') or 'Скрипт не задан'))}</li>"
             for item in section.get("call_tomorrow_contacts") or []
         ) or "".join(
             f"<li>{html.escape(str(call.get('time', '—')))} · {html.escape(str(call.get('client', '—')))} · {html.escape(str(call.get('status', '—')))}</li>"

@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-06 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks.
 
 ---
 
@@ -157,6 +157,29 @@ Service note должна отображать полную воронку от�
 - Включает все содержательные звонки дня, вне зависимости от их coaching-eligibility.
 - Звонки, не вошедшие в coaching core, показываются в списке без глубокого coaching-блока, но присутствуют.
 - Колонки: `#` / `Время` / `Клиент` / `Тема` / `Статус` / `Следующий шаг` / `Контекст`.
+
+---
+
+### Единый client/call display reference
+
+Во всех `manager_daily` блоках, где отображается клиент или звонок, кроме самих фрагментов звонка, используется единый reader-facing reference:
+
+```text
+имя / ФИО / безопасный persisted label · телефон · дата, время
+```
+
+Fallback rules:
+- если имени/label нет: `телефон · дата, время`;
+- если телефона нет: `имя · дата, время`;
+- если имя/label уже является тем же телефоном, телефон не дублируется;
+- reporting layer не выдумывает ФИО и не извлекает новое имя из transcript ad hoc.
+
+Source priority:
+1. persisted analysis call metadata (`scores_detail.call.contact_name` / `contact_phone` and compatible aliases);
+2. persisted interaction metadata (`contact_name`, `contact_label`, `customer_name`, `contact_phone` and compatible aliases);
+3. existing call reference fields already assembled in the reporting payload.
+
+Этот display contract применяется к `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` и client column in `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. Структурное объединение колонок call list остаётся отдельным layout step.
 
 ---
 

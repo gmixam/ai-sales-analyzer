@@ -765,6 +765,46 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["call_tomorrow"]["contacts"][0]["source"], "report_evidence.follow_up_candidates")
         self.assertEqual(payload["call_tomorrow"]["contacts"][0]["next_step"], "Отправить материалы и вернуться с вопросом.")
 
+    def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        artifact.interaction.metadata_["contact_name"] = "Нур-Султан"
+        artifact.interaction.metadata_["contact_phone"] = "+77071523663"
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"] = {"contact_name": "Нур-Султан", "contact_phone": "+77071523663"}
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        report = build_report_render_model(payload)
+        sections = {section["id"]: section for section in report["sections"]}
+        expected = "Нур-Султан · +77071523663 · 4 мая 2026, 11:46"
+
+        self.assertEqual(payload["call_list"][0]["client_call_reference"], expected)
+        self.assertEqual(payload["call_breakdown"]["client_call_reference"], expected)
+        self.assertEqual(payload["voice_of_customer"]["situations"][0]["client_call_reference"], expected)
+        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["client_call_reference"], expected)
+        self.assertEqual(sections["call_list"]["rows"][0][2], expected)
+        self.assertEqual(sections["call_tomorrow"]["rows"][0][1], expected)
+        self.assertEqual(sections["call_breakdown"]["summary_line"], expected)
+        self.assertIn(expected, sections["voice_of_customer"]["rows"][0][0])
+        self.assertNotIn("+77071523663 · +77071523663", expected)
+
     def test_manager_daily_invalid_report_evidence_uses_step8w_fallback(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.interaction.text = "Клиент: Я просто уточняю для руководителя, сама решение не принимаю."
@@ -3560,7 +3600,7 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(len(sections["voice_of_customer"]["rows"]), 1)
         self.assertEqual(
             sections["call_tomorrow"]["rows"][0][:3],
-            ["🔴 Горячий", "+77070000000", "Повод: подтвердить договорённость"],
+            ["🔴 Горячий", "+77070000000 · 25 марта 2026, 10:00", "Повод: подтвердить договорённость"],
         )
         self.assertEqual(len(sections["call_tomorrow"]["rows"][0]), 5)
         self.assertIn("Подтвердить договорённость", sections["call_tomorrow"]["rows"][0][3])

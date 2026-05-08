@@ -550,3 +550,12 @@
 - **Reason:** Step 8W proved the reporting layer can recover evidence from persisted transcripts, but that should remain a compatibility fallback. Report-ready semantic candidates should be prepared during LLM2 analysis so reporting can stay bounded, deterministic, and auditable.
 - **Scope:** Design/architecture contract only in Step 8Y. No code implementation, prompt implementation, STT/LLM rerun, build_missing, delivery, report rendering change, mass rebuild, scheduler, or `rop_weekly` behavior change.
 - **Date:** 2026-05-06
+
+## ADR-054: `manager_daily` uses one unified client/call display reference
+- **Decision:** All `manager_daily` blocks that show a client or call reference must use one display format: `client_name_or_label · phone · date, time`.
+- **Decision:** If no persisted name/label is available, the reference is `phone · date, time`; if no phone is available, the reference is `name/label · date, time`. The reporting layer must not invent names and must not duplicate the phone when the label is already the same phone.
+- **Decision:** The source priority is persisted analysis call metadata, then persisted interaction metadata, then already assembled reporting call-reference fields. Transcript fragments themselves must not be artificially prefixed with this label.
+- **Decision:** The display contract applies to `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and the client column in `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`.
+- **Reason:** Step 8AG human review showed the same call rendered inconsistently across blocks: sometimes phone only, sometimes name only, sometimes time without date. A single reference makes final PDFs readable for managers and ROP without changing analysis, selection, outcomes, or delivery behavior.
+- **Scope:** Reporting payload / render display layer only. No analyzer prompt, STT/LLM, `report_evidence` contract, `BusinessOutcomeResolver`, source discovery, `build_missing`, readiness, delivery semantics, or radical call-list column redesign.
+- **Date:** 2026-05-08

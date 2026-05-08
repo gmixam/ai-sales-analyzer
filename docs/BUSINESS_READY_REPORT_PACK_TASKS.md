@@ -1615,6 +1615,35 @@ canonical selection model из `docs/MANAGER_DAILY_SELECTION_MODEL.md`.
 
 ---
 
+## Step 8AH-1 — Unified client/call references
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** reporting payload / render display layer only for `manager_daily`. No STT, source discovery, `build_missing`, LLM/re-analysis, prompt changes, `report_evidence` contract changes, `BusinessOutcomeResolver` changes, delivery semantics changes, or radical call-list layout redesign.
+
+**Implemented display contract:**
+
+```text
+имя / ФИО / persisted label · телефон · дата, время
+```
+
+Fallbacks:
+- no name/label: `телефон · дата, время`;
+- no phone: `имя · дата, время`;
+- same phone in label and phone is rendered once;
+- no invented names.
+
+**Applied to blocks:**
+- `СИТУАЦИЯ ДНЯ`;
+- `РАЗБОР ЗВОНКА`;
+- `ГОЛОС КЛИЕНТА`;
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`;
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` client column.
+
+**Ready-only verification:** `/tmp/step8ah1_Эльмира_2026-05-04.pdf`, `/tmp/step8ah1_Тимур_2026-05-04.pdf`, `/tmp/step8ah1_Толеген_2026-05-04.pdf`, summary `/tmp/step8ah1_summary_2026-05-04.json`. All three kept `call_list_dates=["2026-05-04"]`, rolling-window calls absent from call list, `manager_facing_completeness.status=passed`, delivery skipped/disabled, and Step 8AG outcome totals unchanged.
+
+**Follow-up for Step 8AH-2:** call-list structure/width can be polished separately, including potential regrouping of `Время` + `Клиент` if human review finds the unified label too wide in dense PDFs. Step 8AH-1 intentionally did not redesign table columns.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract
