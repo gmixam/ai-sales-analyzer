@@ -1895,6 +1895,33 @@ Checks passed: client quotes remain unchanged in rendered rows; recommendations 
 
 **Next:** continue bounded human-review fixes for `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` recommendation quality and Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later steps.
 
+## Step 8AH-8E — Improve tomorrow follow-up recommendations
+
+**Status:** DONE 2026-05-08.
+
+**Scope:** `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` context/recommendation generation only. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, deterministic hotness, inclusion/exclusion rules, Telegram, or business email changes.
+
+**Mechanism:** each tomorrow contact now uses a single signal profile to build `Контекст`, `Рекомендация`, and `Можно начать`:
+- invoice/payment: send invoice, confirm receipt, agree payment timing / next step;
+- meeting/demo/Zoom: confirm meeting, participants, and agenda;
+- materials/KP/WhatsApp/info: send material and set return-to-discussion date;
+- internal discussion: help structure the client's internal discussion and agree next contact;
+- rescheduled: return in the agreed window, remind context, and lock the next step;
+- trust/channel barrier: confirm company and purpose, then offer a safe channel;
+- weak open: clarify relevance and either set a next step or remove from active follow-up.
+
+Valid `call_report_summary.manager_next_action` may override deterministic text only when it is specific and aligned with the detected profile. Generic actions, passive waiting, materials actions without return-to-discussion intent, and trust actions that merely say “write in WhatsApp” fall back to deterministic profile text. Step 8AH-3 priority and Step 8U inclusion/exclusion remain final.
+
+**Verification:** direct persisted-artifact ready-only rebuild produced:
+- `/tmp/step8ah8e_Эльмира_2026-05-04.pdf` (`138869` bytes)
+- `/tmp/step8ah8e_Тимур_2026-05-04.pdf` (`152469` bytes)
+- `/tmp/step8ah8e_Толеген_2026-05-04.pdf` (`126328` bytes)
+- `/tmp/step8ah8e_summary_2026-05-04.json`
+
+Checks passed: tomorrow recommendations are signal-specific; no copied client quote or phone/date/time is rendered as opening phrase; generic `Понять текущий интерес клиента...` fallback did not render; priorities remain `Горячий`, `Перенос`, `Тёплый`, `Низкий`; final `Отказ`, `Тех/сервис`, and `Не подходит` are absent from tomorrow contacts; outcome totals unchanged (`Эльмира 12/1/1/2/2/6/0`, `Тимур 15/3/1/2/6/2/1`, `Толеген 6/0/0/1/3/2/0`); `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `manager_facing_completeness.status=passed`; `transcripts_built=0`; `analyses_built=0`; delivery not run.
+
+**Next:** continue bounded human-review fixes with Тимур `Разбор звонка`; final PDF rebuild and Telegram test delivery remain later steps.
+
 ## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
 
 **Status:** DONE 2026-05-08.

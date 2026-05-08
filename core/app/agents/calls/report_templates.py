@@ -3160,6 +3160,9 @@ def _deadline_label_for_contact(item: dict[str, Any]) -> str:
 
 def _call_goal_for_contact(item: dict[str, Any]) -> str:
     """Return a concrete goal for a call-tomorrow action card."""
+    recommendation = _clean_reader_text(str(item.get("recommendation") or "")).strip()
+    if recommendation:
+        return recommendation if recommendation.endswith((".", "!", "?")) else f"{recommendation}."
     next_step = _clean_reader_text(str(item.get("next_step") or "")).strip()
     if next_step and item.get("call_report_summary_used"):
         return next_step if next_step.endswith((".", "!", "?")) else f"{next_step}."
@@ -3173,6 +3176,9 @@ def _call_goal_for_contact(item: dict[str, Any]) -> str:
 
 def _first_phrase_for_contact(item: dict[str, Any]) -> str:
     """Return a usable first phrase, not a next-step recap."""
+    opening_script = _clean_reader_text(str(item.get("opening_script") or "")).strip(" «»\"")
+    if opening_script:
+        return opening_script
     status = str(item.get("status") or "open")
     deadline = _format_deadline_human(str(item.get("deadline") or "").strip() or None)
     if status == "rescheduled" and deadline:

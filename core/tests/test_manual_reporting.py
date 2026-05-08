@@ -2417,6 +2417,136 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый", "⚪ Низкий"])
         self.assertNotIn("Открытый", " ".join(priority_labels))
 
+    def test_step8ah8e_call_tomorrow_recommendations_are_signal_specific(self) -> None:
+        def contact(name: str, text: str, follow_up: dict[str, Any]) -> ReportArtifact:
+            artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
+            artifact.interaction.text = text
+            artifact.interaction.metadata_["contact_name"] = name
+            detail = artifact.analysis.scores_detail
+            detail["call"] = {"contact_name": name, "contact_phone": "+77070000000"}
+            detail["classification"] = {
+                "call_type": "sales_primary",
+                "scenario_type": "cold_outbound",
+                "analysis_eligibility": "eligible",
+            }
+            detail["follow_up"] = follow_up
+            return artifact
+
+        cases = [
+            (
+                "Счёт клиент",
+                "Клиент согласился: выставьте счёт, после получения согласуем оплату.",
+                {"next_step_fixed": True, "next_step_text": "Выставить счёт клиенту."},
+                "срок оплаты",
+                "Отправить счёт",
+                "Отправляю счёт",
+            ),
+            (
+                "Встреча клиент",
+                "Клиент готов на Zoom-демо продукта.",
+                {"next_step_fixed": True, "next_step_text": "Согласовать Zoom-демо и участников встречи."},
+                "участников и повестку",
+                "Подтвердить встречу",
+                "Подтверждаю встречу",
+            ),
+            (
+                "Материалы клиент",
+                "Клиент: скиньте КП в WhatsApp, я посмотрю.",
+                {"next_step_fixed": True, "next_step_text": "Отправить КП в WhatsApp."},
+                "материалы или предложение",
+                "Отправить материал",
+                "Отправил материалы",
+            ),
+            (
+                "Совет клиент",
+                "Клиент сказал, что подумает и обсудит предложение с коллегами.",
+                {"next_step_fixed": True, "next_step_text": "Клиент обсудит предложение с коллегами."},
+                "обсудить решение внутри",
+                "с кем клиент будет обсуждать",
+                "Удалось обсудить",
+            ),
+            (
+                "Доверие клиент",
+                "Клиент не берёт незнакомые звонки и просит сначала написать в WhatsApp.",
+                {"next_step_fixed": True, "next_step_text": "Написать клиенту в WhatsApp."},
+                "барьер доверия",
+                "безопасный канал",
+                "проверить контакт",
+            ),
+            (
+                "Слабый клиент",
+                "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
+                {"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
+                "явный коммерческий следующий шаг",
+                "снять контакт с активного follow-up",
+                "актуален ли ещё вопрос",
+            ),
+        ]
+        for name, text, follow_up, expected_context, expected_action, expected_phrase in cases:
+            with self.subTest(name=name):
+                payload = build_manager_daily_payload(
+                    department_id=str(uuid4()),
+                    department_name="Отдел продаж",
+                    artifacts=[contact(name, text, follow_up)],
+                    period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+                    filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+                    mode="report_from_ready_data_only",
+                    model_override=None,
+                )
+                sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+                rendered_context = sections["call_tomorrow"]["rows"][0][2]
+                rendered_recommendation = sections["call_tomorrow"]["rows"][0][3]
+
+                self.assertIn(expected_context, rendered_context)
+                self.assertIn(expected_action, rendered_recommendation)
+                self.assertIn(expected_phrase, rendered_recommendation)
+                self.assertNotIn("Понять текущий интерес клиента", rendered_recommendation)
+
+    def test_step8ah8e_call_tomorrow_uses_specific_summary_action_when_aligned(self) -> None:
+        artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию. "
+            "Клиент попросил выставить счёт. Менеджер договорился отправить счёт и уточнить оплату."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["call"] = {"contact_name": "Счёт клиент", "contact_phone": "+77070000000"}
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {"next_step_fixed": True, "next_step_text": "Выставить счёт клиенту."}
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["business_outcome"]["status"] = "agreement"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = (
+            "Клиент попросил счёт и готов обсудить срок оплаты после получения."
+        )
+        detail["report_evidence"]["call_report_summary"]["manager_next_action"] = (
+            "Отправить счёт и согласовать срок оплаты."
+        )
+        detail["report_evidence"]["call_report_summary"]["suggested_manager_phrase"] = (
+            "Добрый день. Отправляю счёт, как договорились. Когда удобно сверить получение?"
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        contact = payload["call_tomorrow"]["contacts"][0]
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(contact["action_source"], "call_report_summary.manager_next_action")
+        self.assertEqual(contact["context_source"], "call_report_summary.short_context")
+        self.assertEqual(contact["next_step"], "Отправить счёт и согласовать срок оплаты.")
+        self.assertIn("Отправить счёт и согласовать срок оплаты", sections["call_tomorrow"]["rows"][0][3])
+        self.assertIn("Отправляю счёт", sections["call_tomorrow"]["rows"][0][3])
+
     def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
         artifact = self._business_artifact(
             text=(
@@ -3533,10 +3663,9 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertIn("/5", sections["main_focus_for_tomorrow"]["situation_title"])
         self.assertNotIn("первый этап ниже", sections["main_focus_for_tomorrow"]["situation_title"])
         self.assertEqual(len(sections["voice_of_customer"]["rows"]), 1)
-        self.assertEqual(
-            sections["call_tomorrow"]["rows"][0][:3],
-            ["🔴 Горячий", "+77070000000 · 25 марта 2026, 10:00", "Повод: подтвердить договорённость"],
-        )
+        self.assertEqual(sections["call_tomorrow"]["rows"][0][0], "🔴 Горячий")
+        self.assertEqual(sections["call_tomorrow"]["rows"][0][1], "+77070000000 · 25 марта 2026, 10:00")
+        self.assertIn("договорённость", sections["call_tomorrow"]["rows"][0][2])
         self.assertEqual(len(sections["call_tomorrow"]["rows"][0]), 4)
         self.assertIn("Подтвердить договорённость", sections["call_tomorrow"]["rows"][0][3])
         self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])

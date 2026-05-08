@@ -636,3 +636,12 @@
 - **Reason:** Human review found useful client quotes paired with broad recommendations such as passively waiting or generally clarifying the task. Managers need the recommendation to answer what to do next for that exact client signal.
 - **Scope:** Reporting payload/render fallback recommendation text only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-063: `manager_daily` tomorrow follow-up recommendations are signal-specific
+- **Decision:** `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` must build `Контекст`, `Рекомендация`, and `Можно начать` from one follow-up action profile instead of rendering the same generic recommendation for different sales situations.
+- **Decision:** Supported deterministic profiles include invoice/payment, meeting/demo/Zoom, materials/KP/WhatsApp/info, internal discussion / thinking, rescheduled callback, trust or safe-channel barrier, weak open, and generic agreement.
+- **Decision:** A valid `call_report_summary.manager_next_action` may override deterministic text only when it is specific and aligned with the detected profile. Generic actions, passive waiting, materials actions without return-to-discussion intent, and trust actions that do not address safe channel/company/purpose must fall back to deterministic profile text.
+- **Decision:** This rule does not change Step 8AH-3 hotness priority, final outcome, sorting, or inclusion/exclusion. Tomorrow still includes only final `Договорённость`, `Перенос`, and `Открыт`, and excludes final `Отказ`, `Тех/сервис`, `Не подходит`, and technical/unclassified buckets.
+- **Reason:** Human review found that tomorrow follow-up rows could say “Понять текущий интерес клиента...” even when persisted evidence clearly showed a specific invoice, meeting, materials request, internal discussion, reschedule, or trust-channel situation.
+- **Scope:** Reporting payload/render recommendation/context generation only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-08

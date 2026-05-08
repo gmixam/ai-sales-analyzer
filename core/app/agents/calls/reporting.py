@@ -6356,6 +6356,7 @@ def _build_daily_call_row(
         "date_label": ref.get("date_label"),
         "time_label": ref.get("time_label"),
         "duration_sec": artifact.interaction.duration_sec,
+        "call_signal_text": _summary_text(getattr(artifact.interaction, "text", None), limit=500),
         "call_type": call_type,
         "scenario_type": classification.get("scenario_type"),
         "status": status,
@@ -7082,7 +7083,13 @@ def _safe_manager_phrase_from_summary(
     summary: dict[str, Any] | None,
     evidence: dict[str, Any] | None,
 ) -> str | None:
-    phrase = _summary_text((summary or {}).get("suggested_manager_phrase"), limit=220)
+    phrase = re.sub(
+        r"\s+",
+        " ",
+        str((summary or {}).get("suggested_manager_phrase") or "").strip(),
+    )
+    if len(phrase) > 220:
+        phrase = phrase[:217].rstrip() + "…"
     if not phrase:
         return None
     normalized = _summary_norm(phrase)
@@ -8089,6 +8096,112 @@ WARM_HOTNESS_SIGNALS = (
     "интерес",
 )
 
+CALL_TOMORROW_INVOICE_MARKERS = (
+    "счет",
+    "счёт",
+    "оплат",
+    "выстав",
+    "получение счет",
+    "получение счёт",
+)
+CALL_TOMORROW_MEETING_MARKERS = (
+    "встреч",
+    "демо",
+    "демонстрац",
+    "презентац",
+    "zoom",
+    "зум",
+)
+CALL_TOMORROW_MATERIALS_MARKERS = (
+    "whatsapp",
+    "ватсап",
+    "материал",
+    "информац",
+    "коммерческое предложение",
+    "кп",
+    "скинь",
+    "отправ",
+    "напиш",
+)
+CALL_TOMORROW_INTERNAL_DISCUSSION_MARKERS = (
+    "совет",
+    "обсуд",
+    "подума",
+    "согласу",
+    "перезвон",
+    "коллег",
+    "руковод",
+)
+CALL_TOMORROW_TRUST_MARKERS = (
+    "мошен",
+    "незнаком",
+    "не беру",
+    "не отвечаю",
+    "довер",
+    "проверить контакт",
+    "безопасн",
+)
+CALL_TOMORROW_GENERIC_ACTION_MARKERS = (
+    "понять текущий интерес",
+    "договориться о конкретном следующем шаге",
+    "уточнить актуальность",
+    "ожидать",
+    "ждать",
+    "поддерживать связь",
+    "общий follow-up",
+)
+CALL_TOMORROW_ACTION_ALIGNMENT_MARKERS: dict[str, tuple[str, ...]] = {
+    "invoice_payment": ("счет", "счёт", "оплат", "выстав", "получ", "срок", "следующ"),
+    "meeting_demo": ("встреч", "демо", "презентац", "zoom", "зум", "участ", "повест"),
+    "materials_request": ("материал", "информац", "коммерческ", "кп", "whatsapp", "ватсап", "отправ", "обсужд", "вопрос"),
+    "internal_discussion": ("обсуд", "коллег", "аргумент", "вопрос", "соглас", "следующ", "решени"),
+    "rescheduled": ("вернуться", "перезвон", "продолж", "напомн", "следующ", "согласован"),
+    "trust_barrier": ("довер", "безопас", "канал", "whatsapp", "ватсап", "email", "почт", "провер", "компан"),
+    "agreement": ("договор", "подтверд", "соглас", "следующ"),
+}
+CALL_TOMORROW_SIGNAL_PROFILES: dict[str, dict[str, str]] = {
+    "invoice_payment": {
+        "context": "Клиент согласовал коммерческий следующий шаг: нужен счёт, подтверждение получения и срок оплаты.",
+        "recommendation": "Отправить счёт, подтвердить получение и согласовать срок оплаты или следующий шаг.",
+        "phrase": "Добрый день. Отправляю счёт, как договорились. Подскажите, когда удобно сверить получение и сроки оплаты?",
+    },
+    "meeting_demo": {
+        "context": "Клиент готов к встрече или демонстрации, поэтому важно заранее закрепить участников и повестку.",
+        "recommendation": "Подтвердить встречу, участников и короткую повестку.",
+        "phrase": "Добрый день. Подтверждаю встречу по ЭДО. Подскажите, кто ещё будет участвовать и какие вопросы важно разобрать?",
+    },
+    "materials_request": {
+        "context": "Клиент попросил материалы или предложение, но следующий контакт нужно закрепить отдельно.",
+        "recommendation": "Отправить материал в согласованный канал и сразу зафиксировать дату возврата к обсуждению.",
+        "phrase": "Добрый день. Отправил материалы, как договорились. Когда удобно вернуться к обсуждению и ответить на вопросы?",
+    },
+    "internal_discussion": {
+        "context": "Клиенту нужно обсудить решение внутри, поэтому без активного follow-up контакт легко зависнет.",
+        "recommendation": "Уточнить, с кем клиент будет обсуждать решение, помочь сформулировать аргументы и согласовать дату следующего контакта.",
+        "phrase": "Добрый день. Удалось обсудить предложение с коллегами? Могу коротко помочь с аргументами и ответить на вопросы.",
+    },
+    "rescheduled": {
+        "context": "Клиент перенёс разговор или попросил вернуться позже, поэтому важно напомнить контекст и закрыть следующий шаг.",
+        "recommendation": "Вернуться в согласованный срок, напомнить контекст прошлого разговора и зафиксировать следующий шаг.",
+        "phrase": "Добрый день. Договаривались вернуться к вопросу. Удобно сейчас коротко продолжить и зафиксировать следующий шаг?",
+    },
+    "trust_barrier": {
+        "context": "Клиент обозначил барьер доверия или удобного канала связи.",
+        "recommendation": "Подтвердить компанию и цель контакта, предложить безопасный канал продолжения — WhatsApp, email или звонок в согласованное время.",
+        "phrase": "Добрый день. Это Договор-24 по вашему обращению. Могу отправить короткое сообщение в WhatsApp, чтобы вам было удобно проверить контакт?",
+    },
+    "weak_open": {
+        "context": "Контакт открыт, но явный коммерческий следующий шаг пока не зафиксирован.",
+        "recommendation": "Уточнить актуальность вопроса и либо зафиксировать следующий шаг, либо снять контакт с активного follow-up.",
+        "phrase": "Добрый день. Хочу уточнить, актуален ли ещё вопрос, и понять, есть ли смысл двигаться дальше.",
+    },
+    "agreement": {
+        "context": "Есть договорённость, которую нужно подтвердить и довести до следующего шага.",
+        "recommendation": "Подтвердить договорённость и довести контакт до следующего шага.",
+        "phrase": "Добрый день. Хочу подтвердить нашу договорённость и уточнить один следующий шаг.",
+    },
+}
+
 
 def _follow_up_hotness(
     *,
@@ -8140,6 +8253,115 @@ def _follow_up_hotness(
         "code": "low",
         "label": CALL_TOMORROW_HOTNESS_LABELS["low"],
         "reason": "open_without_clear_follow_up_signal",
+    }
+
+
+def _call_tomorrow_signal_category(*, final_status: str, text: str) -> str:
+    """Classify tomorrow action context without changing inclusion or hotness."""
+    if final_status == "rescheduled":
+        return "rescheduled"
+    if _contains_hotness_signal(text, CALL_TOMORROW_INVOICE_MARKERS):
+        return "invoice_payment"
+    if _contains_hotness_signal(text, CALL_TOMORROW_MEETING_MARKERS):
+        return "meeting_demo"
+    if _contains_hotness_signal(text, CALL_TOMORROW_TRUST_MARKERS):
+        return "trust_barrier"
+    if _contains_hotness_signal(text, CALL_TOMORROW_MATERIALS_MARKERS):
+        return "materials_request"
+    if _contains_hotness_signal(text, CALL_TOMORROW_INTERNAL_DISCUSSION_MARKERS):
+        return "internal_discussion"
+    if final_status == "agreed":
+        return "agreement"
+    return "weak_open"
+
+
+def _call_tomorrow_summary_action_specific(action: str | None, *, category: str) -> bool:
+    """Allow LLM2 manager action only when it is specific and aligned to the signal."""
+    if not _call_summary_action_usable(action):
+        return False
+    normalized = _summary_norm(action)
+    if any(marker in normalized for marker in CALL_TOMORROW_GENERIC_ACTION_MARKERS):
+        return False
+    if category == "materials_request":
+        sends_material = any(
+            marker in normalized
+            for marker in ("отправ", "скин", "материал", "кп", "предлож", "информац")
+        )
+        fixes_return = any(
+            marker in normalized
+            for marker in ("дат", "вернуться", "возврат", "обсужд", "вопрос", "следующ", "уточн")
+        )
+        return sends_material and fixes_return
+    if category == "trust_barrier":
+        return any(
+            marker in normalized
+            for marker in ("довер", "безопас", "канал", "провер", "компан", "цель")
+        )
+    alignment = CALL_TOMORROW_ACTION_ALIGNMENT_MARKERS.get(category)
+    if not alignment:
+        return False
+    return any(marker in normalized for marker in alignment)
+
+
+def _call_tomorrow_profile(
+    *,
+    final_status: str,
+    deadline: str | None,
+    next_step: str | None,
+    raw_reason: str | None,
+    summary_next_action: str | None,
+    summary_context: str | None,
+    summary_hotness_reason: str | None,
+    evidence_follow_up: dict[str, Any] | None,
+    row: dict[str, Any],
+) -> dict[str, str | bool]:
+    """Return one signal profile for tomorrow context, recommendation and phrase."""
+    evidence = dict(evidence_follow_up or {})
+    signal_text = _normalize_hotness_text(
+        next_step,
+        raw_reason,
+        summary_next_action,
+        summary_context,
+        summary_hotness_reason,
+        evidence.get("next_step"),
+        evidence.get("why_follow_up"),
+        evidence.get("first_phrase"),
+        row.get("business_outcome_evidence"),
+        row.get("next_step"),
+        row.get("reason"),
+        row.get("call_list_topic"),
+        row.get("call_list_context"),
+        row.get("call_signal_text"),
+    )
+    category = _call_tomorrow_signal_category(final_status=final_status, text=signal_text)
+    profile = dict(CALL_TOMORROW_SIGNAL_PROFILES.get(category) or CALL_TOMORROW_SIGNAL_PROFILES["weak_open"])
+    action_source = "deterministic_call_tomorrow_signal"
+    action = profile["recommendation"]
+    if _call_tomorrow_summary_action_specific(summary_next_action, category=category):
+        action = _summary_text(summary_next_action, limit=240) or action
+        action_source = "call_report_summary.manager_next_action"
+
+    context = profile["context"]
+    context_source = "deterministic_call_tomorrow_signal"
+    if category != "weak_open" and _call_summary_context_usable(summary_context):
+        context = _summary_text(summary_context, limit=280) or context
+        context_source = "call_report_summary.short_context"
+    elif category != "weak_open" and _call_summary_action_usable(summary_hotness_reason):
+        context = _summary_text(summary_hotness_reason, limit=220) or context
+        context_source = "call_report_summary.hotness_reason"
+
+    if category == "rescheduled" and deadline and "согласованный срок" not in context.lower():
+        context = f"{context} Срок возврата: {deadline}."
+
+    return {
+        "category": category,
+        "context": context,
+        "recommendation": action if action.endswith((".", "!", "?")) else f"{action}.",
+        "opening_script": profile["phrase"],
+        "action_source": action_source,
+        "context_source": context_source,
+        "used_call_report_summary": action_source.startswith("call_report_summary")
+        or context_source.startswith("call_report_summary"),
     }
 
 
@@ -8211,16 +8433,7 @@ def _build_call_tomorrow(
             or row.get("deadline")
             or ""
         ).strip() or None
-        opening_script = str(safe_summary_phrase or (evidence_follow_up or {}).get("first_phrase") or "").strip()
-        if not opening_script:
-            opening_script = _call_tomorrow_opening_script(
-                status=status,
-                deadline=deadline,
-                next_step=next_step,
-                scenario_type=scenario_type,
-            )
-
-        reason = str(
+        raw_reason = str(
             (summary_context if _call_summary_context_usable(summary_context) else None)
             or (summary_hotness_reason if _call_summary_action_usable(summary_hotness_reason) else None)
             or (evidence_follow_up or {}).get("why_follow_up")
@@ -8231,9 +8444,43 @@ def _build_call_tomorrow(
             final_status=status,
             deadline=deadline,
             next_step=next_step,
-            reason=reason,
+            reason=raw_reason,
             evidence_follow_up=evidence_follow_up,
             row=row,
+        )
+        profile = _call_tomorrow_profile(
+            final_status=status,
+            deadline=deadline,
+            next_step=next_step,
+            raw_reason=raw_reason,
+            summary_next_action=summary_next_action,
+            summary_context=summary_context,
+            summary_hotness_reason=summary_hotness_reason,
+            evidence_follow_up=evidence_follow_up,
+            row=row,
+        )
+        next_step = str(profile["recommendation"])
+        reason = str(profile["context"])
+        opening_script = str(
+            safe_summary_phrase
+            if safe_summary_phrase and str(profile["action_source"]) == "call_report_summary.manager_next_action"
+            else profile["opening_script"]
+            or _call_tomorrow_opening_script(
+                status=status,
+                deadline=deadline,
+                next_step=next_step,
+                scenario_type=scenario_type,
+            )
+        ).strip()
+        call_report_summary_used = bool(
+            summary
+            and (
+                profile["used_call_report_summary"]
+                or (
+                    safe_summary_phrase
+                    and str(profile["action_source"]) == "call_report_summary.manager_next_action"
+                )
+            )
         )
 
         grouped[hotness["code"]].append({
@@ -8251,10 +8498,14 @@ def _build_call_tomorrow(
             "reason": reason,
             "scenario_type": scenario_type,
             "opening_script": opening_script,
-            "call_report_summary_used": bool(summary and (summary_next_action or summary_context or safe_summary_phrase)),
+            "recommendation": str(profile["recommendation"]),
+            "action_profile": str(profile["category"]),
+            "action_source": str(profile["action_source"]),
+            "context_source": str(profile["context_source"]),
+            "call_report_summary_used": call_report_summary_used,
             "source": (
                 "report_evidence.call_report_summary"
-                if summary and (summary_next_action or summary_context or safe_summary_phrase)
+                if call_report_summary_used
                 else "report_evidence.follow_up_candidates"
                 if evidence_follow_up
                 else "final_call_list"
@@ -8287,6 +8538,10 @@ def _build_call_tomorrow(
                 "next_step": item["next_step"],
                 "reason": item["reason"],
                 "opening_script": item["opening_script"],
+                "recommendation": item["recommendation"],
+                "action_profile": item["action_profile"],
+                "action_source": item["action_source"],
+                "context_source": item["context_source"],
                 "call_report_summary_used": item["call_report_summary_used"],
                 "source": item["source"],
             })
