@@ -1776,6 +1776,38 @@ Verification checks passed: outcome totals unchanged; `call_list_dates=["2026-05
 
 **Next:** Step 8AH-8 can run PDF + Telegram test review on the guarded wiring result. Remaining weak spots are content quality, not wiring: legacy rows without valid `call_report_summary` still fall back, and LLM2 can still produce broad-but-guarded short topics that do not improve the call list.
 
+## Step 8AH-8 — Rebuild final PDFs and send Telegram test
+
+**Status:** DONE 2026-05-08, with outcome-stability follow-up required.
+
+**Scope:** ready-only payload/render and explicit Telegram test delivery only. No STT, source discovery, `build_missing`, new LLM analyses, LLM2 prompt, validator, `BusinessOutcomeResolver`, report-selection, or delivery-semantics changes. Business email was not sent.
+
+**Artifacts:**
+- `/tmp/step8ah8_Эльмира_2026-05-04.pdf` (`136442` bytes)
+- `/tmp/step8ah8_Тимур_2026-05-04.pdf` (`147597` bytes)
+- `/tmp/step8ah8_Толеген_2026-05-04.pdf` (`124730` bytes)
+- summary `/tmp/step8ah8_summary_2026-05-04.json`
+
+**Telegram test delivery:**
+- Эльмира: message_id `188`, document_id `BQACAgIAAxkDAAO8af2sppsGkJaG9mSHWrNoTZ63SP8AAjKgAAJILOlLrTbinSNJAWg7BA`
+- Тимур: message_id `189`, document_id `BQACAgIAAxkDAAO9af2sqOfNmlIoONlPn4-bKjeN9XAAAjOgAAJILOlLLK1iT7XlRqo7BA`
+- Толеген: message_id `190`, document_id `BQACAgIAAxkDAAO-af2sqvzmPHNJM5P4iunGUJ10u_QAAjSgAAJILOlL1WheyajX5RQ7BA`
+
+**Verification passed:**
+- `call_list_dates=["2026-05-04"]`
+- rolling-window calls absent from call list
+- `manager_facing_completeness.status=passed`
+- no `OPERATOR PREVIEW / INCOMPLETE`
+- business email `skipped`
+- no broad summary topic rendered as call-list topic
+- no suggested manager phrase with phone/date/time rendered
+- no copied client quote rendered as manager phrase
+- `transcripts_built=0`, `analyses_built=0`
+
+**Outcome-stability blocker:** Эльмира and Толеген matched expected totals, but Тимур rendered current persisted-latest totals `15/3/1/3/5/2/1` instead of expected `15/3/1/2/6/2/1`. The observed cause is latest v8 analysis `5e6c63c5-dead-461d-a2dc-5b7e9f44f459` for Тимур `12:09 / +77470957591`; deterministic reporting resolves that row as `refusal`, while previous v7/v1 analyses resolved it as `open`.
+
+**Follow-up before human review:** run a bounded outcome-stability decision/fix for Тимур `12:09 / +77470957591`: decide whether final PDFs should use latest v8 analysis, restore stable analysis selection for this report-day handoff, or handle this as a resolver/policy issue in a separate bounded step. Do not silently change resolver semantics during review handoff.
+
 ## Out of scope для этой вехи
 
 - Изменение analyzer contract
