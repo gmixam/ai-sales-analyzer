@@ -2818,6 +2818,8 @@ def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[s
             "bar_text": _progress_bar_20(score_on_5),
             "is_priority": bool(item.get("is_priority")),
             "criteria_detail": list(item.get("criteria_detail") or []) or None,
+            "problem_summary": str(item.get("problem_summary") or ""),
+            "problem_wording_warnings": list(item.get("problem_wording_warnings") or []),
         })
     return rows
 

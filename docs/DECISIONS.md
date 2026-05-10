@@ -681,3 +681,13 @@
 - **Reason:** Step 8AH-10B PM review found a self-contradictory report: stage scores/challenge focused on `Э3`, while Situation and Call Breakdown described `Э1`. Managers need one coherent coaching focus unless a secondary signal is explicitly labeled as secondary.
 - **Scope:** Reporting payload/render focus alignment and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, report-day totals, call-list semantics, Step 8AH-11A data-scope rules, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-10
+
+## ADR-068: `manager_daily` problem wording is normalized before manager-facing render
+- **Decision:** Positive or neutral statements must not be rendered as `Основная проблема`, `daily_coaching_focus.problem_statement`, Additional Situation gap title/body, or coaching problem wording.
+- **Decision:** The reporting layer owns a downstream problem-statement normalizer. It rewrites positive/neutral LLM2 or legacy fallback wording into actionable missing-behavior wording before PDF/DOCX rendering.
+- **Decision:** Known positive/neutral patterns such as `Менеджер не ушел в презентацию слишком рано`, `Не ушёл в презентацию слишком рано`, `Сохранил нейтральный, вежливый и понятный тон`, `Представился и обозначил компанию`, and `Понятно обозначил причину звонка` must become manager-facing gap statements rather than being shown as completed actions.
+- **Decision:** Additional Situation gap title and body must not contradict each other. If the title is positive/neutral but the section is a growth zone, the title/body are normalized to gap wording; if no safe rewrite exists, the fallback is `Проблема требует уточнения по evidence`.
+- **Decision:** Normalization diagnostics are exposed through `problem_wording_diagnostics`; focus-level wording warnings also flow into `daily_coaching_focus.validation.issues`.
+- **Reason:** Step 8AH-10B PM review found positive wording such as `Менеджер не ушел в презентацию слишком рано` rendered as a problem, while the actual issue was unfinished qualification before an offer.
+- **Scope:** Reporting payload/render/DOCX normalizer and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring semantics, report-day totals, call-list semantics, Step 8AH-11A data-scope rules, Step 8AH-11B daily-coaching-focus stage selection, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-10

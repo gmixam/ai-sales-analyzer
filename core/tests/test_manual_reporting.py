@@ -1848,6 +1848,128 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["daily_coaching_focus_validation"]["status"], "passed")
         self.assertEqual(sections["challenge"]["focus_stage_code"], "qualification_primary")
 
+    def test_step8ah11c_problem_normalizer_blocks_positive_problem_wording(self) -> None:
+        artifact = _artifact(42.0, "problematic")
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_process_before_pitch",
+                        "criterion_name": "Не ушёл в презентацию слишком рано",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Менеджер не ушел в презентацию слишком рано",
+                    }
+                ],
+            }
+        ]
+        detail["gaps"] = [
+            {
+                "criterion_code": "qp_role_scope",
+                "title": "Роль не уточнена",
+                "comment": "Роль собеседника не была уточнена.",
+            },
+            {
+                "criterion_code": "qp_current_process",
+                "title": "Не ушёл в презентацию слишком рано",
+                "comment": "Квалификация не была завершена до предложения.",
+            },
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_text = " ".join(
+            str(value)
+            for value in [
+                payload["score_by_stage"][0].get("problem_summary"),
+                payload["daily_coaching_focus"].get("problem_statement"),
+                sections["review_block"]["stage_rows"][0].get("problem_summary"),
+                *(item.get("title") for item in sections["additional_situations"].get("situations") or []),
+                *(item.get("client_said") for item in sections["additional_situations"].get("situations") or []),
+            ]
+        )
+        rendered_norm = rendered_text.lower().replace("ё", "е")
+
+        self.assertNotIn("менеджер не ушел в презентацию слишком рано", rendered_norm)
+        self.assertNotIn("не ушел в презентацию слишком рано", rendered_norm)
+        self.assertIn("квалификация не была завершена до предложения", rendered_norm)
+        self.assertIn("positive_or_neutral_problem_wording_normalized", payload["score_by_stage"][0]["problem_wording_warnings"])
+        self.assertEqual(payload["problem_wording_diagnostics"]["status"], "warning")
+
+    def test_step8ah11c_additional_gap_title_and_body_are_normalized(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 10:00:00")
+        artifact.interaction.text = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Квалификация не была завершена до предложения.",
+                    }
+                ],
+            }
+        ]
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["manager_coaching_moments"][0]["stage_code"] = "qualification_primary"
+        detail["report_evidence"]["additional_situations"][0].update(
+            {
+                "type": "growth_zone",
+                "title": "Не ушёл в презентацию слишком рано",
+                "stage_code": "qualification_primary",
+                "what_happened": "Не ушёл в презентацию слишком рано",
+                "why_it_matters": "Квалификация не была завершена до предложения.",
+            }
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        situation = sections["additional_situations"]["situations"][0]
+        combined = f"{situation['title']} {situation['client_said']}".lower().replace("ё", "е")
+
+        self.assertEqual(situation["badge"], "Зона роста")
+        self.assertNotIn("не ушел в презентацию слишком рано", combined)
+        self.assertIn("квалификация не была завершена до предложения", combined)
+        self.assertGreaterEqual(payload["problem_wording_diagnostics"]["normalized_count"], 1)
+
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [

@@ -4344,9 +4344,16 @@ def _build_daily_coaching_focus(
             problem_statement = _first_sentence(str(key_problem.get("title") or ""), limit=220)
     if not problem_statement:
         problem_statement = _focus_stage_generic_text(stage_name, kind="wrong")
+    normalized_focus_problem = _normalize_problem_statement(
+        problem_statement,
+        stage_code=stage_code,
+        fallback=_stage_problem_fallback(stage_code),
+    )
+    problem_statement = str(normalized_focus_problem.get("text") or problem_statement).strip()
 
     confidence = "high" if priority_stage.get("is_priority") and priority_stage.get("problem_summary") else "medium"
     scope = dict(data_scope)
+    validation_issues = list(normalized_focus_problem.get("warnings") or [])
     return {
         "stage_id": _stage_funnel_label_for_code(stage_code),
         "stage_code": stage_code,
@@ -4359,7 +4366,8 @@ def _build_daily_coaching_focus(
         "breakdown_call_id": None,
         "challenge_metric_source": "score_by_stage.priority",
         "confidence": confidence,
-        "validation": {"status": "pending", "issues": []},
+        "problem_normalized_from": normalized_focus_problem.get("source_text"),
+        "validation": {"status": "pending", "issues": validation_issues},
     }
 
 
@@ -4377,7 +4385,7 @@ def _finalize_daily_coaching_focus(
     """Attach selected evidence IDs and alignment diagnostics to the daily focus."""
     result = dict(daily_focus)
     focus_stage = _daily_focus_stage_code(result)
-    issues: list[str] = []
+    issues: list[str] = list((result.get("validation") or {}).get("issues") or [])
 
     situation_stage = _block_stage_code(situation_day_coaching_view) or str(
         (situation_evidence_quote or {}).get("stage_code") or ""
@@ -4400,6 +4408,84 @@ def _finalize_daily_coaching_focus(
         "issues": issues,
     }
     return result
+
+
+def _build_problem_wording_diagnostics(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    daily_focus: dict[str, Any],
+    additional_situations: dict[str, Any] | None,
+    situation_day_coaching_view: dict[str, Any] | None,
+    call_breakdown: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expose warnings when problem wording needed normalization or still looks unsafe."""
+    warnings: list[dict[str, Any]] = []
+    normalized_count = 0
+
+    def add_warning(source: str, value: Any, reason: str) -> None:
+        text = _first_sentence(str(value or ""), limit=220)
+        if text:
+            warnings.append({"source": source, "reason": reason, "text": text})
+
+    for stage in score_by_stage:
+        for reason in stage.get("problem_wording_warnings") or []:
+            add_warning(f"score_by_stage.{stage.get('stage_code')}", stage.get("problem_normalized_from") or stage.get("problem_summary"), str(reason))
+            normalized_count += 1
+        if _problem_statement_is_positive_or_neutral(str(stage.get("problem_summary") or "")):
+            add_warning(f"score_by_stage.{stage.get('stage_code')}", stage.get("problem_summary"), "positive_or_neutral_problem_wording")
+
+    if daily_focus.get("problem_normalized_from"):
+        add_warning("daily_coaching_focus.problem_statement", daily_focus.get("problem_normalized_from"), "positive_or_neutral_problem_wording_normalized")
+        normalized_count += 1
+    if _problem_statement_is_positive_or_neutral(str(daily_focus.get("problem_statement") or "")):
+        add_warning("daily_coaching_focus.problem_statement", daily_focus.get("problem_statement"), "positive_or_neutral_problem_wording")
+
+    for item in (additional_situations or {}).get("situations") or []:
+        if str(item.get("kind") or "") != "gap":
+            continue
+        item_warnings = [str(reason) for reason in item.get("problem_wording_warnings") or []]
+        if item.get("title_normalized_from"):
+            add_warning(
+                "additional_situations.title",
+                item.get("title_normalized_from"),
+                "positive_or_neutral_problem_wording_normalized",
+            )
+            normalized_count += 1
+        if item.get("body_normalized_from"):
+            add_warning(
+                "additional_situations.body",
+                item.get("body_normalized_from"),
+                "positive_or_neutral_problem_wording_normalized",
+            )
+            normalized_count += 1
+        if item_warnings and not item.get("title_normalized_from") and not item.get("body_normalized_from"):
+            for reason in item_warnings:
+                add_warning("additional_situations.title", item.get("title"), reason)
+                normalized_count += 1
+        title = str(item.get("title") or "")
+        body = " ".join(str(item.get(key) or "") for key in ("client_said", "interpretation", "meant"))
+        if _problem_statement_is_positive_or_neutral(title):
+            add_warning("additional_situations.title", title, "positive_gap_title")
+        if _problem_statement_is_positive_or_neutral(body):
+            add_warning("additional_situations.body", body, "positive_gap_body")
+
+    for source, block, key in (
+        ("situation_day.what_happened", situation_day_coaching_view or {}, "what_happened"),
+        ("call_breakdown.rows", call_breakdown or {}, "rows"),
+    ):
+        if key == "rows":
+            for row in block.get("rows") or []:
+                text = str(row[1] if isinstance(row, (list, tuple)) and len(row) > 1 else "")
+                if _problem_statement_is_positive_or_neutral(text):
+                    add_warning(source, text, "positive_or_neutral_problem_wording")
+        elif _problem_statement_is_positive_or_neutral(str(block.get(key) or "")):
+            add_warning(source, block.get(key), "positive_or_neutral_problem_wording")
+
+    return {
+        "status": "warning" if warnings else "passed",
+        "normalized_count": normalized_count,
+        "warnings": warnings,
+    }
 
 
 def build_manager_daily_payload(
@@ -4593,6 +4679,13 @@ def build_manager_daily_payload(
         situation_day_coaching_view=situation_day_coaching_view,
         call_breakdown=call_breakdown,
     )
+    problem_wording_diagnostics = _build_problem_wording_diagnostics(
+        score_by_stage=score_by_stage,
+        daily_focus=daily_coaching_focus,
+        additional_situations=additional_situations,
+        situation_day_coaching_view=situation_day_coaching_view,
+        call_breakdown=call_breakdown,
+    )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -4681,6 +4774,7 @@ def build_manager_daily_payload(
         "situation_day_coaching_view": situation_day_coaching_view,
         "daily_coaching_focus": daily_coaching_focus,
         "daily_coaching_focus_validation": dict(daily_coaching_focus.get("validation") or {}),
+        "problem_wording_diagnostics": problem_wording_diagnostics,
         "coaching_data_scope": coaching_data_scope,
         "data_scopes": {
             "coaching_base": coaching_data_scope,
@@ -5095,6 +5189,124 @@ _CRITERION_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("cross_", "cross_stage_transition"),
 )
 
+POSITIVE_PROBLEM_WORDING_MARKERS = (
+    "не ушел в презентац слишком рано",
+    "не ушёл в презентац слишком рано",
+    "не переходил к презентац слишком рано",
+    "сохранил нейтральн",
+    "сохранил вежлив",
+    "представился",
+    "обозначил компанию",
+    "понятно обозначил причину",
+)
+
+
+def _stage_problem_fallback(stage_code: str | None, criterion_code: str | None = None) -> str:
+    code = str(stage_code or "").strip()
+    criterion = str(criterion_code or "").strip()
+    if code == "contact_start":
+        if criterion.startswith("cs_"):
+            return "Повод звонка был объяснён недостаточно ясно."
+        return "Первичный контакт не был связан с задачей клиента."
+    if code == "qualification_primary":
+        return "Квалификация не была завершена до предложения."
+    if code == "needs_discovery":
+        return "Потребность клиента не была раскрыта до предложения."
+    if code == "presentation":
+        return "Предложение не было связано с выявленной задачей клиента."
+    if code == "objection_handling":
+        return "Причина сомнения клиента не была разобрана."
+    if code == "completion_next_step":
+        return "Следующий шаг не был закреплён достаточно конкретно."
+    return "Проблема требует уточнения по evidence."
+
+
+def _specific_problem_rewrite(
+    *,
+    text: str,
+    stage_code: str | None = None,
+    criterion_code: str | None = None,
+    criterion_name: str | None = None,
+) -> str | None:
+    normalized = _summary_norm(text)
+    criterion_text = _summary_norm(f"{criterion_code or ''} {criterion_name or ''}")
+    if "не уш" in normalized and "презентац" in normalized and "слишком рано" in normalized:
+        if str(stage_code or "").strip() == "needs_discovery":
+            return "Потребность клиента не была раскрыта до предложения."
+        return "Квалификация не была завершена до предложения."
+    if "сохранил" in normalized and any(marker in normalized for marker in ("нейтральн", "вежлив", "понятн")):
+        return "Тон был вежливым, но не помог продвинуть разговор."
+    if "представ" in normalized and ("компан" in normalized or "себ" in normalized):
+        return "Повод звонка был объяснён недостаточно ясно."
+    if "понятно обозначил" in normalized and "причин" in normalized:
+        return "Причина звонка не была связана с задачей клиента."
+    if "презентац" in criterion_text and "рано" in criterion_text:
+        return _stage_problem_fallback(stage_code, criterion_code)
+    return None
+
+
+def _problem_statement_is_positive_or_neutral(text: str) -> bool:
+    normalized = _summary_norm(text)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in POSITIVE_PROBLEM_WORDING_MARKERS):
+        return True
+    positive_starts = (
+        "менеджер сохранил",
+        "менеджер представ",
+        "менеджер обозначил",
+        "менеджер понятно",
+        "сохранил",
+        "представ",
+        "понятно обозначил",
+    )
+    if normalized.startswith(positive_starts):
+        return True
+    if normalized.startswith("не ") and any(marker in normalized for marker in ("слишком рано", "излишне", "давил")):
+        return True
+    return False
+
+
+def _normalize_problem_statement(
+    value: Any,
+    *,
+    stage_code: str | None = None,
+    criterion_code: str | None = None,
+    criterion_name: str | None = None,
+    fallback: str | None = None,
+) -> dict[str, Any]:
+    """Return actionable manager-facing problem wording from persisted issue text."""
+    original = re.sub(r"`[^`]+`", "", str(value or ""))
+    original = re.sub(r"\b[a-z]{2,}_[a-z0-9_]+\b", "", original, flags=re.IGNORECASE)
+    original = re.sub(r"\s+", " ", original).strip(" -–—:;")
+    sentence_end = re.search(r"[.!?]\s+", original)
+    if sentence_end:
+        original = original[: sentence_end.start()].strip()
+    if len(original) > 220:
+        original = original[:220].rsplit(" ", 1)[0].strip()
+    replacement = _specific_problem_rewrite(
+        text=original,
+        stage_code=stage_code,
+        criterion_code=criterion_code,
+        criterion_name=criterion_name,
+    )
+    warnings: list[str] = []
+    if replacement:
+        warnings.append("positive_or_neutral_problem_wording_normalized")
+    elif _problem_statement_is_positive_or_neutral(original):
+        replacement = fallback or _stage_problem_fallback(stage_code, criterion_code)
+        warnings.append("positive_or_neutral_problem_wording_normalized")
+    elif not original:
+        replacement = fallback or _stage_problem_fallback(stage_code, criterion_code)
+        warnings.append("missing_problem_wording_fallback")
+
+    text = replacement or original
+    return {
+        "text": text,
+        "source_text": original if text != original else None,
+        "warnings": warnings,
+    }
+
 
 def _stage_code_from_criterion_code(criterion_code: str) -> str | None:
     """Resolve analyzer criterion_code prefix to report stage_code."""
@@ -5124,13 +5336,24 @@ def _first_sentence(value: str, *, limit: int = 180) -> str:
     return text
 
 
-def _stage_problem_text_from_issue(issue: dict[str, Any]) -> str:
+def _stage_problem_text_from_issue(
+    issue: dict[str, Any],
+    *,
+    stage_code: str | None = None,
+    criterion_code: str | None = None,
+    criterion_name: str | None = None,
+) -> dict[str, Any]:
     """Build one bounded stage problem sentence from already persisted analysis data."""
     for key in ("comment", "interpretation", "impact", "evidence", "title", "criterion_name"):
         text = _first_sentence(str(issue.get(key) or ""))
         if text:
-            return text
-    return ""
+            return _normalize_problem_statement(
+                text,
+                stage_code=stage_code,
+                criterion_code=criterion_code,
+                criterion_name=criterion_name,
+            )
+    return {"text": "", "source_text": None, "warnings": []}
 
 
 def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str, Any]]:
@@ -5161,13 +5384,21 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                     normalized = round(cscore / cmax * 10, 1)
                     crit_stage.setdefault(code, {}).setdefault(ccode, []).append(normalized)
                     crit_names.setdefault(ccode, cname)
-                    candidate_text = _stage_problem_text_from_issue(dict(crit))
+                    normalized_problem = _stage_problem_text_from_issue(
+                        dict(crit),
+                        stage_code=code,
+                        criterion_code=ccode,
+                        criterion_name=cname,
+                    )
+                    candidate_text = str(normalized_problem.get("text") or "").strip()
                     if candidate_text:
                         stage_problem_candidates.setdefault(code, []).append(
                             {
                                 "source": "criteria_comment",
                                 "score": normalized,
                                 "text": candidate_text,
+                                "source_text": normalized_problem.get("source_text"),
+                                "wording_warnings": list(normalized_problem.get("warnings") or []),
                                 "criterion_code": ccode,
                                 "criterion_name": cname,
                             }
@@ -5175,13 +5406,21 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
         for item in detail.get("gaps") or []:
             item_code = str(item.get("criterion_code") or "").strip()
             stage_code = _stage_code_from_criterion_code(item_code)
-            candidate_text = _stage_problem_text_from_issue(dict(item))
+            normalized_problem = _stage_problem_text_from_issue(
+                dict(item),
+                stage_code=stage_code,
+                criterion_code=item_code,
+                criterion_name=str(item.get("criterion_name") or item.get("title") or ""),
+            )
+            candidate_text = str(normalized_problem.get("text") or "").strip()
             if stage_code and candidate_text:
                 stage_problem_candidates.setdefault(stage_code, []).append(
                     {
                         "source": "gap",
                         "score": 0.0,
                         "text": candidate_text,
+                        "source_text": normalized_problem.get("source_text"),
+                        "wording_warnings": list(normalized_problem.get("warnings") or []),
                         "criterion_code": item_code,
                         "criterion_name": str(item.get("criterion_name") or item.get("title") or "").strip(),
                     }
@@ -5189,13 +5428,20 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
         for item in detail.get("evidence_fragments") or []:
             item_code = str(item.get("criterion_code") or "").strip()
             stage_code = _stage_code_from_criterion_code(item_code)
-            candidate_text = _stage_problem_text_from_issue(dict(item))
+            normalized_problem = _stage_problem_text_from_issue(
+                dict(item),
+                stage_code=stage_code,
+                criterion_code=item_code,
+            )
+            candidate_text = str(normalized_problem.get("text") or "").strip()
             if stage_code and candidate_text:
                 stage_problem_candidates.setdefault(stage_code, []).append(
                     {
                         "source": "evidence",
                         "score": 5.0,
                         "text": candidate_text,
+                        "source_text": normalized_problem.get("source_text"),
+                        "wording_warnings": list(normalized_problem.get("warnings") or []),
                         "criterion_code": item_code,
                         "criterion_name": "",
                     }
@@ -5230,6 +5476,8 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
         ]
         problem_summary = None
         problem_source = None
+        problem_normalized_from = None
+        problem_wording_warnings: list[str] = []
         if problem_candidates:
             problem_candidates.sort(
                 key=lambda item: (
@@ -5240,6 +5488,8 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             best_problem = problem_candidates[0]
             problem_summary = str(best_problem.get("text") or "").strip() or None
             problem_source = str(best_problem.get("source") or "").strip() or None
+            problem_normalized_from = str(best_problem.get("source_text") or "").strip() or None
+            problem_wording_warnings = list(best_problem.get("wording_warnings") or [])
         rows.append({
             "stage_code": stage_code,
             "funnel_label": funnel_label,
@@ -5249,6 +5499,8 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             "criteria_detail": criteria_detail,
             "problem_summary": problem_summary,
             "problem_source": problem_source,
+            "problem_normalized_from": problem_normalized_from,
+            "problem_wording_warnings": problem_wording_warnings,
         })
     return rows
 
@@ -6221,17 +6473,42 @@ def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> li
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for item in detail.get(key) or []:
-            label = _finding_item_label(dict(item or {}))
+            raw_item = dict(item or {})
+            label = _finding_item_label(raw_item)
+            if key == "gaps":
+                stage_code = _stage_code_from_criterion_code(str(raw_item.get("criterion_code") or ""))
+                normalized = _normalize_problem_statement(
+                    label,
+                    stage_code=stage_code,
+                    criterion_code=str(raw_item.get("criterion_code") or ""),
+                    criterion_name=str(raw_item.get("criterion_name") or raw_item.get("title") or ""),
+                )
+                label = str(normalized.get("text") or label).strip()
+                if normalized.get("source_text"):
+                    raw_item = dict(raw_item)
+                    raw_item["problem_normalized_from"] = normalized.get("source_text")
+                    raw_item["problem_wording_warnings"] = list(normalized.get("warnings") or [])
             grouped.setdefault(label, []).append(item)
     result: list[dict[str, Any]] = []
     for label, items in sorted(grouped.items(), key=lambda pair: len(pair[1]), reverse=True)[:5]:
         first = items[0]
+        first_stage_code = _stage_code_from_criterion_code(str(first.get("criterion_code") or ""))
+        interpretation = _finding_item_interpretation(dict(first or {}))
+        if key == "gaps":
+            normalized_interpretation = _normalize_problem_statement(
+                interpretation,
+                stage_code=first_stage_code,
+                criterion_code=str(first.get("criterion_code") or ""),
+                criterion_name=str(first.get("criterion_name") or first.get("title") or ""),
+                fallback=_stage_problem_fallback(first_stage_code, str(first.get("criterion_code") or "")),
+            )
+            interpretation = str(normalized_interpretation.get("text") or interpretation).strip()
         result.append(
             {
                 "label": label,
                 "signal": len(items),
                 "criterion_code": str(first.get("criterion_code") or "").strip() or None,
-                "interpretation": _finding_item_interpretation(dict(first or {})),
+                "interpretation": interpretation,
             }
         )
     return result
@@ -7074,15 +7351,33 @@ def _build_additional_situations(
     for item in improve_items:
         if len(situations) >= 3:
             break
-        label = str(item.get("label") or "").strip()
+        stage_code = _stage_code_from_criterion_code(str(item.get("criterion_code") or ""))
+        normalized_label = _normalize_problem_statement(
+            item.get("label"),
+            stage_code=stage_code,
+            criterion_code=str(item.get("criterion_code") or ""),
+            fallback=_stage_problem_fallback(stage_code),
+        )
+        label = str(normalized_label.get("text") or item.get("label") or "").strip()
         if not label or label.strip().lower() in seen_titles:
             continue
         seen_titles.add(label.strip().lower())
+        normalized_interpretation = _normalize_problem_statement(
+            item.get("interpretation"),
+            stage_code=stage_code,
+            criterion_code=str(item.get("criterion_code") or ""),
+            fallback=label,
+        )
         situations.append({
             "kind": "gap",
             "title": label,
+            "title_normalized_from": normalized_label.get("source_text"),
+            "body_normalized_from": normalized_interpretation.get("source_text"),
+            "problem_wording_warnings": sorted(
+                set(list(normalized_label.get("warnings") or []) + list(normalized_interpretation.get("warnings") or []))
+            ),
             "signal": int(item.get("signal") or 0),
-            "interpretation": str(item.get("interpretation") or "Выявлено в нескольких звонках."),
+            "interpretation": str(normalized_interpretation.get("text") or "Выявлено в нескольких звонках."),
         })
 
     for item in worked_items:
@@ -8023,7 +8318,12 @@ def _client_grounded_situation_coaching_view(
         ]
     else:
         fact = f"Клиент сказал: «{_dialogue_turn_text(quote, limit=180)}»."
-        pattern_title = str(candidate.get("situation_title") or "").strip() or "Ситуация дня с клиентской репликой"
+        normalized_title = _normalize_problem_statement(
+            candidate.get("situation_title"),
+            stage_code=stage_code,
+            fallback=_stage_problem_fallback(stage_code),
+        )
+        pattern_title = str(normalized_title.get("text") or "").strip() or "Ситуация дня с клиентской репликой"
         what_happened = fact
         meaning = _first_sentence(str(candidate.get("what_it_means") or ""), limit=260)
         what_was_missing = _first_sentence(str(candidate.get("what_was_missing") or ""), limit=260)
@@ -8158,13 +8458,23 @@ def _build_report_evidence_situation(
             coaching_view_source = "report_evidence.client_grounded_situation"
     dialogue_is_partial = any(turn.get("speaker") == "unknown" for turn in dialogue_turns) or bool(dialogue_partial_reason)
     if coaching_view is None:
+        normalized_title = _normalize_problem_statement(
+            candidate.get("situation_title"),
+            stage_code=stage_code,
+            fallback=_stage_problem_fallback(stage_code),
+        )
+        normalized_what_happened = _normalize_problem_statement(
+            candidate.get("what_happened"),
+            stage_code=stage_code,
+            fallback=_stage_problem_fallback(stage_code),
+        )
         coaching_view = {
-            "pattern_title": str(candidate.get("situation_title") or "").strip()
+            "pattern_title": str(normalized_title.get("text") or "").strip()
             or "Ситуация дня из report_evidence",
             "stage_code": stage_code,
             "stage_label": stage_name,
             "stage_score_label": _report_evidence_stage_score_label(stage_code, score_by_stage),
-            "what_happened": _first_sentence(str(candidate.get("what_happened") or ""), limit=260),
+            "what_happened": _first_sentence(str(normalized_what_happened.get("text") or ""), limit=260),
             "meaning": _first_sentence(str(candidate.get("what_it_means") or ""), limit=260),
             "what_was_missing": _first_sentence(str(candidate.get("what_was_missing") or ""), limit=260),
             "next_time_action": _first_sentence(str(candidate.get("next_time_action") or ""), limit=260),
@@ -8277,10 +8587,16 @@ def _build_call_breakdown_from_report_evidence(
     rows: list[list[str]] = []
     fragment_present = False
     for index, (_moment_rank, moment, _turns, fragment, _strength) in enumerate(best_candidates[:3], start=1):
-        stage_name = _stage_name_for_code(str(moment.get("stage_code") or ""), score_by_stage)
+        moment_stage_code = str(moment.get("stage_code") or "").strip()
+        stage_name = _stage_name_for_code(moment_stage_code, score_by_stage)
         if fragment:
             fragment_present = True
-        what = _first_sentence(str(moment.get("what_happened") or ""), limit=220)
+        normalized_what = _normalize_problem_statement(
+            moment.get("what_happened"),
+            stage_code=moment_stage_code,
+            fallback=_stage_problem_fallback(moment_stage_code),
+        )
+        what = _first_sentence(str(normalized_what.get("text") or ""), limit=220)
         better = _first_sentence(str(moment.get("what_better") or ""), limit=240)
         rows.append(
             [
@@ -8432,12 +8748,38 @@ def _build_additional_situations_from_report_evidence(
             priority = str(item.get("priority") or "").strip().lower()
             if quality not in REPORT_EVIDENCE_USABLE_QUALITIES or priority not in {"high", "medium"}:
                 continue
-            title = _first_sentence(str(item.get("title") or ""), limit=120).rstrip(".")
+            kind = "strength" if str(item.get("type") or "") == "strength" else "gap"
+            stage_code = str(item.get("stage_code") or "").strip()
+            raw_title = _first_sentence(str(item.get("title") or ""), limit=120).rstrip(".")
+            title = raw_title
+            title_normalized_from = None
+            wording_warnings: list[str] = []
+            if kind == "gap":
+                normalized_title = _normalize_problem_statement(
+                    raw_title,
+                    stage_code=stage_code,
+                    fallback=_stage_problem_fallback(stage_code),
+                )
+                title = str(normalized_title.get("text") or raw_title).strip().rstrip(".")
+                title_normalized_from = normalized_title.get("source_text")
+                wording_warnings.extend(str(item) for item in normalized_title.get("warnings") or [])
             title_key = title.strip().lower()
             if not title or title_key in seen_titles:
                 continue
             seen_titles.add(title_key)
-            kind = "strength" if str(item.get("type") or "") == "strength" else "gap"
+            raw_what_happened = _first_sentence(str(item.get("what_happened") or ""), limit=180)
+            body_normalized_from = None
+            if kind == "gap":
+                normalized_happened = _normalize_problem_statement(
+                    raw_what_happened,
+                    stage_code=stage_code,
+                    fallback=title,
+                )
+                what_happened = str(normalized_happened.get("text") or raw_what_happened).strip()
+                body_normalized_from = normalized_happened.get("source_text")
+                wording_warnings.extend(str(item) for item in normalized_happened.get("warnings") or [])
+            else:
+                what_happened = raw_what_happened
             rows.append(
                 (
                     (
@@ -8448,9 +8790,12 @@ def _build_additional_situations_from_report_evidence(
                     {
                         "kind": kind,
                         "title": title,
+                        "title_normalized_from": title_normalized_from,
+                        "body_normalized_from": body_normalized_from,
+                        "problem_wording_warnings": sorted(set(wording_warnings)),
                         "signal": 1,
                         "interpretation": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
-                        "client_said": _first_sentence(str(item.get("what_happened") or ""), limit=180),
+                        "client_said": what_happened,
                         "meant": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
                         "how_to": _first_sentence(str(item.get("recommended_action") or ""), limit=180),
                         "why": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
@@ -9138,8 +9483,24 @@ def _build_call_breakdown(
         ]
     to_fix = [
         {
-            "label": _finding_item_label(dict(i or {})),
-            "interpretation": _finding_item_interpretation(dict(i or {})),
+            "label": str(
+                _normalize_problem_statement(
+                    _finding_item_label(dict(i or {})),
+                    stage_code=focus_stage_code,
+                    criterion_code=str((i or {}).get("criterion_code") or ""),
+                    fallback=_stage_problem_fallback(focus_stage_code),
+                ).get("text")
+                or _finding_item_label(dict(i or {}))
+            ),
+            "interpretation": str(
+                _normalize_problem_statement(
+                    _finding_item_interpretation(dict(i or {})),
+                    stage_code=focus_stage_code,
+                    criterion_code=str((i or {}).get("criterion_code") or ""),
+                    fallback=_stage_problem_fallback(focus_stage_code),
+                ).get("text")
+                or _finding_item_interpretation(dict(i or {}))
+            ),
         }
         for i in to_fix_source[:2]
         if _finding_item_label(dict(i or {})) != "Без названия"

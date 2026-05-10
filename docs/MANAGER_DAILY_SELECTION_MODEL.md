@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem.
 
 ---
 
@@ -278,6 +278,31 @@ Selection rule:
 - Stage mismatch between focus, Situation, and Breakdown is exposed in `daily_coaching_focus_validation` as a warning.
 
 This does not change outcome totals, report-day call-list semantics, Step 8AH-11A `data_scope`, or the `report_evidence` schema.
+
+### Problem wording normalization
+
+Since Step 8AH-11C, manager-facing coaching problem text is normalized downstream by the reporting layer before it reaches the PDF/DOCX render model.
+
+The normalizer applies to:
+- `score_by_stage[].problem_summary` and the `Основная проблема` text in `БАЛЛЫ ПО ЭТАПАМ`;
+- `daily_coaching_focus.problem_statement`;
+- Situation Day / coaching situation problem wording;
+- Call Breakdown `Что было` problem wording;
+- `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` gap titles and gap body text;
+- DOCX fallback stage/additional-situation problem text.
+
+Rules:
+- positive or neutral statements must not be rendered as the problem for a `Фокус на завтра`, `Зона внимания`, or `Зона роста`;
+- if a persisted criterion/title says a positive behavior such as `Менеджер не ушел в презентацию слишком рано`, the renderer rewrites it into the missing behavior, for example `Квалификация не была завершена до предложения`;
+- Additional Situation gap title and body must not contradict each other; if title is positive but body describes a gap, the title is rewritten as a gap;
+- if no safe rewrite is possible, the safe fallback is `Проблема требует уточнения по evidence`, not a positive statement presented as a problem.
+
+Payload diagnostics:
+- `problem_wording_diagnostics.status` is `warning` when any problem wording was normalized or still looks unsafe;
+- `problem_wording_diagnostics.normalized_count` counts normalized manager-facing problem fields;
+- `daily_coaching_focus.validation.issues` may include `positive_or_neutral_problem_wording_normalized` when the focus problem needed rewriting.
+
+This normalizer does not change score values, final outcomes, report-day call-list semantics, `data_scope`, `daily_coaching_focus.stage_code`, `report_evidence`, or LLM2 prompts.
 
 Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `report_evidence v1` when it exists and passes `validate_report_evidence(scores_detail, transcript)`:
 - `СИТУАЦИЯ ДНЯ` prefers usable `report_evidence.situation_candidates`;

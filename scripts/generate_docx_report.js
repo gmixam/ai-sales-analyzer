@@ -363,15 +363,36 @@ function stageStatus(stage) {
   return "Зона внимания";
 }
 
+function normalizeProblemStatement(text, stageCode = "", kind = "gap") {
+  const value = cleanText(text);
+  if (!value || kind === "strength") return value;
+  const normalized = value.toLowerCase().replace(/ё/g, "е");
+  if (normalized.includes("не уш") && normalized.includes("презентац") && normalized.includes("слишком рано")) {
+    return stageCode === "needs_discovery"
+      ? "Потребность клиента не была раскрыта до предложения."
+      : "Квалификация не была завершена до предложения.";
+  }
+  if (normalized.includes("сохранил") && (normalized.includes("нейтральн") || normalized.includes("вежлив") || normalized.includes("понятн"))) {
+    return "Тон был вежливым, но не помог продвинуть разговор.";
+  }
+  if (normalized.includes("представ") && (normalized.includes("компан") || normalized.includes("себ"))) {
+    return "Повод звонка был объяснён недостаточно ясно.";
+  }
+  if (normalized.includes("понятно обозначил") && normalized.includes("причин")) {
+    return "Причина звонка не была связана с задачей клиента.";
+  }
+  return value;
+}
+
 function stageProblem(stage) {
   if (stage.priority) {
-    return firstNonEmpty(
+    return normalizeProblemStatement(firstNonEmpty(
       stage.problem_summary,
       DATA.key_problem?.title,
       "Этот этап сейчас главный фокус ближайшей отработки.",
-    );
+    ), stage.stage_code || "");
   }
-  return firstNonEmpty(stage.problem_summary, "Недостаточно данных для конкретного вывода по этапу.");
+  return normalizeProblemStatement(firstNonEmpty(stage.problem_summary, "Недостаточно данных для конкретного вывода по этапу."), stage.stage_code || "");
 }
 
 function criterionToProblem(name) {
@@ -599,6 +620,7 @@ function dataFromBundle(bundle) {
     },
     stages: (payload.score_by_stage || []).map((stage) => ({
       code: stage.funnel_label || stage.stage_code || "—",
+      stage_code: stage.stage_code || "",
       name: `${stage.funnel_label || ""} ${stage.stage_name || ""}`.trim(),
       score10: stage.score ?? null,
       score5: stage.score === null || stage.score === undefined ? null : safeNumber((safeNumber(stage.score) / 2).toFixed(1), null),
@@ -661,8 +683,9 @@ function dataFromBundle(bundle) {
       })
       .slice(0, 3)
       .map((item) => ({
-        title: (item.title || "").trim(),
+        title: normalizeProblemStatement((item.title || "").trim(), item.stage_code || "", item.kind || (item.badge === "Сильная сторона" ? "strength" : "gap")),
         badge: item.badge || (item.kind === "strength" ? "Сильная сторона" : "Зона роста"),
+        stage_code: item.stage_code || "",
         client_said: item.client_said || "",
         meant: item.meant || item.interpretation || "",
         how_to: item.how_to || "",
