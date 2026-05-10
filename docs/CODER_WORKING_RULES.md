@@ -62,6 +62,24 @@ Files in Sources, внешние snapshots и старый контекст пр
 - scheduler / retries / beat / full automation loop не делать, пока это не подтверждено отдельным шагом;
 - checklist definition, analysis contract и manager card считать разными сущностями и не смешивать их.
 
+### 3.1 Generated report correction rule
+
+Generated reports are verification artifacts, not source of truth.
+
+Если проблема найдена в PDF, DOCX, HTML, Telegram preview или другом generated report artifact, кодер не должен править этот artifact вручную и не должен подгонять один конкретный отчёт, менеджера, звонок, номер или PDF.
+
+Любая report-quality проблема должна быть сведена к upstream-механизму:
+- prompt / prompt asset;
+- schema / contract;
+- validator;
+- renderer / template;
+- normalizer / formatter;
+- selection logic;
+- deterministic reporting logic;
+- regression tests / verification checks.
+
+Отчётные artifacts пересобираются только после system-level fix или явно зафиксированного no-code decision. Если нужен временный exception для review handoff, он должен быть назван как explicit temporary policy в docs/decision/progress, а не скрыт как ручная правка PDF.
+
 ## 4. Task normalization rule
 
 Если входящая задача дана не в project task format, кодер не должен сразу переходить к реализации.

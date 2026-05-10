@@ -654,3 +654,11 @@
 - **Reason:** Human review found `РАЗБОР ЗВОНКА` rows where the block selected a coaching moment but rendered `Фрагмент: —`, making generic advice look like evidence-backed call analysis.
 - **Scope:** Reporting payload/render evidence ranking and weak-fragment display only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-08
+
+## ADR-065: Reports are verification artifacts; fixes must be system-level first
+- **Decision:** Generated report artifacts such as PDF, DOCX, HTML, text extracts, Telegram previews, and review packages are verification artifacts, not source of truth for product behavior.
+- **Decision:** A report defect must be corrected upstream first: prompt / contract / validator / renderer / template / normalizer / selection logic / deterministic reporting logic / regression tests. Manual editing of a generated report is not an acceptable product fix.
+- **Decision:** Reports may be rebuilt only after the mechanism is fixed, after an explicit no-code decision, or as a clearly bounded verification run. A one-off report, manager, call, phone, interaction id, or PDF must not be patched as the implementation.
+- **Reason:** Step 8 human-review work showed that PDF-visible issues can tempt point fixes, but reliable `manager_daily` quality requires reusable mechanisms and regression checks before final artifacts are regenerated.
+- **Scope:** Project operating rule for report correction and review handoff. This does not change analyzer prompts, report contracts, validators, renderers, selection logic, outcome resolution, delivery semantics, or existing generated artifacts by itself.
+- **Date:** 2026-05-10

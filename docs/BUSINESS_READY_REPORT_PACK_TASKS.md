@@ -36,6 +36,10 @@
 - coaching / pattern engine
 - full rich daily mechanism upgrade
 
+## Operating rule for report quality fixes
+
+Future report polish tasks must target mechanisms, not individual PDFs. A problem found in a generated `manager_daily` artifact must first be mapped to the upstream prompt, contract, validator, renderer/template, normalizer, selection logic, deterministic reporting logic, or regression check that produced it. Generated PDFs/DOCX/HTML/text previews are verification artifacts and must not be manually edited as the fix. Reports are rebuilt only after a system-level fix or an explicit no-code decision is recorded.
+
 ## Source of truth — current report layer
 
 | Роль | Файл |
