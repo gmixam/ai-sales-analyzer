@@ -57,7 +57,10 @@ from app.agents.calls.analysis_purpose import (  # noqa: E402
     mark_scores_detail_analysis_purpose,
 )
 from app.agents.calls.report_evidence import validate_report_evidence  # noqa: E402
-from app.agents.calls.report_templates import build_report_render_model  # noqa: E402
+from app.agents.calls.report_templates import (  # noqa: E402
+    _call_context_label,
+    build_report_render_model,
+)
 from app.agents.calls.verification_report_runner import (  # noqa: E402
     build_canonical_verification_bundle,
 )
@@ -1265,6 +1268,61 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertNotIn("12 мая", sections["call_tomorrow"]["rows"][0][3])
         self.assertNotIn("14:30", sections["call_tomorrow"]["rows"][0][3])
+
+    def test_step8ah9_call_list_deadline_context_removes_technical_do_for_periods(self) -> None:
+        self.assertEqual(_call_context_label("agreed", "После праздников", None), "после праздников")
+        self.assertEqual(_call_context_label("agreed", "На этой неделе", None), "на этой неделе")
+        self.assertEqual(_call_context_label("agreed", "12:00", None), "до 12:00")
+        self.assertEqual(_call_context_label("agreed", "пятницы", None), "до пятницы")
+        self.assertEqual(_call_context_label("agreed", "до На этой неделе", None), "на этой неделе")
+
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:14:00")
+        artifact.interaction.text = "Клиент: выставляйте счёт. Менеджер: отправлю счёт."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_text": "Выставить счёт клиенту.",
+            "due_date_text": "На этой неделе",
+        }
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_context = sections["call_list"]["rows"][0][3]
+
+        self.assertEqual(rendered_context, "на этой неделе")
+        self.assertNotIn("до На", rendered_context)
+
+    def test_step8ah9_empty_additional_situations_hidden_in_manager_daily_render(self) -> None:
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[_artifact()],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload["additional_situations"] = {"is_placeholder": True, "situations": []}
+
+        rendered = render_report_email(payload)
+
+        self.assertNotIn("ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ", rendered["text"])
+        self.assertNotIn("Дополнительные ситуации появятся", rendered["text"])
+        self.assertNotIn("Дополнительные ситуации появятся", rendered["html"])
+        self.assertIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["text"])
 
     def test_manager_daily_payload_falls_back_to_breakdown_evidence_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -3072,7 +3130,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "СИТУАЦИЯ ДНЯ",
             "РАЗБОР ЗВОНКА",
             "ГОЛОС КЛИЕНТА",
-            "ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ",
             "ЧЕЛЛЕНДЖ НА ЗАВТРА",
             "ПОЗВОНИ ЗАВТРА",
             "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ",

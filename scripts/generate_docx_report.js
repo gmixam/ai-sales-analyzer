@@ -1351,8 +1351,6 @@ function buildDopSituatsii() {
   const situations = DATA.additional_situations || [];
 
   if (situations.length === 0) {
-    blocks.push(blockHeading("📋", "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ"));
-    blocks.push(metaPara("Дополнительные ситуации появятся после накопления данных по звонкам."));
     return blocks;
   }
 

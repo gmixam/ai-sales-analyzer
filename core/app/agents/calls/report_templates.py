@@ -69,6 +69,11 @@ def _section_meta(template: ReportTemplate, section_id: str) -> dict[str, Any]:
     )
 
 
+def _section_hidden_when_empty(section: dict[str, Any]) -> bool:
+    """Return True for optional manager_daily sections that should vanish when empty."""
+    return section.get("id") == "additional_situations" and not (section.get("situations") or [])
+
+
 def render_report_artifact(payload: dict[str, Any], *, prefer_docx_first: bool = False) -> dict[str, Any]:
     """Render one final report artifact from normalized payload and active template assets."""
     template = load_report_template(str(payload["meta"]["preset"]))
@@ -697,6 +702,8 @@ def _render_text_report(report: dict[str, Any]) -> str:
         lines.extend([f"- {item['label']}: {_value(item.get('value'))}" for item in report["summary_cards"]])
         lines.append("")
     for section in report["sections"]:
+        if _section_hidden_when_empty(section):
+            continue
         lines.append(section["label"])
         lines.append("-" * len(section["label"]))
         lines.extend(_section_to_text_lines(section))
@@ -808,6 +815,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append("—")
         return lines
     if kind == "expanded_situations":
+        if _section_hidden_when_empty(section):
+            return []
         lines = []
         for item in section.get("situations") or []:
             lines.extend(
@@ -1166,6 +1175,8 @@ def _render_html_section(section: dict[str, Any]) -> str:
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
+        if _section_hidden_when_empty(section):
+            return ""
         cards = "".join(
             "<article class=\"card\">"
             f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
@@ -1176,12 +1187,6 @@ def _render_html_section(section: dict[str, Any]) -> str:
             "</article>"
             for item in section.get("situations") or []
         )
-        if not cards:
-            return (
-                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-                "<p class=\"muted\">Дополнительные ситуации появятся после накопления данных по звонкам.</p>"
-                "</div></section>"
-            )
         return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
         return (
@@ -1428,6 +1433,8 @@ def _render_pdf_report(*, report: dict[str, Any], template: ReportTemplate) -> t
     add_line(report.get("hero_focus") or report.get("hero_context") or "", size=10, color=black, gap=12)
 
     for section in report["sections"]:
+        if _section_hidden_when_empty(section):
+            continue
         if section.get("page_break_before"):
             add_page()
         bar_color = accent
@@ -1756,24 +1763,25 @@ def _render_manager_daily_pdf_report(
     footer(page3, 3)
 
     page4 = add_page()
-    draw_section_bar(page4, top=58, title=additional["label"], color=accent)
-    additional_top = 92
-    if not (additional.get("situations") or []):
-        draw_text(page4, left=margin, top=92, text="Дополнительные ситуации появятся после накопления данных по звонкам.", size=8.8, color=muted, max_width=width - (margin * 2))
-        additional_top = 120
-    for item in (additional.get("situations") or [])[:3]:
-        card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
-        card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
-        card_h = 92
-        draw_rect(page4, left=margin, top=additional_top, box_width=width - (margin * 2), box_height=card_h, fill=card_fill)
-        draw_rect(page4, left=margin, top=additional_top, box_width=4, box_height=card_h, fill=card_color)
-        draw_text(page4, left=margin + 12, top=additional_top + 8, text=f"{item.get('badge') or 'Ситуация'} · {item.get('title') or ''}", size=9.2, color=card_color, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=additional_top + 26, text=f"Что сказал клиент: {item.get('client_said') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=additional_top + 42, text=f"Что имел в виду: {item.get('meant') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=additional_top + 58, text=f"Как надо было: {item.get('how_to') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=additional_top + 74, text=f"Почему так: {item.get('why') or '—'}", size=7.6, color=muted, max_width=width - (margin * 2) - 24)
-        additional_top += card_h + 10
-    challenge_top = additional_top + 2
+    additional_top = 58
+    if additional.get("situations"):
+        draw_section_bar(page4, top=58, title=additional["label"], color=accent)
+        additional_top = 92
+        for item in (additional.get("situations") or [])[:3]:
+            card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
+            card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
+            card_h = 92
+            draw_rect(page4, left=margin, top=additional_top, box_width=width - (margin * 2), box_height=card_h, fill=card_fill)
+            draw_rect(page4, left=margin, top=additional_top, box_width=4, box_height=card_h, fill=card_color)
+            draw_text(page4, left=margin + 12, top=additional_top + 8, text=f"{item.get('badge') or 'Ситуация'} · {item.get('title') or ''}", size=9.2, color=card_color, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=additional_top + 26, text=f"Что сказал клиент: {item.get('client_said') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=additional_top + 42, text=f"Что имел в виду: {item.get('meant') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=additional_top + 58, text=f"Как надо было: {item.get('how_to') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=additional_top + 74, text=f"Почему так: {item.get('why') or '—'}", size=7.6, color=muted, max_width=width - (margin * 2) - 24)
+            additional_top += card_h + 10
+        challenge_top = additional_top + 2
+    else:
+        challenge_top = additional_top
     draw_section_bar(page4, top=challenge_top, title=challenge["label"], color=accent)
     draw_rect(page4, left=margin, top=challenge_top + 30, box_width=width - (margin * 2), box_height=106, fill=light_blue)
     draw_rect(page4, left=margin, top=challenge_top + 30, box_width=4, box_height=106, fill=accent)
@@ -2487,12 +2495,7 @@ def _render_additional_situations_html(section: dict[str, Any]) -> str:
     label = html.escape(str(section.get("label") or "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ"))
     situations = list(section.get("situations") or [])
     if section.get("is_placeholder") or not situations:
-        return (
-            f"<div class=\"section-bar\">{label}</div>"
-            "<section class=\"add-situations\">"
-            "<div class=\"add-sit-placeholder\">Дополнительные ситуации появятся после накопления данных по звонкам.</div>"
-            "</section>"
-        )
+        return ""
     cards = ""
     for s in situations:
         kind = str(s.get("kind") or "gap")
@@ -3100,7 +3103,9 @@ def _build_v5_additional_situations_section(*, section: dict[str, Any]) -> dict[
         situations.append(
             {
                 "badge": "Сильная сторона" if kind == "strength" else "Зона роста",
+                "kind": kind,
                 "title": title,
+                "signal": int(item.get("signal") or 0),
                 "client_said": _clean_reader_text(str(item.get("client_said") or "")) or interpretation or "Ситуация повторяется в нескольких звонках.",
                 "meant": _clean_reader_text(str(item.get("meant") or "")) or (
                     "За этим стоит устойчивый рабочий паттерн, который стоит сохранить."
@@ -3119,7 +3124,7 @@ def _build_v5_additional_situations_section(*, section: dict[str, Any]) -> dict[
                 ),
             }
         )
-    return {"situations": situations[:3]}
+    return {"situations": situations[:3], "hide_when_empty": True}
 
 
 def _build_challenge_data(
@@ -3455,6 +3460,47 @@ def _call_topic_label(call_type: str | None, scenario_type: str | None) -> str:
     return type_label or scenario_label or "—"
 
 
+def _lower_first(value: str) -> str:
+    """Lowercase only the first character for inline Russian period labels."""
+    text = str(value or "").strip()
+    return text[:1].lower() + text[1:] if text else text
+
+
+def _is_human_relative_period(value: str) -> bool:
+    """Return True when a deadline is already phrased as a period, not a due-by target."""
+    normalized = re.sub(r"\s+", " ", str(value or "").strip()).lower().replace("ё", "е")
+    return normalized.startswith(
+        (
+            "после ",
+            "на этой ",
+            "на следующ",
+            "на будущ",
+            "на неделе",
+            "в течение ",
+            "в ближайш",
+            "через ",
+            "позже",
+        )
+    )
+
+
+def _call_list_deadline_context(deadline: str | None) -> str | None:
+    """Return a compact call-list context without technical 'до <relative period>' wording."""
+    dl = _format_deadline_human(deadline) if deadline else None
+    if not dl:
+        return None
+    text = re.sub(r"\s+", " ", str(dl).strip()).rstrip(".")
+    if not text:
+        return None
+    lowered = text.lower().replace("ё", "е")
+    if lowered.startswith("до "):
+        tail = text[3:].strip()
+        return _lower_first(tail) if _is_human_relative_period(tail) else f"до {tail}"
+    if _is_human_relative_period(text):
+        return _lower_first(text)
+    return f"до {text}"
+
+
 def _call_context_label(
     status: str | None,
     deadline: str | None,
@@ -3467,11 +3513,11 @@ def _call_context_label(
         if row:
             return str(row.get("unclassified_context_label") or "Нет готового разбора")
         return "Нет готового разбора"
-    dl = _format_deadline_human(deadline) if deadline else None
+    dl_context = _call_list_deadline_context(deadline)
     if status == "agreed":
-        return f"до {dl}" if dl else "—"
+        return dl_context or "—"
     if status == "rescheduled":
-        return f"→ {dl}" if dl else "перезвон"
+        return f"→ {dl_context}" if dl_context else "перезвон"
     if reason and status in ("open", "refusal"):
         short = reason[:28].rstrip()
         return short + "…" if len(reason) > 28 else short
@@ -3680,6 +3726,8 @@ def _manager_status_text_color(
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
+        if _section_hidden_when_empty(section):
+            return ""
         cards = "".join(
             "<article class=\"card\">"
             f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
@@ -3689,7 +3737,7 @@ def _manager_status_text_color(
             f"<p><strong>Почему так:</strong> {html.escape(str(item.get('why') or '—'))}</p>"
             "</article>"
             for item in section.get("situations") or []
-        ) or "<article class=\"card\"><p>Дополнительные ситуации появятся после накопления данных по звонкам.</p></article>"
+        )
         return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
         return (
