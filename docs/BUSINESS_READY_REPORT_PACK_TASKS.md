@@ -1969,6 +1969,29 @@ Checks passed: all three call-breakdown render rows have `bare_fragment_dash_cou
 
 **Next:** Step 8AH-8H — explicit Telegram test delivery of these final PDFs, still without business email.
 
+## Step 8AH-8H — Telegram test delivery of final manager_daily PDFs
+
+**Status:** DONE 2026-05-10.
+
+**Scope:** delivery-only handoff of the already built Step 8AH-8G PDFs through explicit `telegram_test_only`. No PDF rebuild, STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, code, validator, `BusinessOutcomeResolver`, PDF layout, delivery-semantics, or business email changes.
+
+**Pre-flight:** reused `/tmp/step8ah8g_summary_2026-05-04.json`; all three source PDFs existed and had non-zero sizes; `ready_for_step8ah8h=true`; `manager_facing_completeness.status=passed`; `call_list_dates=["2026-05-04"]`; rolling-window calls absent from call list; `transcripts_built=0`; `analyses_built=0`; delivery/email flags were false; outcome totals matched the expected baselines:
+- Эльмира `12/1/1/2/2/6/0`
+- Тимур `15/3/1/2/6/2/1`
+- Толеген `6/0/0/1/3/2/0`
+
+**Telegram test delivery:**
+
+| File | Status | message_id | document_id |
+|---|---|---:|---|
+| `/tmp/step8ah8g_Эльмира_2026-05-04.pdf` | delivered | `191` | `BQACAgIAAxkDAAO_agABfLK75582tpHG4-hX3TzUPhLGAAIvnwACHa0JSJUQvQIbusswOwQ` |
+| `/tmp/step8ah8g_Тимур_2026-05-04.pdf` | delivered | `192` | `BQACAgIAAxkDAAPAagABfLJnRSEmi2JpKtZF5SsntIffAAIwnwACHa0JSDYmSLKcFuaZOwQ` |
+| `/tmp/step8ah8g_Толеген_2026-05-04.pdf` | delivered | `193` | `BQACAgIAAxkDAAPBagABfLJil99r0Pit-9NaRxfd3rlhAAIxnwACHa0JSDesGCpt9l7gOwQ` |
+
+**Delivery result:** `telegram_test_delivery.status=delivered` for all three; business email stayed `skipped`; delivery summary saved to `/tmp/step8ah8h_delivery_summary_2026-05-04.json`.
+
+**Next:** Step 8AH-9 — human review of the Telegram-delivered final candidates.
+
 ## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
 
 **Status:** DONE 2026-05-08.
