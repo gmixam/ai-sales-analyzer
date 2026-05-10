@@ -896,7 +896,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append("Момент / время | Что было | Фрагмент | Рекомендация")
             lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
         else:
-            lines.append("—")
+            if CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE not in lines:
+                lines.append(CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE)
         return lines
     if kind == "voice_of_customer":
         lines = []
@@ -1253,10 +1254,12 @@ def _render_html_section(section: dict[str, Any]) -> str:
             if section.get("scope_note") else ""
         )
         if not rows:
+            fallback_html = ""
+            if str(section.get("summary_line") or "").strip() != CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE:
+                fallback_html = f"<p class=\"muted\">{html.escape(CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE)}</p>"
             return (
                 f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}{intro}"
-                "<p class=\"muted\">Недостаточно данных для детального разбора звонка.</p>"
-                "</div></section>"
+                f"{fallback_html}</div></section>"
             )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}{intro}"
@@ -3033,10 +3036,15 @@ def _build_v5_call_breakdown_section(
     """Map legacy call_breakdown payload to the Step 8AH-2 4-column structure."""
     scope = dict(data_scope or section.get("data_scope_details") or {})
     scope_note = _data_scope_note(scope, selected_call=True)
+    quality = dict(section.get("call_breakdown_quality") or {})
     explicit_rows = [
         _normalize_call_breakdown_row(row=row, index=index)
         for index, row in enumerate(section.get("rows") or [], start=1)
         if isinstance(row, (list, tuple))
+    ]
+    explicit_rows = [
+        row for row in explicit_rows
+        if not _call_breakdown_row_missing_confirming_fragment(row)
     ]
     if explicit_rows:
         return {
@@ -3053,42 +3061,17 @@ def _build_v5_call_breakdown_section(
             ),
             "rows": explicit_rows[:5],
         }
-    rows: list[list[str]] = []
-    for idx, item in enumerate(section.get("to_fix") or []):
-        better = ""
-        if idx < len(recommendations):
-            better = _clean_reader_text(
-                str(recommendations[idx].get("better_phrasing") or recommendations[idx].get("title") or "")
-            )
-        if not better:
-            better = _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Следующий шаг нужно формулировать конкретнее."))
-        rows.append(
-            [
-                f"Момент {idx + 1}",
-                f"{item.get('label') or 'Момент разговора'}: {item.get('interpretation') or 'Требует уточнения.'}",
-                CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                better,
-            ]
-        )
-    if not rows:
-        rows.append(
-            [
-                "Момент 1",
-                "Недостаточно данных для детального покадрового разбора звонка.",
-                CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                _clean_reader_text(str((section.get("recommendation") or {}).get("better_phrasing") or "Повторите разбор после следующего полного запуска.")),
-            ]
-        )
+    fallback_line = str(
+        section.get("summary_line")
+        or quality.get("message")
+        or CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE
+    )
     return {
         "data_scope": _data_scope_code(scope),
         "data_scope_details": scope,
         "scope_note": scope_note,
-        "summary_line": (
-            f"{section.get('client_call_reference') or section.get('client_label') or 'Клиент'}"
-            if section.get("client_call_reference") or section.get("client_label") or section.get("time_label")
-            else "Звонок выбран как наиболее показательный для основного паттерна дня."
-        ),
-        "rows": rows[:5],
+        "summary_line": fallback_line,
+        "rows": [],
     }
 
 
@@ -3110,12 +3093,22 @@ def _normalize_call_breakdown_row(*, row: list[Any] | tuple[Any, ...], index: in
 
 
 CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
+CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE = (
+    "Недостаточно подтверждённых фрагментов для детального разбора по фокусному этапу."
+)
+
+
+def _call_breakdown_row_missing_confirming_fragment(row: list[str]) -> bool:
+    fragment = _clean_reader_text(row[2] if len(row) > 2 else "").strip()
+    if not fragment or fragment in {"—", "-"}:
+        return True
+    return fragment == CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE
 
 
 def _call_breakdown_fragment_or_note(value: str) -> str:
     text = _clean_reader_text(value).strip()
     if not text or text == "—":
-        return CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE
+        return ""
     return text
 
 

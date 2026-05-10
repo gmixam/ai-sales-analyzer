@@ -1943,7 +1943,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("Недостаточно evidence", payload["situation_day_coaching_view"]["what_happened"])
         self.assertEqual(payload["call_breakdown"]["stage_code"], "needs_discovery")
         self.assertEqual(payload["call_breakdown"]["call_breakdown_source"], "focus_evidence_missing")
-        self.assertIn("Недостаточно evidence", sections["call_breakdown"]["rows"][0][1])
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "insufficient_evidence")
+        self.assertEqual(sections["call_breakdown"]["rows"], [])
+        self.assertIn("Недостаточно подтверждённых фрагментов", sections["call_breakdown"]["summary_line"])
         self.assertEqual(sections["challenge"]["focus_stage_code"], "needs_discovery")
         self.assertEqual(sections["main_focus_for_tomorrow"]["focus_stage_code"], "needs_discovery")
 
@@ -2347,6 +2349,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["additional_situations"].get("hidden_reason"), "quality_gate_no_valid_situations")
         self.assertGreaterEqual(payload["additional_situations_quality"]["filtered_count"], 1)
         self.assertNotIn("ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ", rendered["text"])
+        self.assertIn("call_breakdown_quality", payload)
+        self.assertNotIn("Нет подтверждающего фрагмента в сохранённых данных", rendered["text"])
 
         self.assertIn("call_list_context_quality", payload)
         self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
@@ -2679,7 +2683,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "Менеджер не выяснил, как устроен текущий процесс у клиента.",
         )
 
-    def test_call_breakdown_missing_fragment_renders_explicit_weak_evidence_note(self) -> None:
+    def test_call_breakdown_quality_gate_hides_missing_fragment_rows(self) -> None:
         artifact = _artifact(42.0, "problematic")
         artifact.interaction.text = "Текст звонка."
         detail = artifact.analysis.scores_detail
@@ -2713,11 +2717,120 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         self.assertFalse(payload["call_breakdown"]["call_breakdown_fragment_present"])
         self.assertEqual(payload["call_breakdown"]["call_breakdown_evidence_strength"], "missing")
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "insufficient_evidence")
+        self.assertGreaterEqual(payload["call_breakdown_quality"]["filtered_rows_count"], 1)
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
-        row = sections["call_breakdown"]["rows"][0]
-        self.assertEqual(row[2], "Нет подтверждающего фрагмента в сохранённых данных.")
-        self.assertNotEqual(row[2], "—")
-        self.assertIn("подтверждающий фрагмент ограничен", sections["call_breakdown"]["summary_line"])
+        self.assertEqual(sections["call_breakdown"]["rows"], [])
+        rendered = render_report_email(payload)["text"]
+        self.assertIn("Недостаточно подтверждённых фрагментов", rendered)
+        self.assertNotIn("Нет подтверждающего фрагмента в сохранённых данных", rendered)
+        self.assertNotIn("Фрагмент: —", rendered)
+
+    def test_step8ah11h_call_breakdown_filters_positive_recommendation_for_problem_row(self) -> None:
+        artifact = _artifact(42.0, "problematic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Расскажите, как сейчас подписываете документы. "
+            "Клиент: Пока вручную, но процесс не обсуждали подробно."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [],
+            }
+        ]
+        detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Текущий процесс не уточнён"}]
+        detail["recommendations"] = [
+            {"recommendation": "Продолжать использовать четкое представление компании."}
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        quality = payload["call_breakdown_quality"]
+        self.assertEqual(quality["status"], "insufficient_evidence")
+        self.assertEqual(
+            quality["filtered_reasons"].get("recommendation_polarity_mismatch"),
+            1,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        breakdown_text = " ".join(
+            [sections["call_breakdown"]["summary_line"]]
+            + [" | ".join(row) for row in sections["call_breakdown"]["rows"]]
+        )
+        self.assertIn("Недостаточно подтверждённых фрагментов", breakdown_text)
+        self.assertNotIn("Продолжать использовать четкое представление", breakdown_text)
+
+    def test_step8ah11h_call_breakdown_cleans_punctuation_artifacts(self) -> None:
+        artifact = _artifact(42.0, "problematic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Вам удобно сейчас говорить? "
+            "Клиент: Нет, напишите позже."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Проверить возможность говорить.",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [],
+            }
+        ]
+        detail["gaps"] = [
+            {
+                "criterion_code": "qp_current_process",
+                "title": "Уместность разговора не проверена",
+                "comment": "Менеджер не проверил возможность говорить.: Менеджер сразу перешёл к вопросу.",
+            }
+        ]
+        detail["recommendations"] = [
+            {
+                "recommendation": "Сначала уточнить, удобно ли говорить, затем коротко обозначить цель звонка."
+            }
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "passed")
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        breakdown_text = " ".join(
+            [sections["call_breakdown"]["summary_line"]]
+            + [" | ".join(row) for row in sections["call_breakdown"]["rows"]]
+        )
+        self.assertNotIn("говорить.: Менеджер", breakdown_text)
+        self.assertNotIn(".:", breakdown_text)
+        self.assertIn("сначала уточнить", breakdown_text.lower())
 
     def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
         artifact = _artifact(50.0, "problematic")

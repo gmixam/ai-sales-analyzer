@@ -4902,6 +4902,10 @@ def build_manager_daily_payload(
     )
     key_problem = _with_data_scope(key_problem, coaching_data_scope)
     call_breakdown = _with_data_scope(call_breakdown, call_breakdown_data_scope)
+    call_breakdown, call_breakdown_quality = _apply_call_breakdown_quality_gate(
+        call_breakdown=call_breakdown,
+        daily_focus=daily_coaching_focus,
+    )
     additional_situations = _with_data_scope(additional_situations, coaching_data_scope)
     additional_situations, additional_situations_quality = _apply_additional_situations_quality_gate(
         additional_situations=additional_situations,
@@ -5014,6 +5018,7 @@ def build_manager_daily_payload(
         "daily_coaching_focus_validation": dict(daily_coaching_focus.get("validation") or {}),
         "problem_wording_diagnostics": problem_wording_diagnostics,
         "additional_situations_quality": additional_situations_quality,
+        "call_breakdown_quality": call_breakdown_quality,
         "coaching_data_scope": coaching_data_scope,
         "data_scopes": {
             "coaching_base": coaching_data_scope,
@@ -7959,7 +7964,32 @@ REPORT_EVIDENCE_USABLE_QUALITIES = {"direct", "indirect", "weak"}
 REPORT_EVIDENCE_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 REPORT_EVIDENCE_QUALITY_RANK = {"direct": 0, "indirect": 1, "weak": 2, "insufficient": 9}
 CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
+CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE = (
+    "Недостаточно подтверждённых фрагментов для детального разбора по фокусному этапу."
+)
 CALL_BREAKDOWN_EVIDENCE_STRENGTH_RANK = {"strong": 0, "medium": 1, "weak": 2, "missing": 3}
+CALL_BREAKDOWN_POSITIVE_ONLY_RECOMMENDATION_MARKERS = (
+    "продолжать",
+    "продолжить использовать",
+    "сохранять",
+    "сохранить",
+    "использовать четкое представление",
+    "использовать чёткое представление",
+)
+CALL_BREAKDOWN_CORRECTIVE_RECOMMENDATION_MARKERS = (
+    "уточ",
+    "спрос",
+    "зафикс",
+    "соглас",
+    "провер",
+    "связ",
+    "адапт",
+    "объяс",
+    "пояс",
+    "конкрет",
+    "предлож",
+    "сформулир",
+)
 
 
 def _call_list_rows_by_interaction_id(call_list: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -8595,6 +8625,189 @@ def _call_breakdown_summary_line(
     if evidence_strength in {"weak", "missing"}:
         return f"{summary} · зона для разбора; подтверждающий фрагмент ограничен"
     return summary
+
+
+def _clean_call_breakdown_cell(value: Any) -> str:
+    """Normalize manager-facing call breakdown text and punctuation artifacts."""
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return ""
+    text = re.sub(r"([.!?])\s*:\s+", r"\1 ", text)
+    text = re.sub(r":\s*:\s*", ": ", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    return text.strip()
+
+
+def _call_breakdown_fragment_reject_reason(value: Any) -> str | None:
+    """Return why a call breakdown fragment is unsafe for manager-facing proof."""
+    text = _clean_call_breakdown_cell(value)
+    if not text or text in {"—", "-"}:
+        return "missing_evidence"
+    if _summary_norm(text).rstrip(".") == _summary_norm(CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE).rstrip("."):
+        return "no_confirming_fragment"
+    if is_greeting_only_fragment(text) or _dialogue_compact(text) == "телефонныйзвонок":
+        return "low_information"
+    if fragment_information_score(text) < 3:
+        return "low_information"
+    return None
+
+
+def _call_breakdown_problem_is_growth(value: Any) -> bool:
+    normalized = _summary_norm(value)
+    return any(
+        marker in normalized
+        for marker in (
+            "не ",
+            "небыл",
+            "небыла",
+            "недостат",
+            "остался общ",
+            "общим",
+            "без ",
+            "не уточ",
+            "не зафикс",
+            "не связан",
+            "не провер",
+            "проблем",
+            "зона",
+            "требует",
+        )
+    )
+
+
+def _call_breakdown_positive_only_recommendation(value: Any) -> bool:
+    normalized = _summary_norm(value)
+    if not normalized:
+        return False
+    has_positive_only_marker = any(
+        marker in normalized
+        for marker in CALL_BREAKDOWN_POSITIVE_ONLY_RECOMMENDATION_MARKERS
+    )
+    if not has_positive_only_marker:
+        return False
+    return not any(
+        marker in normalized
+        for marker in CALL_BREAKDOWN_CORRECTIVE_RECOMMENDATION_MARKERS
+    )
+
+
+def _call_breakdown_recommendation_polarity_mismatch(*, what: Any, recommendation: Any) -> bool:
+    return _call_breakdown_problem_is_growth(what) and _call_breakdown_positive_only_recommendation(recommendation)
+
+
+def _call_breakdown_duplicate_problem_wording(*, what: Any, recommendation: Any) -> bool:
+    what_norm = _summary_norm(what).rstrip(".")
+    rec_norm = _summary_norm(recommendation).rstrip(".")
+    if not what_norm or not rec_norm:
+        return False
+    return what_norm == rec_norm or (
+        len(rec_norm) >= 32 and rec_norm in what_norm
+    ) or (
+        len(what_norm) >= 32 and what_norm in rec_norm
+    )
+
+
+def _call_breakdown_quality_fallback(
+    *,
+    call_breakdown: dict[str, Any],
+    quality: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return an explicit insufficient-evidence Call Breakdown block."""
+    result = dict(call_breakdown)
+    result["is_placeholder"] = False
+    result["rows"] = []
+    result["summary_line"] = CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE
+    result["call_breakdown_evidence_strength"] = "missing"
+    result["call_breakdown_fragment_present"] = False
+    result["call_breakdown_quality"] = quality
+    return result, quality
+
+
+def _apply_call_breakdown_quality_gate(
+    *,
+    call_breakdown: dict[str, Any] | None,
+    daily_focus: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Filter Call Breakdown rows so only evidence-backed, aligned moments render."""
+    source = str((call_breakdown or {}).get("call_breakdown_source") or (call_breakdown or {}).get("source_note") or "")
+    rows = [
+        list(row)
+        for row in ((call_breakdown or {}).get("rows") or [])
+        if isinstance(row, (list, tuple))
+    ]
+    quality: dict[str, Any] = {
+        "status": "passed",
+        "source": source or "unknown",
+        "input_rows_count": len(rows),
+        "rendered_rows_count": 0,
+        "filtered_rows_count": 0,
+        "filtered_reasons": {},
+        "filtered_rows": [],
+        "rendered_rows": [],
+    }
+    if not call_breakdown:
+        quality["status"] = "insufficient_evidence"
+        return _call_breakdown_quality_fallback(call_breakdown={}, quality=quality)
+
+    focus_stage = _daily_focus_stage_code(daily_focus)
+    block_stage = str(call_breakdown.get("stage_code") or "").strip()
+
+    rendered: list[list[str]] = []
+
+    def reject(index: int, reason: str, row: list[Any]) -> None:
+        quality["filtered_rows_count"] += 1
+        reasons = quality["filtered_reasons"]
+        reasons[reason] = int(reasons.get(reason) or 0) + 1
+        quality["filtered_rows"].append(
+            {
+                "index": index,
+                "reason": reason,
+                "what": _first_sentence(str(row[1] if len(row) > 1 else ""), limit=180),
+                "fragment": _first_sentence(str(row[2] if len(row) > 2 else ""), limit=120),
+                "recommendation": _first_sentence(str(row[3] if len(row) > 3 else ""), limit=180),
+            }
+        )
+
+    for index, row in enumerate(rows, start=1):
+        if focus_stage and block_stage and block_stage != focus_stage:
+            reject(index, "stage_mismatch", row)
+            continue
+        padded = [*row, "", "", "", ""][:4]
+        moment, what, fragment, recommendation = [_clean_call_breakdown_cell(item) for item in padded]
+        fragment_reason = _call_breakdown_fragment_reject_reason(fragment)
+        if fragment_reason:
+            reject(index, fragment_reason, row)
+            continue
+        if _call_breakdown_recommendation_polarity_mismatch(what=what, recommendation=recommendation):
+            reject(index, "recommendation_polarity_mismatch", row)
+            continue
+        if _call_breakdown_duplicate_problem_wording(what=what, recommendation=recommendation):
+            reject(index, "duplicate_problem_wording", row)
+            continue
+        cleaned_row = [moment or f"Момент {len(rendered) + 1}", what, fragment, recommendation]
+        rendered.append(cleaned_row)
+        quality["rendered_rows"].append(
+            {
+                "index": len(rendered),
+                "moment": cleaned_row[0],
+                "fragment_present": True,
+            }
+        )
+
+    quality["rendered_rows_count"] = len(rendered)
+    if not rendered:
+        quality["status"] = "insufficient_evidence"
+        return _call_breakdown_quality_fallback(call_breakdown=call_breakdown, quality=quality)
+
+    if quality["filtered_rows_count"]:
+        quality["status"] = "warning"
+    result = dict(call_breakdown)
+    result["rows"] = rendered
+    result["call_breakdown_fragment_present"] = True
+    if result.get("call_breakdown_evidence_strength") == "missing":
+        result["call_breakdown_evidence_strength"] = "medium"
+    result["call_breakdown_quality"] = quality
+    return result, quality
 
 
 def _artifact_fallback_evidence_texts(artifact: ReportArtifact) -> list[str]:
