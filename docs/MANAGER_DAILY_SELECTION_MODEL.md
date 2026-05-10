@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem; Step 8AH-11D добавил quality gate for Additional Situations so generic/contextless cards are hidden and valid cards use evidence/context-backed, stage-specific wording.
 
 ---
 
@@ -303,6 +303,45 @@ Payload diagnostics:
 - `daily_coaching_focus.validation.issues` may include `positive_or_neutral_problem_wording_normalized` when the focus problem needed rewriting.
 
 This normalizer does not change score values, final outcomes, report-day call-list semantics, `data_scope`, `daily_coaching_focus.stage_code`, `report_evidence`, or LLM2 prompts.
+
+### Additional Situations quality gate
+
+Since Step 8AH-11D, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` is filtered by a reporting-layer quality gate before rendering.
+
+Minimum manager-facing situation contract:
+
+```json
+{
+  "title": "...",
+  "stage_id": "Э2",
+  "problem_signal": "...",
+  "data_scope": "report_day | expanded_coaching_base | rolling_window",
+  "evidence_call_id": "...",
+  "evidence_quote": "...",
+  "what_happened": "...",
+  "why_it_matters": "...",
+  "next_action": "...",
+  "why_this_works": "...",
+  "confidence": "high | medium | low"
+}
+```
+
+Gate rules:
+- a situation is not rendered when it has neither grounded evidence nor concrete call context;
+- duplicate problem signals are filtered so the block does not repeat the same secondary pattern;
+- low-confidence or unresolved title/body mismatches are filtered;
+- generic text such as `Клиент не получил достаточно конкретики...` or `Задать уточняющий вопрос...` must not be repeated across unrelated signals;
+- if generic wording can be safely adapted, the reporting layer replaces it with stage-specific guidance:
+  - primary contact: trust, call reason, and conversation relevance;
+  - qualification: role, current process, and need before an offer;
+  - needs discovery: concrete scenarios and decision criteria;
+  - presentation: product value tied to the client's task;
+  - objection handling: specific risk or doubt;
+  - completion: date, channel, owner, and next step.
+
+If no situation passes the gate, the section is hidden; no empty placeholder, `—`, `None`, or generic filler is rendered. Payload diagnostics expose `additional_situations_quality.status`, input/rendered/filtered counts, filter reasons (`missing_evidence`, `generic_wording`, `title_body_mismatch`, `duplicate_signal`, `low_confidence`), and rendered-situation metadata.
+
+This gate does not change final outcomes, call-list report-day semantics, `data_scope`, `daily_coaching_focus`, problem wording normalization, LLM2 prompts, or the `report_evidence` contract.
 
 Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `report_evidence v1` when it exists and passes `validate_report_evidence(scores_detail, transcript)`:
 - `СИТУАЦИЯ ДНЯ` prefers usable `report_evidence.situation_candidates`;

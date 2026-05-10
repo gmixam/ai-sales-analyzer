@@ -691,3 +691,13 @@
 - **Reason:** Step 8AH-10B PM review found positive wording such as `Менеджер не ушел в презентацию слишком рано` rendered as a problem, while the actual issue was unfinished qualification before an offer.
 - **Scope:** Reporting payload/render/DOCX normalizer and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring semantics, report-day totals, call-list semantics, Step 8AH-11A data-scope rules, Step 8AH-11B daily-coaching-focus stage selection, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-10
+
+## ADR-069: `manager_daily` Additional Situations require evidence/context and non-generic actions
+- **Decision:** `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` must pass a reporting-layer quality gate before manager-facing render.
+- **Decision:** A rendered additional situation must have a title, stage/signal metadata, data scope, evidence or concrete call context, `what_happened`, `why_it_matters`, `next_action`, `why_this_works`, and medium/high confidence.
+- **Decision:** Candidates without evidence/context, unresolved title/body mismatch, duplicate problem signal, low confidence, or unrecoverably generic wording are excluded. If no candidates pass, the section is hidden rather than filled with placeholders or generic filler.
+- **Decision:** Generic `why_it_matters` / `next_action` text may be deterministically adapted to stage-specific guidance for primary contact, qualification, needs discovery, presentation, objections, or completion. The same generic recommendation must not be repeated across unrelated signals.
+- **Decision:** Payload diagnostics are exposed through `additional_situations_quality` with input/rendered/filtered counts, filter reasons, and rendered-situation metadata.
+- **Reason:** Step 8AH-10B PM review found that Additional Situations could look populated while still repeating generic advice without concrete evidence or call context.
+- **Scope:** Reporting payload/render/DOCX quality gate, deterministic wording adaptation, diagnostics, and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring semantics, report-day totals, call-list semantics, Step 8AH-11A data-scope rules, Step 8AH-11B daily-coaching-focus semantics, Step 8AH-11C problem normalizer semantics, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-10

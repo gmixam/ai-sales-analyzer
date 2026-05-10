@@ -3251,30 +3251,32 @@ def _build_v5_additional_situations_section(
     situations: list[dict[str, Any]] = []
     for item in section.get("situations") or []:
         title = _clean_reader_text(str(item.get("title") or "Ситуация"))
-        interpretation = _clean_reader_text(str(item.get("interpretation") or ""))
         kind = str(item.get("kind") or "gap")
+        client_said = _clean_reader_text(
+            str(item.get("client_said") or item.get("what_happened") or item.get("evidence_quote") or "")
+        )
+        meant = _clean_reader_text(str(item.get("meant") or item.get("why_it_matters") or ""))
+        how_to = _clean_reader_text(str(item.get("how_to") or item.get("next_action") or ""))
+        why = _clean_reader_text(str(item.get("why") or item.get("why_this_works") or ""))
+        if not title or not client_said or not meant or not how_to:
+            continue
         situations.append(
             {
                 "badge": "Сильная сторона" if kind == "strength" else "Зона роста",
                 "kind": kind,
                 "title": title,
+                "stage_id": item.get("stage_id"),
+                "stage_code": item.get("stage_code"),
+                "problem_signal": item.get("problem_signal"),
+                "data_scope": item.get("data_scope"),
+                "evidence_call_id": item.get("evidence_call_id"),
+                "evidence_quote": item.get("evidence_quote"),
+                "confidence": item.get("confidence"),
                 "signal": int(item.get("signal") or 0),
-                "client_said": _clean_reader_text(str(item.get("client_said") or "")) or interpretation or "Ситуация повторяется в нескольких звонках.",
-                "meant": _clean_reader_text(str(item.get("meant") or "")) or (
-                    "За этим стоит устойчивый рабочий паттерн, который стоит сохранить."
-                    if kind == "strength"
-                    else "Клиент не получил достаточно конкретики или фиксации следующего шага."
-                ),
-                "how_to": _clean_reader_text(str(item.get("how_to") or "")) or (
-                    "Повторять удачную формулировку и усиливать её короткой привязкой к задаче клиента."
-                    if kind == "strength"
-                    else "Задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг и дедлайн."
-                ),
-                "why": _clean_reader_text(str(item.get("why") or "")) or (
-                    "Такой паттерн помогает удерживать доверие и ускоряет движение к договорённости."
-                    if kind == "strength"
-                    else "Конкретика снижает зависание звонка и переводит разговор в управляемый follow-up."
-                ),
+                "client_said": client_said,
+                "meant": meant,
+                "how_to": how_to,
+                "why": why,
             }
         )
     return {

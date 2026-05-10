@@ -1970,6 +1970,105 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("квалификация не была завершена до предложения", combined)
         self.assertGreaterEqual(payload["problem_wording_diagnostics"]["normalized_count"], 1)
 
+    def test_step8ah11d_additional_quality_gate_hides_contextless_legacy_cards(self) -> None:
+        artifact = _artifact(
+            48.0,
+            "problematic",
+            call_date="2026-05-04 10:00:00",
+            gaps=[
+                {
+                    "criterion_code": "qp_role_scope",
+                    "title": "Роль не уточнена",
+                    "comment": "Роль собеседника не была уточнена.",
+                },
+                {
+                    "criterion_code": "qp_current_process",
+                    "title": "Текущий процесс не уточнён",
+                    "comment": "Квалификация не была завершена до предложения.",
+                },
+            ],
+            strengths=[],
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        rendered = render_report_email(payload)
+
+        self.assertEqual(payload["additional_situations"]["situations"], [])
+        self.assertEqual(payload["additional_situations"].get("hidden_reason"), "quality_gate_no_valid_situations")
+        self.assertGreaterEqual(payload["additional_situations_quality"]["filtered_reasons"].get("missing_evidence", 0), 1)
+        self.assertNotIn("ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ", rendered["text"])
+        self.assertNotIn("Дополнительные ситуации появятся", rendered["text"])
+
+    def test_step8ah11d_additional_quality_gate_adapts_generic_wording_by_stage(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 10:00:00")
+        artifact.interaction.text = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail.update(_valid_report_evidence_detail())
+        generic_why = "Клиент не получил достаточно конкретики или фиксации следующего шага."
+        generic_action = "Задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг и дедлайн."
+        detail["report_evidence"]["additional_situations"] = [
+            {
+                "type": "growth_zone",
+                "title": "Текущий процесс не уточнён",
+                "priority": "medium",
+                "evidence_quality": "indirect",
+                "what_happened": "Скиньте в WhatsApp, я посмотрю.",
+                "why_it_matters": generic_why,
+                "recommended_action": generic_action,
+                "stage_code": "qualification_primary",
+                "usable_in_report": True,
+            },
+            {
+                "type": "growth_zone",
+                "title": "Следующий шаг остался общим",
+                "priority": "medium",
+                "evidence_quality": "indirect",
+                "what_happened": "Хорошо, отправлю информацию.",
+                "why_it_matters": generic_why,
+                "recommended_action": generic_action,
+                "stage_code": "completion_next_step",
+                "usable_in_report": True,
+            },
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        situations = sections["additional_situations"]["situations"]
+        rendered_text = " ".join(
+            " ".join(str(situation.get(key) or "") for key in ("meant", "how_to", "why"))
+            for situation in situations
+        ).lower().replace("ё", "е")
+        actions = [situation["how_to"] for situation in situations]
+
+        self.assertEqual(payload["additional_situations_quality"]["rendered_count"], 2)
+        self.assertEqual(payload["additional_situations_quality"]["filtered_count"], 0)
+        self.assertNotIn("клиент не получил достаточно конкретики или фиксации следующего шага", rendered_text)
+        self.assertNotIn("задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг", rendered_text)
+        self.assertEqual(len(set(actions)), len(actions))
+        self.assertTrue(any("роль" in action.lower() or "текущий процесс" in action.lower() for action in actions))
+        self.assertTrue(any("канал" in action.lower() or "срок" in action.lower() for action in actions))
+
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [

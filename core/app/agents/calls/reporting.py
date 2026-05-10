@@ -4488,6 +4488,237 @@ def _build_problem_wording_diagnostics(
     }
 
 
+ADDITIONAL_SITUATION_GENERIC_TEXT_MARKERS = (
+    "клиент не получил достаточно конкретики или фиксации следующего шага",
+    "задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг и дедлайн",
+    "конкретика снижает зависание звонка",
+    "ситуация повторяется в нескольких звонках",
+    "подтверждено в нескольких звонках",
+    "выявлено в нескольких звонках",
+    "хорошо отработано в нескольких звонках",
+)
+
+
+def _additional_stage_profile(stage_code: str | None) -> dict[str, str]:
+    code = str(stage_code or "").strip()
+    if code == "contact_start":
+        return {
+            "why_it_matters": "Проблема в первичном контакте снижает доверие: клиенту неясно, кто звонит, зачем и почему разговор уместен сейчас.",
+            "next_action": "Коротко подтвердить компанию, повод контакта и удобство разговора, затем связать вопрос с задачей клиента.",
+            "why_this_works": "Так менеджер снимает барьер доверия и получает разрешение продолжить диалог.",
+        }
+    if code == "qualification_primary":
+        return {
+            "why_it_matters": "Без роли, текущего процесса и потребности предложение звучит преждевременно и хуже попадает в задачу клиента.",
+            "next_action": "Уточнить роль собеседника, текущий процесс и критерий решения до предложения продукта.",
+            "why_this_works": "Квалификация помогает привязать следующий шаг к реальной задаче клиента, а не к общей презентации.",
+        }
+    if code == "needs_discovery":
+        return {
+            "why_it_matters": "Если конкретные сценарии использования не раскрыты, менеджер не понимает, какой результат клиент хочет получить.",
+            "next_action": "Задать 2-3 вопроса о сценариях, участниках процесса и критериях успеха перед рекомендацией решения.",
+            "why_this_works": "Так предложение становится ответом на конкретный сценарий клиента и меньше звучит как шаблонная презентация.",
+        }
+    if code == "presentation":
+        return {
+            "why_it_matters": "Презентация без связи с задачей клиента перегружает разговор и не помогает принять решение.",
+            "next_action": "Показывать только те возможности продукта, которые прямо закрывают выявленную задачу клиента.",
+            "why_this_works": "Короткая привязка функции к боли клиента делает предложение понятнее и повышает шанс на следующий шаг.",
+        }
+    if code == "objection_handling":
+        return {
+            "why_it_matters": "Неразобранное сомнение остаётся барьером для следующего шага, даже если клиент продолжает слушать.",
+            "next_action": "Уточнить причину сомнения, подтвердить её и ответить на конкретный риск клиента.",
+            "why_this_works": "Разбор причины возражения показывает, что менеджер слышит клиента и работает с реальным барьером.",
+        }
+    if code == "completion_next_step":
+        return {
+            "why_it_matters": "Без даты, канала или ответственного договорённость остаётся открытой и легко теряется после звонка.",
+            "next_action": "Зафиксировать конкретный следующий шаг: канал, срок возврата и кто что делает до следующего контакта.",
+            "why_this_works": "Конкретная фиксация переводит интерес в управляемый follow-up и снижает риск зависания.",
+        }
+    return {
+        "why_it_matters": "Ситуация влияет на качество диалога и требует отдельного разбора с менеджером.",
+        "next_action": "Разобрать evidence, уточнить недостающий шаг и закрепить один конкретный способ улучшения.",
+        "why_this_works": "Так дополнительный паттерн становится понятным действием, а не общей заметкой.",
+    }
+
+
+def _additional_text_is_generic(value: Any) -> bool:
+    normalized = _summary_norm(value)
+    if not normalized:
+        return True
+    if len(normalized) < 18:
+        return True
+    return any(marker in normalized for marker in ADDITIONAL_SITUATION_GENERIC_TEXT_MARKERS)
+
+
+def _additional_concrete_context(value: Any) -> str:
+    text = _first_sentence(str(value or ""), limit=220).strip()
+    if not text or _additional_text_is_generic(text):
+        return ""
+    return text
+
+
+def _additional_confidence(*, evidence_quality: str, evidence_quote: str, context: str) -> str:
+    quality = str(evidence_quality or "").strip().lower()
+    if quality == "direct" and evidence_quote:
+        return "high"
+    if quality in {"direct", "indirect"} and (evidence_quote or context):
+        return "medium"
+    if quality == "weak" and (evidence_quote or context):
+        return "medium"
+    return "low"
+
+
+def _additional_quality_reason_counts(filtered: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in filtered:
+        for reason in item.get("reasons") or []:
+            key = str(reason)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _apply_additional_situations_quality_gate(
+    *,
+    additional_situations: dict[str, Any],
+    data_scope: dict[str, Any],
+    daily_focus: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Filter additional situations that are generic, duplicated, or not evidence/context-backed."""
+    candidates = [dict(item or {}) for item in (additional_situations or {}).get("situations") or []]
+    rendered: list[dict[str, Any]] = []
+    filtered: list[dict[str, Any]] = []
+    seen_signals: set[str] = set()
+    scope = dict(data_scope or {})
+    scope_code = str(scope.get("code") or MANAGER_DAILY_DATA_SCOPE_REPORT_DAY)
+
+    for index, candidate in enumerate(candidates, start=1):
+        item = dict(candidate)
+        reasons: list[str] = []
+        kind = str(item.get("kind") or "gap").strip() or "gap"
+        stage_code = str(item.get("stage_code") or _daily_focus_stage_code(daily_focus) or "").strip()
+        profile = _additional_stage_profile(stage_code)
+        title = _first_sentence(str(item.get("title") or ""), limit=140).rstrip(".")
+        evidence_quote = _additional_concrete_context(item.get("evidence_quote"))
+        what_happened = _additional_concrete_context(
+            item.get("what_happened")
+            or item.get("client_said")
+            or evidence_quote
+            or item.get("interpretation")
+        )
+        why_it_matters = _first_sentence(str(item.get("why_it_matters") or item.get("meant") or item.get("interpretation") or ""), limit=220)
+        next_action = _first_sentence(str(item.get("next_action") or item.get("how_to") or ""), limit=220)
+        why_this_works = _first_sentence(str(item.get("why_this_works") or item.get("why") or ""), limit=220)
+
+        if kind == "gap":
+            if _additional_text_is_generic(why_it_matters):
+                why_it_matters = profile["why_it_matters"]
+            if _additional_text_is_generic(next_action):
+                next_action = profile["next_action"]
+            if _additional_text_is_generic(why_this_works):
+                why_this_works = profile["why_this_works"]
+
+        has_specific_context = bool(
+            what_happened
+            and (
+                item.get("evidence_call_id")
+                or item.get("client_call_reference")
+                or str(item.get("source") or "").startswith("report_evidence")
+            )
+        )
+        if not evidence_quote and not has_specific_context:
+            reasons.append("missing_evidence")
+        if kind == "gap" and (
+            _problem_statement_is_positive_or_neutral(title)
+            or _problem_statement_is_positive_or_neutral(what_happened)
+        ):
+            reasons.append("title_body_mismatch")
+        if _additional_text_is_generic(why_it_matters) or _additional_text_is_generic(next_action):
+            reasons.append("generic_wording")
+
+        problem_signal = str(item.get("problem_signal") or "").strip() or _focus_problem_signal(
+            " ".join(part for part in (stage_code, title) if part),
+            fallback=stage_code or f"additional_{index}",
+        )
+        if problem_signal in seen_signals:
+            reasons.append("duplicate_signal")
+
+        confidence = str(item.get("confidence") or "").strip().lower()
+        if confidence not in {"high", "medium", "low"}:
+            confidence = _additional_confidence(
+                evidence_quality=str(item.get("evidence_quality") or ""),
+                evidence_quote=evidence_quote,
+                context=what_happened,
+            )
+        if confidence == "low":
+            reasons.append("low_confidence")
+
+        if reasons:
+            filtered.append(
+                {
+                    "title": title or str(item.get("title") or ""),
+                    "problem_signal": problem_signal,
+                    "source": item.get("source"),
+                    "reasons": sorted(set(reasons)),
+                }
+            )
+            continue
+
+        seen_signals.add(problem_signal)
+        item.update(
+            {
+                "kind": kind,
+                "title": title,
+                "stage_id": _stage_funnel_label_for_code(stage_code),
+                "stage_code": stage_code,
+                "problem_signal": problem_signal,
+                "data_scope": scope_code,
+                "data_scope_details": scope,
+                "evidence_call_id": str(item.get("evidence_call_id") or "").strip() or None,
+                "evidence_quote": evidence_quote or None,
+                "what_happened": what_happened,
+                "why_it_matters": why_it_matters,
+                "next_action": next_action,
+                "why_this_works": why_this_works,
+                "confidence": confidence,
+                # Render-model compatibility aliases.
+                "client_said": what_happened,
+                "meant": why_it_matters,
+                "how_to": next_action,
+                "why": why_this_works,
+            }
+        )
+        rendered.append(item)
+
+    result = dict(additional_situations or {})
+    result["situations"] = rendered[:3]
+    result["is_placeholder"] = False
+    if not rendered:
+        result["hidden_reason"] = "quality_gate_no_valid_situations"
+
+    diagnostics = {
+        "status": "passed" if not filtered else ("hidden" if not rendered and candidates else "warning"),
+        "input_count": len(candidates),
+        "rendered_count": len(rendered[:3]),
+        "filtered_count": len(filtered),
+        "filtered_reasons": _additional_quality_reason_counts(filtered),
+        "filtered": filtered,
+        "rendered_situations": [
+            {
+                "title": item.get("title"),
+                "stage_id": item.get("stage_id"),
+                "problem_signal": item.get("problem_signal"),
+                "confidence": item.get("confidence"),
+                "source": item.get("source"),
+            }
+            for item in rendered[:3]
+        ],
+    }
+    return result, diagnostics
+
+
 def build_manager_daily_payload(
     *,
     department_id: str,
@@ -4671,6 +4902,11 @@ def build_manager_daily_payload(
     key_problem = _with_data_scope(key_problem, coaching_data_scope)
     call_breakdown = _with_data_scope(call_breakdown, call_breakdown_data_scope)
     additional_situations = _with_data_scope(additional_situations, coaching_data_scope)
+    additional_situations, additional_situations_quality = _apply_additional_situations_quality_gate(
+        additional_situations=additional_situations,
+        data_scope=coaching_data_scope,
+        daily_focus=daily_coaching_focus,
+    )
     if situation_day_coaching_view is not None:
         situation_day_coaching_view = _with_data_scope(situation_day_coaching_view, situation_data_scope)
     daily_coaching_focus = _finalize_daily_coaching_focus(
@@ -4775,6 +5011,7 @@ def build_manager_daily_payload(
         "daily_coaching_focus": daily_coaching_focus,
         "daily_coaching_focus_validation": dict(daily_coaching_focus.get("validation") or {}),
         "problem_wording_diagnostics": problem_wording_diagnostics,
+        "additional_situations_quality": additional_situations_quality,
         "coaching_data_scope": coaching_data_scope,
         "data_scopes": {
             "coaching_base": coaching_data_scope,
@@ -7371,6 +7608,12 @@ def _build_additional_situations(
         situations.append({
             "kind": "gap",
             "title": label,
+            "stage_id": _stage_funnel_label_for_code(stage_code),
+            "stage_code": stage_code,
+            "problem_signal": _focus_problem_signal(
+                " ".join(part for part in (stage_code or "", label) if part),
+                fallback=stage_code or "additional_gap",
+            ),
             "title_normalized_from": normalized_label.get("source_text"),
             "body_normalized_from": normalized_interpretation.get("source_text"),
             "problem_wording_warnings": sorted(
@@ -7390,6 +7633,7 @@ def _build_additional_situations(
         situations.append({
             "kind": "strength",
             "title": label,
+            "problem_signal": _focus_problem_signal(label, fallback="additional_strength"),
             "signal": int(item.get("signal") or 0),
             "interpretation": str(item.get("interpretation") or "Хорошо отработано в нескольких звонках."),
         })
@@ -8741,6 +8985,7 @@ def _build_additional_situations_from_report_evidence(
         )
         if evidence is None:
             continue
+        ref = _artifact_call_reference(artifact)
         for item in evidence.get("additional_situations") or []:
             if not isinstance(item, dict) or item.get("usable_in_report") is not True:
                 continue
@@ -8790,10 +9035,20 @@ def _build_additional_situations_from_report_evidence(
                     {
                         "kind": kind,
                         "title": title,
+                        "stage_id": _stage_funnel_label_for_code(stage_code),
+                        "stage_code": stage_code,
+                        "problem_signal": _focus_problem_signal(
+                            " ".join(part for part in (stage_code, title) if part),
+                            fallback=stage_code or f"additional_{kind}",
+                        ),
                         "title_normalized_from": title_normalized_from,
                         "body_normalized_from": body_normalized_from,
                         "problem_wording_warnings": sorted(set(wording_warnings)),
                         "signal": 1,
+                        "evidence_call_id": str(artifact.interaction.id),
+                        "client_call_reference": ref["client_call_reference"],
+                        "evidence_quote": raw_what_happened if quality in {"direct", "indirect"} else None,
+                        "evidence_quality": quality,
                         "interpretation": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
                         "client_said": what_happened,
                         "meant": _first_sentence(str(item.get("why_it_matters") or ""), limit=180),
