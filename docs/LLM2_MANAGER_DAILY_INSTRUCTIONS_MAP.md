@@ -459,6 +459,32 @@ Rejected candidate reasons are exposed in `call_list_context_quality.rejected_co
 
 The gate normalizes relative periods and human-readable deadlines so technical forms such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026` do not reach the manager-facing call list. It also avoids bare `—` for sales/open/follow-up statuses when a deterministic fallback can explain the row. This is downstream reporting behavior only; LLM2 prompts, `report_evidence` schema, final outcomes, and report-day inclusion semantics are unchanged.
 
+### Semantic regression checkpoint diagnostics
+
+After Step 8AH-11F, use one targeted pre-rebuild command for the manager_daily semantic layer:
+
+```bash
+docker compose exec -T api pytest -q tests/test_manual_reporting.py -k 'step8ah11'
+```
+
+Diagnostic-to-block map:
+
+| Diagnostic / payload field | PDF blocks protected | What the checkpoint verifies |
+|---|---|---|
+| `data_scopes` | Situation, Call Breakdown, Challenge, Additional Situations | Expanded/rolling evidence is explicitly labeled; report-day call list stays report-day only; expanded/rolling metrics do not say `Сегодня`. |
+| `daily_coaching_focus_validation` | Stage scores, Situation, Call Breakdown, Challenge, tomorrow focus | Main coaching blocks use the same focus stage or render explicit insufficient-evidence fallback. |
+| `problem_wording_diagnostics` | Stage-score main problem, Situation, Call Breakdown, Additional Situations, Challenge wording | Positive/neutral LLM2 or fallback wording is rewritten into actionable gap wording before render. |
+| `additional_situations_quality` | Additional Situations | Empty placeholders, contextless cards, generic repeated wording, and title/body contradictions are filtered. |
+| `call_list_context_quality` | Call list `Контекст` | Weak/truncated/technical contexts are rejected; business-relevant rows get deterministic readable fallback instead of bare `—`. |
+
+The checkpoint is intentionally narrower than the full suite. The current full manual-reporting/provider-routing suite still has 5 known unrelated selection/counter failures; those are not LLM2 instruction or Step 8AH-11 semantic-regression failures:
+
+- `test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics`;
+- `test_call_list_adds_analysis_not_reusable_reason`;
+- `test_day_summary_uses_without_breakdown_bucket_and_preserves_total`;
+- `test_manager_facing_completeness_gate_passes_with_non_coachable_bucket`;
+- `test_unclassified_manager_buckets_are_added_to_call_list`.
+
 ### Report evidence vs legacy Step 8W fallback
 
 Current policy: valid `report_evidence` is preferred; missing/invalid report evidence falls back to Step 8W-style persisted evidence/transcript/deterministic assembly. This is correct for safety, but it can hide useful summary/evidence fields if one field invalidates the whole package.

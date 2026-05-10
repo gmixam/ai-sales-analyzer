@@ -228,6 +228,37 @@ Payload diagnostics:
 
 This gate does not change final status, outcome totals, report-day call-list inclusion, status sorting, or coaching-block data-scope behavior.
 
+### Step 8AH-11 Semantic Regression Checkpoint
+
+Before any verification rebuild after Step 8AH-11A..11E, run the targeted semantic checkpoint:
+
+```bash
+docker compose exec -T api pytest -q tests/test_manual_reporting.py -k 'step8ah11'
+```
+
+What it covers:
+- **Data scope:** non-report-day coaching evidence is labeled as expanded/rolling; rolling/expanded metrics do not say `Сегодня`; `call_list` stays report-day only.
+- **Daily coaching focus:** `БАЛЛЫ ПО ЭТАПАМ`, `СИТУАЦИЯ`, `РАЗБОР`, and `ЧЕЛЛЕНДЖ` share `daily_coaching_focus.stage_code`; missing evidence for the focus stage renders explicit insufficient-evidence fallback rather than silently switching stage.
+- **Problem wording:** positive/neutral wording is normalized before manager-facing render; known phrases such as `Менеджер не ушел в презентацию слишком рано` do not appear as problems; Additional Situation title/body contradictions are normalized or filtered.
+- **Additional Situations:** empty placeholders are hidden; weak/contextless/generic cards are filtered; rendered cards expose evidence/context-backed, stage-specific wording.
+- **Call-list context:** technical deadline strings, meaningless truncated contexts, and bare `—` for sales/open/follow-up rows are blocked; weak `call_report_summary` context falls back to deterministic human-readable text.
+
+Diagnostic expectations covered by the checkpoint:
+- `data_scopes`;
+- `daily_coaching_focus_validation`;
+- `problem_wording_diagnostics`;
+- `additional_situations_quality`;
+- `call_list_context_quality`.
+
+When this checkpoint fails, fix the upstream mechanism first and do not rebuild PDFs until the targeted semantic checkpoint is green.
+
+Known unrelated technical debt: the full `tests/test_manual_reporting.py tests/test_ai_provider_routing.py` suite currently has 5 selection/counter failures outside Step 8AH-11 semantic quality gates. They are tracked separately and must not be mixed into Step 8AH-11 content-quality fixes:
+- `test_build_manager_daily_payload_enriches_outcomes_focus_and_dynamics`;
+- `test_call_list_adds_analysis_not_reusable_reason`;
+- `test_day_summary_uses_without_breakdown_bucket_and_preserves_total`;
+- `test_manager_facing_completeness_gate_passes_with_non_coachable_bucket`;
+- `test_unclassified_manager_buckets_are_added_to_call_list`.
+
 ### Outcome resolver grounded-source rule
 
 Since Step 8AH-8A, hard `Отказ` matching in `BusinessOutcomeResolver` must be grounded in the transcript / classification / follow-up surface, not in synthetic coaching narrative.

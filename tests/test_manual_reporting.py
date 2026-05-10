@@ -2215,6 +2215,155 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertTrue(any("роль" in action.lower() or "текущий процесс" in action.lower() for action in actions))
         self.assertTrue(any("канал" in action.lower() or "срок" in action.lower() for action in actions))
 
+    def test_step8ah11f_manager_daily_semantic_regression_checkpoint(self) -> None:
+        """Single pre-rebuild checkpoint for Step 8AH-11A..11E semantics."""
+        manager = _manager()
+        scope_previous_day = _artifact_for_manager(
+            manager,
+            score_percent=38.0,
+            level="problematic",
+            call_date="2026-04-30 09:00:00",
+        )
+        scope_report_day = _artifact_for_manager(
+            manager,
+            score_percent=82.0,
+            level="strong",
+            call_date="2026-05-04 10:00:00",
+        )
+        scope_payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[scope_previous_day, scope_report_day],
+            period={"date_from": "2026-04-30", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[scope_previous_day, scope_report_day],
+        )
+        scope_sections = {section["id"]: section for section in build_report_render_model(scope_payload)["sections"]}
+
+        previous_day = _artifact_for_manager(
+            manager,
+            score_percent=38.0,
+            level="problematic",
+            call_date="2026-04-30 09:00:00",
+            gaps=[
+                {
+                    "criterion_code": "qp_current_process",
+                    "title": "Не ушёл в презентацию слишком рано",
+                    "comment": "Менеджер не ушел в презентацию слишком рано",
+                }
+            ],
+            strengths=[],
+        )
+        previous_detail = previous_day.analysis.scores_detail
+        previous_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        previous_detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_process_before_pitch",
+                        "criterion_name": "Не ушёл в презентацию слишком рано",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Менеджер не ушел в презентацию слишком рано",
+                    }
+                ],
+            }
+        ]
+
+        report_day = _artifact_for_manager(
+            manager,
+            score_percent=70.0,
+            level="basic",
+            call_date="2026-05-04 10:00:00",
+        )
+        report_day.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию. "
+            "Клиент: Не заинтересован в данный момент."
+        )
+        report_detail = report_day.analysis.scores_detail
+        report_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        report_detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент не заинтересован в данный момент",
+        }
+        report_detail.update(_valid_report_evidence_detail())
+        report_detail["report_evidence"]["call_report_summary"]["short_topic"] = "Обсуждение ЭДО"
+        report_detail["report_evidence"]["call_report_summary"]["short_context"] = "Клиент не заинтересован в да…"
+        report_detail["report_evidence"]["additional_situations"] = []
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[previous_day, report_day],
+            period={"date_from": "2026-04-30", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[previous_day, report_day],
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered = render_report_email(payload)
+        rendered_norm = rendered["text"].lower().replace("ё", "е")
+        call_list_context = " ".join(str(row[3]) for row in sections["call_list"]["rows"])
+
+        self.assertEqual([row["date_label"] for row in scope_payload["call_list"]], ["2026-05-04"])
+        self.assertIn("data_scopes", scope_payload)
+        self.assertEqual(scope_payload["data_scopes"]["situation_day"]["code"], "expanded_coaching_base")
+        self.assertEqual(scope_payload["data_scopes"]["call_breakdown"]["code"], "expanded_coaching_base")
+        self.assertEqual(scope_payload["data_scopes"]["challenge"]["code"], "rolling_window")
+        self.assertNotEqual(scope_sections["main_focus_for_tomorrow"]["label"], "СИТУАЦИЯ ДНЯ")
+        self.assertNotIn("Сегодня", scope_sections["challenge"]["today_line"])
+        self.assertEqual([row["date_label"] for row in payload["call_list"]], ["2026-05-04"])
+
+        self.assertIn("daily_coaching_focus_validation", payload)
+        self.assertEqual(payload["daily_coaching_focus"]["stage_code"], "qualification_primary")
+        self.assertEqual(payload["daily_coaching_focus_validation"]["status"], "passed")
+        self.assertEqual(sections["main_focus_for_tomorrow"]["focus_stage_code"], "qualification_primary")
+        self.assertEqual(payload["call_breakdown"]["stage_code"], "qualification_primary")
+        self.assertEqual(sections["challenge"]["focus_stage_code"], "qualification_primary")
+
+        self.assertIn("problem_wording_diagnostics", payload)
+        self.assertGreaterEqual(payload["problem_wording_diagnostics"]["normalized_count"], 1)
+        self.assertNotIn("менеджер не ушел в презентацию слишком рано", rendered_norm)
+        self.assertIn("квалификация не была завершена до предложения", rendered_norm)
+
+        self.assertIn("additional_situations_quality", payload)
+        self.assertEqual(payload["additional_situations"]["situations"], [])
+        self.assertEqual(payload["additional_situations"].get("hidden_reason"), "quality_gate_no_valid_situations")
+        self.assertGreaterEqual(payload["additional_situations_quality"]["filtered_count"], 1)
+        self.assertNotIn("ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ", rendered["text"])
+
+        self.assertIn("call_list_context_quality", payload)
+        self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
+        self.assertEqual(payload["call_list_context_quality"]["calls_count"], 1)
+        self.assertGreaterEqual(payload["call_list_context_quality"]["fallback_generated_count"], 1)
+        self.assertTrue(
+            any(
+                item["reason"] == "truncated_context"
+                for item in payload["call_list_context_quality"]["rejected_contexts"]
+            )
+        )
+        self.assertNotIn("до После", call_list_context)
+        self.assertNotIn("до На этой неделе", call_list_context)
+        self.assertNotIn("→ до Конец года 2026", call_list_context)
+        self.assertNotIn("да…", call_list_context)
+        self.assertNotEqual(call_list_context.strip(), "—")
+
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [
