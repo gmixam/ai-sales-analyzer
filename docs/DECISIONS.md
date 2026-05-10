@@ -671,3 +671,13 @@
 - **Reason:** PM review after Step 8AH-10B found that a non-report-day coaching example and expanded-base counts could be read as if they happened today. The report needs to stay useful for coaching without misleading the manager about the data scope.
 - **Scope:** Reporting payload/render semantics and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring, report-day totals, selection inclusion/exclusion, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-10
+
+## ADR-067: `manager_daily` main coaching blocks share one daily coaching focus
+- **Decision:** `manager_daily` must build a deterministic `daily_coaching_focus` object and use it as the single stage/problem source for the main coaching layer.
+- **Decision:** `daily_coaching_focus` carries focus stage (`stage_id`, `stage_code`, `stage_name`), problem signal/statement, data scope, selected evidence/breakdown call ids, challenge metric source, confidence, and validation status.
+- **Decision:** `СИТУАЦИЯ` and `РАЗБОР ЗВОНКА` must not silently select evidence from a different stage than `daily_coaching_focus.stage_code`. Valid `report_evidence` candidates and legacy fallback are filtered to the focus stage.
+- **Decision:** If no suitable evidence exists for the focus stage, the block must render an explicit insufficient-evidence fallback instead of replacing the main focus with a secondary signal.
+- **Decision:** `ЧЕЛЛЕНДЖ` and focus recommendations use the same focus stage. Stage mismatch is exposed through `daily_coaching_focus_validation` as a warning.
+- **Reason:** Step 8AH-10B PM review found a self-contradictory report: stage scores/challenge focused on `Э3`, while Situation and Call Breakdown described `Э1`. Managers need one coherent coaching focus unless a secondary signal is explicitly labeled as secondary.
+- **Scope:** Reporting payload/render focus alignment and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, report-day totals, call-list semantics, Step 8AH-11A data-scope rules, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-10

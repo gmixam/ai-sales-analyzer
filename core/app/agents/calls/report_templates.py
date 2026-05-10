@@ -378,6 +378,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     selection_note = _build_manager_daily_selection_note(payload=payload, total_calls=total_calls)
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     data_scopes = dict(payload.get("data_scopes") or {})
+    daily_focus = dict(payload.get("daily_coaching_focus") or {})
     coaching_scope = dict(data_scopes.get("coaching_base") or payload.get("coaching_data_scope") or {})
     situation_scope = dict(data_scopes.get("situation_day") or coaching_scope)
     call_breakdown_scope = dict(data_scopes.get("call_breakdown") or coaching_scope)
@@ -401,6 +402,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         key_problem=dict(payload.get("key_problem_of_day") or {}),
         total_calls=total_calls,
         data_scope=challenge_scope,
+        daily_focus=daily_focus,
     )
     _unclassified_count = int(call_outcomes.get("unclassified_count") or 0)
     outcome_cols = [
@@ -456,6 +458,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             ),
             "data_scope": _data_scope_code(situation_scope),
             "data_scope_details": situation_scope,
+            "daily_coaching_focus": daily_focus,
+            "focus_stage_code": daily_focus.get("stage_code"),
             "scope_note": _data_scope_note(situation_scope, selected_call=True),
             "example_label": _data_scope_example_label(situation_scope),
             "situation_title": _build_situation_title(
@@ -3286,12 +3290,15 @@ def _build_challenge_data(
     key_problem: dict[str, Any],
     total_calls: int,
     data_scope: dict[str, Any] | None = None,
+    daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the fixed-structure v5 challenge block."""
     scope = dict(data_scope or key_problem.get("data_scope_details") or {})
     scope_code = _data_scope_code(scope)
+    focus = dict(daily_focus or {})
     priority_row = _priority_stage_row(score_by_stage)
-    stage_name = priority_row.get("stage_name") if priority_row else "приоритетный этап"
+    stage_code = str(focus.get("stage_code") or (priority_row or {}).get("stage_code") or "").strip()
+    stage_name = str(focus.get("stage_name") or (priority_row or {}).get("stage_name") or "приоритетный этап").strip()
     calls_basis = max(total_calls, 1)
     target = max(1, round(calls_basis * 0.75))
     today_count = int(key_problem.get("pattern_count") or 0)
@@ -3308,6 +3315,8 @@ def _build_challenge_data(
     return {
         "data_scope": scope_code,
         "data_scope_details": scope,
+        "focus_stage_code": stage_code or None,
+        "daily_coaching_focus": focus,
         "scope_note": _data_scope_note(scope),
         "goal_line": f"Из следующих {calls_basis} звонков — отработать '{stage_name}' минимум в {target} случаях.",
         "today_line": pattern_line,

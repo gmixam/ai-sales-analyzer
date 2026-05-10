@@ -4275,6 +4275,133 @@ def _is_meaningful_recommendation(item: dict[str, Any]) -> bool:
     return title != MANAGER_DAILY_FALLBACK_RECOMMENDATION_TITLE
 
 
+def _stage_funnel_label_for_code(stage_code: str) -> str | None:
+    code = str(stage_code or "").strip()
+    for known_code, funnel_label, _stage_name in _STAGE_FUNNEL_ORDER:
+        if known_code == code:
+            return funnel_label
+    return None
+
+
+def _priority_stage_from_scores(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    key_problem: dict[str, Any],
+) -> dict[str, Any] | None:
+    priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
+    if priority_stage is not None:
+        return dict(priority_stage)
+    if _is_meaningful_key_problem(key_problem):
+        scored_stages = [item for item in score_by_stage if item.get("score") is not None]
+        if scored_stages:
+            return dict(min(scored_stages, key=lambda item: float(item.get("score") or 999.0)))
+    return None
+
+
+def _daily_focus_stage_code(daily_focus: dict[str, Any] | None) -> str:
+    return str((daily_focus or {}).get("stage_code") or "").strip()
+
+
+def _focus_problem_signal(value: str, *, fallback: str) -> str:
+    normalized = _summary_norm(value)
+    tokens = re.findall(r"[a-zа-яё0-9]+", normalized)
+    if not tokens:
+        return fallback
+    return "_".join(tokens[:8])[:80] or fallback
+
+
+def _build_daily_coaching_focus(
+    *,
+    score_by_stage: list[dict[str, Any]],
+    key_problem: dict[str, Any],
+    data_scope: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the single focus object that all main coaching blocks must align to."""
+    priority_stage = _priority_stage_from_scores(score_by_stage=score_by_stage, key_problem=key_problem)
+    if priority_stage is None:
+        scope = dict(data_scope)
+        return {
+            "stage_id": None,
+            "stage_code": None,
+            "stage_name": None,
+            "problem_signal": None,
+            "problem_statement": MANAGER_DAILY_FALLBACK_KEY_PROBLEM_DESCRIPTION,
+            "data_scope": scope.get("code") or MANAGER_DAILY_DATA_SCOPE_REPORT_DAY,
+            "data_scope_details": scope,
+            "evidence_call_id": None,
+            "breakdown_call_id": None,
+            "challenge_metric_source": "insufficient_stage_data",
+            "confidence": "low",
+            "validation": {"status": "warning", "issues": ["focus_stage_missing"]},
+        }
+
+    stage_code = str(priority_stage.get("stage_code") or "").strip()
+    stage_name = str(priority_stage.get("stage_name") or "").strip() or _stage_name_for_code(stage_code, score_by_stage)
+    problem_statement = _first_sentence(str(priority_stage.get("problem_summary") or ""), limit=220)
+    if not problem_statement and _is_meaningful_key_problem(key_problem):
+        key_problem_stage = _stage_code_from_criterion_code(str(key_problem.get("criterion_code") or ""))
+        if not key_problem_stage or key_problem_stage == stage_code:
+            problem_statement = _first_sentence(str(key_problem.get("title") or ""), limit=220)
+    if not problem_statement:
+        problem_statement = _focus_stage_generic_text(stage_name, kind="wrong")
+
+    confidence = "high" if priority_stage.get("is_priority") and priority_stage.get("problem_summary") else "medium"
+    scope = dict(data_scope)
+    return {
+        "stage_id": _stage_funnel_label_for_code(stage_code),
+        "stage_code": stage_code,
+        "stage_name": stage_name,
+        "problem_signal": _focus_problem_signal(problem_statement, fallback=stage_code or "focus_stage"),
+        "problem_statement": problem_statement,
+        "data_scope": scope.get("code") or MANAGER_DAILY_DATA_SCOPE_REPORT_DAY,
+        "data_scope_details": scope,
+        "evidence_call_id": None,
+        "breakdown_call_id": None,
+        "challenge_metric_source": "score_by_stage.priority",
+        "confidence": confidence,
+        "validation": {"status": "pending", "issues": []},
+    }
+
+
+def _block_stage_code(block: dict[str, Any] | None) -> str:
+    return str((block or {}).get("stage_code") or "").strip()
+
+
+def _finalize_daily_coaching_focus(
+    *,
+    daily_focus: dict[str, Any],
+    situation_evidence_quote: dict[str, Any] | None,
+    situation_day_coaching_view: dict[str, Any] | None,
+    call_breakdown: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach selected evidence IDs and alignment diagnostics to the daily focus."""
+    result = dict(daily_focus)
+    focus_stage = _daily_focus_stage_code(result)
+    issues: list[str] = []
+
+    situation_stage = _block_stage_code(situation_day_coaching_view) or str(
+        (situation_evidence_quote or {}).get("stage_code") or ""
+    ).strip()
+    if focus_stage and situation_stage and situation_stage != focus_stage:
+        issues.append(f"situation_stage_mismatch:{situation_stage}")
+
+    breakdown_stage = _block_stage_code(call_breakdown)
+    if focus_stage and breakdown_stage and breakdown_stage != focus_stage:
+        issues.append(f"call_breakdown_stage_mismatch:{breakdown_stage}")
+
+    evidence_call_id = str((situation_evidence_quote or {}).get("call_id") or "").strip() or None
+    breakdown_call_id = str((call_breakdown or {}).get("call_id") or "").strip() or None
+    result["evidence_call_id"] = evidence_call_id
+    result["breakdown_call_id"] = breakdown_call_id
+    result["situation_stage_code"] = situation_stage or None
+    result["breakdown_stage_code"] = breakdown_stage or None
+    result["validation"] = {
+        "status": "warning" if issues else "passed",
+        "issues": issues,
+    }
+    return result
+
+
 def build_manager_daily_payload(
     *,
     department_id: str,
@@ -4343,20 +4470,31 @@ def build_manager_daily_payload(
         improve_items=improve_items,
     )
     score_by_stage = _aggregate_stage_scores(artifacts=coaching_content_artifacts)
+    daily_coaching_focus = _build_daily_coaching_focus(
+        score_by_stage=score_by_stage,
+        key_problem=key_problem,
+        data_scope=coaching_data_scope,
+    )
     report_evidence_situation = _build_report_evidence_situation(
         artifacts=coaching_content_artifacts,
         report_evidence_index=report_evidence_index,
         call_list_by_interaction_id=call_list_by_interaction_id,
         score_by_stage=score_by_stage,
+        daily_focus=daily_coaching_focus,
     )
     call_breakdown = _build_call_breakdown_from_report_evidence(
         artifacts=coaching_content_artifacts,
         report_evidence_index=report_evidence_index,
         call_list_by_interaction_id=call_list_by_interaction_id,
         score_by_stage=score_by_stage,
+        daily_focus=daily_coaching_focus,
     )
     if call_breakdown is None:
-        call_breakdown = _build_call_breakdown(improve_items=improve_items, artifacts=coaching_content_artifacts)
+        call_breakdown = _build_call_breakdown(
+            improve_items=improve_items,
+            artifacts=coaching_content_artifacts,
+            daily_focus=daily_coaching_focus,
+        )
     voice_of_customer = _build_voice_of_customer_from_report_evidence(
         artifacts=coaching_content_artifacts,
         report_evidence_index=report_evidence_index,
@@ -4408,6 +4546,7 @@ def build_manager_daily_payload(
         score_by_stage=score_by_stage,
         key_problem=key_problem,
         recommendations=recommendation_cards,
+        daily_focus=daily_coaching_focus,
     )
     focus_stage_recommendation = _build_focus_stage_recommendation(
         focus_stage_deep_dive=focus_stage_deep_dive,
@@ -4448,6 +4587,12 @@ def build_manager_daily_payload(
     additional_situations = _with_data_scope(additional_situations, coaching_data_scope)
     if situation_day_coaching_view is not None:
         situation_day_coaching_view = _with_data_scope(situation_day_coaching_view, situation_data_scope)
+    daily_coaching_focus = _finalize_daily_coaching_focus(
+        daily_focus=daily_coaching_focus,
+        situation_evidence_quote=situation_evidence_quote,
+        situation_day_coaching_view=situation_day_coaching_view,
+        call_breakdown=call_breakdown,
+    )
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -4534,6 +4679,8 @@ def build_manager_daily_payload(
         "focus_stage_deep_dive": focus_stage_deep_dive,
         "focus_stage_recommendation": focus_stage_recommendation,
         "situation_day_coaching_view": situation_day_coaching_view,
+        "daily_coaching_focus": daily_coaching_focus,
+        "daily_coaching_focus_validation": dict(daily_coaching_focus.get("validation") or {}),
         "coaching_data_scope": coaching_data_scope,
         "data_scopes": {
             "coaching_base": coaching_data_scope,
@@ -5764,9 +5911,20 @@ def _build_focus_stage_deep_dive(
     score_by_stage: list[dict[str, Any]],
     key_problem: dict[str, Any],
     recommendations: list[dict[str, Any]],
+    daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build a compact deterministic deep-dive for the priority stage from existing payload data."""
-    priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
+    priority_stage = next(
+        (
+            item
+            for item in score_by_stage
+            if focus_stage_code and str(item.get("stage_code") or "").strip() == focus_stage_code
+        ),
+        None,
+    )
+    if priority_stage is None:
+        priority_stage = next((item for item in score_by_stage if item.get("is_priority")), None)
     if priority_stage is None and _is_meaningful_key_problem(key_problem):
         scored_stages = [item for item in score_by_stage if item.get("score") is not None]
         if scored_stages:
@@ -5779,7 +5937,9 @@ def _build_focus_stage_deep_dive(
     if not stage_code and not stage_name:
         return None
 
-    problem_summary = _first_sentence(str(priority_stage.get("problem_summary") or ""))
+    problem_summary = _first_sentence(
+        str(priority_stage.get("problem_summary") or (daily_focus or {}).get("problem_statement") or "")
+    )
     key_title = (
         _first_sentence(str(key_problem.get("title") or ""))
         if _is_meaningful_key_problem(key_problem)
@@ -5947,13 +6107,16 @@ def _build_situation_day_coaching_view(
         return None
 
     client_text = str((situation_evidence_quote or {}).get("client_text") or "").strip()
+    has_grounded_evidence = bool(client_text or (situation_dialogue_excerpt or {}).get("turns"))
     what_went_wrong = _first_sentence(str(focus_stage_deep_dive.get("what_went_wrong") or ""), limit=220)
     meaning = _first_sentence(str(focus_stage_deep_dive.get("why_it_matters") or ""), limit=260)
     what_was_missing = _coaching_missing_text(what_went_wrong, stage_code)
     next_time_action = _first_sentence(str(focus_stage_deep_dive.get("what_to_fix") or ""), limit=240)
 
     fact = _situation_fact_from_quote(client_text)
-    if fact and what_was_missing:
+    if not has_grounded_evidence:
+        what_happened = "Недостаточно evidence для показа ситуации по фокусному этапу."
+    elif fact and what_was_missing:
         what_happened = f"{fact} В разговоре не хватило квалификации: {what_was_missing}"
     elif what_was_missing:
         what_happened = f"В звонке проявилась проблема фокусного этапа: {what_was_missing}"
@@ -5971,11 +6134,15 @@ def _build_situation_day_coaching_view(
         ]
 
     return {
-        "pattern_title": _situation_pattern_title(
-            stage_code=stage_code,
-            stage_name=stage_name,
-            what_went_wrong=what_went_wrong,
-            client_text=client_text,
+        "pattern_title": (
+            "Недостаточно evidence по фокусному этапу"
+            if not has_grounded_evidence
+            else _situation_pattern_title(
+                stage_code=stage_code,
+                stage_name=stage_name,
+                what_went_wrong=what_went_wrong,
+                client_text=client_text,
+            )
         ),
         "stage_code": stage_code,
         "stage_label": stage_name,
@@ -7914,9 +8081,11 @@ def _build_report_evidence_situation(
     report_evidence_index: dict[str, dict[str, Any]],
     call_list_by_interaction_id: dict[str, dict[str, Any]],
     score_by_stage: list[dict[str, Any]],
+    daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build Situation Day from valid report_evidence.situation_candidates when usable."""
     candidates: list[tuple[tuple[int, int, int, int, float, datetime], ReportArtifact, dict[str, Any], dict[str, Any], list[dict[str, str]]]] = []
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
     for artifact in artifacts:
         if not _is_report_evidence_sales_like(
             artifact=artifact,
@@ -7931,6 +8100,8 @@ def _build_report_evidence_situation(
             continue
         for candidate in evidence.get("situation_candidates") or []:
             if not isinstance(candidate, dict) or candidate.get("usable_in_report") is not True:
+                continue
+            if focus_stage_code and str(candidate.get("stage_code") or "").strip() != focus_stage_code:
                 continue
             quality = str(candidate.get("evidence_quality") or "").strip().lower()
             if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
@@ -8036,6 +8207,7 @@ def _build_call_breakdown_from_report_evidence(
     report_evidence_index: dict[str, dict[str, Any]],
     call_list_by_interaction_id: dict[str, dict[str, Any]],
     score_by_stage: list[dict[str, Any]],
+    daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build РАЗБОР ЗВОНКА from valid manager_coaching_moments when available."""
     candidates: list[
@@ -8048,6 +8220,7 @@ def _build_call_breakdown_from_report_evidence(
             str,
         ]
     ] = []
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
     for artifact in artifacts:
         if not _is_report_evidence_sales_like(
             artifact=artifact,
@@ -8062,6 +8235,8 @@ def _build_call_breakdown_from_report_evidence(
             continue
         for moment in evidence.get("manager_coaching_moments") or []:
             if not isinstance(moment, dict) or moment.get("usable_in_report") is not True:
+                continue
+            if focus_stage_code and str(moment.get("stage_code") or "").strip() != focus_stage_code:
                 continue
             quality = str(moment.get("evidence_quality") or "").strip().lower()
             if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
@@ -8092,7 +8267,7 @@ def _build_call_breakdown_from_report_evidence(
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
-    _rank, best_artifact, _best_moment, _turns, _best_fragment, best_strength = candidates[0]
+    _rank, best_artifact, best_moment, _turns, _best_fragment, best_strength = candidates[0]
     best_candidates = [
         (rank, moment, turns, fragment, strength)
         for rank, artifact, moment, turns, fragment, strength in candidates
@@ -8126,6 +8301,8 @@ def _build_call_breakdown_from_report_evidence(
         "date_label": ref["date_label"],
         "time_label": ref["time_label"],
         "client_call_reference": ref["client_call_reference"],
+        "stage_code": str(best_moment.get("stage_code") or "").strip(),
+        "stage_name": _stage_name_for_code(str(best_moment.get("stage_code") or ""), score_by_stage),
         "stage_steps": [],
         "worked": [],
         "to_fix": [],
@@ -8834,6 +9011,7 @@ def _build_call_breakdown(
     *,
     improve_items: list[dict[str, Any]],
     artifacts: list[ReportArtifact],
+    daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build compact step-by-step breakdown of the most representative problem call.
 
@@ -8847,22 +9025,54 @@ def _build_call_breakdown(
         "client_phone": None,
         "date_label": None,
         "time_label": None,
+        "stage_code": _daily_focus_stage_code(daily_focus) or None,
+        "stage_name": (daily_focus or {}).get("stage_name"),
         "stage_steps": [],
         "worked": [],
         "to_fix": [],
         "recommendation": None,
+        "rows": [
+            [
+                "1",
+                "Недостаточно evidence для показа разбора по фокусному этапу.",
+                CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
+                _first_sentence(str((daily_focus or {}).get("problem_statement") or ""), limit=220)
+                or "Повторите разбор после следующего полного запуска.",
+            ]
+        ],
+        "summary_line": "Звонок по фокусному этапу не выбран: подтверждающее evidence ограничено.",
+        "source_note": "focus_evidence_missing",
+        "call_breakdown_source": "focus_evidence_missing",
+        "call_breakdown_evidence_strength": "missing",
+        "call_breakdown_fragment_present": False,
     }
     if not improve_items or not artifacts:
         return _empty
 
     gap_label = improve_items[0]["label"]
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
     candidates: list[tuple[int, float, int, datetime, ReportArtifact]] = []
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-        has_gap = any(
-            _finding_item_label(dict(item or {})) == gap_label
-            for item in (detail.get("gaps") or [])
-        )
+        if focus_stage_code:
+            has_gap = False
+            for item in detail.get("gaps") or []:
+                criterion_code = str((item or {}).get("criterion_code") or "").strip()
+                gap_stage = _stage_code_from_criterion_code(criterion_code)
+                if gap_stage == focus_stage_code:
+                    has_gap = True
+                    break
+                if not criterion_code and (
+                    _finding_item_label(dict(item or {})) != "Без названия"
+                    or _finding_item_interpretation(dict(item or {}))
+                ):
+                    has_gap = True
+                    break
+        else:
+            has_gap = any(
+                _finding_item_label(dict(item or {})) == gap_label
+                for item in (detail.get("gaps") or [])
+            )
         if has_gap:
             s = _extract_score_percent(artifact.analysis)
             evidence_score = _artifact_fallback_evidence_score(artifact)
@@ -8918,12 +9128,20 @@ def _build_call_breakdown(
         for i in (detail.get("strengths") or [])[:2]
         if _finding_item_label(dict(i or {})) != "Без названия"
     ]
+    to_fix_source = list(detail.get("gaps") or [])
+    if focus_stage_code:
+        to_fix_source = [
+            item
+            for item in to_fix_source
+            if _stage_code_from_criterion_code(str((item or {}).get("criterion_code") or "")) == focus_stage_code
+            or not str((item or {}).get("criterion_code") or "").strip()
+        ]
     to_fix = [
         {
             "label": _finding_item_label(dict(i or {})),
             "interpretation": _finding_item_interpretation(dict(i or {})),
         }
-        for i in (detail.get("gaps") or [])[:2]
+        for i in to_fix_source[:2]
         if _finding_item_label(dict(i or {})) != "Без названия"
     ]
 
@@ -8977,6 +9195,8 @@ def _build_call_breakdown(
         "date_label": ref["date_label"],
         "time_label": ref["time_label"],
         "client_call_reference": ref["client_call_reference"],
+        "stage_code": focus_stage_code or None,
+        "stage_name": (daily_focus or {}).get("stage_name"),
         "stage_steps": stage_steps,
         "worked": worked,
         "to_fix": to_fix,

@@ -833,6 +833,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         ]
         detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Legacy gap"}]
         detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["manager_coaching_moments"][0]["stage_code"] = "qualification_primary"
 
         payload = build_manager_daily_payload(
             department_id=str(uuid4()),
@@ -1733,6 +1734,119 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIsNone(sections["main_focus_for_tomorrow"]["scope_note"])
         self.assertEqual(sections["main_focus_for_tomorrow"]["example_label"], "Пример из сегодня")
         self.assertTrue(sections["challenge"]["today_line"].startswith("Сегодня:"))
+
+    def test_step8ah11b_daily_focus_filters_mismatched_situation_and_breakdown(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "stage_score": 2,
+                "max_stage_score": 2,
+                "criteria_results": [],
+            },
+            {
+                "stage_code": "needs_discovery",
+                "stage_name": "Выявление детальных потребностей",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "nd_depth",
+                        "criterion_name": "Глубина потребности",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Конкретные сценарии использования не были выявлены.",
+                    }
+                ],
+            },
+        ]
+        detail["gaps"] = [
+            {
+                "criterion_code": "cs_relevance",
+                "title": "Нерелевантный старт",
+                "comment": "Старт звонка был общим.",
+            }
+        ]
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["situation_candidates"][0]["stage_code"] = "contact_start"
+        detail["report_evidence"]["manager_coaching_moments"][0]["stage_code"] = "contact_start"
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(payload["daily_coaching_focus"]["stage_id"], "Э3")
+        self.assertEqual(payload["daily_coaching_focus"]["stage_code"], "needs_discovery")
+        self.assertEqual(payload["daily_coaching_focus_validation"]["status"], "passed")
+        self.assertEqual(payload["situation_day_coaching_view"]["stage_code"], "needs_discovery")
+        self.assertIn("Недостаточно evidence", payload["situation_day_coaching_view"]["what_happened"])
+        self.assertEqual(payload["call_breakdown"]["stage_code"], "needs_discovery")
+        self.assertEqual(payload["call_breakdown"]["call_breakdown_source"], "focus_evidence_missing")
+        self.assertIn("Недостаточно evidence", sections["call_breakdown"]["rows"][0][1])
+        self.assertEqual(sections["challenge"]["focus_stage_code"], "needs_discovery")
+        self.assertEqual(sections["main_focus_for_tomorrow"]["focus_stage_code"], "needs_discovery")
+
+    def test_step8ah11b_daily_focus_keeps_aligned_report_evidence_blocks(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Контекст процесса не уточнён.",
+                    }
+                ],
+            }
+        ]
+        detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Legacy gap"}]
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["manager_coaching_moments"][0]["stage_code"] = "qualification_primary"
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(payload["daily_coaching_focus"]["stage_code"], "qualification_primary")
+        self.assertEqual(payload["situation_day_coaching_view"]["stage_code"], "qualification_primary")
+        self.assertEqual(payload["call_breakdown"]["stage_code"], "qualification_primary")
+        self.assertEqual(payload["daily_coaching_focus_validation"]["status"], "passed")
+        self.assertEqual(sections["challenge"]["focus_stage_code"], "qualification_primary")
 
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
