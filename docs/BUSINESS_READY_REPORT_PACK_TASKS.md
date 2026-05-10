@@ -1946,6 +1946,29 @@ Checks passed: all three call-breakdown render rows have `bare_fragment_dash_cou
 
 **Next:** rebuild final PDFs after all blocker fixes and send to Telegram test before Step 8AH human review.
 
+## Step 8AH-8G — Rebuild final manager_daily PDFs after all blocker/content fixes
+
+**Status:** DONE 2026-05-10.
+
+**Scope:** final artifact verification only: persisted ready-only payload/render for `manager_daily` report-day `2026-05-04`. No STT, source discovery, `build_missing`, LLM/re-analysis, LLM2 prompt, `report_evidence` contract/validator, `BusinessOutcomeResolver`, PDF layout, delivery semantics, Telegram, or business email changes.
+
+**Artifacts:**
+- `/tmp/step8ah8g_Эльмира_2026-05-04.pdf` (`143928` bytes)
+- `/tmp/step8ah8g_Тимур_2026-05-04.pdf` (`151562` bytes)
+- `/tmp/step8ah8g_Толеген_2026-05-04.pdf` (`126322` bytes)
+- `/tmp/step8ah8g_summary_2026-05-04.json`
+
+**Verification result:** all three PDFs are ready candidates for Telegram test delivery. Each report has `manager_facing_completeness.status=passed`, `call_list_dates=["2026-05-04"]`, rolling-window calls absent from call list, no `OPERATOR PREVIEW / INCOMPLETE`, `transcripts_built=0`, `analyses_built=0`, and no delivery/email run.
+
+**Outcome totals:** unchanged and matched expected baselines:
+- Эльмира `12/1/1/2/2/6/0`
+- Тимур `15/3/1/2/6/2/1`
+- Толеген `6/0/0/1/3/2/0`
+
+**Regression checks:** unsafe client name `Ужас` absent; available safe names remained visible; Эльмира Situation Day uses client-grounded evidence; Voice of Customer recommendations preserve quotes and do not copy quote text as manager action; tomorrow recommendations are signal-specific, keep deterministic priority labels, and exclude final refusal/tech/not-suitable; call breakdown has no bare fragment dash and exposes evidence diagnostics.
+
+**Next:** Step 8AH-8H — explicit Telegram test delivery of these final PDFs, still without business email.
+
 ## Step 8-STABLE — Stable analysis selection / controlled sample isolation policy
 
 **Status:** DONE 2026-05-08.
