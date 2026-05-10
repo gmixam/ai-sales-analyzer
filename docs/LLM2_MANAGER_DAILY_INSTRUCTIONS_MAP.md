@@ -20,6 +20,7 @@ Key findings:
 - Valid `report_evidence v1` is preferred for report-ready evidence, but the reporting layer falls back to deterministic / legacy Step 8W paths when the package is missing or invalid.
 - `call_report_summary` is used only through a valid `report_evidence` package and guarded by report-layer generic-topic, phrase-safety, and final-authority rules.
 - Final outcome totals, inclusion/exclusion, call-list date boundaries, and tomorrow priority are reporting-layer responsibilities; LLM2 signals do not override them.
+- Since Step 8AH-11A, coaching-block `data_scope` is also a reporting-layer responsibility. LLM2 does not emit it; the renderer uses deterministic scope metadata so expanded/rolling coaching evidence is labeled explicitly and not shown as plain report-day content.
 
 ## LLM2 prompt inventory
 
@@ -338,11 +339,11 @@ Important fallback rules:
 | `ДЕНЬГИ НА СТОЛЕ` | Outcome/follow-up/money clues from analysis as interpreted by deterministic reporting | Report-day only, final outcome categories and money rules | Empty/zero when no qualifying outcome | LLM wording cannot override money rules; verify totals after next run |
 | `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` | `call_report_summary.short_topic` -> `Тип / суть`; `short_context` -> `Контекст`, only if valid and non-generic | Unified client reference, report-day boundary, final status order, call time | Summary/generic fallback from call type/outcome/context; `—` for empty context | Technical fallback context can remain weak; broad summary topics are guarded but may fall back to less useful text |
 | `БАЛЛЫ ПО ЭТАПАМ` | `score_by_stage[].score/max_score/criteria_results` | Stage aggregation and display thresholds | Empty/low-information stage handling | Stage scores can be valid while report evidence is weak; this can create alignment gaps with narrative blocks |
-| `СИТУАЦИЯ ДНЯ` | Preferred `report_evidence.situation_candidates`; client-grounding can use `voice_of_customer` / `quote_bank` from same valid package | Sales-like final statuses, focus stage, client-reaction classifier, evidence ranking, dialogue formatting | Step 8W legacy evidence fragments, call breakdown excerpt, transcript/dialogue fallback, deterministic coaching text | Focus stage and selected situation can diverge; positive/neutral `what_happened` may still read like a problem if LLM wording is weak |
-| `РАЗБОР ЗВОНКА` | Preferred `report_evidence.manager_coaching_moments` | Evidence-strength ranking, low-information fragment guard, final sales-like filters | Legacy gaps/recommendations/evidence fragments/transcript sentence fallback; explicit missing-evidence note | Weak evidence is now labeled, but selected call can still differ from Situation Day/Challenge focus |
+| `СИТУАЦИЯ ДНЯ` | Preferred `report_evidence.situation_candidates`; client-grounding can use `voice_of_customer` / `quote_bank` from same valid package | Sales-like final statuses, focus stage, client-reaction classifier, evidence ranking, dialogue formatting, selected-call `data_scope` | Step 8W legacy evidence fragments, call breakdown excerpt, transcript/dialogue fallback, deterministic coaching text | Focus stage and selected situation can diverge; if selected from expanded base, renderer must keep explicit scope label/note |
+| `РАЗБОР ЗВОНКА` | Preferred `report_evidence.manager_coaching_moments` | Evidence-strength ranking, low-information fragment guard, final sales-like filters, selected-call `data_scope` | Legacy gaps/recommendations/evidence fragments/transcript sentence fallback; explicit missing-evidence note | Weak evidence is now labeled; if selected from expanded base, renderer must keep explicit scope label/note |
 | `ГОЛОС КЛИЕНТА` | Preferred `report_evidence.voice_of_customer`; optional `call_report_summary.manager_next_action` when specific/aligned | Signal-specific deterministic action mapping, quote preservation, source ranking | `evidence_fragments.client_text`, `product_signals.quote`, generic fallback only when no clear signal | If valid report_evidence is missing/invalid, VOC can become sparse; manager action can still be generic for unclear quotes |
-| `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` | Preferred `report_evidence.additional_situations` | Dedup against top situation, priority/quality filter | Secondary gaps/strengths or empty placeholder | Empty section is expected when neither LLM2 nor fallback yields an extra situation; may look underfilled |
-| `ЧЕЛЛЕНДЖ` | Indirectly uses `score_by_stage`, gaps/recommendations/key problem | Deterministic challenge from focus stage/key problem | Generic stage challenge fallback | Focus stage can diverge from Situation Day and Call Breakdown when sources differ |
+| `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` | Preferred `report_evidence.additional_situations` | Dedup against top situation, priority/quality filter, aggregate coaching `data_scope` | Secondary gaps/strengths or hidden empty section | Empty section is hidden after Step 8AH-9; if rendered from expanded/rolling data, scope note must remain visible |
+| `ЧЕЛЛЕНДЖ` | Indirectly uses `score_by_stage`, gaps/recommendations/key problem | Deterministic challenge from focus stage/key problem, aggregate coaching `data_scope` | Generic stage challenge fallback | Focus stage can diverge from Situation Day and Call Breakdown when sources differ; rolling/expanded counts must not say `Сегодня` |
 | `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` | `call_report_summary.short_context`, `hotness_reason`, `manager_next_action`, safe `suggested_manager_phrase`; `follow_up_candidates` as bounded enrichment | Final status inclusion (`agreed/rescheduled/open` only), deterministic hotness, signal profile, deadline/time sorting | Deterministic profile text, legacy `follow_up`, final call list row context | `call_report_summary.hotness` does not override priority; good. But generic LLM manager actions may be rejected and fallback must stay useful |
 | Unified client/call references | LLM2 `call.contact_name/contact_phone` template fields if present; `call_report_summary.client_display_name` is documented but not currently a primary runtime display source | Interaction metadata, safe persisted transcript name fallback, safe-name guard, date/time formatting | Phone + date/time; date/time only if phone absent | Summary names are not currently consumed by `_artifact_call_metadata`; future wiring must respect `client_name_confidence` and safe-name rules |
 
@@ -364,7 +365,13 @@ Rolling/coaching context allowed:
 - `ГОЛОС КЛИЕНТА`
 - `ЧЕЛЛЕНДЖ`
 
-Normal safety expectation: rolling-window calls must not enter the call list. After the next report-day run, verify `call_list_dates` and explicit rolling-window absence in the summary.
+Since Step 8AH-11A, coaching blocks expose deterministic `data_scope`:
+
+- `report_day` — selected call/metric is report-day only; `Ситуация дня` / `Сегодня` wording is allowed.
+- `expanded_coaching_base` — selected coaching call is outside the report-day call list but inside the expanded coaching base; renderer must label it as expanded-base evidence.
+- `rolling_window` — metric/pattern is aggregated from the rolling-window coaching base; renderer must use `За последние N рабочих дней` / rolling-window wording and must not say `Сегодня`.
+
+Normal safety expectation: rolling-window calls must not enter the call list. After the next report-day run, verify `call_list_dates`, explicit rolling-window absence in the call list, and scope-aware labels/notes in coaching blocks.
 
 ### Focus stage alignment
 
@@ -388,6 +395,7 @@ Current policy: valid `report_evidence` is preferred; missing/invalid report evi
 | Whole-package validity gate can suppress useful summary fields | `validate_report_evidence(...)` -> `_build_report_evidence_index(...)` | One invalid enum or ungrounded quote can prevent `short_topic`, `short_context`, and manager action usage | Count valid/invalid `report_evidence`; sample invalid packages and check if failure is localized |
 | `call_report_summary.client_display_name` is documented but not currently a primary display-name source | Unified reference path in `reporting.py` | Fresh LLM2 names may not appear even when safe; future wiring could also introduce unsafe names if not gated | Verify whether next-run client labels come from metadata or summary; decide if a bounded wiring task is needed |
 | Focus/Situation/Breakdown/Challenge can use different source calls/stages | `build_manager_daily_payload(...)` block assembly | A report can feel inconsistent even when every block is individually valid | Compare block source diagnostics and stage labels in generated summary/PDF |
+| Coaching block data scope can be misread as report-day | `data_scope` assignment/rendering for Situation, Breakdown, Challenge, Additional Situations | A non-report-day example or rolling metric can look like it happened "today" | Verify scope labels/notes: no non-report-day selected call under plain `СИТУАЦИЯ ДНЯ`, no rolling/expanded metric with `Сегодня` wording |
 | Positive or neutral text can appear as a problem | Key problem / situation wording fallbacks | LLM comments and deterministic fallbacks can frame neutral statements as `Основная проблема` | Inspect key_problem, Situation Day `what_happened`, and stage challenge language |
 | Technical fallback context in call list | Call-list context fallback | If summary context is missing/invalid, technical/unclassified context can stay weak or empty | Verify `Тип / суть` / `Контекст` for technical/service rows and summary usage counts |
 | Empty Additional Situations | `additional_situations` report_evidence/fallback | Empty placeholder can feel like missing analysis in human review | Check whether valid `additional_situations` are produced for new analyses; if empty, confirm it is acceptable |
@@ -424,10 +432,12 @@ After the next `manager_daily` report-day run, verify:
 
 5. **Block quality**
    - `СИТУАЦИЯ ДНЯ` client-reaction conclusions include client-grounded evidence when available.
+   - Non-report-day coaching examples carry explicit `data_scope` wording and are not rendered as plain `СИТУАЦИЯ ДНЯ`.
    - `РАЗБОР ЗВОНКА` has no bare `Фрагмент: —`; weak/missing evidence is explicit.
    - `ГОЛОС КЛИЕНТА` preserves client quotes and uses signal-specific manager actions.
    - `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` uses deterministic priority, excludes final refusal/tech/not-suitable, and avoids generic or copied phrases.
    - `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` is either populated or intentionally empty with acceptable placeholder.
+   - `ЧЕЛЛЕНДЖ` does not say `Сегодня` when the displayed metric comes from an expanded/rolling coaching base.
 
 6. **Boundaries and counters**
    - `call_list_dates` contains only the report day.

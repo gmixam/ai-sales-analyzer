@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import unittest
 from contextlib import contextmanager
@@ -35,6 +36,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     BusinessOutcomeResolver,
     CallsManualReportingOrchestrator,
     MEANINGFUL_ABSOLUTE_MIN_DURATION_SEC,
+    MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC,
     ReportArtifact,
     ReportRunFilters,
     _build_meaningful_call_list,
@@ -42,6 +44,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     _build_selection_model_counters,
     _classify_meaningful_call,
     _select_stable_analysis_for_reporting,
+    classify_provider_error,
     build_manager_daily_payload,
     build_rop_weekly_payload,
     render_report_email,
@@ -57,6 +60,7 @@ from app.agents.calls.analysis_purpose import (  # noqa: E402
     mark_scores_detail_analysis_purpose,
 )
 from app.agents.calls.report_evidence import validate_report_evidence  # noqa: E402
+from app.agents.calls.schemas import CDRRecord  # noqa: E402
 from app.agents.calls.report_templates import (  # noqa: E402
     _call_context_label,
     build_report_render_model,
@@ -77,7 +81,7 @@ from app.agents.calls.scheduled_reporting import (  # noqa: E402
     extract_editable_blocks,
 )
 from app.core_shared.api.main import app  # noqa: E402
-from app.core_shared.exceptions import ASAError, DeliveryError  # noqa: E402
+from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError  # noqa: E402
 
 try:
     from fastapi.testclient import TestClient  # noqa: E402
@@ -1116,6 +1120,342 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("что именно закрывает текущее решение", row[2])
         self.assertNotIn("уточнить задачу клиента", row[2])
 
+    def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        artifact.interaction.metadata_["contact_name"] = "Нур-Султан"
+        artifact.interaction.metadata_["contact_phone"] = "+77071523663"
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"] = {"contact_name": "Нур-Султан", "contact_phone": "+77071523663"}
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        report = build_report_render_model(payload)
+        sections = {section["id"]: section for section in report["sections"]}
+        expected = "Нур-Султан · +77071523663 · 4 мая 2026, 11:46"
+
+        self.assertEqual(payload["call_list"][0]["client_call_reference"], expected)
+        self.assertEqual(payload["call_breakdown"]["client_call_reference"], expected)
+        self.assertEqual(payload["voice_of_customer"]["situations"][0]["client_call_reference"], expected)
+        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["client_call_reference"], expected)
+        self.assertEqual(sections["call_list"]["rows"][0][1], expected)
+        self.assertEqual(sections["call_tomorrow"]["rows"][0][1], expected)
+        self.assertEqual(sections["call_breakdown"]["summary_line"], expected)
+        self.assertIn(expected, sections["voice_of_customer"]["rows"][0][0])
+        self.assertNotIn("+77071523663 · +77071523663", expected)
+
+        self.assertEqual(sections["call_breakdown"]["rows"][0][0], "Момент 1")
+        self.assertEqual(len(sections["call_breakdown"]["rows"][0]), 4)
+        self.assertTrue(sections["call_tomorrow"]["rows"][0][2].startswith(("Повод:", "Срок:", "Контекст:")))
+        self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
+        self.assertEqual(sections["call_list"]["columns"], ["#", "Клиент", "Тип / суть", "Контекст", "Статус"])
+
+    def test_step8ah1_uses_safe_persisted_transcript_name_when_metadata_name_missing(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")
+        artifact.interaction.text = "Как могу к вам обращаться? Нур-Султан. Нур-Султан, приятно познакомиться."
+        artifact.interaction.metadata_.pop("contact_name", None)
+        artifact.interaction.metadata_["contact_phone"] = "+77071523663"
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "А как могу к вам обращаться?"},
+            {"speaker": "B", "text": "Нур-Султан."},
+        ]
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"] = {"contact_name": None, "contact_phone": "+77071523663"}
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(
+            payload["call_list"][0]["client_call_reference"],
+            "Нур-Султан · +77071523663 · 4 мая 2026, 11:46",
+        )
+
+    def test_step8ah8b_rejects_unsafe_client_display_name(self) -> None:
+        """Step 8AH-8B: unsafe extracted names fall back to phone/date in unified references."""
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 06:37:00")
+        artifact.interaction.text = "Как могу к вам обращаться? Ужас. Менеджер продолжил звонок."
+        artifact.interaction.metadata_["contact_name"] = "Ужас"
+        artifact.interaction.metadata_["contact_phone"] = "+77774745093"
+        artifact.interaction.metadata_["segments"] = [
+            {"speaker": "A", "text": "Как могу к вам обращаться?"},
+            {"speaker": "B", "text": "Ужас."},
+        ]
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"] = {"contact_name": "Ужас", "contact_phone": "+77774745093"}
+        detail.update(_valid_report_evidence_detail())
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        expected = "+77774745093 · 4 мая 2026, 06:37"
+        rendered = json.dumps(payload, ensure_ascii=False)
+        self.assertEqual(payload["call_list"][0]["client_call_reference"], expected)
+        self.assertEqual(payload["call_list"][0]["client_name"], None)
+        self.assertNotIn("Ужас · +77774745093", rendered)
+
+    def test_step8ah8b_keeps_safe_client_display_names(self) -> None:
+        """Step 8AH-8B: valid persisted names continue to render in unified references."""
+        safe_names = ["Надежда Анатольевна", "Агирим", "Акмарал", "Екатерина", "Максим", "Нур-Султан"]
+        for name in safe_names:
+            with self.subTest(name=name):
+                artifact = _artifact(64.0, "basic", call_date="2026-05-04 11:46:00")
+                artifact.interaction.metadata_["contact_name"] = name
+                artifact.interaction.metadata_["contact_phone"] = "+77071523663"
+                detail = artifact.analysis.scores_detail
+                detail["classification"] = {
+                    "call_type": "sales_primary",
+                    "scenario_type": "cold_outbound",
+                    "analysis_eligibility": "eligible",
+                }
+                detail["call"] = {"contact_name": name, "contact_phone": "+77071523663"}
+                detail["follow_up"] = {"next_step_fixed": True, "next_step_text": "Отправить информацию."}
+
+                payload = build_manager_daily_payload(
+                    department_id=str(uuid4()),
+                    department_name="Отдел продаж",
+                    artifacts=[artifact],
+                    period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+                    filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+                    mode="report_from_ready_data_only",
+                    model_override=None,
+                )
+
+                self.assertEqual(
+                    payload["call_list"][0]["client_call_reference"],
+                    f"{name} · +77071523663 · 4 мая 2026, 11:46",
+                )
+
+    def test_step8ah3_call_tomorrow_uses_hotness_not_final_open_label(self) -> None:
+        def contact(name: str, text: str, follow_up: dict[str, Any], call_date: str) -> ReportArtifact:
+            artifact = _artifact(70.0, "basic", call_date=call_date)
+            artifact.interaction.text = text
+            artifact.interaction.metadata_["contact_name"] = name
+            detail = artifact.analysis.scores_detail
+            detail["call"] = {"contact_name": name, "contact_phone": "+77070000000"}
+            detail["classification"] = {
+                "call_type": "sales_primary",
+                "scenario_type": "cold_outbound",
+                "analysis_eligibility": "eligible",
+            }
+            detail["follow_up"] = follow_up
+            return artifact
+
+        agreed = contact(
+            "Счет клиент",
+            "Клиент согласился: выставляйте счет сегодня.",
+            {"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
+            "2026-05-04 12:00:00",
+        )
+        rescheduled = contact(
+            "Перенос клиент",
+            "Клиент попросил вернуться позже после просмотра.",
+            {"next_step_fixed": False, "reason_not_fixed": "Клиент попросил позже."},
+            "2026-05-04 09:00:00",
+        )
+        warm = contact(
+            "Теплый клиент",
+            "Клиент: скиньте информацию на WhatsApp, я посмотрю.",
+            {"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
+            "2026-05-04 08:00:00",
+        )
+        low = contact(
+            "Низкий клиент",
+            "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
+            {"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
+            "2026-05-04 07:00:00",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[low, warm, rescheduled, agreed],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        contacts = payload["call_tomorrow"]["contacts"]
+        self.assertEqual([item["priority_code"] for item in contacts], ["hot", "rescheduled", "warm", "low"])
+        self.assertEqual([item["priority_label"] for item in contacts], ["Горячий", "Перенос", "Тёплый", "Низкий"])
+        self.assertEqual([item["status"] for item in contacts], ["agreed", "rescheduled", "open", "open"])
+
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        priority_labels = [row[0] for row in sections["call_tomorrow"]["rows"]]
+        self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый", "⚪ Низкий"])
+        self.assertNotIn("Открытый", " ".join(priority_labels))
+
+    def test_step8ah8e_call_tomorrow_recommendations_are_signal_specific(self) -> None:
+        def contact(name: str, text: str, follow_up: dict[str, Any]) -> ReportArtifact:
+            artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
+            artifact.interaction.text = text
+            artifact.interaction.metadata_["contact_name"] = name
+            detail = artifact.analysis.scores_detail
+            detail["call"] = {"contact_name": name, "contact_phone": "+77070000000"}
+            detail["classification"] = {
+                "call_type": "sales_primary",
+                "scenario_type": "cold_outbound",
+                "analysis_eligibility": "eligible",
+            }
+            detail["follow_up"] = follow_up
+            return artifact
+
+        cases = [
+            (
+                "Счёт клиент",
+                "Клиент согласился: выставьте счёт, после получения согласуем оплату.",
+                {"next_step_fixed": True, "next_step_text": "Выставить счёт клиенту."},
+                "срок оплаты",
+                "Отправить счёт",
+                "Отправляю счёт",
+            ),
+            (
+                "Встреча клиент",
+                "Клиент готов на Zoom-демо продукта.",
+                {"next_step_fixed": True, "next_step_text": "Согласовать Zoom-демо и участников встречи."},
+                "участников и повестку",
+                "Подтвердить встречу",
+                "Подтверждаю встречу",
+            ),
+            (
+                "Материалы клиент",
+                "Клиент: скиньте КП в WhatsApp, я посмотрю.",
+                {"next_step_fixed": True, "next_step_text": "Отправить КП в WhatsApp."},
+                "материалы или предложение",
+                "Отправить материал",
+                "Отправил материалы",
+            ),
+            (
+                "Совет клиент",
+                "Клиент сказал, что подумает и обсудит предложение с коллегами.",
+                {"next_step_fixed": True, "next_step_text": "Клиент обсудит предложение с коллегами."},
+                "обсудить решение внутри",
+                "с кем клиент будет обсуждать",
+                "Удалось обсудить",
+            ),
+            (
+                "Доверие клиент",
+                "Клиент не берёт незнакомые звонки и просит сначала написать в WhatsApp.",
+                {"next_step_fixed": True, "next_step_text": "Написать клиенту в WhatsApp."},
+                "барьер доверия",
+                "безопасный канал",
+                "проверить контакт",
+            ),
+            (
+                "Слабый клиент",
+                "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
+                {"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
+                "явный коммерческий следующий шаг",
+                "снять контакт с активного follow-up",
+                "актуален ли ещё вопрос",
+            ),
+        ]
+        for name, text, follow_up, expected_context, expected_action, expected_phrase in cases:
+            with self.subTest(name=name):
+                payload = build_manager_daily_payload(
+                    department_id=str(uuid4()),
+                    department_name="Отдел продаж",
+                    artifacts=[contact(name, text, follow_up)],
+                    period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+                    filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+                    mode="report_from_ready_data_only",
+                    model_override=None,
+                )
+                sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+                rendered_context = sections["call_tomorrow"]["rows"][0][2]
+                rendered_recommendation = sections["call_tomorrow"]["rows"][0][3]
+
+                self.assertIn(expected_context, rendered_context)
+                self.assertIn(expected_action, rendered_recommendation)
+                self.assertIn(expected_phrase, rendered_recommendation)
+                self.assertNotIn("Понять текущий интерес клиента", rendered_recommendation)
+
+    def test_step8ah8e_call_tomorrow_uses_specific_summary_action_when_aligned(self) -> None:
+        artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию. "
+            "Клиент попросил выставить счёт. Менеджер договорился отправить счёт и уточнить оплату."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["call"] = {"contact_name": "Счёт клиент", "contact_phone": "+77070000000"}
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {"next_step_fixed": True, "next_step_text": "Выставить счёт клиенту."}
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["business_outcome"]["status"] = "agreement"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = (
+            "Клиент попросил счёт и готов обсудить срок оплаты после получения."
+        )
+        detail["report_evidence"]["call_report_summary"]["manager_next_action"] = (
+            "Отправить счёт и согласовать срок оплаты."
+        )
+        detail["report_evidence"]["call_report_summary"]["suggested_manager_phrase"] = (
+            "Добрый день. Отправляю счёт, как договорились. Когда удобно сверить получение?"
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        contact = payload["call_tomorrow"]["contacts"][0]
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(contact["action_source"], "call_report_summary.manager_next_action")
+        self.assertEqual(contact["context_source"], "call_report_summary.short_context")
+        self.assertEqual(contact["next_step"], "Отправить счёт и согласовать срок оплаты.")
+        self.assertIn("Отправить счёт и согласовать срок оплаты", sections["call_tomorrow"]["rows"][0][3])
+        self.assertIn("Отправляю счёт", sections["call_tomorrow"]["rows"][0][3])
+
     def test_manager_daily_invalid_report_evidence_uses_step8w_fallback(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.interaction.text = "Клиент: Я просто уточняю для руководителя, сама решение не принимаю."
@@ -1324,7 +1664,77 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("Дополнительные ситуации появятся", rendered["html"])
         self.assertIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["text"])
 
-    def test_manager_daily_payload_falls_back_to_breakdown_evidence_without_stage_match(self) -> None:
+    def test_step8ah11a_expanded_coaching_scope_is_explicit_for_non_report_day_blocks(self) -> None:
+        manager = _manager()
+        previous_day = _artifact_for_manager(
+            manager,
+            score_percent=38.0,
+            level="problematic",
+            call_date="2026-04-30 09:00:00",
+        )
+        report_day = _artifact_for_manager(
+            manager,
+            score_percent=82.0,
+            level="strong",
+            call_date="2026-05-04 10:00:00",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[previous_day, report_day],
+            period={"date_from": "2026-04-30", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[previous_day, report_day],
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(len(payload["call_list"]), 1)
+        self.assertEqual(payload["call_list"][0]["date_label"], "2026-05-04")
+        self.assertEqual(payload["data_scopes"]["situation_day"]["code"], "expanded_coaching_base")
+        self.assertEqual(payload["data_scopes"]["call_breakdown"]["code"], "expanded_coaching_base")
+        self.assertEqual(payload["data_scopes"]["challenge"]["code"], "rolling_window")
+
+        situation = sections["main_focus_for_tomorrow"]
+        self.assertEqual(situation["data_scope"], "expanded_coaching_base")
+        self.assertNotEqual(situation["label"], "СИТУАЦИЯ ДНЯ")
+        self.assertIn("расширенной", situation["scope_note"].lower())
+        self.assertEqual(situation["example_label"], "Пример из расширенной базы")
+        self.assertIn("РАСШИРЕННОЙ БАЗЫ", situation["situation_title"])
+
+        breakdown = sections["call_breakdown"]
+        self.assertEqual(breakdown["data_scope"], "expanded_coaching_base")
+        self.assertIn("РАСШИРЕННОЙ БАЗЫ", breakdown["label"])
+        self.assertIn("расширенной", breakdown["scope_note"].lower())
+
+        challenge = sections["challenge"]
+        self.assertEqual(challenge["data_scope"], "rolling_window")
+        self.assertNotIn("Сегодня", challenge["today_line"])
+        self.assertIn("За последние", challenge["today_line"])
+
+    def test_step8ah11a_report_day_scope_keeps_today_wording(self) -> None:
+        artifact = _artifact(call_date="2026-05-04 10:00:00")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[artifact],
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(payload["data_scopes"]["situation_day"]["code"], "report_day")
+        self.assertEqual(sections["main_focus_for_tomorrow"]["label"], "СИТУАЦИЯ ДНЯ")
+        self.assertIsNone(sections["main_focus_for_tomorrow"]["scope_note"])
+        self.assertEqual(sections["main_focus_for_tomorrow"]["example_label"], "Пример из сегодня")
+        self.assertTrue(sections["challenge"]["today_line"].startswith("Сегодня:"))
+
+    def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [
             {
@@ -1359,69 +1769,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
             model_override=None,
         )
 
-        quote = payload["situation_evidence_quote"]
-        self.assertIsNotNone(quote)
-        self.assertEqual(quote["source"], "call_breakdown_evidence_fragments")
-        self.assertIn("другому этапу", quote["client_text"])
-
-    def test_manager_daily_payload_falls_back_to_breakdown_transcript_excerpt(self) -> None:
-        artifact = _artifact(74.0, "basic")
-        artifact.interaction.text = (
-            "ТЕЛЕФОННЫЙ ЗВОНОК. Алло. Здравствуйте, это Эльмира, компания Договор-24. "
-            "Вы интересовались подписанием документов. Можем продолжить диалог?"
-        )
-        artifact.interaction.metadata_["segments"] = [
-            {"speaker": "A", "text": "ТЕЛЕФОННЫЙ ЗВОНОК"},
-            {"speaker": "A", "text": "Алло."},
-            {"speaker": "A", "text": "Здравствуйте, это Эльмира, компания Договор-24."},
-            {"speaker": "A", "text": "Вы интересовались подписанием документов."},
-            {"speaker": "A", "text": "Можем продолжить диалог?"},
-        ]
-        artifact.analysis.scores_detail["call"]["contact_name"] = "Жанна"
-        artifact.analysis.scores_detail["score_by_stage"] = [
-            {
-                "stage_code": "contact_start",
-                "stage_name": "Первичный контакт",
-                "stage_score": 3,
-                "max_stage_score": 4,
-                "criteria_results": [
-                    {
-                        "criterion_code": "cs_permission",
-                        "criterion_name": "Проверка уместности",
-                        "score": 1,
-                        "max_score": 2,
-                        "comment": "Проверка уместности разговора была, но без адаптации.",
-                    }
-                ],
-            }
-        ]
-        artifact.analysis.scores_detail["gaps"] = [
-            {
-                "criterion_code": "cs_permission",
-                "title": "Проверил уместность разговора / возможность говорить",
-                "comment": "Проверка уместности разговора была, но без адаптации.",
-            }
-        ]
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[artifact],
-            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
-            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-
         self.assertIsNone(payload["situation_evidence_quote"])
-        excerpt = payload["situation_dialogue_excerpt"]
-        self.assertIsNotNone(excerpt)
-        self.assertEqual(excerpt["source"], "call_breakdown_transcript_segments")
-        self.assertEqual(excerpt["client_name"], "Жанна")
-        self.assertEqual(excerpt["turns"][0]["speaker"], "unknown")
-        self.assertIn("Эльмира", excerpt["turns"][0]["text"])
-        self.assertNotIn("ТЕЛЕФОННЫЙ ЗВОНОК", " ".join(turn["text"] for turn in excerpt["turns"]))
-        self.assertIsNotNone(payload["situation_day_coaching_view"])
 
     def test_manager_daily_payload_dialogue_excerpt_is_partial_with_client_text_only(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -1829,8 +2177,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         self.assertFalse(payload["focus_of_week"]["is_placeholder"])
-        # call_outcomes_summary uses report-day (2026-03-25) only; one call from 2026-03-24 is excluded
-        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 1)
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 2)
         self.assertEqual(payload["focus_criterion_dynamics"]["focus_criterion_name"], "Фиксация следующего шага")
         self.assertIsNotNone(payload["focus_criterion_dynamics"]["current_period_value"])
         self.assertIn("Повторяемость", payload["key_problem_of_day"]["description"])
@@ -2009,8 +2356,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         analysis = SimpleNamespace(
             id=uuid4(),
-            instruction_version="analysis_v1",
-            score_total=0.0,
             scores_detail={
                 "classification": {
                     "call_type": "other",
@@ -2073,6 +2418,72 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertTrue(is_meaningful)
         self.assertIsNone(reason)
 
+    def test_classify_meaningful_call_excludes_short_source_only_contact(self) -> None:
+        """Meaningful recalibration: CDR-only partial contacts need stronger talk-time evidence."""
+        artifact = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=60,
+                text="",
+                metadata_={
+                    "source_status": "answered",
+                    "direction": "out",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+
+    def test_classify_meaningful_call_keeps_long_source_only_live_contact(self) -> None:
+        """Meaningful recalibration: long answered CDR-only calls stay in the manager-facing day list."""
+        artifact = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC,
+                text="",
+                metadata_={
+                    "source_status": "answered",
+                    "direction": "in",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+
+        self.assertTrue(is_meaningful)
+        self.assertIsNone(reason)
+
+    def test_classify_meaningful_call_excludes_non_answered_source_only_call(self) -> None:
+        """Meaningful recalibration: missed/local source rows remain raw-only, not meaningful."""
+        artifact = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC + 30,
+                text="",
+                metadata_={
+                    "source_status": "missed",
+                    "direction": "out",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        is_meaningful, reason = _classify_meaningful_call(artifact)
+
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+
     def test_build_selection_model_counters_sm2_too_short_counted(self) -> None:
         """SM-2: too_short_or_no_speech exclusion reason is populated from real classification."""
         short_no_speech = ReportArtifact(
@@ -2129,7 +2540,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
     def test_sm3_call_list_includes_meaningful_non_coaching_calls(self) -> None:
         """SM-3: call_list includes meaningful calls beyond coaching_core (wider than usable)."""
         coaching_artifact = _artifact(82.0, "strong")
-        # A support call with transcript — meaningful but not usable/coaching_core
         support_interaction = _interaction(manager_id=coaching_artifact.interaction.manager_id, text="Добрый день, помогите с договором")
         support_analysis = SimpleNamespace(
             id=uuid4(),
@@ -2162,6 +2572,871 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         call_list = payload["call_list"]
         self.assertEqual(len(call_list), 2, "call_list should include both coaching and support meaningful calls")
+
+    def test_unclassified_breakdown_counts_report_day_meaningful_calls_only(self) -> None:
+        """Step 8C: unclassified diagnostics use report-day meaningful calls, not coaching window."""
+        manager = _manager()
+        coaching_artifact = _artifact_for_manager(
+            manager,
+            score_percent=82.0,
+            level="strong",
+            call_date="2026-03-24 10:00:00",
+        )
+        report_day_ready = _artifact_for_manager(
+            manager,
+            score_percent=78.0,
+            level="basic",
+            call_date="2026-03-25 09:00:00",
+        )
+        report_day_missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=manager.id,
+                text="Клиент спрашивает про договор.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        previous_day_missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=manager.id,
+                text="Предыдущий день, тоже без анализа.",
+                call_date="2026-03-24 12:00:00",
+            ),
+            analysis=None,
+            manager=manager,
+            call_started_at=datetime.fromisoformat("2026-03-24T12:00:00").replace(tzinfo=UTC),
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[coaching_artifact, report_day_ready],
+            period={"date_from": "2026-03-24", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[coaching_artifact, report_day_ready, report_day_missing, previous_day_missing],
+        )
+
+        self.assertEqual(payload["unclassified_breakdown"]["total"], 1)
+        self.assertEqual(payload["unclassified_breakdown"]["by_reason"], {"no_analysis": 1})
+        self.assertEqual(payload["call_outcomes_summary"]["unclassified_count"], 1)
+
+    def test_call_list_adds_unclassified_reason_for_no_analysis(self) -> None:
+        """Step 8C: unclassified call_list rows explain why status is unavailable."""
+        ready = _artifact(82.0, "strong")
+        missing_analysis = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет готового анализа.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, missing_analysis])
+        unclassified = [row for row in rows if row["status"] is None]
+
+        self.assertEqual(len(unclassified), 1)
+        self.assertEqual(unclassified[0]["unclassified_reason_code"], "no_analysis")
+        self.assertEqual(unclassified[0]["unclassified_reason_label"], "Нет готового анализа")
+
+    def test_call_list_adds_cdr_only_reason_for_probable_live_without_audio(self) -> None:
+        """Step 8C: CDR-only probable live calls are separated from generic no_analysis."""
+        ready = _artifact(82.0, "strong")
+        interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        interaction.duration_sec = 180
+        interaction.metadata_["source_status"] = "answered"
+        interaction.metadata_["direction"] = "out"
+        cdr_only = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, cdr_only])
+        unclassified = [row for row in rows if row["status"] is None]
+
+        self.assertEqual(unclassified[0]["unclassified_reason_code"], "cdr_only_probable_live")
+        self.assertEqual(unclassified[0]["unclassified_reason_label"], "CDR-only: вероятный живой разговор")
+
+    def test_call_list_adds_analysis_not_reusable_reason(self) -> None:
+        """Step 8C: rejected persisted analysis is visible as diagnostic reason."""
+        ready = _artifact(82.0, "strong")
+        rejected = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        rejected.scores_detail = {"classification": {}, "follow_up": {}}
+        interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="Транскрипт есть, но persisted analysis старого формата.",
+            call_date="2026-03-25 12:00:00",
+        )
+        artifact = ReportArtifact(
+            interaction=interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+            original_analysis=rejected,
+            analysis_reuse_reason="missing_required_keys:score,score_by_stage",
+        )
+
+        rows = _build_meaningful_call_list(window_artifacts=[ready, artifact])
+        unclassified = [row for row in rows if row["status"] is None]
+
+        self.assertEqual(unclassified[0]["unclassified_reason_code"], "analysis_not_reusable")
+        self.assertEqual(unclassified[0]["unclassified_reason_label"], "Анализ не проходит reuse-проверку")
+
+    def test_unclassified_manager_buckets_are_added_to_call_list(self) -> None:
+        """Step 8G: diagnostic reasons get manager-facing status buckets."""
+        ready = _artifact(82.0, "strong")
+        no_transcript_interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        no_transcript_interaction.raw_ref = "onlinepbx://audio.wav"
+        no_transcript = ReportArtifact(
+            interaction=no_transcript_interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        no_analysis = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет анализа.",
+                call_date="2026-03-25 12:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+        )
+        rejected = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        non_reusable = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, но звонок не подходит для разбора.",
+                call_date="2026-03-25 13:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T13:00:00").replace(tzinfo=UTC),
+            original_analysis=rejected,
+            analysis_reuse_reason="semantic_empty:not_coachable_or_reportable",
+        )
+        failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        failed.is_failed = True
+        failed.fail_reason = "Criterion intro missing required fields: comment"
+        analysis_failed = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, analysis упал.",
+                call_date="2026-03-25 14:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T14:00:00").replace(tzinfo=UTC),
+            original_analysis=failed,
+            analysis_reuse_reason="contract_validation_error",
+        )
+        provider_failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        provider_failed.is_failed = True
+        provider_failed.fail_reason = "OpenAI 429 insufficient_quota"
+        provider_error = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, provider вернул ошибку.",
+                call_date="2026-03-25 15:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T15:00:00").replace(tzinfo=UTC),
+            original_analysis=provider_failed,
+            analysis_reuse_reason="provider_error",
+        )
+
+        rows = _build_meaningful_call_list(
+            window_artifacts=[ready, no_transcript, no_analysis, non_reusable, analysis_failed, provider_error]
+        )
+        buckets = {
+            row["unclassified_reason_code"]: row["unclassified_status_label"]
+            for row in rows
+            if row["status"] is None
+        }
+
+        self.assertEqual(buckets["no_transcript"], "Без транскрипта")
+        self.assertEqual(buckets["no_analysis"], "Без анализа")
+        self.assertEqual(buckets["semantic_empty"], "Не подходит для разбора")
+        self.assertEqual(buckets["analysis_failed_contract"], "Ошибка анализа")
+        self.assertEqual(buckets["analysis_failed_provider"], "Ошибка провайдера")
+
+    def test_day_summary_uses_without_breakdown_bucket_and_preserves_total(self) -> None:
+        """Step 8G: dashboard keeps arithmetic while replacing НЕ КЛАСС. with a breakdown."""
+        ready = _artifact(82.0, "strong")
+        missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет анализа.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        rejected = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        non_reusable = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, но звонок не подходит для разбора.",
+                call_date="2026-03-25 12:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+            original_analysis=rejected,
+            analysis_reuse_reason="not_coachable_or_reportable",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, missing, non_reusable],
+        )
+        report = build_report_render_model(payload)
+        day_summary = {section["id"]: section for section in report["sections"]}["day_summary"]
+        labels = [item["label"] for item in day_summary["outcome_cols"]]
+        values = [int(item["value"]) for item in day_summary["outcome_cols"]]
+
+        self.assertIn("БЕЗ РАЗБОРА", labels)
+        self.assertNotIn("НЕ КЛАСС.", labels)
+        self.assertIn("1 без анализа", day_summary["breakdown_note"])
+        self.assertIn("1 не подходит для разбора", day_summary["breakdown_note"])
+        self.assertEqual(sum(values[1:]), payload["selection_model"]["meaningful_calls_total"])
+
+    def test_call_list_render_status_matches_unclassified_bucket(self) -> None:
+        """Step 8G: СПИСОК ЗВОНКОВ ДНЯ shows concrete bucket, not generic gray status."""
+        ready = _artifact(82.0, "strong")
+        missing = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Есть транскрипт, но нет анализа.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, missing],
+        )
+        report = build_report_render_model(payload)
+        call_list = {section["id"]: section for section in report["sections"]}["call_list"]
+        missing_row = [row for row in call_list["rows"] if row[4] == "Без анализа"][0]
+
+        self.assertEqual(missing_row[3], "Нет готового анализа")
+
+    def test_manager_facing_completeness_gate_passes_with_non_coachable_bucket(self) -> None:
+        """Step 8I: non-coachable/semantic-empty calls may remain in a manager-facing report."""
+        ready = _artifact(82.0, "strong")
+        failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        failed.is_failed = True
+        failed.fail_reason = "not_coachable_or_reportable: semantic_empty"
+        non_coachable = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Расшифрованный звонок без sales-содержания.",
+                call_date="2026-03-25 11:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+            original_analysis=failed,
+            analysis_reuse_reason="semantic_empty:not_coachable_or_reportable",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, non_coachable],
+        )
+
+        self.assertEqual(payload["manager_facing_completeness"]["status"], "passed")
+        self.assertTrue(payload["manager_facing_completeness"]["manager_report_allowed"])
+        self.assertEqual(payload["call_outcomes_summary"]["unclassified_by_bucket"]["Не подходит для разбора"], 1)
+
+    def test_manager_facing_completeness_gate_fails_on_incomplete_and_technical_buckets(self) -> None:
+        """Step 8I: incomplete/technical buckets block ordinary manager-facing delivery."""
+        ready = _artifact(82.0, "strong")
+        no_transcript_interaction = _interaction(
+            manager_id=ready.interaction.manager_id,
+            text="",
+            call_date="2026-03-25 11:00:00",
+        )
+        no_transcript_interaction.raw_ref = "onlinepbx://audio.wav"
+        no_transcript = ReportArtifact(
+            interaction=no_transcript_interaction,
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T11:00:00").replace(tzinfo=UTC),
+        )
+        no_analysis = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, анализа нет.",
+                call_date="2026-03-25 12:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T12:00:00").replace(tzinfo=UTC),
+        )
+        failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+        failed.is_failed = True
+        failed.fail_reason = "Criterion greeting missing required fields: comment"
+        contract_error = ReportArtifact(
+            interaction=_interaction(
+                manager_id=ready.interaction.manager_id,
+                text="Транскрипт есть, contract validation упал.",
+                call_date="2026-03-25 13:00:00",
+            ),
+            analysis=None,
+            manager=ready.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T13:00:00").replace(tzinfo=UTC),
+            original_analysis=failed,
+            analysis_reuse_reason="contract_validation_error",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[ready],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[ready, no_transcript, no_analysis, contract_error],
+        )
+        gate = payload["manager_facing_completeness"]
+
+        self.assertEqual(gate["status"], "review_required")
+        self.assertFalse(gate["manager_report_allowed"])
+        self.assertEqual(gate["reason"], "incomplete_day_call_processing")
+        self.assertEqual(gate["blocking_counts"]["no_transcript"], 1)
+        self.assertEqual(gate["blocking_counts"]["no_analysis"], 1)
+        self.assertEqual(gate["blocking_counts"]["analysis_error"], 1)
+        self.assertEqual(gate["affected_calls_count"], 3)
+
+    def test_manager_daily_coaching_core_excludes_support_not_eligible_calls(self) -> None:
+        """Selection bugfix: support/not_eligible can be meaningful, but not coaching_core."""
+        coaching_artifact = _artifact(82.0, "strong")
+        support_interaction = _interaction(
+            manager_id=coaching_artifact.interaction.manager_id,
+            text="Клиент задаёт технический вопрос по документам.",
+        )
+        support_analysis = _analysis(50.0, "basic")
+        support_detail = dict(support_analysis.scores_detail)
+        support_detail["classification"] = {
+            "call_type": "support",
+            "scenario_type": "hot_incoming_contact",
+            "analysis_eligibility": "not_eligible",
+        }
+        support_analysis = SimpleNamespace(
+            id=uuid4(),
+            interaction_id=support_interaction.id,
+            instruction_version="analysis_v1",
+            score_total=50.0,
+            scores_detail=support_detail,
+            is_failed=False,
+            fail_reason=None,
+        )
+        support_artifact = ReportArtifact(
+            interaction=support_interaction,
+            analysis=support_analysis,
+            manager=coaching_artifact.manager,
+            call_started_at=datetime.fromisoformat("2026-03-25T09:00:00").replace(tzinfo=UTC),
+        )
+
+        missing, usable = CallsManualReportingOrchestrator._split_usable_artifacts(
+            [coaching_artifact, support_artifact],
+            require_coaching_core_eligible=True,
+        )
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=usable,
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[coaching_artifact, support_artifact],
+        )
+
+        self.assertEqual([item.interaction.id for item in usable], [coaching_artifact.interaction.id])
+        self.assertIn(f"coaching_core_not_eligible:{support_artifact.interaction.id}", missing)
+        self.assertEqual(len(payload["call_list"]), 2)
+        self.assertEqual(payload["selection_model"]["meaningful_calls_total"], 2)
+        self.assertEqual(payload["selection_model"]["included_in_report_total"], 1)
+        self.assertEqual(payload["selection_model"]["service_calls_total"], 1)
+
+    def test_manager_daily_source_filters_do_not_apply_hardcoded_duration_cutoff(self) -> None:
+        """Source scope keeps short calls unless explicit UI duration filters are set."""
+        short_record = CDRRecord(
+            call_id="short-call",
+            call_date="2026-03-25T10:00:00+00:00",
+            duration=45,
+            talk_duration=23,
+            direction="out",
+            status="answered",
+            extension="322",
+            phone="+77070000000",
+        )
+        missed_record = CDRRecord(
+            call_id="missed-call",
+            call_date="2026-03-25T11:00:00+00:00",
+            duration=15,
+            talk_duration=0,
+            direction="out",
+            status="missed",
+            extension="322",
+            phone="+77070000001",
+        )
+
+        self.assertTrue(
+            CallsManualReportingOrchestrator._record_matches_source_scope(
+                record=short_record,
+                source_extensions={"322"},
+            )
+        )
+        self.assertTrue(
+            CallsManualReportingOrchestrator._record_matches_source_filters(
+                record=short_record,
+                filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            )
+        )
+        self.assertFalse(
+            CallsManualReportingOrchestrator._record_matches_source_filters(
+                record=short_record,
+                filters=ReportRunFilters(
+                    date_from="2026-03-25",
+                    date_to="2026-03-25",
+                    min_duration_sec=180,
+                ),
+            )
+        )
+        self.assertTrue(
+            CallsManualReportingOrchestrator._record_matches_source_filters(
+                record=missed_record,
+                filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            )
+        )
+
+    def test_prepare_artifacts_skips_audio_build_for_source_only_calls(self) -> None:
+        """Source-only missed/no-recording calls stay in raw scope without STT failure."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="")
+        interaction.raw_ref = None
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "source_status": "missed",
+            "direction": "out",
+        }
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(
+            process=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+        )
+        orchestrator.analyzer = SimpleNamespace(
+            analyze_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("analyzer should not run"))
+        )
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("persist_analysis should not run"))
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(build_summary["missing_transcripts_before_build"], 1)
+        self.assertEqual(build_summary["transcripts_built"], 0)
+        self.assertEqual(build_summary["transcript_build_failed"], 0)
+        self.assertEqual(build_errors, [])
+
+    def test_prepare_artifacts_refreshes_onlinepbx_audio_url_before_stt(self) -> None:
+        """Step 8L: selected OnlinePBX calls refresh expired direct URLs before STT."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
+        interaction.source = "onlinepbx"
+        interaction.external_id = "98aa9872-5406-4eef-9c0b-30f44175b3a9"
+        interaction.raw_ref = "https://api2.onlinepbx.ru/calls-records/download/expired/rec.mp3"
+        interaction.error_message = "Failed to download audio artifact: status=404 KEY_IS_EXPIRED"
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "external_call_code": interaction.external_id,
+            "source_status": "answered",
+            "direction": "out",
+        }
+        commits: list[bool] = []
+        processed: list[str] = []
+
+        class FakeExtractor:
+            async def process(self, item):
+                processed.append(item.raw_ref)
+                item.text = "Расшифрованный звонок"
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.db = SimpleNamespace(commit=lambda: commits.append(True))
+        orchestrator.intake = SimpleNamespace(
+            get_recording_url=lambda call_id: f"https://fresh.example.test/{call_id}/rec.mp3"
+        )
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: _analysis(80.0, "strong"))
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda **kwargs: kwargs["result"]
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(processed, [f"https://fresh.example.test/{interaction.external_id}/rec.mp3"])
+        self.assertEqual(build_summary["transcripts_built"], 1)
+        self.assertEqual(build_summary["analyses_built"], 1)
+        self.assertEqual(build_errors, [])
+        self.assertGreaterEqual(len(commits), 1)
+        self.assertEqual(interaction.metadata_["source_audio_url_refresh"]["status"], "refreshed")
+        self.assertIsNone(interaction.error_message)
+
+    def test_prepare_artifacts_records_source_audio_unavailable_when_refresh_fails(self) -> None:
+        """Step 8L: refresh failure becomes an operator diagnostic and STT is skipped."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
+        interaction.source = "onlinepbx"
+        interaction.external_id = "98aa9872-5406-4eef-9c0b-30f44175b3a9"
+        interaction.raw_ref = None
+        interaction.error_message = None
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "external_call_code": interaction.external_id,
+            "source_status": "answered",
+            "direction": "out",
+        }
+
+        class FakeExtractor:
+            async def process(self, _item):
+                raise AssertionError("STT should not run when audio refresh fails")
+
+        def _raise_refresh_error(_call_id):
+            raise ASAError("OnlinePBX recording lookup failed: KEY_IS_EXPIRED")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.db = SimpleNamespace(commit=lambda: None)
+        orchestrator.intake = SimpleNamespace(get_recording_url=_raise_refresh_error)
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(build_summary["transcripts_built"], 0)
+        self.assertEqual(build_summary["transcript_build_failed"], 1)
+        self.assertTrue(any(item.startswith("source_audio_unavailable:") for item in build_errors))
+        self.assertEqual(
+            interaction.metadata_["source_audio_unavailable"]["reason"],
+            "recording_url_refresh_failed",
+        )
+        self.assertEqual(interaction.error_message, "source_audio_unavailable:recording_url_refresh_failed")
+
+    def test_provider_error_classifier_detects_openai_insufficient_quota(self) -> None:
+        error = (
+            "Whisper STT failed: Error code: 429 - {'error': {'message': 'You exceeded your current quota', "
+            "'type': 'insufficient_quota', 'code': 'insufficient_quota'}}"
+        )
+
+        classified = classify_provider_error(error)
+
+        self.assertEqual(classified.error_class, "quota_insufficient")
+
+    def test_provider_error_classifier_separates_non_quota_rate_limit(self) -> None:
+        classified = classify_provider_error("Error code: 429 - rate_limit_exceeded")
+
+        self.assertEqual(classified.error_class, "rate_limited")
+
+    def test_prepare_artifacts_stops_stt_after_quota_and_marks_remaining(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        first = _interaction(text="", call_date="2026-03-25 10:00:00")
+        second = _interaction(text="", call_date="2026-03-25 10:05:00")
+        for item in (first, second):
+            item.raw_ref = "https://example.test/audio.mp3"
+            item.metadata_ = {
+                **dict(item.metadata_ or {}),
+                "source_status": "answered",
+                "direction": "out",
+            }
+        calls: list[str] = []
+
+        class FakeExtractor:
+            async def process(self, interaction):
+                calls.append(str(interaction.id))
+                raise ASAError("Whisper STT failed: Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[first, second],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(build_summary["transcript_build_failed"], 1)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 1)
+        self.assertEqual(build_summary["quota_blocker"]["type"], "quota_blocked")
+        self.assertTrue(any(item.startswith("quota_blocked_current_run:") for item in build_errors))
+        self.assertEqual(second.metadata_["last_provider_failure"]["error_class"], "quota_insufficient")
+
+    def test_prepare_artifacts_stops_llm_after_quota_and_keeps_transcript(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        first = _interaction(text="Готовый транскрипт", call_date="2026-03-25 10:00:00")
+        second = _interaction(text="Второй транскрипт", call_date="2026-03-25 10:05:00")
+        calls: list[str] = []
+
+        def _raise_quota(interaction):
+            calls.append(str(interaction.id))
+            raise ASAError("LLM-1 request failed: Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(process=lambda *_args, **_kwargs: None)
+        orchestrator.analyzer = SimpleNamespace(analyze_call=_raise_quota)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[first, second],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first.text, "Готовый транскрипт")
+        self.assertEqual(build_summary["analysis_build_failed"], 1)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 1)
+        self.assertTrue(any(item.startswith("quota_blocked_current_run:") for item in build_errors))
+
+    def test_prepare_artifacts_persists_contract_validation_failure_as_analysis_error(self) -> None:
+        """Step 8N: contract validation failures are persisted and surfaced as Ошибка анализа."""
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="Готовый транскрипт", call_date="2026-03-25 10:00:00")
+        persisted: list[SimpleNamespace] = []
+
+        def _raise_contract_error(item):
+            raise LLMResponseError(
+                "Criterion cs_intro_and_company in stage contact_start is missing required fields: comment",
+                interaction_id=str(item.id),
+                raw_response='{"score_by_stage":[]}',
+            )
+
+        def _persist_failed_analysis(**kwargs):
+            failed = _analysis(0.0, "problematic", strengths=[], gaps=[], recommendations=[])
+            failed.is_failed = True
+            failed.fail_reason = kwargs.get("fail_reason") or str(kwargs["error"])
+            failed.scores_detail = None
+            persisted.append(failed)
+            return failed
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(process=lambda *_args, **_kwargs: None)
+        orchestrator.analyzer = SimpleNamespace(analyze_call=_raise_contract_error)
+        orchestrator.call_orchestrator = SimpleNamespace(
+            persist_analysis=lambda *_args, **_kwargs: None,
+            persist_failed_analysis=_persist_failed_analysis,
+        )
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        artifacts, build_summary, build_errors = asyncio.run(_run())
+        rows = _build_meaningful_call_list(window_artifacts=artifacts)
+
+        self.assertEqual(build_summary["analysis_build_failed"], 1)
+        self.assertEqual(len(persisted), 1)
+        self.assertTrue(persisted[0].fail_reason.startswith("analysis_failed_contract:"))
+        self.assertTrue(any("analysis_failed_contract:" in item for item in build_errors))
+        self.assertEqual(rows[0]["unclassified_reason_code"], "analysis_failed_contract")
+        self.assertEqual(rows[0]["unclassified_status_label"], "Ошибка анализа")
+
+    def test_prepare_artifacts_non_quota_error_does_not_trip_circuit_breaker(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        first = _interaction(text="", call_date="2026-03-25 10:00:00")
+        second = _interaction(text="", call_date="2026-03-25 10:05:00")
+        for item in (first, second):
+            item.raw_ref = "https://example.test/audio.mp3"
+            item.metadata_ = {
+                **dict(item.metadata_ or {}),
+                "source_status": "answered",
+                "direction": "out",
+            }
+        calls: list[str] = []
+
+        class FakeExtractor:
+            async def process(self, interaction):
+                calls.append(str(interaction.id))
+                raise ASAError("temporary provider timeout")
+
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = FakeExtractor()
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[first, second],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, _build_errors = asyncio.run(_run())
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(build_summary["transcript_build_failed"], 2)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 0)
+        self.assertIsNone(build_summary["quota_blocker"])
+
+    def test_prepare_artifacts_skips_previous_quota_failure_without_force(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
+        interaction.raw_ref = "https://example.test/audio.mp3"
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "source_status": "answered",
+            "direction": "out",
+            "last_provider_failure": {
+                "type": "quota_blocked",
+                "stage": "stt",
+                "error_class": "quota_insufficient",
+            },
+        }
+        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
+        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
+        orchestrator.extractor = SimpleNamespace(
+            process=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("quota-blocked call should not retry"))
+        )
+        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
+        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
+
+        async def _run():
+            return await CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+
+        import asyncio
+
+        _artifacts, build_summary, build_errors = asyncio.run(_run())
+
+        self.assertEqual(build_summary["quota_blocked_previous_run"], 1)
+        self.assertEqual(build_summary["skipped_due_to_quota"], 1)
+        self.assertTrue(any(item.startswith("quota_blocked_previous_run:") for item in build_errors))
+
+    def test_quota_blocker_response_has_no_secret_value(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        blocker = CallsManualReportingOrchestrator._build_quota_blocker(
+            stage="stt",
+            provider_context={
+                "provider": "openai",
+                "account_alias": "stt_main",
+                "model": "whisper-1",
+                "api_key_env": "OPENAI_API_KEY_STT_MAIN",
+            },
+            error_info=classify_provider_error("429 insufficient_quota"),
+        )
+
+        text = str(blocker)
+        self.assertIn("OPENAI_API_KEY_STT_MAIN", text)
+        self.assertNotIn("sk-", text)
+        self.assertNotIn("test-key", text)
 
     def test_sm3_call_list_excludes_beep_and_ivr(self) -> None:
         """SM-3: call_list does not include IVR/beep/no-speech calls."""
@@ -2287,6 +3562,44 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "rows inside the same status group must stay sorted by time",
         )
 
+    def test_step8ah8a_business_outcome_ignores_synthetic_recommendation_refusal_terms(self) -> None:
+        """Step 8AH-8A: synthetic coaching text must not flip an open follow-up to refusal."""
+        artifact = _artifact(70.0, "basic", call_date="2026-05-04 12:09:44")
+        artifact.interaction.text = (
+            "Менеджер: хотел предложить вам посотрудничать по ЭДО. "
+            "Клиент: Вы можете отправить предложение, я вам написала почту. "
+            "Менеджер: Хорошо, сейчас посмотрю."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["summary"] = {
+            "outcome_code": "callback_planned",
+            "outcome_text": "Клиент согласился на получение предложения по электронной почте.",
+            "next_step_text": "Клиенту будет отправлено предложение по электронной почте.",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_type": "email_follow_up",
+            "next_step_text": "Отправить предложение по электронной почте.",
+            "due_date_text": "2026-05-05",
+            "reason_not_fixed": None,
+        }
+        detail["recommendations"] = [
+            {
+                "recommendation": "Сначала уточнить процесс клиента.",
+                "why_it_matters": "Это может привести к тому, что предложение будет неактуально для клиента.",
+            }
+        ]
+
+        outcome = BusinessOutcomeResolver().resolve(artifact)
+
+        self.assertEqual(outcome.final_status, "open")
+        self.assertEqual(outcome.reason_code, "business_outcome_open_follow_up")
+
     def test_sm3_build_meaningful_call_list_direct(self) -> None:
         """SM-3: _build_meaningful_call_list excludes non-meaningful, includes support with transcript."""
         normal = _artifact(82.0, "strong")
@@ -2312,576 +3625,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertNotIn("too_short_or_no_speech", [r.get("call_type") for r in result])
 
-    # --- Step 8R business outcome resolver tests ---
-
-    def _business_artifact(
-        self,
-        *,
-        text: str,
-        call_type: str = "sales_primary",
-        eligibility: str = "eligible",
-        follow_up: dict[str, Any] | None = None,
-        is_failed: bool = False,
-        fail_reason: str | None = None,
-        duration_sec: int = 120,
-    ) -> ReportArtifact:
-        interaction = _interaction(text=text, call_date="2026-05-04 10:00:00")
-        interaction.duration_sec = duration_sec
-        analysis = SimpleNamespace(
-            id=uuid4(),
-            instruction_version="analysis_v1",
-            score_total=0.0,
-            scores_detail={
-                "classification": {
-                    "call_type": call_type,
-                    "analysis_eligibility": eligibility,
-                },
-                "call": {"contact_phone": "+77070000000"},
-                "follow_up": follow_up or {},
-                "score": {"checklist_score": {"score_percent": 0.0}},
-                "score_by_stage": [],
-                "strengths": [],
-                "gaps": [],
-                "recommendations": [],
-            },
-            is_failed=is_failed,
-            fail_reason=fail_reason,
-        )
-        return ReportArtifact(
-            interaction=interaction,
-            analysis=None if is_failed else analysis,
-            manager=_manager(),
-            call_started_at=datetime.fromisoformat("2026-05-04T10:00:00").replace(tzinfo=UTC),
-            original_analysis=analysis,
-            analysis_reuse_reason=fail_reason if is_failed else "reusable",
-        )
-
-    def test_step8r_non_coachable_service_resolves_to_tech_service(self) -> None:
-        artifact = self._business_artifact(
-            text=(
-                "Клиент не может подписать договор через QR. Менеджер объясняет NCALayer, "
-                "модуль Договор 24 и помогает продолжить подписание."
-            ),
-            call_type="support",
-            eligibility="not_eligible",
-            is_failed=True,
-            fail_reason="not_coachable_or_reportable",
-        )
-
-        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
-
-        self.assertEqual(row["status"], "tech_service")
-        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_tech_service")
-        self.assertIsNone(row["unclassified_status_label"])
-
-    def test_step8r_non_coachable_sales_refusal_beats_not_suitable(self) -> None:
-        artifact = self._business_artifact(
-            text=(
-                "Звонила по заявке. Клиент сказал: передумали, мы уже другой нашли. "
-                "Если вопросы будут, обратитесь."
-            ),
-            eligibility="not_eligible",
-            is_failed=True,
-            fail_reason="not_coachable_or_reportable",
-        )
-
-        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
-
-        self.assertEqual(row["status"], "refusal")
-        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_refusal")
-
-    def test_step8r_refusal_beats_open_and_agreement(self) -> None:
-        open_artifact = self._business_artifact(
-            text=(
-                "Клиент смотрел демо-доступ. Пока нет необходимости, вопросы отсутствуют, "
-                "обращусь если понадобится."
-            ),
-            follow_up={"next_step_fixed": False, "reason_not_fixed": "Клиент не проявил интереса к следующему шагу."},
-        )
-        agreed_artifact = self._business_artifact(
-            text="Все устраивает на данный момент, другие системы не рассматриваем.",
-            follow_up={"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
-        )
-
-        rows = _build_meaningful_call_list(window_artifacts=[open_artifact, agreed_artifact])
-
-        self.assertEqual([row["status"] for row in rows], ["refusal", "refusal"])
-
-    def test_step8r_commercial_next_step_resolves_to_agreed(self) -> None:
-        artifact = self._business_artifact(
-            text="Клиент согласился: да, выставляйте счет, счет на WhatsApp сейчас отправлю.",
-            follow_up={"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
-        )
-
-        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
-
-        self.assertEqual(row["status"], "agreed")
-        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_agreed_commercial_step")
-
-    def test_step8r_weak_follow_up_stays_open_not_agreed(self) -> None:
-        artifact = self._business_artifact(
-            text="Скиньте информацию на WhatsApp, я посмотрю, если все нормально, может созвонимся.",
-            follow_up={"next_step_fixed": True, "next_step_text": "Информация отправлена на WhatsApp."},
-        )
-
-        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
-
-        self.assertEqual(row["status"], "open")
-        self.assertEqual(row["business_outcome_reason_code"], "business_outcome_open_follow_up")
-
-    def test_step8r_contract_error_remains_blocking(self) -> None:
-        artifact = self._business_artifact(
-            text="Клиент просит выставить счет.",
-            is_failed=True,
-            fail_reason="analysis_failed_contract: missing required fields",
-        )
-
-        row = _build_meaningful_call_list(window_artifacts=[artifact])[0]
-
-        self.assertIsNone(row["status"])
-        self.assertEqual(row["unclassified_reason_code"], "analysis_failed_contract")
-        self.assertEqual(row["unclassified_status_label"], "Ошибка анализа")
-
-    # --- Step 8U post-summary block alignment tests ---
-
-    def _set_business_contact(
-        self,
-        artifact: ReportArtifact,
-        *,
-        client: str,
-        call_date: str,
-        score_percent: float = 50.0,
-    ) -> ReportArtifact:
-        artifact.call_started_at = datetime.fromisoformat(call_date.replace(" ", "T")).replace(tzinfo=UTC)
-        artifact.interaction.metadata_["call_date"] = call_date
-        artifact.interaction.metadata_["contact_phone"] = client
-        detail = artifact.original_analysis.scores_detail if artifact.original_analysis is not None else artifact.analysis.scores_detail
-        detail["call"] = {"contact_phone": client}
-        detail["score"] = {"checklist_score": {"score_percent": score_percent}}
-        if artifact.analysis is not None:
-            artifact.analysis.score_total = score_percent
-        if artifact.original_analysis is not None:
-            artifact.original_analysis.score_total = score_percent
-        return artifact
-
-    def test_step8u_call_tomorrow_uses_final_call_list_outcomes(self) -> None:
-        agreed = self._set_business_contact(
-            self._business_artifact(
-                text="Клиент согласился: выставляйте счет сегодня.",
-                follow_up={"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
-            ),
-            client="Счет клиент",
-            call_date="2026-05-04 09:00:00",
-        )
-        open_call = self._set_business_contact(
-            self._business_artifact(
-                text="Скиньте информацию на WhatsApp, я посмотрю и потом дам обратную связь.",
-                follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
-            ),
-            client="Открытый клиент",
-            call_date="2026-05-04 10:00:00",
-        )
-        refusal = self._set_business_contact(
-            self._business_artifact(
-                text="Не актуально, пока нет потребности, ничего не рассматриваем.",
-                follow_up={"next_step_fixed": False, "reason_not_fixed": "Клиент отказался."},
-            ),
-            client="Отказ клиент",
-            call_date="2026-05-04 11:00:00",
-        )
-        service = self._set_business_contact(
-            self._business_artifact(
-                text="Клиент просит помочь с QR и NCALayer, документ не открывается.",
-                call_type="support",
-                eligibility="not_eligible",
-            ),
-            client="Сервис клиент",
-            call_date="2026-05-04 12:00:00",
-        )
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[agreed, open_call, refusal, service],
-            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-
-        statuses_by_client = {
-            item["client_label"]: item["status"]
-            for item in payload["call_tomorrow"]["contacts"]
-        }
-        self.assertEqual(statuses_by_client, {"Счет клиент": "agreed", "Открытый клиент": "open"})
-        self.assertEqual(payload["call_outcomes_summary"]["refusal_count"], 1)
-        self.assertEqual(payload["call_outcomes_summary"]["tech_service_count"], 1)
-
-        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
-        tomorrow_rows = sections["call_tomorrow"]["rows"]
-        row_by_client = {row[1].split(" · ", 1)[0]: row for row in tomorrow_rows}
-        self.assertEqual(row_by_client["Счет клиент"][0], "🔴 Горячий")
-        self.assertEqual(row_by_client["Открытый клиент"][0], "🟠 Тёплый")
-        self.assertNotIn("Отказ клиент", row_by_client)
-        self.assertNotIn("Сервис клиент", row_by_client)
-
-    def test_step8ah3_call_tomorrow_uses_hotness_not_final_open_label(self) -> None:
-        agreed = self._set_business_contact(
-            self._business_artifact(
-                text="Клиент согласился на следующий шаг: выставляйте счет.",
-                follow_up={"next_step_fixed": True, "next_step_text": "Выставить счет клиенту."},
-            ),
-            client="Счет клиент",
-            call_date="2026-05-04 12:00:00",
-        )
-        rescheduled = self._set_business_contact(
-            self._business_artifact(
-                text="Клиент попросил вернуться позже после просмотра.",
-                follow_up={"next_step_fixed": False, "reason_not_fixed": "Клиент попросил позже."},
-            ),
-            client="Перенос клиент",
-            call_date="2026-05-04 09:00:00",
-        )
-        warm = self._set_business_contact(
-            self._business_artifact(
-                text="Клиент: скиньте информацию на WhatsApp, я посмотрю.",
-                follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
-            ),
-            client="Теплый клиент",
-            call_date="2026-05-04 08:00:00",
-        )
-        low = self._set_business_contact(
-            self._business_artifact(
-                text="Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
-                follow_up={"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
-            ),
-            client="Низкий клиент",
-            call_date="2026-05-04 07:00:00",
-        )
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[low, warm, rescheduled, agreed],
-            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-        contacts = payload["call_tomorrow"]["contacts"]
-        self.assertEqual([item["priority_code"] for item in contacts], ["hot", "rescheduled", "warm", "low"])
-        self.assertEqual([item["priority_label"] for item in contacts], ["Горячий", "Перенос", "Тёплый", "Низкий"])
-        self.assertEqual([item["status"] for item in contacts], ["agreed", "rescheduled", "open", "open"])
-
-        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
-        priority_labels = [row[0] for row in sections["call_tomorrow"]["rows"]]
-        self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый", "⚪ Низкий"])
-        self.assertNotIn("Открытый", " ".join(priority_labels))
-
-    def test_step8ah8e_call_tomorrow_recommendations_are_signal_specific(self) -> None:
-        def contact(name: str, text: str, follow_up: dict[str, Any]) -> ReportArtifact:
-            artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
-            artifact.interaction.text = text
-            artifact.interaction.metadata_["contact_name"] = name
-            detail = artifact.analysis.scores_detail
-            detail["call"] = {"contact_name": name, "contact_phone": "+77070000000"}
-            detail["classification"] = {
-                "call_type": "sales_primary",
-                "scenario_type": "cold_outbound",
-                "analysis_eligibility": "eligible",
-            }
-            detail["follow_up"] = follow_up
-            return artifact
-
-        cases = [
-            (
-                "Счёт клиент",
-                "Клиент согласился: выставьте счёт, после получения согласуем оплату.",
-                {"next_step_fixed": True, "next_step_text": "Выставить счёт клиенту."},
-                "срок оплаты",
-                "Отправить счёт",
-                "Отправляю счёт",
-            ),
-            (
-                "Встреча клиент",
-                "Клиент готов на Zoom-демо продукта.",
-                {"next_step_fixed": True, "next_step_text": "Согласовать Zoom-демо и участников встречи."},
-                "участников и повестку",
-                "Подтвердить встречу",
-                "Подтверждаю встречу",
-            ),
-            (
-                "Материалы клиент",
-                "Клиент: скиньте КП в WhatsApp, я посмотрю.",
-                {"next_step_fixed": True, "next_step_text": "Отправить КП в WhatsApp."},
-                "материалы или предложение",
-                "Отправить материал",
-                "Отправил материалы",
-            ),
-            (
-                "Совет клиент",
-                "Клиент сказал, что подумает и обсудит предложение с коллегами.",
-                {"next_step_fixed": True, "next_step_text": "Клиент обсудит предложение с коллегами."},
-                "обсудить решение внутри",
-                "с кем клиент будет обсуждать",
-                "Удалось обсудить",
-            ),
-            (
-                "Доверие клиент",
-                "Клиент не берёт незнакомые звонки и просит сначала написать в WhatsApp.",
-                {"next_step_fixed": True, "next_step_text": "Написать клиенту в WhatsApp."},
-                "барьер доверия",
-                "безопасный канал",
-                "проверить контакт",
-            ),
-            (
-                "Слабый клиент",
-                "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
-                {"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
-                "явный коммерческий следующий шаг",
-                "снять контакт с активного follow-up",
-                "актуален ли ещё вопрос",
-            ),
-        ]
-        for name, text, follow_up, expected_context, expected_action, expected_phrase in cases:
-            with self.subTest(name=name):
-                payload = build_manager_daily_payload(
-                    department_id=str(uuid4()),
-                    department_name="Отдел продаж",
-                    artifacts=[contact(name, text, follow_up)],
-                    period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-                    filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-                    mode="report_from_ready_data_only",
-                    model_override=None,
-                )
-                sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
-                rendered_context = sections["call_tomorrow"]["rows"][0][2]
-                rendered_recommendation = sections["call_tomorrow"]["rows"][0][3]
-
-                self.assertIn(expected_context, rendered_context)
-                self.assertIn(expected_action, rendered_recommendation)
-                self.assertIn(expected_phrase, rendered_recommendation)
-                self.assertNotIn("Понять текущий интерес клиента", rendered_recommendation)
-
-    def test_step8ah8e_call_tomorrow_uses_specific_summary_action_when_aligned(self) -> None:
-        artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
-        artifact.interaction.text = (
-            "Клиент: Скиньте в WhatsApp, я посмотрю. "
-            "Менеджер: Хорошо, отправлю информацию. "
-            "Клиент попросил выставить счёт. Менеджер договорился отправить счёт и уточнить оплату."
-        )
-        detail = artifact.analysis.scores_detail
-        detail["call"] = {"contact_name": "Счёт клиент", "contact_phone": "+77070000000"}
-        detail["classification"] = {
-            "call_type": "sales_primary",
-            "scenario_type": "cold_outbound",
-            "analysis_eligibility": "eligible",
-        }
-        detail["follow_up"] = {"next_step_fixed": True, "next_step_text": "Выставить счёт клиенту."}
-        detail.update(_valid_report_evidence_detail())
-        detail["report_evidence"]["business_outcome"]["status"] = "agreement"
-        detail["report_evidence"]["call_report_summary"]["short_context"] = (
-            "Клиент попросил счёт и готов обсудить срок оплаты после получения."
-        )
-        detail["report_evidence"]["call_report_summary"]["manager_next_action"] = (
-            "Отправить счёт и согласовать срок оплаты."
-        )
-        detail["report_evidence"]["call_report_summary"]["suggested_manager_phrase"] = (
-            "Добрый день. Отправляю счёт, как договорились. Когда удобно сверить получение?"
-        )
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[artifact],
-            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-        contact = payload["call_tomorrow"]["contacts"][0]
-        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
-
-        self.assertEqual(contact["action_source"], "call_report_summary.manager_next_action")
-        self.assertEqual(contact["context_source"], "call_report_summary.short_context")
-        self.assertEqual(contact["next_step"], "Отправить счёт и согласовать срок оплаты.")
-        self.assertIn("Отправить счёт и согласовать срок оплаты", sections["call_tomorrow"]["rows"][0][3])
-        self.assertIn("Отправляю счёт", sections["call_tomorrow"]["rows"][0][3])
-
-    def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:
-        artifact = self._business_artifact(
-            text=(
-                "Менеджер уточняет процесс клиента. Клиент говорит: "
-                "Скиньте в WhatsApp, я посмотрю. Менеджер отвечает: Хорошо, отправлю информацию."
-            ),
-            follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
-        )
-        artifact.call_started_at = datetime.fromisoformat("2026-05-04T11:46:00").replace(tzinfo=UTC)
-        artifact.interaction.metadata_["call_date"] = "2026-05-04 11:46:00"
-        artifact.interaction.metadata_["contact_name"] = "Нур-Султан"
-        artifact.interaction.metadata_["contact_phone"] = "+77071523663"
-        detail = artifact.original_analysis.scores_detail
-        detail["call"] = {"contact_name": "Нур-Султан", "contact_phone": "+77071523663"}
-        detail["score"] = {"checklist_score": {"score_percent": 65.0}}
-        detail.update(_valid_report_evidence_detail())
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[artifact],
-            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-        report = build_report_render_model(payload)
-        sections = {section["id"]: section for section in report["sections"]}
-        expected = "Нур-Султан · +77071523663 · 4 мая 2026, 11:46"
-
-        self.assertEqual(payload["call_list"][0]["client_call_reference"], expected)
-        self.assertEqual(payload["call_breakdown"]["client_call_reference"], expected)
-        self.assertEqual(payload["voice_of_customer"]["situations"][0]["client_call_reference"], expected)
-        self.assertEqual(payload["call_tomorrow"]["contacts"][0]["client_call_reference"], expected)
-        self.assertEqual(sections["call_list"]["rows"][0][1], expected)
-        self.assertEqual(sections["call_tomorrow"]["rows"][0][1], expected)
-        self.assertEqual(sections["call_breakdown"]["summary_line"], expected)
-        self.assertIn(expected, sections["voice_of_customer"]["rows"][0][0])
-        self.assertNotIn("+77071523663 · +77071523663", expected)
-
-        self.assertEqual(sections["call_breakdown"]["rows"][0][0], "Момент 1")
-        self.assertEqual(len(sections["call_breakdown"]["rows"][0]), 4)
-        self.assertTrue(sections["call_tomorrow"]["rows"][0][2].startswith(("Повод:", "Срок:", "Контекст:")))
-        self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
-        self.assertEqual(sections["call_list"]["columns"], ["#", "Клиент", "Тип / суть", "Контекст", "Статус"])
-
-    def test_step8ah1_uses_safe_persisted_transcript_name_when_metadata_name_missing(self) -> None:
-        artifact = self._business_artifact(
-            text="Как могу к вам обращаться? Нур-Султан. Нур-Султан, приятно познакомиться.",
-            follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
-        )
-        artifact.call_started_at = datetime.fromisoformat("2026-05-04T11:46:00").replace(tzinfo=UTC)
-        artifact.interaction.metadata_["call_date"] = "2026-05-04 11:46:00"
-        artifact.interaction.metadata_.pop("contact_name", None)
-        artifact.interaction.metadata_["contact_phone"] = "+77071523663"
-        artifact.interaction.metadata_["segments"] = [
-            {"speaker": "A", "text": "А как могу к вам обращаться?"},
-            {"speaker": "B", "text": "Нур-Султан."},
-        ]
-        detail = artifact.original_analysis.scores_detail
-        detail["call"] = {"contact_name": None, "contact_phone": "+77071523663"}
-        detail["score"] = {"checklist_score": {"score_percent": 65.0}}
-        detail.update(_valid_report_evidence_detail())
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[artifact],
-            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-
-        self.assertEqual(
-            payload["call_list"][0]["client_call_reference"],
-            "Нур-Султан · +77071523663 · 4 мая 2026, 11:46",
-        )
-
-    def test_step8u_coaching_examples_skip_service_when_sales_like_exists(self) -> None:
-        service = self._set_business_contact(
-            self._business_artifact(
-                text="Клиент просит помочь с QR и NCALayer, документ не открывается.",
-                call_type="support",
-                eligibility="not_eligible",
-            ),
-            client="Сервис клиент",
-            call_date="2026-05-04 11:52:00",
-            score_percent=10.0,
-        )
-        sales = self._set_business_contact(
-            self._business_artifact(
-                text="Скиньте информацию на WhatsApp, я посмотрю и вернусь с обратной связью.",
-                follow_up={"next_step_fixed": True, "next_step_text": "Отправить информацию на WhatsApp."},
-            ),
-            client="Открытый клиент",
-            call_date="2026-05-04 12:09:00",
-            score_percent=80.0,
-        )
-        for artifact, quote in (
-            (service, "Не могу открыть документ через QR."),
-            (sales, "Скиньте информацию на WhatsApp, я посмотрю."),
-        ):
-            detail = artifact.original_analysis.scores_detail if artifact.original_analysis is not None else artifact.analysis.scores_detail
-            detail["gaps"] = [
-                {
-                    "title": "Фиксация следующего шага",
-                    "comment": "Следующий шаг не закреплен достаточно конкретно.",
-                    "criterion_code": "ns_next_step",
-                }
-            ]
-            detail["score_by_stage"] = [
-                {
-                    "stage_code": "completion_next_step",
-                    "stage_name": "Завершение и следующий шаг",
-                    "stage_score": 0,
-                    "max_stage_score": 2,
-                    "criteria_results": [
-                        {
-                            "criterion_code": "ns_next_step",
-                            "criterion_name": "Фиксация следующего шага",
-                            "score": 0,
-                            "max_score": 1,
-                            "comment": "Нужно точнее закреплять продолжение.",
-                        }
-                    ],
-                }
-            ]
-            detail["evidence_fragments"] = [
-                {
-                    "criterion_code": "ns_next_step",
-                    "fragment_type": "missed_opportunity",
-                    "client_text": quote,
-                    "manager_text": "Отправлю информацию, дальше уточним интерес.",
-                }
-            ]
-
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[service, sales],
-            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
-            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-        )
-
-        self.assertEqual(payload["call_breakdown"]["client_label"], "Открытый клиент")
-        self.assertEqual(payload["situation_evidence_quote"]["client_label"], "Открытый клиент")
-        self.assertEqual([row["status"] for row in payload["call_list"]], ["open", "tech_service"])
-
     # --- SM-4 acceptance tests ---
-
-    def _make_payload_with_readiness(self, outcome: str, *, window_artifacts=None) -> dict[str, Any]:
-        """Build a payload with readiness meta for selection_note tests."""
-        coaching = _artifact(82.0, "strong")
-        payload = build_manager_daily_payload(
-            department_id=str(uuid4()),
-            department_name="Отдел продаж",
-            artifacts=[coaching],
-            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
-            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
-            mode="report_from_ready_data_only",
-            model_override=None,
-            window_artifacts=window_artifacts,
-        )
-        payload.setdefault("meta", {})["readiness"] = {
-            "readiness_outcome": outcome,
-            "window_days_used": 1,
-            "relevant_calls": 3,
-            "ready_analyses": 1,
-            "total_group_calls": 3,
-        }
-        return payload
 
     def test_sm4_full_report_note_uses_selection_model_funnel(self) -> None:
         """SM-4: full_report selection_note uses selection_model counters for honest funnel."""
@@ -2913,13 +3657,10 @@ class ManualReportingPayloadTests(unittest.TestCase):
         report = build_report_render_model(payload)
         sections = {s["id"]: s for s in report["sections"]}
         note = sections["report_header"].get("selection_note") or ""
-        # Funnel from selection_model: 2 raw, 1 meaningful (beep excluded), 1 in report
         self.assertIn("Найдено в телефонии: 2", note)
         self.assertIn("содержательных: 1", note)
         self.assertIn("вошло в разбор: 1", note)
-        # No "Сигнальный отчёт" for full_report
         self.assertNotIn("Сигнальный отчёт", note)
-        # No raw internal codes exposed
         self.assertNotIn("too_short_or_no_speech", note)
         self.assertNotIn("ivr_or_autoanswer", note)
 
@@ -2980,7 +3721,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
         report = build_report_render_model(payload)
         sections = {s["id"]: s for s in report["sections"]}
         note = sections["report_header"].get("selection_note") or ""
-        # Manager-facing label, not raw code
         self.assertIn("нет готового анализа", note)
         self.assertNotIn("not_enough_analysis", note)
         self.assertIn("Не вошло:", note)
@@ -4344,111 +5084,6 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(build_summary["missing_analyses_before_build"], 1)
         self.assertEqual(build_errors, [])
 
-    def test_prepare_artifacts_refreshes_onlinepbx_audio_url_before_stt(self) -> None:
-        """Step 8L: selected OnlinePBX calls refresh expired direct URLs before STT."""
-        orchestrator = object.__new__(CallsManualReportingOrchestrator)
-        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
-        interaction.source = "onlinepbx"
-        interaction.external_id = "98aa9872-5406-4eef-9c0b-30f44175b3a9"
-        interaction.raw_ref = "https://api2.onlinepbx.ru/calls-records/download/expired/rec.mp3"
-        interaction.error_message = "Failed to download audio artifact: status=404 KEY_IS_EXPIRED"
-        interaction.metadata_ = {
-            **dict(interaction.metadata_ or {}),
-            "external_call_code": interaction.external_id,
-            "source_status": "answered",
-            "direction": "out",
-        }
-        commits: list[bool] = []
-        processed: list[str] = []
-
-        class FakeExtractor:
-            async def process(self, item):
-                processed.append(item.raw_ref)
-                item.text = "Расшифрованный звонок"
-
-        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
-        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
-        orchestrator.db = SimpleNamespace(commit=lambda: commits.append(True))
-        orchestrator.intake = SimpleNamespace(
-            get_recording_url=lambda call_id: f"https://fresh.example.test/{call_id}/rec.mp3"
-        )
-        orchestrator.extractor = FakeExtractor()
-        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: _analysis(80.0, "strong"))
-        orchestrator.call_orchestrator = SimpleNamespace(
-            persist_analysis=lambda **kwargs: kwargs["result"]
-        )
-
-        async def _run():
-            return await CallsManualReportingOrchestrator._prepare_artifacts(
-                orchestrator,
-                interactions=[interaction],
-                preset=resolve_report_preset("manager_daily"),
-                mode="build_missing_and_report",
-            )
-
-        import asyncio
-
-        _artifacts, build_summary, build_errors = asyncio.run(_run())
-
-        self.assertEqual(processed, [f"https://fresh.example.test/{interaction.external_id}/rec.mp3"])
-        self.assertEqual(build_summary["transcripts_built"], 1)
-        self.assertEqual(build_summary["analyses_built"], 1)
-        self.assertEqual(build_errors, [])
-        self.assertGreaterEqual(len(commits), 1)
-        self.assertEqual(interaction.metadata_["source_audio_url_refresh"]["status"], "refreshed")
-        self.assertIsNone(interaction.error_message)
-
-    def test_prepare_artifacts_records_source_audio_unavailable_when_refresh_fails(self) -> None:
-        """Step 8L: refresh failure becomes an operator diagnostic and STT is skipped."""
-        orchestrator = object.__new__(CallsManualReportingOrchestrator)
-        interaction = _interaction(text="", call_date="2026-03-25 10:00:00")
-        interaction.source = "onlinepbx"
-        interaction.external_id = "98aa9872-5406-4eef-9c0b-30f44175b3a9"
-        interaction.raw_ref = None
-        interaction.error_message = None
-        interaction.metadata_ = {
-            **dict(interaction.metadata_ or {}),
-            "external_call_code": interaction.external_id,
-            "source_status": "answered",
-            "direction": "out",
-        }
-
-        class FakeExtractor:
-            async def process(self, _item):
-                raise AssertionError("STT should not run when audio refresh fails")
-
-        def _raise_refresh_error(_call_id):
-            raise ASAError("OnlinePBX recording lookup failed: KEY_IS_EXPIRED")
-
-        setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **kwargs: {})
-        setattr(orchestrator, "_load_managers_by_id", lambda **kwargs: {})
-        orchestrator.db = SimpleNamespace(commit=lambda: None)
-        orchestrator.intake = SimpleNamespace(get_recording_url=_raise_refresh_error)
-        orchestrator.extractor = FakeExtractor()
-        orchestrator.analyzer = SimpleNamespace(analyze_call=lambda *_args, **_kwargs: None)
-        orchestrator.call_orchestrator = SimpleNamespace(persist_analysis=lambda *_args, **_kwargs: None)
-
-        async def _run():
-            return await CallsManualReportingOrchestrator._prepare_artifacts(
-                orchestrator,
-                interactions=[interaction],
-                preset=resolve_report_preset("manager_daily"),
-                mode="build_missing_and_report",
-            )
-
-        import asyncio
-
-        _artifacts, build_summary, build_errors = asyncio.run(_run())
-
-        self.assertEqual(build_summary["transcripts_built"], 0)
-        self.assertEqual(build_summary["transcript_build_failed"], 1)
-        self.assertTrue(any(item.startswith("source_audio_unavailable:") for item in build_errors))
-        self.assertEqual(
-            interaction.metadata_["source_audio_unavailable"]["reason"],
-            "recording_url_refresh_failed",
-        )
-        self.assertEqual(interaction.error_message, "source_audio_unavailable:recording_url_refresh_failed")
-
     def test_prepare_artifacts_rejects_semantically_empty_analysis_for_reuse_and_rebuilds_it(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
         interaction = _interaction()
@@ -5278,6 +5913,10 @@ class ScheduledReviewableReportingServiceTests(unittest.TestCase):
 @unittest.skipIf(TestClient is None, "FastAPI test client is not available")
 class ScheduledReviewableReportingApiTests(unittest.TestCase):
     def test_report_ui_context_includes_scheduled_reviewable_reporting(self) -> None:
+        @contextmanager
+        def fake_db():
+            yield SimpleNamespace()
+
         class FakeScheduleService:
             def __init__(self, db) -> None:
                 self.db = db
@@ -5476,73 +6115,6 @@ class ScheduledReviewableReportingApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "deleted")
         self.assertTrue(payload["schedule"]["deleted"])
-
-
-class InsightQuoteNormalizerTests(unittest.TestCase):
-    """Unit tests for _normalize_insight_quote — covers all input variants from the LLM contract."""
-
-    def setUp(self):
-        from app.agents.calls.orchestrator import _normalize_insight_quote
-        self._normalize = _normalize_insight_quote
-
-    def test_none_returns_none(self):
-        self.assertIsNone(self._normalize(None))
-
-    def test_empty_string_returns_none(self):
-        self.assertIsNone(self._normalize(""))
-
-    def test_whitespace_only_string_returns_none(self):
-        self.assertIsNone(self._normalize("   "))
-
-    def test_plain_string_is_returned_stripped(self):
-        self.assertEqual(self._normalize("  Добрый день.  "), "Добрый день.")
-
-    def test_list_of_dicts_with_text_joined(self):
-        evidence = [
-            {"start_ms": 0, "end_ms": 26520, "text": "Меня Тимур зовут с компании Договор24."},
-            {"start_ms": 26520, "end_ms": 30000, "text": "Вы оставляли заявку."},
-        ]
-        result = self._normalize(evidence)
-        self.assertEqual(result, "Меня Тимур зовут с компании Договор24. Вы оставляли заявку.")
-
-    def test_list_of_dicts_single_item(self):
-        evidence = [{"start_ms": 0, "end_ms": 5000, "text": "Алло, это Договор24."}]
-        self.assertEqual(self._normalize(evidence), "Алло, это Договор24.")
-
-    def test_empty_list_returns_none(self):
-        self.assertIsNone(self._normalize([]))
-
-    def test_list_of_dicts_all_empty_text_returns_none(self):
-        self.assertIsNone(self._normalize([{"start_ms": 0, "end_ms": 0, "text": ""}, {"start_ms": 0, "end_ms": 0, "text": "   "}]))
-
-    def test_list_of_strings_joined(self):
-        self.assertEqual(self._normalize(["Первое.", "Второе."]), "Первое. Второе.")
-
-    def test_list_of_strings_skips_empty(self):
-        self.assertEqual(self._normalize(["Первое.", "", "Второе."]), "Первое. Второе.")
-
-    def test_dict_with_text_field(self):
-        self.assertEqual(self._normalize({"text": "Клиент отказал."}), "Клиент отказал.")
-
-    def test_dict_without_text_fallback_to_json(self):
-        result = self._normalize({"key": "value"})
-        self.assertIsNotNone(result)
-        self.assertIn("key", result)
-
-    def test_result_is_always_str_or_none(self):
-        cases = [
-            None, "", "text", [], ["a"], [{"text": "x"}], {}, {"text": "y"}, 42, 3.14,
-        ]
-        for case in cases:
-            result = self._normalize(case)
-            self.assertIsInstance(result, (str, type(None)), f"Expected str|None for input {case!r}, got {type(result)}")
-
-    def test_no_can_adapt_type_dict_error(self):
-        """The exact value that triggered the production crash must produce a plain str."""
-        crash_value = [{"start_ms": 0, "end_ms": 26520, "text": "Меня Тимур зовут с компании Договор24."}]
-        result = self._normalize(crash_value)
-        self.assertIsInstance(result, str)
-        self.assertIn("Тимур", result)
 
 
 if __name__ == "__main__":

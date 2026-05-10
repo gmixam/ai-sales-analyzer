@@ -1664,6 +1664,76 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("Дополнительные ситуации появятся", rendered["html"])
         self.assertIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["text"])
 
+    def test_step8ah11a_expanded_coaching_scope_is_explicit_for_non_report_day_blocks(self) -> None:
+        manager = _manager()
+        previous_day = _artifact_for_manager(
+            manager,
+            score_percent=38.0,
+            level="problematic",
+            call_date="2026-04-30 09:00:00",
+        )
+        report_day = _artifact_for_manager(
+            manager,
+            score_percent=82.0,
+            level="strong",
+            call_date="2026-05-04 10:00:00",
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[previous_day, report_day],
+            period={"date_from": "2026-04-30", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[previous_day, report_day],
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(len(payload["call_list"]), 1)
+        self.assertEqual(payload["call_list"][0]["date_label"], "2026-05-04")
+        self.assertEqual(payload["data_scopes"]["situation_day"]["code"], "expanded_coaching_base")
+        self.assertEqual(payload["data_scopes"]["call_breakdown"]["code"], "expanded_coaching_base")
+        self.assertEqual(payload["data_scopes"]["challenge"]["code"], "rolling_window")
+
+        situation = sections["main_focus_for_tomorrow"]
+        self.assertEqual(situation["data_scope"], "expanded_coaching_base")
+        self.assertNotEqual(situation["label"], "СИТУАЦИЯ ДНЯ")
+        self.assertIn("расширенной", situation["scope_note"].lower())
+        self.assertEqual(situation["example_label"], "Пример из расширенной базы")
+        self.assertIn("РАСШИРЕННОЙ БАЗЫ", situation["situation_title"])
+
+        breakdown = sections["call_breakdown"]
+        self.assertEqual(breakdown["data_scope"], "expanded_coaching_base")
+        self.assertIn("РАСШИРЕННОЙ БАЗЫ", breakdown["label"])
+        self.assertIn("расширенной", breakdown["scope_note"].lower())
+
+        challenge = sections["challenge"]
+        self.assertEqual(challenge["data_scope"], "rolling_window")
+        self.assertNotIn("Сегодня", challenge["today_line"])
+        self.assertIn("За последние", challenge["today_line"])
+
+    def test_step8ah11a_report_day_scope_keeps_today_wording(self) -> None:
+        artifact = _artifact(call_date="2026-05-04 10:00:00")
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[artifact],
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(payload["data_scopes"]["situation_day"]["code"], "report_day")
+        self.assertEqual(sections["main_focus_for_tomorrow"]["label"], "СИТУАЦИЯ ДНЯ")
+        self.assertIsNone(sections["main_focus_for_tomorrow"]["scope_note"])
+        self.assertEqual(sections["main_focus_for_tomorrow"]["example_label"], "Пример из сегодня")
+        self.assertTrue(sections["challenge"]["today_line"].startswith("Сегодня:"))
+
     def test_manager_daily_payload_keeps_situation_evidence_quote_null_without_stage_match(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["score_by_stage"] = [

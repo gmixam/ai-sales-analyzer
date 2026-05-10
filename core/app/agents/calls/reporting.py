@@ -57,6 +57,9 @@ MANAGER_DAILY_SIGNAL_REPORT_MIN_READY_ANALYSES = 2
 MANAGER_DAILY_FALLBACK_RECOMMENDATION_TITLE = "Пока недостаточно рекомендаций"
 MANAGER_DAILY_FALLBACK_KEY_PROBLEM_TITLE = "Требует уточнения"
 MANAGER_DAILY_FALLBACK_KEY_PROBLEM_DESCRIPTION = "Недостаточно данных для выделения одной главной проблемы."
+MANAGER_DAILY_DATA_SCOPE_REPORT_DAY = "report_day"
+MANAGER_DAILY_DATA_SCOPE_EXPANDED_COACHING_BASE = "expanded_coaching_base"
+MANAGER_DAILY_DATA_SCOPE_ROLLING_WINDOW = "rolling_window"
 REPORTING_REQUIRED_ANALYSIS_KEYS = (
     "classification",
     "score",
@@ -4317,6 +4320,13 @@ def build_manager_daily_payload(
         artifacts=artifacts,
         call_list_by_interaction_id=call_list_by_interaction_id,
     )
+    report_bounds = _report_day_bounds(period=period, filters=filters)
+    artifact_by_id = _artifact_by_interaction_id(coaching_content_artifacts)
+    coaching_data_scope = _coaching_base_data_scope(
+        artifacts=coaching_content_artifacts,
+        period=period,
+        filters=filters,
+    )
     manager_facing_completeness = _build_manager_facing_completeness_gate(call_list=call_list)
     worked_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="strengths")
     improve_items = _aggregate_finding_items(artifacts=coaching_content_artifacts, key="gaps")
@@ -4386,6 +4396,7 @@ def build_manager_daily_payload(
         situation_evidence_quote = _build_situation_evidence_quote_from_call_breakdown(
             artifacts=coaching_content_artifacts,
             call_breakdown=call_breakdown,
+            score_by_stage=score_by_stage,
         )
     situation_dialogue_excerpt = (report_evidence_situation or {}).get("dialogue_excerpt")
     if situation_dialogue_excerpt is None:
@@ -4416,6 +4427,27 @@ def build_manager_daily_payload(
             focus_stage_deep_dive=focus_stage_deep_dive,
             focus_stage_recommendation=focus_stage_recommendation,
         )
+    situation_data_scope = _reference_call_scope(
+        refs=[
+            situation_evidence_quote,
+            situation_dialogue_excerpt,
+            dict(key_problem.get("call_example") or {}),
+        ],
+        artifact_by_id=artifact_by_id,
+        report_bounds=report_bounds,
+        fallback=coaching_data_scope,
+    )
+    call_breakdown_data_scope = _block_call_scope(
+        block=call_breakdown,
+        artifact_by_id=artifact_by_id,
+        report_bounds=report_bounds,
+        fallback=coaching_data_scope,
+    )
+    key_problem = _with_data_scope(key_problem, coaching_data_scope)
+    call_breakdown = _with_data_scope(call_breakdown, call_breakdown_data_scope)
+    additional_situations = _with_data_scope(additional_situations, coaching_data_scope)
+    if situation_day_coaching_view is not None:
+        situation_day_coaching_view = _with_data_scope(situation_day_coaching_view, situation_data_scope)
     for artifact in artifacts:
         bucket = _score_bucket(artifact.analysis)
         level_counts[bucket] += 1
@@ -4502,6 +4534,14 @@ def build_manager_daily_payload(
         "focus_stage_deep_dive": focus_stage_deep_dive,
         "focus_stage_recommendation": focus_stage_recommendation,
         "situation_day_coaching_view": situation_day_coaching_view,
+        "coaching_data_scope": coaching_data_scope,
+        "data_scopes": {
+            "coaching_base": coaching_data_scope,
+            "situation_day": situation_data_scope,
+            "call_breakdown": call_breakdown_data_scope,
+            "additional_situations": coaching_data_scope,
+            "challenge": coaching_data_scope,
+        },
         "report_evidence_diagnostics": report_evidence_diagnostics,
         "call_report_summary_diagnostics": call_report_summary_diagnostics,
         "call_list": call_list,
@@ -4546,6 +4586,147 @@ def _filter_artifacts_by_period(*, artifacts: list[ReportArtifact], period: dict
         if date_from <= call_day <= date_to:
             selected.append(artifact)
     return selected
+
+
+def _date_bounds_from_period(period: dict[str, str] | None) -> tuple[date, date] | None:
+    """Return date bounds from a normalized period dict, if parseable."""
+    if not period:
+        return None
+    try:
+        date_from = date.fromisoformat(str(period.get("date_from") or ""))
+        raw_to = str(period.get("date_to") or period.get("date_from") or "")
+        date_to = date.fromisoformat(raw_to)
+    except (TypeError, ValueError):
+        return None
+    return date_from, date_to
+
+
+def _report_day_bounds(*, period: dict[str, str], filters: ReportRunFilters) -> tuple[date, date] | None:
+    """Return the operational report-day bounds, preferring explicit user filters."""
+    filtered_period = {
+        "date_from": filters.date_from or period.get("date_from") or "",
+        "date_to": filters.date_to or filters.date_from or period.get("date_to") or period.get("date_from") or "",
+    }
+    return _date_bounds_from_period(filtered_period)
+
+
+def _artifact_call_day(artifact: ReportArtifact) -> date | None:
+    if artifact.call_started_at is not None:
+        return artifact.call_started_at.date()
+    metadata = dict(getattr(artifact.interaction, "metadata_", None) or {})
+    parsed = parse_call_started_at(metadata)
+    return parsed.date() if parsed is not None else None
+
+
+def _date_in_bounds(value: date | None, bounds: tuple[date, date] | None) -> bool:
+    if value is None or bounds is None:
+        return True
+    return bounds[0] <= value <= bounds[1]
+
+
+def _coaching_base_data_scope(
+    *,
+    artifacts: list[ReportArtifact],
+    period: dict[str, str],
+    filters: ReportRunFilters,
+) -> dict[str, Any]:
+    """Describe whether coaching blocks use report-day or expanded data."""
+    report_bounds = _report_day_bounds(period=period, filters=filters)
+    effective_bounds = _date_bounds_from_period(period)
+    call_days = sorted({day for artifact in artifacts if (day := _artifact_call_day(artifact)) is not None})
+    base_from = call_days[0].isoformat() if call_days else None
+    base_to = call_days[-1].isoformat() if call_days else None
+    report_from = report_bounds[0].isoformat() if report_bounds else None
+    report_to = report_bounds[1].isoformat() if report_bounds else None
+    has_non_report_day = any(not _date_in_bounds(day, report_bounds) for day in call_days)
+
+    code = MANAGER_DAILY_DATA_SCOPE_REPORT_DAY
+    if has_non_report_day:
+        if effective_bounds and report_bounds and effective_bounds != report_bounds:
+            code = MANAGER_DAILY_DATA_SCOPE_ROLLING_WINDOW
+        else:
+            code = MANAGER_DAILY_DATA_SCOPE_EXPANDED_COACHING_BASE
+
+    return {
+        "code": code,
+        "report_date_from": report_from,
+        "report_date_to": report_to,
+        "base_date_from": base_from or report_from,
+        "base_date_to": base_to or report_to,
+        "base_days_count": len(call_days) or (1 if report_from else 0),
+        "base_calls_count": len(artifacts),
+    }
+
+
+def _call_data_scope(
+    *,
+    artifact: ReportArtifact | None,
+    report_bounds: tuple[date, date] | None,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    """Return data scope for a block tied to one selected call."""
+    if artifact is None:
+        return dict(fallback)
+    day = _artifact_call_day(artifact)
+    code = (
+        MANAGER_DAILY_DATA_SCOPE_REPORT_DAY
+        if _date_in_bounds(day, report_bounds)
+        else MANAGER_DAILY_DATA_SCOPE_EXPANDED_COACHING_BASE
+    )
+    result = dict(fallback)
+    result.update(
+        {
+            "code": code,
+            "selected_call_date": day.isoformat() if day else None,
+            "selected_call_id": str(artifact.interaction.id),
+        }
+    )
+    return result
+
+
+def _artifact_by_interaction_id(artifacts: list[ReportArtifact]) -> dict[str, ReportArtifact]:
+    return {str(artifact.interaction.id): artifact for artifact in artifacts}
+
+
+def _block_call_scope(
+    *,
+    block: dict[str, Any] | None,
+    artifact_by_id: dict[str, ReportArtifact],
+    report_bounds: tuple[date, date] | None,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    """Return data scope for a payload block that may carry a selected call_id."""
+    if not block:
+        return dict(fallback)
+    call_id = str(block.get("call_id") or "").strip()
+    artifact = artifact_by_id.get(call_id) if call_id else None
+    return _call_data_scope(artifact=artifact, report_bounds=report_bounds, fallback=fallback)
+
+
+def _reference_call_scope(
+    *,
+    refs: list[dict[str, Any] | None],
+    artifact_by_id: dict[str, ReportArtifact],
+    report_bounds: tuple[date, date] | None,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    """Return data scope from the first reference with a known call_id."""
+    for ref in refs:
+        if not ref:
+            continue
+        call_id = str(ref.get("call_id") or "").strip()
+        artifact = artifact_by_id.get(call_id) if call_id else None
+        if artifact is not None:
+            return _call_data_scope(artifact=artifact, report_bounds=report_bounds, fallback=fallback)
+    return dict(fallback)
+
+
+def _with_data_scope(block: dict[str, Any] | None, scope: dict[str, Any]) -> dict[str, Any]:
+    """Attach manager_daily block data scope without mutating caller-owned dicts."""
+    result = dict(block or {})
+    result["data_scope"] = str(scope.get("code") or MANAGER_DAILY_DATA_SCOPE_REPORT_DAY)
+    result["data_scope_details"] = dict(scope)
+    return result
 
 
 def build_rop_weekly_payload(
@@ -5314,6 +5495,7 @@ def _build_situation_evidence_quote_from_call_breakdown(
     *,
     artifacts: list[ReportArtifact],
     call_breakdown: dict[str, Any] | None,
+    score_by_stage: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Fallback Situation Day quote to the selected sales-like breakdown call evidence."""
     artifact = _find_call_breakdown_artifact(artifacts=artifacts, call_breakdown=call_breakdown)
@@ -5321,6 +5503,8 @@ def _build_situation_evidence_quote_from_call_breakdown(
         return None
 
     detail = dict(artifact.analysis.scores_detail or {})
+    priority_stage = next((item for item in score_by_stage or [] if item.get("is_priority")), None)
+    priority_stage_code = str((priority_stage or {}).get("stage_code") or "").strip()
     for frag in detail.get("evidence_fragments") or []:
         client_text = str(frag.get("client_text") or "").strip()
         if len(client_text) < 5:
@@ -5332,12 +5516,15 @@ def _build_situation_evidence_quote_from_call_breakdown(
             or ""
         ).strip() or None
         criterion_code = str(frag.get("criterion_code") or "").strip()
+        stage_code = _stage_code_from_criterion_code(criterion_code)
+        if priority_stage_code and stage_code != priority_stage_code:
+            continue
         return {
             **_artifact_call_reference(artifact),
             "client_text": client_text,
             "manager_text": manager_text,
             "criterion_code": criterion_code,
-            "stage_code": _stage_code_from_criterion_code(criterion_code),
+            "stage_code": stage_code,
             "source": "call_breakdown_evidence_fragments",
         }
     return None

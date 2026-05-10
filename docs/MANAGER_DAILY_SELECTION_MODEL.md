@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day.
 
 ---
 
@@ -230,6 +230,24 @@ Reason: Step 8AH-8A showed that a valid open follow-up (`Вы можете от�
 - ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ
 
 Readiness decision (`full_report` / `signal_report` / `skip_accumulate`) также считается по `coaching_core`.
+
+### Data scope for coaching blocks
+
+Since Step 8AH-11A, coaching blocks carry a deterministic `data_scope` assigned by the reporting layer:
+
+| `data_scope` | Meaning | Rendering rule |
+|---|---|---|
+| `report_day` | The selected call/metric comes only from report-day calls. | Existing day wording is allowed: `Ситуация дня`, `Сегодня`. |
+| `expanded_coaching_base` | A selected coaching call comes from the expanded coaching base rather than the report-day call list. | The block must explain that the call was selected from the expanded coaching base and must not present it as a plain report-day situation. |
+| `rolling_window` | The metric/pattern is aggregated from a rolling-window coaching base. | The renderer must use `За последние N рабочих дней` / rolling-window wording and must not say `Сегодня` for that metric. |
+
+Applied blocks:
+- `СИТУАЦИЯ ДНЯ` / coaching situation;
+- `РАЗБОР ЗВОНКА`;
+- `ЧЕЛЛЕНДЖ НА ЗАВТРА`;
+- `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`, when applicable.
+
+`data_scope` is not an LLM2 output and does not change `report_evidence`. It is derived from selected persisted artifacts, report-day filters, and the effective coaching window. `ИТОГ ДНЯ`, `ДЕНЬГИ НА СТОЛЕ`, and `СПИСОК ЗВОНКОВ ДНЯ` remain report-day only, and rolling/expanded calls must not enter the call list.
 
 Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `report_evidence v1` when it exists and passes `validate_report_evidence(scores_detail, transcript)`:
 - `СИТУАЦИЯ ДНЯ` prefers usable `report_evidence.situation_candidates`;

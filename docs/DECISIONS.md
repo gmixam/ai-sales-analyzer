@@ -662,3 +662,12 @@
 - **Reason:** Step 8 human-review work showed that PDF-visible issues can tempt point fixes, but reliable `manager_daily` quality requires reusable mechanisms and regression checks before final artifacts are regenerated.
 - **Scope:** Project operating rule for report correction and review handoff. This does not change analyzer prompts, report contracts, validators, renderers, selection logic, outcome resolution, delivery semantics, or existing generated artifacts by itself.
 - **Date:** 2026-05-10
+
+## ADR-066: `manager_daily` coaching blocks render explicit data scope
+- **Decision:** Coaching blocks in `manager_daily` must carry deterministic `data_scope` metadata with one of `report_day`, `expanded_coaching_base`, or `rolling_window`.
+- **Decision:** If a selected Situation Day / Call Breakdown example is not from the report-day call list, the renderer must not present it as a plain `СИТУАЦИЯ ДНЯ` / today example. It must label the block or note that the call was selected from the expanded coaching base.
+- **Decision:** If a Challenge or coaching metric is aggregated from expanded/rolling data, the renderer must not say `Сегодня` for that metric. It must use expanded-base or `За последние N рабочих дней` wording.
+- **Decision:** `ИТОГ ДНЯ`, `ДЕНЬГИ НА СТОЛЕ`, and `СПИСОК ЗВОНКОВ ДНЯ` remain report-day only. Expanded/rolling calls must not enter the call list.
+- **Reason:** PM review after Step 8AH-10B found that a non-report-day coaching example and expanded-base counts could be read as if they happened today. The report needs to stay useful for coaching without misleading the manager about the data scope.
+- **Scope:** Reporting payload/render semantics and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring, report-day totals, selection inclusion/exclusion, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-10

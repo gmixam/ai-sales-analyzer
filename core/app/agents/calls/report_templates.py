@@ -308,6 +308,60 @@ def _build_render_model(*, payload: dict[str, Any], template: ReportTemplate) ->
     return _build_rop_weekly_model(payload=payload, template=template)
 
 
+def _data_scope_code(scope: dict[str, Any] | None) -> str:
+    code = str((scope or {}).get("code") or (scope or {}).get("data_scope") or "report_day").strip()
+    return code if code in {"report_day", "expanded_coaching_base", "rolling_window"} else "report_day"
+
+
+def _data_scope_day_word(days: int) -> str:
+    return "рабочий день" if days == 1 else "рабочих дня" if days in {2, 3, 4} else "рабочих дней"
+
+
+def _data_scope_period_label(scope: dict[str, Any] | None) -> str:
+    scope = dict(scope or {})
+    start = str(scope.get("base_date_from") or "").strip()
+    end = str(scope.get("base_date_to") or "").strip()
+    if not start or not end or start == end:
+        return ""
+    start_label = _format_deadline_human(start) or start
+    end_label = _format_deadline_human(end) or end
+    return f": с {start_label} по {end_label}"
+
+
+def _data_scope_note(scope: dict[str, Any] | None, *, selected_call: bool = False) -> str | None:
+    """Return manager-facing note for report-day / expanded / rolling coaching scopes."""
+    scope = dict(scope or {})
+    code = _data_scope_code(scope)
+    if code == "report_day":
+        return None
+    days = int(scope.get("base_days_count") or 0)
+    if days <= 0:
+        days = 1
+    period_label = _data_scope_period_label(scope)
+    if code == "rolling_window":
+        prefix = "Звонок выбран из rolling-window базы" if selected_call else "Паттерн посчитан по rolling-window базе"
+        return f"{prefix} за {days} {_data_scope_day_word(days)}{period_label}."
+    prefix = "Звонок выбран из расширенной коучинговой базы" if selected_call else "Паттерн посчитан по расширенной коучинговой базе"
+    return f"{prefix}{period_label}."
+
+
+def _data_scope_section_label(*, default_label: str, scope: dict[str, Any] | None, kind: str) -> str:
+    code = _data_scope_code(scope)
+    if code == "report_day":
+        return default_label
+    if kind == "situation":
+        return "КОУЧИНГОВАЯ СИТУАЦИЯ"
+    if kind == "call_breakdown":
+        return "РАЗБОР ЗВОНКА ИЗ РАСШИРЕННОЙ БАЗЫ"
+    if kind == "additional":
+        return "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ ИЗ РАСШИРЕННОЙ БАЗЫ"
+    return default_label
+
+
+def _data_scope_example_label(scope: dict[str, Any] | None) -> str:
+    return "Пример из сегодня" if _data_scope_code(scope) == "report_day" else "Пример из расширенной базы"
+
+
 def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTemplate) -> dict[str, Any]:
     header = payload["header"]
     kpi = payload["kpi_overview"]
@@ -322,6 +376,13 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     call_outcomes = dict(payload.get("call_outcomes_summary") or {})
     call_list_raw = list(payload.get("call_list") or [])
     selection_note = _build_manager_daily_selection_note(payload=payload, total_calls=total_calls)
+    readiness = dict((payload.get("meta") or {}).get("readiness") or {})
+    data_scopes = dict(payload.get("data_scopes") or {})
+    coaching_scope = dict(data_scopes.get("coaching_base") or payload.get("coaching_data_scope") or {})
+    situation_scope = dict(data_scopes.get("situation_day") or coaching_scope)
+    call_breakdown_scope = dict(data_scopes.get("call_breakdown") or coaching_scope)
+    additional_scope = dict(data_scopes.get("additional_situations") or coaching_scope)
+    challenge_scope = dict(data_scopes.get("challenge") or coaching_scope)
     warm_pipeline = _build_warm_pipeline_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
     money_on_table = _build_money_on_table_data(
         call_list_raw=call_list_raw,
@@ -339,6 +400,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         score_by_stage=list(payload.get("score_by_stage") or []),
         key_problem=dict(payload.get("key_problem_of_day") or {}),
         total_calls=total_calls,
+        data_scope=challenge_scope,
     )
     _unclassified_count = int(call_outcomes.get("unclassified_count") or 0)
     outcome_cols = [
@@ -352,7 +414,6 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     if _unclassified_count > 0:
         outcome_cols.append({"label": "БЕЗ РАЗБОРА", "value": _unclassified_count, "tone": "neutral"})
     unclassified_note = _build_unclassified_summary_note(call_outcomes)
-    readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     _readiness_outcome = readiness.get("readiness_outcome") or ""
     _report_type_label = (
         "Сигнальный отчёт" if _readiness_outcome == "signal_report"
@@ -388,7 +449,19 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "main_focus_for_tomorrow"),
-            "situation_title": _build_situation_title(payload.get("score_by_stage") or []),
+            "label": _data_scope_section_label(
+                default_label=_section_meta(template, "main_focus_for_tomorrow").get("label", "СИТУАЦИЯ ДНЯ"),
+                scope=situation_scope,
+                kind="situation",
+            ),
+            "data_scope": _data_scope_code(situation_scope),
+            "data_scope_details": situation_scope,
+            "scope_note": _data_scope_note(situation_scope, selected_call=True),
+            "example_label": _data_scope_example_label(situation_scope),
+            "situation_title": _build_situation_title(
+                payload.get("score_by_stage") or [],
+                data_scope=situation_scope,
+            ),
             "body": _build_situation_body(
                 key_problem=dict(payload.get("key_problem_of_day") or {}),
                 score_by_stage=list(payload.get("score_by_stage") or []),
@@ -412,9 +485,15 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "call_breakdown"),
+            "label": _data_scope_section_label(
+                default_label=_section_meta(template, "call_breakdown").get("label", "РАЗБОР ЗВОНКА"),
+                scope=call_breakdown_scope,
+                kind="call_breakdown",
+            ),
             **_build_v5_call_breakdown_section(
                 section=dict(payload.get("call_breakdown") or {}),
                 recommendations=list(payload.get("recommendations") or []),
+                data_scope=call_breakdown_scope,
             ),
         },
         {
@@ -426,8 +505,14 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         },
         {
             **_section_meta(template, "additional_situations"),
+            "label": _data_scope_section_label(
+                default_label=_section_meta(template, "additional_situations").get("label", "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ"),
+                scope=additional_scope,
+                kind="additional",
+            ),
             **_build_v5_additional_situations_section(
                 section=dict(payload.get("additional_situations") or {}),
+                data_scope=additional_scope,
             ),
         },
         {
@@ -777,14 +862,16 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     if kind == "situation_card":
         lines = [
             str(section.get("situation_title") or section.get("label") or "Ситуация дня"),
+            str(section.get("scope_note") or ""),
             str(section.get("body") or ""),
             f"Что хотел клиент: {section.get('client_need') or 'Нет данных'}",
             f"Наша задача: {section.get('manager_task') or 'Нет данных'}",
         ]
         example = dict(section.get("call_example") or {})
         if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
+            example_label = str(section.get("example_label") or "Пример из сегодня")
             lines.append(
-                f"Пример из сегодня: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
+                f"{example_label}: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
             )
         if example.get("reason_short"):
             lines.append(str(example["reason_short"]))
@@ -795,7 +882,11 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append(f"Почему работает: {section.get('why_it_works')}")
         return [line for line in lines if line]
     if kind == "call_breakdown":
-        lines = [str(section.get("summary_line") or "Разбор звонка")]
+        lines = [
+            str(section.get("scope_note") or ""),
+            str(section.get("summary_line") or "Разбор звонка"),
+        ]
+        lines = [line for line in lines if line]
         rows = section.get("rows") or []
         if rows:
             lines.append("Момент / время | Что было | Фрагмент | Рекомендация")
@@ -818,6 +909,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         if _section_hidden_when_empty(section):
             return []
         lines = []
+        if section.get("scope_note"):
+            lines.append(str(section["scope_note"]))
         for item in section.get("situations") or []:
             lines.extend(
                 [
@@ -829,14 +922,16 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                     "",
                 ]
             )
-        return lines[:-1] if lines else ["—"]
+        return lines[:-1] if lines and lines[-1] == "" else lines or ["—"]
     if kind == "challenge_card":
-        return [
+        lines = [
+            str(section.get("scope_note") or ""),
             str(section.get("goal_line") or "Челлендж не определён."),
             str(section.get("today_line") or ""),
             str(section.get("record_line") or ""),
             f"Фраза для завтра: {section.get('phrase_line') or 'Нет данных'}",
         ]
+        return [line for line in lines if line]
     if kind == "call_tomorrow":
         rows = section.get("rows") or []
         if rows:
@@ -1111,9 +1206,14 @@ def _render_html_section(section: dict[str, Any]) -> str:
     if kind == "situation_card":
         scripts = "".join(f"<li>{html.escape(str(item))}</li>" for item in section.get("scripts") or [])
         example = dict(section.get("call_example") or {})
+        scope_note_html = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
+        example_label = str(section.get("example_label") or "Пример из сегодня")
         example_html = (
             "<div class=\"mini-card\">"
-            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_call_reference') or example.get('client_label') or 'Клиент'))}"
+            f"<strong>{html.escape(example_label)}:</strong> {html.escape(str(example.get('client_call_reference') or example.get('client_label') or 'Клиент'))}"
             + (
                 f"<div class=\"muted\">{html.escape(str(example.get('reason_short') or ''))}</div>"
                 if example.get("reason_short") else ""
@@ -1125,6 +1225,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
             f"<h3>{html.escape(str(section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
+            f"{scope_note_html}"
             f"<p>{html.escape(str(section.get('body') or ''))}</p>"
             f"<p><strong>Что хотел клиент:</strong> {html.escape(str(section.get('client_need') or 'Нет данных'))}</p>"
             f"<p><strong>Наша задача:</strong> {html.escape(str(section.get('manager_task') or 'Нет данных'))}</p>"
@@ -1143,14 +1244,18 @@ def _render_html_section(section: dict[str, Any]) -> str:
             f"<p class=\"muted\">{html.escape(str(section.get('summary_line') or ''))}</p>"
             if section.get("summary_line") else ""
         )
+        scope_note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
         if not rows:
             return (
-                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}{intro}"
                 "<p class=\"muted\">Недостаточно данных для детального разбора звонка.</p>"
                 "</div></section>"
             )
         return (
-            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}{intro}"
             "<table><thead><tr><th>Момент / время</th><th>Что было</th><th>Фрагмент</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
@@ -1177,6 +1282,10 @@ def _render_html_section(section: dict[str, Any]) -> str:
     if kind == "expanded_situations":
         if _section_hidden_when_empty(section):
             return ""
+        scope_note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
         cards = "".join(
             "<article class=\"card\">"
             f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
@@ -1187,10 +1296,15 @@ def _render_html_section(section: dict[str, Any]) -> str:
             "</article>"
             for item in section.get("situations") or []
         )
-        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}<div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
+        scope_note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"{scope_note}"
             f"<p><strong>{html.escape(str(section.get('goal_line') or ''))}</strong></p>"
             f"<p>{html.escape(str(section.get('today_line') or ''))}</p>"
             f"<p>{html.escape(str(section.get('record_line') or ''))}</p>"
@@ -1712,13 +1826,17 @@ def _render_manager_daily_pdf_report(
     draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=230, fill=light_blue)
     draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=230, fill=accent)
     draw_text(page2, left=margin + 12, top=focus_top + 42, text=str(focus.get("situation_title") or focus["label"]), size=10.2, color=accent, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=focus_top + 62, text=str(focus.get("body") or ""), size=9.0, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=focus_top + 94, text=f"Что хотел клиент: {focus.get('client_need') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=focus_top + 120, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    focus_note = str(focus.get("scope_note") or "")
+    body_top = focus_top + 80 if focus_note else focus_top + 62
+    if focus_note:
+        draw_text(page2, left=margin + 12, top=focus_top + 62, text=focus_note, size=8.2, color=muted, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=body_top, text=str(focus.get("body") or ""), size=9.0, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=body_top + 32, text=f"Что хотел клиент: {focus.get('client_need') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    draw_text(page2, left=margin + 12, top=body_top + 58, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
     example = dict(focus.get("call_example") or {})
     example_line = ""
     if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
-        example_line = f"Пример: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
+        example_line = f"{focus.get('example_label') or 'Пример'}: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
     if example_line:
         draw_text(page2, left=margin + 12, top=focus_top + 150, text=example_line, size=8.3, color=accent, max_width=width - (margin * 2) - 24)
     script_top = focus_top + 170
@@ -1729,11 +1847,14 @@ def _render_manager_daily_pdf_report(
 
     page3 = add_page()
     draw_section_bar(page3, top=58, title=call_breakdown["label"], color=accent)
-    draw_text(page3, left=margin, top=86, text=str(call_breakdown.get("summary_line") or ""), size=9.5, color=black, max_width=width - (margin * 2))
+    breakdown_note = str(call_breakdown.get("scope_note") or "")
+    if breakdown_note:
+        draw_text(page3, left=margin, top=84, text=breakdown_note, size=8.4, color=muted, max_width=width - (margin * 2))
+    draw_text(page3, left=margin, top=98 if breakdown_note else 86, text=str(call_breakdown.get("summary_line") or ""), size=9.5, color=black, max_width=width - (margin * 2))
     if call_breakdown.get("rows"):
         breakdown_bottom = draw_table(
             page3,
-            top=104,
+            top=116 if breakdown_note else 104,
             columns=["Момент / время", "Что было", "Фрагмент", "Рекомендация"],
             rows=[list(map(str, row)) for row in (call_breakdown.get("rows") or [])],
             col_widths=[66, 152, 138, 155],
@@ -2418,14 +2539,26 @@ def _priority_stage_row(score_by_stage: list[dict[str, Any]]) -> dict[str, Any] 
     return min(scored, key=lambda r: float(r.get("score_float") or 999))
 
 
-def _build_situation_title(score_by_stage: list[dict[str, Any]]) -> str:
+def _build_situation_title(
+    score_by_stage: list[dict[str, Any]],
+    *,
+    data_scope: dict[str, Any] | None = None,
+) -> str:
     """Build СИТУАЦИЯ ДНЯ heading from the priority stage."""
+    scope_code = _data_scope_code(data_scope)
+    title_prefix = (
+        "СИТУАЦИЯ ДНЯ"
+        if scope_code == "report_day"
+        else "КОУЧИНГОВАЯ СИТУАЦИЯ ИЗ РАСШИРЕННОЙ БАЗЫ"
+        if scope_code == "expanded_coaching_base"
+        else "ПАТТЕРН В РАСШИРЕННОЙ БАЗЕ"
+    )
     row = _priority_stage_row(score_by_stage)
     if row is not None:
         name = str(row.get("stage_name") or "этап")
         score = str(row.get("score") or "—")
-        return f"СИТУАЦИЯ ДНЯ · {name} — {score}/5"
-    return "СИТУАЦИЯ ДНЯ"
+        return f"{title_prefix} · {name} — {score}/5"
+    return title_prefix
 
 
 def _build_pattern_count_label(key_problem: dict[str, Any]) -> str | None:
@@ -2889,8 +3022,11 @@ def _build_v5_call_breakdown_section(
     *,
     section: dict[str, Any],
     recommendations: list[dict[str, Any]],
+    data_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map legacy call_breakdown payload to the Step 8AH-2 4-column structure."""
+    scope = dict(data_scope or section.get("data_scope_details") or {})
+    scope_note = _data_scope_note(scope, selected_call=True)
     explicit_rows = [
         _normalize_call_breakdown_row(row=row, index=index)
         for index, row in enumerate(section.get("rows") or [], start=1)
@@ -2898,6 +3034,9 @@ def _build_v5_call_breakdown_section(
     ]
     if explicit_rows:
         return {
+            "data_scope": _data_scope_code(scope),
+            "data_scope_details": scope,
+            "scope_note": scope_note,
             "summary_line": str(
                 section.get("summary_line")
                 or (
@@ -2935,6 +3074,9 @@ def _build_v5_call_breakdown_section(
             ]
         )
     return {
+        "data_scope": _data_scope_code(scope),
+        "data_scope_details": scope,
+        "scope_note": scope_note,
         "summary_line": (
             f"{section.get('client_call_reference') or section.get('client_label') or 'Клиент'}"
             if section.get("client_call_reference") or section.get("client_label") or section.get("time_label")
@@ -3093,8 +3235,13 @@ def _build_v5_voice_of_customer_section(
     }
 
 
-def _build_v5_additional_situations_section(*, section: dict[str, Any]) -> dict[str, Any]:
+def _build_v5_additional_situations_section(
+    *,
+    section: dict[str, Any],
+    data_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Expand compact additional situations into the v5 four-row card structure."""
+    scope = dict(data_scope or section.get("data_scope_details") or {})
     situations: list[dict[str, Any]] = []
     for item in section.get("situations") or []:
         title = _clean_reader_text(str(item.get("title") or "Ситуация"))
@@ -3124,7 +3271,13 @@ def _build_v5_additional_situations_section(*, section: dict[str, Any]) -> dict[
                 ),
             }
         )
-    return {"situations": situations[:3], "hide_when_empty": True}
+    return {
+        "situations": situations[:3],
+        "hide_when_empty": True,
+        "data_scope": _data_scope_code(scope),
+        "data_scope_details": scope,
+        "scope_note": _data_scope_note(scope),
+    }
 
 
 def _build_challenge_data(
@@ -3132,16 +3285,32 @@ def _build_challenge_data(
     score_by_stage: list[dict[str, Any]],
     key_problem: dict[str, Any],
     total_calls: int,
-) -> dict[str, str]:
+    data_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the fixed-structure v5 challenge block."""
+    scope = dict(data_scope or key_problem.get("data_scope_details") or {})
+    scope_code = _data_scope_code(scope)
     priority_row = _priority_stage_row(score_by_stage)
     stage_name = priority_row.get("stage_name") if priority_row else "приоритетный этап"
     calls_basis = max(total_calls, 1)
     target = max(1, round(calls_basis * 0.75))
     today_count = int(key_problem.get("pattern_count") or 0)
+    if scope_code == "report_day":
+        pattern_line = f"Сегодня: {today_count} звонк(ов) с повторением основного паттерна дня."
+    elif scope_code == "rolling_window":
+        days = int(scope.get("base_days_count") or 0) or 1
+        pattern_line = (
+            f"За последние {days} {_data_scope_day_word(days)}: "
+            f"{today_count} звонк(ов) с повторением основного паттерна."
+        )
+    else:
+        pattern_line = f"В расширенной базе: {today_count} звонк(ов) с повторением основного паттерна."
     return {
+        "data_scope": scope_code,
+        "data_scope_details": scope,
+        "scope_note": _data_scope_note(scope),
         "goal_line": f"Из следующих {calls_basis} звонков — отработать '{stage_name}' минимум в {target} случаях.",
-        "today_line": f"Сегодня: {today_count} звонк(ов) с повторением основного паттерна дня.",
+        "today_line": pattern_line,
         "record_line": "Рекорд: нет базы (первый период отслеживания).",
         "phrase_line": "Сначала уточняем контекст клиента, затем даём решение и фиксируем следующий шаг.",
     }
@@ -3674,9 +3843,14 @@ def _manager_status_text_color(
     if kind == "situation_card":
         scripts = "".join(f"<li>{html.escape(str(item))}</li>" for item in section.get("scripts") or [])
         example = dict(section.get("call_example") or {})
+        scope_note_html = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
+        example_label = str(section.get("example_label") or "Пример из сегодня")
         example_html = (
             "<div class=\"mini-card\">"
-            f"<strong>Пример из сегодня:</strong> {html.escape(str(example.get('client_call_reference') or example.get('client_label') or 'Клиент'))}"
+            f"<strong>{html.escape(example_label)}:</strong> {html.escape(str(example.get('client_call_reference') or example.get('client_label') or 'Клиент'))}"
             + (
                 f"<div class=\"muted\">{html.escape(str(example.get('reason_short') or ''))}</div>"
                 if example.get("reason_short") else ""
@@ -3688,6 +3862,7 @@ def _manager_status_text_color(
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
             f"<h3>{html.escape(str(section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
+            f"{scope_note_html}"
             f"<p>{html.escape(str(section.get('body') or ''))}</p>"
             f"<p><strong>Что хотел клиент:</strong> {html.escape(str(section.get('client_need') or 'Нет данных'))}</p>"
             f"<p><strong>Наша задача:</strong> {html.escape(str(section.get('manager_task') or 'Нет данных'))}</p>"
@@ -3706,8 +3881,12 @@ def _manager_status_text_color(
             f"<p class=\"muted\">{html.escape(str(section.get('summary_line') or ''))}</p>"
             if section.get("summary_line") else ""
         )
+        scope_note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
         return (
-            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}{intro}"
             "<table><thead><tr><th>Момент / время</th><th>Что было</th><th>Фрагмент</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
@@ -3728,6 +3907,10 @@ def _manager_status_text_color(
     if kind == "expanded_situations":
         if _section_hidden_when_empty(section):
             return ""
+        scope_note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
         cards = "".join(
             "<article class=\"card\">"
             f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
@@ -3738,10 +3921,15 @@ def _manager_status_text_color(
             "</article>"
             for item in section.get("situations") or []
         )
-        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{cards}</div></div></section>"
+        return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}<div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
+        scope_note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+            if section.get("scope_note") else ""
+        )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+            f"{scope_note}"
             f"<p><strong>{html.escape(str(section.get('goal_line') or ''))}</strong></p>"
             f"<p>{html.escape(str(section.get('today_line') or ''))}</p>"
             f"<p>{html.escape(str(section.get('record_line') or ''))}</p>"

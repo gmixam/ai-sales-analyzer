@@ -614,6 +614,10 @@ function dataFromBundle(bundle) {
     })),
     situation: {
       title: situation.situation_title || "СИТУАЦИЯ ДНЯ",
+      block_label: situation.label || "СИТУАЦИЯ ДНЯ",
+      data_scope: situation.data_scope || "report_day",
+      scope_note: situation.scope_note || "",
+      example_label: situation.example_label || "Пример из сегодня",
       body: situation.body || situation.text || "",
       pattern_count_label: situation.pattern_count_label || "",
       client_need: situation.client_need || "",
@@ -632,6 +636,9 @@ function dataFromBundle(bundle) {
       description: payload.key_problem_of_day?.description || "",
     },
     call_breakdown: {
+      block_label: callBreakdown.label || "РАЗБОР ЗВОНКА",
+      data_scope: callBreakdown.data_scope || "report_day",
+      scope_note: callBreakdown.scope_note || "",
       client: payload.call_breakdown?.client_label || "Клиент",
       time: payload.call_breakdown?.time_label || "—",
       reference: payload.call_breakdown?.client_call_reference || "",
@@ -663,7 +670,10 @@ function dataFromBundle(bundle) {
         type: item.kind || (item.badge === "Сильная сторона" ? "strength" : "gap"),
         signal: safeNumber(item.signal) || 0,
       })),
+    additional_situations_scope_note: (sections.additional_situations || {}).scope_note || "",
     challenge: {
+      data_scope: challenge.data_scope || "report_day",
+      scope_note: challenge.scope_note || "",
       goal_line: challenge.goal_line || "",
       today_line: challenge.today_line || "",
       record_line: challenge.record_line || "",
@@ -1223,15 +1233,18 @@ function buildSituatsiya() {
   }
 
   const result = [
-    blockHeading("🎯", `СИТУАЦИЯ ДНЯ · ${patternTitle}`),
+    blockHeading("🎯", `${s.block_label || "СИТУАЦИЯ ДНЯ"} · ${patternTitle}`),
   ];
+  if (s.scope_note) {
+    result.push(bodyPara(s.scope_note, { color: COLORS.gray, size: SZ.meta }));
+  }
   if (stageMeta) {
     result.push(bodyPara(stageMeta, { bold: true, color: COLORS.heading }));
   } else if (s.title) {
     result.push(bodyPara(cleanText(s.title), { bold: true, color: COLORS.heading }));
   }
   if (callRef) {
-    result.push(bodyPara(callRef, { bold: true, color: COLORS.heading }));
+    result.push(bodyPara(`${s.example_label || "Пример"}: ${callRef}`, { bold: true, color: COLORS.heading }));
   }
   if (whatHappenedText) {
     result.push(subHeading("Что произошло"));
@@ -1253,12 +1266,13 @@ function buildSituatsiya() {
 // ──────────────────────────────────────────────────────────────
 
 function buildRazbor() {
-  const { client, time, reference, summary, stages } = DATA.call_breakdown;
+  const { block_label, client, time, reference, summary, stages, scope_note } = DATA.call_breakdown;
   const callReference = reference || `${client} · ${time}`;
   const summaryLine = summary || callReference;
   if (!stages || stages.length === 0) {
     return [
-      blockHeading("🔍", "РАЗБОР ЗВОНКА"),
+      blockHeading("🔍", block_label || "РАЗБОР ЗВОНКА"),
+      ...(scope_note ? [bodyPara(scope_note, { color: COLORS.gray, size: SZ.meta })] : []),
       bodyPara(summaryLine, { color: COLORS.gray }),
       bodyPara("Недостаточно данных для детального разбора звонка.", { color: COLORS.gray }),
     ];
@@ -1289,7 +1303,8 @@ function buildRazbor() {
   );
 
   return [
-    blockHeading("🔍", "РАЗБОР ЗВОНКА"),
+    blockHeading("🔍", block_label || "РАЗБОР ЗВОНКА"),
+    ...(scope_note ? [bodyPara(scope_note, { color: COLORS.gray, size: SZ.meta })] : []),
     bodyPara(introLine, { color: COLORS.gray }),
     spacer(4),
     new Table({
@@ -1358,6 +1373,9 @@ function buildDopSituatsii() {
     ? "ДОПОЛНИТЕЛЬНАЯ СИТУАЦИЯ"
     : "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ";
   blocks.push(blockHeading("📋", headingText));
+  if (DATA.additional_situations_scope_note) {
+    blocks.push(bodyPara(DATA.additional_situations_scope_note, { color: COLORS.gray, size: SZ.meta }));
+  }
   blocks.push(bodyPara(
     "Приложение к основному отчёту. Для углублённого разбора с менеджером или самостоятельно.",
     { color: COLORS.gray, size: SZ.meta },
@@ -1442,6 +1460,15 @@ function buildChellendj() {
   }
 
   const rows = [];
+  if (c.scope_note) {
+    rows.push(new TableRow({ children: [
+      clCell("База"),
+      clContentCell([new Paragraph({
+        children: [new TextRun({ text: c.scope_note, size: SZ.cell, color: COLORS.gray, font: "Arial" })],
+        spacing: { before: 0, after: 0 },
+      })]),
+    ]}));
+  }
 
   if (c.goal_line) {
     rows.push(new TableRow({ children: [
