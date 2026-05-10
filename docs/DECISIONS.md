@@ -701,3 +701,13 @@
 - **Reason:** Step 8AH-10B PM review found that Additional Situations could look populated while still repeating generic advice without concrete evidence or call context.
 - **Scope:** Reporting payload/render/DOCX quality gate, deterministic wording adaptation, diagnostics, and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring semantics, report-day totals, call-list semantics, Step 8AH-11A data-scope rules, Step 8AH-11B daily-coaching-focus semantics, Step 8AH-11C problem normalizer semantics, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-10
+
+## ADR-070: `manager_daily` call-list context is quality-gated before render
+- **Decision:** `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ / Контекст` must be selected through a reporting-layer quality gate rather than rendering weak `call_report_summary` or follow-up text directly.
+- **Decision:** Source priority is: valid high-quality `call_report_summary.short_context`; specific `call_report_summary.short_topic`; deterministic final-outcome + next-step/deadline fallback; call type + customer-signal fallback; safe fallback text.
+- **Decision:** The gate rejects empty, bare-dash, low-information, truncated-with-ellipsis, technical-code-like, and bad-deadline wording such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026`.
+- **Decision:** Sales/open/follow-up rows should not render bare `—` when deterministic reporting can explain the context. Technical/service rows receive a service fallback when no sales context exists; not-suitable rows should say that they are not suitable for review.
+- **Decision:** Payload diagnostics are exposed through `call_list_context_quality` with source counts, fallback counts, rejected candidate contexts, retained bare contexts, and final failures.
+- **Reason:** PM review after Step 8AH-10B found that call-list context could remain empty, truncated, or technical even after deadline wording polish. Managers need a readable context for each business-relevant call without inventing facts or changing final outcomes.
+- **Scope:** Reporting payload/render fallback formatting, diagnostics, and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` / `call_report_summary` contract, outcome resolver, scoring semantics, report-day totals, call-list inclusion/sorting semantics, Step 8AH-11A data-scope rules, Step 8AH-11B daily-coaching-focus semantics, Step 8AH-11C problem normalizer semantics, Step 8AH-11D Additional Situations quality gate, delivery semantics, scheduler, or `rop_weekly` changes.
+- **Date:** 2026-05-10

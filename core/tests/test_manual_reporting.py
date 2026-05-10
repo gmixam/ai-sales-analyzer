@@ -1616,6 +1616,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(_call_context_label("agreed", "12:00", None), "до 12:00")
         self.assertEqual(_call_context_label("agreed", "пятницы", None), "до пятницы")
         self.assertEqual(_call_context_label("agreed", "до На этой неделе", None), "на этой неделе")
+        self.assertNotIn("→ до Конец года 2026", _call_context_label("rescheduled", "до Конец года 2026", None))
 
         artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:14:00")
         artifact.interaction.text = "Клиент: выставляйте счёт. Менеджер: отправлю счёт."
@@ -1643,8 +1644,153 @@ class ManualReportingPayloadTests(unittest.TestCase):
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
         rendered_context = sections["call_list"]["rows"][0][3]
 
-        self.assertEqual(rendered_context, "на этой неделе")
+        self.assertIn("счёт", rendered_context)
+        self.assertIn("на этой неделе", rendered_context)
         self.assertNotIn("до На", rendered_context)
+
+    def test_step8ah11e_call_list_context_rejects_truncated_summary_context(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:30:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию. "
+            "Клиент: Не заинтересован в данный момент."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент не заинтересован в данный момент",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["call_report_summary"]["short_topic"] = "Обсуждение ЭДО"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = "Клиент не заинтересован в да…"
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        row = payload["call_list"][0]
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_context = sections["call_list"]["rows"][0][3]
+
+        self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
+        self.assertEqual(row["call_list_context_source"], "deterministic_context_quality_gate")
+        self.assertIn("Клиент отказался", row["call_list_context"])
+        self.assertNotIn("да…", rendered_context)
+        self.assertTrue(
+            any(item["reason"] == "truncated_context" for item in row["call_list_context_rejected"])
+        )
+
+    def test_step8ah11e_call_list_context_fallbacks_avoid_bare_dash_for_sales_rows(self) -> None:
+        agreed = _artifact(64.0, "basic", call_date="2026-05-04 09:00:00")
+        agreed.interaction.text = "Клиент: Выставляйте счёт. Менеджер: Отправлю счёт."
+        agreed_detail = agreed.analysis.scores_detail
+        agreed_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        agreed_detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_text": "Выставить счёт клиенту.",
+        }
+
+        rescheduled = _artifact(64.0, "basic", call_date="2026-05-04 10:00:00")
+        rescheduled.interaction.text = "Клиент: Вернитесь после праздников. Менеджер: Хорошо."
+        rescheduled_detail = rescheduled.analysis.scores_detail
+        rescheduled_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        rescheduled_detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент попросил перезвонить после праздников",
+            "due_date_text": "После праздников",
+        }
+
+        open_call = _artifact(64.0, "basic", call_date="2026-05-04 11:00:00")
+        open_call.interaction.text = "Клиент: Скиньте материалы, я посмотрю. Менеджер: Отправлю."
+        open_detail = open_call.analysis.scores_detail
+        open_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        open_detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "",
+        }
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[agreed, rescheduled, open_call],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        contexts = [row["call_list_context"] for row in payload["call_list"]]
+
+        self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
+        self.assertTrue(all(context and context != "—" for context in contexts))
+        self.assertTrue(any("счёт" in context for context in contexts))
+        self.assertTrue(any("после праздников" in context for context in contexts))
+        self.assertTrue(any("Клиент попросил материалы" in context for context in contexts))
+
+    def test_step8ah11e_call_list_context_handles_year_period_and_service_fallback(self) -> None:
+        rescheduled = _artifact(64.0, "basic", call_date="2026-05-04 10:00:00")
+        rescheduled.interaction.text = "Клиент: Вернитесь в конце года 2026. Менеджер: Хорошо."
+        rescheduled_detail = rescheduled.analysis.scores_detail
+        rescheduled_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        rescheduled_detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент попросил вернуться в конце года",
+            "due_date_text": "Конец года 2026",
+        }
+
+        service = _artifact(64.0, "basic", call_date="2026-05-04 11:00:00")
+        service.interaction.text = "Клиент: Помогите с подписанием документа через QR."
+        service_detail = service.analysis.scores_detail
+        service_detail["classification"] = {
+            "call_type": "support",
+            "scenario_type": "after_signed_document",
+            "analysis_eligibility": "not_eligible",
+        }
+        service_detail["follow_up"] = {}
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[rescheduled, service],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_contexts = [row[3] for row in sections["call_list"]["rows"]]
+        all_context = " ".join(rendered_contexts)
+
+        self.assertIn("в конце 2026 года", all_context)
+        self.assertIn("после подписания документа", all_context.lower())
+        self.assertNotIn("→ до Конец года 2026", all_context)
+        self.assertNotIn("до Конец года 2026", all_context)
+        self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
 
     def test_step8ah9_empty_additional_situations_hidden_in_manager_daily_render(self) -> None:
         payload = build_manager_daily_payload(

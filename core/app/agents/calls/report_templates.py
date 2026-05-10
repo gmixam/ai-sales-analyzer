@@ -3677,7 +3677,14 @@ def _call_list_deadline_context(deadline: str | None) -> str | None:
     lowered = text.lower().replace("ё", "е")
     if lowered.startswith("до "):
         tail = text[3:].strip()
+        tail_lowered = tail.lower().replace("ё", "е")
+        if "конец года" in tail_lowered:
+            year_match = re.search(r"\b(20\d{2})\b", tail)
+            return f"в конце {year_match.group(1)} года" if year_match else "в конце года"
         return _lower_first(tail) if _is_human_relative_period(tail) else f"до {tail}"
+    if "конец года" in lowered:
+        year_match = re.search(r"\b(20\d{2})\b", text)
+        return f"в конце {year_match.group(1)} года" if year_match else "в конце года"
     if _is_human_relative_period(text):
         return _lower_first(text)
     return f"до {text}"

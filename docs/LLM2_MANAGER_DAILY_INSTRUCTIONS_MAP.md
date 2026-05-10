@@ -24,6 +24,7 @@ Key findings:
 - Since Step 8AH-11B, `daily_coaching_focus` is the deterministic reporting-layer object that aligns stage focus across stage scores, Situation, Call Breakdown, Challenge, and focus recommendations. LLM2 provides candidate evidence, but it does not choose the final cross-block focus independently.
 - Since Step 8AH-11C, positive/neutral problem wording from LLM2 or legacy fallback is normalized downstream before rendering. LLM2 may still emit criterion titles/comments such as “не ушёл в презентацию слишком рано”, but `manager_daily` rewrites manager-facing problem text into actionable missing behavior and exposes `problem_wording_diagnostics`.
 - Since Step 8AH-11D, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` candidates are gated downstream. LLM2 may provide `additional_situations`, but reporting renders only candidates with evidence or concrete call context, non-generic stage-specific wording, aligned title/body, and acceptable confidence.
+- Since Step 8AH-11E, call-list `Контекст` is gated downstream. LLM2 `call_report_summary.short_context` is a candidate source, but weak/truncated/technical/empty context is rejected and replaced by deterministic human-readable fallback without changing final outcomes or report-day call-list boundaries.
 
 ## LLM2 prompt inventory
 
@@ -340,7 +341,7 @@ Important fallback rules:
 |---|---|---|---|---|
 | `ИТОГ ДНЯ` | Indirectly uses persisted analysis fields through final resolver | Report-day `meaningful_calls`, `BusinessOutcomeResolver`, deterministic category counters | Technical/unclassified buckets when no reusable analysis | Outcome drift if future controlled samples are not marked; mitigated for future by Step 8-STABLE |
 | `ДЕНЬГИ НА СТОЛЕ` | Outcome/follow-up/money clues from analysis as interpreted by deterministic reporting | Report-day only, final outcome categories and money rules | Empty/zero when no qualifying outcome | LLM wording cannot override money rules; verify totals after next run |
-| `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` | `call_report_summary.short_topic` -> `Тип / суть`; `short_context` -> `Контекст`, only if valid and non-generic | Unified client reference, report-day boundary, final status order, call time | Summary/generic fallback from call type/outcome/context; `—` for empty context | Technical fallback context can remain weak; broad summary topics are guarded but may fall back to less useful text |
+| `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` | `call_report_summary.short_topic` -> `Тип / суть`; `short_context` -> candidate `Контекст`, only if valid, non-generic, and quality-gate-safe | Unified client reference, report-day boundary, final status order, call time, Step 8AH-11E context quality gate | Specific summary topic sentence, outcome + next-step/deadline fallback, call type + customer-signal fallback, safe deterministic fallback | Whole-package validity can still suppress summary fields, but weak/truncated/technical context is now replaced by human-readable fallback and exposed in diagnostics |
 | `БАЛЛЫ ПО ЭТАПАМ` | `score_by_stage[].score/max_score/criteria_results` | Stage aggregation and display thresholds; `daily_coaching_focus.stage_code` is derived from the priority stage; problem wording normalizer rewrites positive/neutral problem summaries | Empty/low-information stage handling | Stage scores can be valid while evidence is weak; `daily_coaching_focus_validation` / `problem_wording_diagnostics` should flag downstream mismatches or rewrites |
 | `СИТУАЦИЯ ДНЯ` | Preferred `report_evidence.situation_candidates`; client-grounding can use `voice_of_customer` / `quote_bank` from same valid package | `daily_coaching_focus.stage_code`, sales-like final statuses, client-reaction classifier, evidence ranking, dialogue formatting, selected-call `data_scope`, problem wording normalizer | Step 8W legacy evidence fragments, call breakdown excerpt, transcript/dialogue fallback, explicit insufficient-evidence text | Must not silently use another stage; if selected from expanded base, renderer must keep explicit scope label/note; positive wording must be normalized before render |
 | `РАЗБОР ЗВОНКА` | Preferred `report_evidence.manager_coaching_moments` | `daily_coaching_focus.stage_code`, evidence-strength ranking, low-information fragment guard, final sales-like filters, selected-call `data_scope`, problem wording normalizer | Legacy gaps/recommendations/evidence fragments/transcript sentence fallback; explicit missing/insufficient-evidence note | Weak evidence is labeled; stage mismatch must not be hidden as main focus; `Что было` must describe a gap, not a positive criterion |
@@ -435,6 +436,29 @@ Filtered reasons are exposed in `additional_situations_quality.filtered_reasons`
 
 When LLM2 or legacy fallback supplies generic wording, the reporting layer may replace it with stage-specific guidance. If it cannot make the card evidence/context-backed and specific, the candidate is excluded. If no candidate passes, the PDF/DOCX/HTML section is hidden.
 
+### Call-list context quality gate
+
+Since Step 8AH-11E, `call_report_summary.short_context` is treated as candidate wording, not guaranteed rendered context.
+
+The downstream gate chooses the first usable source:
+
+1. high-quality `call_report_summary.short_context`;
+2. specific `call_report_summary.short_topic` normalized as a context sentence;
+3. deterministic final-outcome + next-step/deadline fallback;
+4. call type + customer-signal fallback;
+5. safe fallback text.
+
+Rejected candidate reasons are exposed in `call_list_context_quality.rejected_contexts`:
+
+- `empty_context`;
+- `bare_dash`;
+- `truncated_context`;
+- `technical_fragment`;
+- `bad_deadline_wording`;
+- `low_information`.
+
+The gate normalizes relative periods and human-readable deadlines so technical forms such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026` do not reach the manager-facing call list. It also avoids bare `—` for sales/open/follow-up statuses when a deterministic fallback can explain the row. This is downstream reporting behavior only; LLM2 prompts, `report_evidence` schema, final outcomes, and report-day inclusion semantics are unchanged.
+
 ### Report evidence vs legacy Step 8W fallback
 
 Current policy: valid `report_evidence` is preferred; missing/invalid report evidence falls back to Step 8W-style persisted evidence/transcript/deterministic assembly. This is correct for safety, but it can hide useful summary/evidence fields if one field invalidates the whole package.
@@ -448,7 +472,7 @@ Current policy: valid `report_evidence` is preferred; missing/invalid report evi
 | Focus/Situation/Breakdown/Challenge can use different source calls/stages | `daily_coaching_focus_validation` | A report can feel inconsistent even when every block is individually valid | Verify `daily_coaching_focus.stage_code`, Situation stage, Breakdown stage, and Challenge stage match or have explicit insufficient-evidence handling |
 | Coaching block data scope can be misread as report-day | `data_scope` assignment/rendering for Situation, Breakdown, Challenge, Additional Situations | A non-report-day example or rolling metric can look like it happened "today" | Verify scope labels/notes: no non-report-day selected call under plain `СИТУАЦИЯ ДНЯ`, no rolling/expanded metric with `Сегодня` wording |
 | Positive or neutral text can appear as a problem | Key problem / situation wording fallbacks | Step 8AH-11C normalizes known positive/neutral patterns, but new wording variants can appear | Inspect `problem_wording_diagnostics`, key problem, Situation Day `what_happened`, Additional Situations title/body, and stage challenge language |
-| Technical fallback context in call list | Call-list context fallback | If summary context is missing/invalid, technical/unclassified context can stay weak or empty | Verify `Тип / суть` / `Контекст` for technical/service rows and summary usage counts |
+| Call-list context can be weak if all inputs are weak | Step 8AH-11E quality gate | The gate replaces known weak/truncated/technical forms, but truly missing context still becomes deterministic fallback rather than new facts | Verify `call_list_context_quality`, fallback counts, and rendered `Контекст` for technical/service/open/refusal rows |
 | Empty or generic Additional Situations | `additional_situations` report_evidence/fallback and Step 8AH-11D quality gate | The section should not look filled with repeated generic advice or contextless cards | Check `additional_situations_quality`; rendered cards need evidence/context and stage-specific `why_it_matters` / `next_action`; if none pass, section should be hidden |
 | Bare `Фрагмент: —` should not return | Call Breakdown rendering | Step 8AH-8F added explicit weak-evidence note; future render path must preserve it | Search PDF text for `Фрагмент: —` and check `call_breakdown_fragment_present` diagnostics |
 | Unsafe / weird client names | Safe-name display helper | Bad names are high-visibility PDF defects | Search PDF text for known unsafe labels and review low-confidence names |

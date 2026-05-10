@@ -4759,6 +4759,7 @@ def build_manager_daily_payload(
         window_artifacts=operational_day_artifacts,
         report_evidence_index=report_evidence_index,
     )
+    call_list_context_quality = _build_call_list_context_quality_diagnostics(call_list)
     call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
     coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
         artifacts=artifacts,
@@ -5001,6 +5002,7 @@ def build_manager_daily_payload(
         "recommendations": recommendation_cards,
         "call_outcomes_summary": call_outcomes_summary,
         "unclassified_breakdown": unclassified_breakdown,
+        "call_list_context_quality": call_list_context_quality,
         "manager_facing_completeness": manager_facing_completeness,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
@@ -6915,6 +6917,260 @@ def _build_meaningful_call_list(
     return rows
 
 
+CALL_LIST_CONTEXT_TECHNICAL_PATTERNS = (
+    "до после",
+    "до на этой",
+    "до на следующ",
+    "→ до",
+    "-> до",
+)
+CALL_LIST_CONTEXT_LOW_INFO = {"—", "-", "нет", "да", "перезвон", "созвон", "дальше", "позже"}
+CALL_LIST_RELATIVE_PERIOD_PREFIXES = (
+    "после ",
+    "на этой ",
+    "на следующ",
+    "на будущ",
+    "на неделе",
+    "в течение ",
+    "в ближайш",
+    "через ",
+    "позже",
+)
+
+
+def _lower_first_ru(value: str) -> str:
+    text = str(value or "").strip()
+    return text[:1].lower() + text[1:] if text else text
+
+
+def _call_list_is_relative_period(value: str) -> bool:
+    normalized = _summary_norm(value).rstrip(".")
+    return normalized.startswith(CALL_LIST_RELATIVE_PERIOD_PREFIXES)
+
+
+def _call_list_deadline_phrase(value: Any) -> str | None:
+    """Return human-readable deadline/period phrase for call-list context."""
+    text = _format_iso_deadline(str(value or "").strip() or None)
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", str(text).strip()).rstrip(".")
+    if not text:
+        return None
+    lowered = _summary_norm(text)
+    if lowered.startswith("до "):
+        text = text[3:].strip()
+        lowered = _summary_norm(text)
+    if "конец года" in lowered:
+        year_match = re.search(r"\b(20\d{2})\b", text)
+        return f"в конце {year_match.group(1)} года" if year_match else "в конце года"
+    if _call_list_is_relative_period(text):
+        return _lower_first_ru(text)
+    return f"до {text}"
+
+
+def _call_list_context_reject_reason(value: Any) -> str | None:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    normalized = _summary_norm(text)
+    if not normalized:
+        return "empty_context"
+    if normalized in {"—", "-"}:
+        return "bare_dash"
+    if normalized in CALL_LIST_CONTEXT_LOW_INFO:
+        return "low_information"
+    if any(pattern in normalized for pattern in CALL_LIST_CONTEXT_TECHNICAL_PATTERNS):
+        return "bad_deadline_wording"
+    if re.search(r"\b[a-z]{2,}_[a-z0-9_]+\b", text, flags=re.IGNORECASE):
+        return "technical_fragment"
+    if "…" in text or "..." in text:
+        return "truncated_context"
+    if len(normalized) < 12:
+        return "low_information"
+    return None
+
+
+def _call_list_context_text(value: Any, *, limit: int = 220) -> str | None:
+    text = _summary_text(value, limit=limit)
+    if not text:
+        return None
+    return None if _call_list_context_reject_reason(text) else text
+
+
+def _call_list_status_fallback_context(
+    *,
+    status: str | None,
+    call_type: str | None,
+    scenario_type: str | None,
+    deadline: str | None,
+    next_step: str | None,
+    reason: str | None,
+    signal_text: str | None,
+    unclassified_status_label: str | None,
+    unclassified_context_label: str | None,
+) -> str:
+    """Build a human-readable context when summary context is missing or weak."""
+    status_text = str(status or "").strip()
+    call_type_text = str(call_type or "").strip()
+    scenario_text = str(scenario_type or "").strip()
+    deadline_phrase = _call_list_deadline_phrase(deadline)
+    combined = _summary_norm(" ".join(str(part or "") for part in (next_step, reason, signal_text)))
+    if not status_text:
+        context_label = str(unclassified_context_label or "").strip()
+        if context_label:
+            return context_label
+        if str(unclassified_status_label or "") == "Не подходит для разбора":
+            return "Не подходит для разбора."
+        return "Нет готового разбора по звонку."
+    if status_text == "tech_service" or call_type_text in {"support", "internal"}:
+        if scenario_text == "after_signed_document":
+            return "Звонок после подписания документа, продажный потенциал не раскрыт."
+        return "Технический / сервисный звонок, продажный контекст не выявлен."
+    if scenario_text == "after_signed_document" and status_text in {"open", "refusal"}:
+        return "Звонок после подписания документа, продажный потенциал не раскрыт."
+    if status_text == "rescheduled":
+        if deadline_phrase:
+            return f"Клиент попросил вернуться в согласованный срок: {deadline_phrase}."
+        return "Клиент попросил вернуться позже, точный срок не извлечён."
+    if status_text == "agreed":
+        if _contains_hotness_signal(combined, CALL_TOMORROW_INVOICE_MARKERS):
+            suffix = f" Срок: {deadline_phrase}." if deadline_phrase else ""
+            return f"Есть коммерческий следующий шаг: отправить счёт, подтвердить получение и согласовать оплату.{suffix}"
+        if deadline_phrase:
+            return f"Есть договорённость, следующий шаг нужно выполнить {deadline_phrase}."
+        return "Есть договорённость, следующий шаг нужно подтвердить и довести до результата."
+    if status_text == "open":
+        if _contains_hotness_signal(combined, CALL_TOMORROW_MATERIALS_MARKERS):
+            return "Клиент попросил материалы, следующий контакт нужно закрепить отдельно."
+        return "Контакт открыт, следующий шаг не зафиксирован."
+    if status_text == "refusal":
+        reason_text = _call_list_context_text(reason, limit=160)
+        if reason_text:
+            return f"Клиент отказался: {reason_text.rstrip('.') }."
+        return "Клиент отказался, причина отказа не извлечена."
+    return "Контекст звонка требует уточнения по сохранённым данным."
+
+
+def _select_call_list_context(
+    *,
+    status: str | None,
+    call_type: str | None,
+    scenario_type: str | None,
+    deadline: str | None,
+    next_step: str | None,
+    reason: str | None,
+    signal_text: str | None,
+    summary_topic: str | None,
+    summary_context: str | None,
+    unclassified_status_label: str | None,
+    unclassified_context_label: str | None,
+) -> dict[str, Any]:
+    rejected: list[dict[str, str]] = []
+
+    def reject(source: str, value: Any) -> str | None:
+        reason_code = _call_list_context_reject_reason(value)
+        if reason_code:
+            rejected.append({"source": source, "reason": reason_code, "value": str(value or "")[:140]})
+        return reason_code
+
+    if summary_context and _call_summary_context_usable(summary_context) and not reject(
+        "report_evidence.call_report_summary.short_context",
+        summary_context,
+    ):
+        return {
+            "context": summary_context,
+            "source": "report_evidence.call_report_summary.short_context",
+            "rejected": rejected,
+            "fallback_generated": False,
+            "bare_context_retained": False,
+        }
+    if summary_topic and _call_summary_topic_usable(summary_topic) and not reject(
+        "report_evidence.call_report_summary.short_topic",
+        summary_topic,
+    ):
+        topic_context = summary_topic if summary_topic.endswith((".", "!", "?")) else f"{summary_topic}."
+        return {
+            "context": topic_context,
+            "source": "report_evidence.call_report_summary.short_topic",
+            "rejected": rejected,
+            "fallback_generated": False,
+            "bare_context_retained": False,
+        }
+
+    fallback = _call_list_status_fallback_context(
+        status=status,
+        call_type=call_type,
+        scenario_type=scenario_type,
+        deadline=deadline,
+        next_step=next_step,
+        reason=reason,
+        signal_text=signal_text,
+        unclassified_status_label=unclassified_status_label,
+        unclassified_context_label=unclassified_context_label,
+    )
+    reject_reason = reject("deterministic_fallback", fallback)
+    if reject_reason:
+        fallback = "Контекст звонка требует уточнения по сохранённым данным."
+    return {
+        "context": fallback,
+        "source": "deterministic_context_quality_gate",
+        "rejected": rejected,
+        "fallback_generated": True,
+        "bare_context_retained": False,
+    }
+
+
+def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]) -> dict[str, Any]:
+    rejected: list[dict[str, Any]] = []
+    source_counts: dict[str, int] = {}
+    fallback_generated_count = 0
+    bare_retained: list[dict[str, Any]] = []
+    final_failures: list[dict[str, Any]] = []
+    for row in call_list:
+        source = str(row.get("call_list_context_source") or "unknown")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        if source == "deterministic_context_quality_gate":
+            fallback_generated_count += 1
+        final_reason = _call_list_context_reject_reason(row.get("call_list_context"))
+        if final_reason:
+            final_failures.append(
+                {
+                    "interaction_id": row.get("interaction_id"),
+                    "status": row.get("status"),
+                    "reason": final_reason,
+                    "value": str(row.get("call_list_context") or "")[:140],
+                }
+            )
+        if row.get("call_list_context_bare_retained"):
+            bare_retained.append(
+                {
+                    "interaction_id": row.get("interaction_id"),
+                    "status": row.get("status"),
+                    "reason": row.get("call_list_context_bare_reason") or "allowed",
+                }
+            )
+        for item in row.get("call_list_context_rejected") or []:
+            rejected.append(
+                {
+                    "interaction_id": row.get("interaction_id"),
+                    "status": row.get("status"),
+                    **dict(item),
+                }
+            )
+    return {
+        "status": "warning" if final_failures or bare_retained else "passed",
+        "calls_count": len(call_list),
+        "call_report_summary_context_count": source_counts.get("report_evidence.call_report_summary.short_context", 0),
+        "call_report_summary_topic_count": source_counts.get("report_evidence.call_report_summary.short_topic", 0),
+        "fallback_generated_count": fallback_generated_count,
+        "bare_context_retained_count": len(bare_retained),
+        "bare_context_retained": bare_retained,
+        "final_failure_count": len(final_failures),
+        "final_failures": final_failures,
+        "rejected_count": len(rejected),
+        "rejected_contexts": rejected,
+        "source_counts": source_counts,
+    }
+
+
 def _reason_label(reason_code: str | None) -> str | None:
     """Return diagnostic Russian label for an unclassified reason code."""
     if not reason_code:
@@ -7190,7 +7446,23 @@ def _build_daily_call_row(
     summary_topic = summary_topic_raw.rstrip(".") if summary_topic_raw else None
     summary_context = _summary_text((summary or {}).get("short_context"), limit=280) if summary else None
     topic_used = bool(summary_topic and _call_summary_topic_usable(summary_topic))
-    context_used = bool(summary_context and _call_summary_context_usable(summary_context))
+    next_step = follow_up.get("next_step_text")
+    reason = str(follow_up.get("reason_not_fixed") or "").strip() or None
+    signal_text = _summary_text(getattr(artifact.interaction, "text", None), limit=500)
+    scenario_type = classification.get("scenario_type")
+    context_selection = _select_call_list_context(
+        status=status,
+        call_type=str(call_type or "").strip() or None,
+        scenario_type=str(scenario_type or "").strip() or None,
+        deadline=deadline,
+        next_step=str(next_step or "").strip() or None,
+        reason=reason,
+        signal_text=signal_text,
+        summary_topic=summary_topic,
+        summary_context=summary_context,
+        unclassified_status_label=unclassified_status_label,
+        unclassified_context_label=unclassified_context_label,
+    )
     return {
         "interaction_id": str(artifact.interaction.id),
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
@@ -7201,13 +7473,13 @@ def _build_daily_call_row(
         "date_label": ref.get("date_label"),
         "time_label": ref.get("time_label"),
         "duration_sec": artifact.interaction.duration_sec,
-        "call_signal_text": _summary_text(getattr(artifact.interaction, "text", None), limit=500),
+        "call_signal_text": signal_text,
         "call_type": call_type,
-        "scenario_type": classification.get("scenario_type"),
+        "scenario_type": scenario_type,
         "status": status,
-        "next_step": follow_up.get("next_step_text"),
+        "next_step": next_step,
         "deadline": deadline,
-        "reason": str(follow_up.get("reason_not_fixed") or "").strip() or None,
+        "reason": reason,
         "score_percent": _extract_score_percent(artifact.analysis),
         "unclassified_reason_code": unclassified_reason_code,
         "unclassified_reason_label": unclassified_reason_label,
@@ -7220,9 +7492,17 @@ def _build_daily_call_row(
         "call_report_summary_short_topic": summary_topic,
         "call_report_summary_short_context": summary_context,
         "call_list_topic": summary_topic if topic_used else None,
-        "call_list_context": summary_context if context_used else None,
+        "call_list_context": context_selection["context"],
         "call_list_topic_source": "report_evidence.call_report_summary.short_topic" if topic_used else "deterministic_fallback",
-        "call_list_context_source": "report_evidence.call_report_summary.short_context" if context_used else "deterministic_fallback",
+        "call_list_context_source": context_selection["source"],
+        "call_list_context_quality": {
+            "source": context_selection["source"],
+            "fallback_generated": context_selection["fallback_generated"],
+            "rejected_count": len(context_selection["rejected"]),
+        },
+        "call_list_context_rejected": context_selection["rejected"],
+        "call_list_context_fallback_generated": context_selection["fallback_generated"],
+        "call_list_context_bare_retained": context_selection["bare_context_retained"],
     }
 
 

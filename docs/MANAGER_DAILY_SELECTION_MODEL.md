@@ -6,7 +6,7 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem; Step 8AH-11D добавил quality gate for Additional Situations so generic/contextless cards are hidden and valid cards use evidence/context-backed, stage-specific wording.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem; Step 8AH-11D добавил quality gate for Additional Situations so generic/contextless cards are hidden and valid cards use evidence/context-backed, stage-specific wording; Step 8AH-11E добавил quality gate for call-list context so weak, truncated, technical, or empty contexts are replaced by human-readable deterministic fallbacks without changing report-day semantics.
 
 ---
 
@@ -158,8 +158,10 @@ Service note должна отображать полную воронку от�
 - Звонки, не вошедшие в coaching core, показываются в списке без глубокого coaching-блока, но присутствуют.
 - Колонки since Step 8AH-2: `#` / `Клиент` / `Тип / суть` / `Контекст` / `Статус`.
 - `Клиент` содержит unified client/call reference from Step 8AH-1, including date/time, so separate `Время` column is no longer rendered.
-- `Тип / суть` remains a deterministic label from existing `classification.call_type` / `scenario_type`; richer short topic is future LLM2/report-evidence enrichment.
-- If `Контекст` is not available from existing follow-up/outcome fields, render `—` or the existing manager-facing unclassified context; do not generate new context in reporting layer.
+- `Тип / суть` uses valid, non-generic `report_evidence.call_report_summary.short_topic` when available; otherwise it falls back to the deterministic `classification.call_type` / `scenario_type` label.
+- `Контекст` is selected through the Step 8AH-11E call-list context quality gate. The gate prefers useful `call_report_summary.short_context`, then specific `short_topic`, then deterministic outcome/next-step/signal fallbacks.
+- The call-list context gate rejects empty, bare-dash, low-information, truncated-with-ellipsis, technical-code-like, and bad-deadline contexts such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026`.
+- For `Договорённость`, `Перенос`, `Открыт`, and sales-related `Отказ`, the renderer should not show bare `—`; if summary context is missing/weak, reporting generates a human-readable fallback.
 - Sort order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets. Within each status group, sort by call time.
 
 ---
@@ -199,6 +201,32 @@ Since Step 8AH-7, richer per-call topic/context may come from valid `report_evid
 - `short_context` can fill `Контекст` when useful;
 - broad `short_topic` values such as `Обсуждение...`, `Разговор...`, `Звонок...`, `Продажи...`, or `Холодный звонок...` fall back to deterministic type/scenario labels;
 - missing or invalid `report_evidence` falls back to the previous deterministic/legacy fields.
+
+Since Step 8AH-11E, `Контекст` is no longer a raw summary/follow-up passthrough. The quality gate chooses the first usable source:
+1. high-quality `call_report_summary.short_context`;
+2. specific `call_report_summary.short_topic` normalized as a sentence;
+3. final outcome + next step / deadline fallback;
+4. call type + customer signal fallback;
+5. safe deterministic fallback.
+
+Fallback examples:
+- `open` without a clear next step: `Контакт открыт, следующий шаг не зафиксирован.`;
+- `rescheduled` with a deadline: `Клиент попросил вернуться в согласованный срок: {deadline}.`;
+- invoice/payment agreement: `Есть коммерческий следующий шаг: отправить счёт, подтвердить получение и согласовать оплату.`;
+- refusal without reason: `Клиент отказался, причина отказа не извлечена.`;
+- technical/service: `Технический / сервисный звонок, продажный контекст не выявлен.`;
+- after-signature service/sales attempt: `Звонок после подписания документа, продажный потенциал не раскрыт.`;
+- materials/KP/WhatsApp request: `Клиент попросил материалы, следующий контакт нужно закрепить отдельно.`
+
+Payload diagnostics:
+- `call_list_context_quality.status`;
+- total calls;
+- count of contexts sourced from `call_report_summary.short_context` / `short_topic`;
+- count of deterministic fallbacks;
+- retained bare contexts, if any;
+- rejected candidate contexts with reasons: `empty_context`, `bare_dash`, `truncated_context`, `technical_fragment`, `bad_deadline_wording`, `low_information`.
+
+This gate does not change final status, outcome totals, report-day call-list inclusion, status sorting, or coaching-block data-scope behavior.
 
 ### Outcome resolver grounded-source rule
 
