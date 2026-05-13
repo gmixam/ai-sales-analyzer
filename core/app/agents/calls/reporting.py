@@ -146,6 +146,7 @@ class ReportRunFilters:
     max_duration_sec: int | None = None
     force_retry_quota_blocked: bool = False
     include_controlled_samples: bool = False
+    analysis_instruction_version: str | None = None
 
 
 @dataclass(slots=True)
@@ -843,6 +844,9 @@ class CallsManualReportingOrchestrator:
         if normalized_mode not in REPORTING_ALLOWED_MODES:
             allowed = ", ".join(sorted(REPORTING_ALLOWED_MODES))
             raise ASAError(f"Unsupported report mode '{mode}'. Supported modes: {allowed}.")
+        filters.analysis_instruction_version = _normalize_analysis_instruction_version(
+            filters.analysis_instruction_version
+        )
 
         period = self._build_period(filters=filters, preset=preset)
         source_period = period
@@ -949,6 +953,7 @@ class CallsManualReportingOrchestrator:
             mode=normalized_mode,
             force_retry_quota_blocked=filters.force_retry_quota_blocked,
             include_controlled_samples=filters.include_controlled_samples,
+            analysis_instruction_version=filters.analysis_instruction_version,
         )
 
         reports = self._group_and_build_reports(
@@ -1132,10 +1137,14 @@ class CallsManualReportingOrchestrator:
             "analyses_built": 0,
             "analyses_reused": 0,
             "analyses_rejected_for_reuse": 0,
+            "analyses_rejected_for_instruction_version": 0,
             "missing_transcripts_before_build": 0,
             "missing_analyses_before_build": 0,
             "transcript_build_failed": 0,
             "analysis_build_failed": 0,
+            "include_controlled_samples": False,
+            "analysis_selection_policy": "latest_reusable_stable_excluding_controlled_samples",
+            "analysis_instruction_version": None,
             "skipped_due_to_quota": 0,
             "quota_blocked_previous_run": 0,
             "quota_blocker": None,
@@ -1383,11 +1392,16 @@ class CallsManualReportingOrchestrator:
         mode: str,
         force_retry_quota_blocked: bool = False,
         include_controlled_samples: bool = False,
+        analysis_instruction_version: str | None = None,
     ) -> tuple[list[ReportArtifact], dict[str, Any], list[str]]:
         """Reuse persisted artifacts and optionally build only missing ones."""
+        required_analysis_instruction_version = _normalize_analysis_instruction_version(
+            analysis_instruction_version
+        )
         analyses_by_interaction = self._load_latest_analyses_by_interaction(
             interactions=interactions,
             include_controlled_samples=include_controlled_samples,
+            analysis_instruction_version=required_analysis_instruction_version,
         )
         managers_by_id = self._load_managers_by_id(interactions=interactions)
 
@@ -1396,6 +1410,7 @@ class CallsManualReportingOrchestrator:
         built_analyses = 0
         reused_analyses = 0
         analyses_rejected_for_reuse = 0
+        analyses_rejected_for_instruction_version = 0
         missing_transcripts_before_build = 0
         missing_analyses_before_build = 0
         failed_transcripts = 0
@@ -1413,13 +1428,18 @@ class CallsManualReportingOrchestrator:
                 reused_transcripts += 1
             else:
                 missing_transcripts_before_build += 1
-            reusable_analysis, analysis_reuse_reason = _is_analysis_reusable_for_reporting(analysis)
+            reusable_analysis, analysis_reuse_reason = _is_analysis_reusable_for_reporting(
+                analysis,
+                required_instruction_version=required_analysis_instruction_version,
+            )
             if reusable_analysis:
                 reused_analyses += 1
             else:
                 missing_analyses_before_build += 1
                 if analysis is not None:
                     analyses_rejected_for_reuse += 1
+                    if _is_instruction_version_mismatch_reason(analysis_reuse_reason):
+                        analyses_rejected_for_instruction_version += 1
                     if not (
                         self._allows_build_missing(preset=preset, mode=mode)
                         and interaction.text
@@ -1510,6 +1530,24 @@ class CallsManualReportingOrchestrator:
                                 result=result,
                             )
                             built_analyses += 1
+                            reusable_analysis, analysis_reuse_reason = (
+                                _is_analysis_reusable_for_reporting(
+                                    analysis,
+                                    required_instruction_version=(
+                                        required_analysis_instruction_version
+                                    ),
+                                )
+                            )
+                            if not reusable_analysis:
+                                original_analysis = analysis
+                                analyses_rejected_for_reuse += 1
+                                if _is_instruction_version_mismatch_reason(analysis_reuse_reason):
+                                    analyses_rejected_for_instruction_version += 1
+                                analysis = None
+                                build_errors.append(
+                                    "analysis_reuse_rejected:"
+                                    f"{interaction.id}:{analysis_reuse_reason}"
+                                )
                         except SemanticAnalysisError as exc:
                             failed_analyses += 1
                             original_analysis = self.call_orchestrator.persist_failed_analysis(
@@ -1569,6 +1607,9 @@ class CallsManualReportingOrchestrator:
                 "analyses_built": built_analyses,
                 "analyses_reused": reused_analyses,
                 "analyses_rejected_for_reuse": analyses_rejected_for_reuse,
+                "analyses_rejected_for_instruction_version": (
+                    analyses_rejected_for_instruction_version
+                ),
                 "missing_transcripts_before_build": missing_transcripts_before_build,
                 "missing_analyses_before_build": missing_analyses_before_build,
                 "transcript_build_failed": failed_transcripts,
@@ -1578,7 +1619,13 @@ class CallsManualReportingOrchestrator:
                     "latest_reusable_including_controlled_samples"
                     if include_controlled_samples
                     else "latest_reusable_stable_excluding_controlled_samples"
+                )
+                + (
+                    f"_instruction_version={required_analysis_instruction_version}"
+                    if required_analysis_instruction_version
+                    else ""
                 ),
+                "analysis_instruction_version": required_analysis_instruction_version,
                 "skipped_due_to_quota": skipped_due_to_quota,
                 "quota_blocked_previous_run": quota_blocked_previous_run,
                 "quota_blocker": quota_blocker,
@@ -1957,6 +2004,7 @@ class CallsManualReportingOrchestrator:
             "execution_model": self._resolve_execution_model(preset=preset),
             "mode": mode,
             "period": period,
+            "analysis_instruction_version": filters.analysis_instruction_version,
             "selected_manager_ids": selected_manager_ids,
             "selected_manager_extensions": selected_manager_extensions,
             "manager_filter_logic": (
@@ -2023,6 +2071,12 @@ class CallsManualReportingOrchestrator:
             notes.append(
                 "manager_ids and manager_extensions are both selected, so the current bounded logic uses their intersection."
             )
+        if filters.analysis_instruction_version:
+            notes.append(
+                "Analysis reuse is restricted to "
+                f"instruction_version={filters.analysis_instruction_version}; "
+                "older analyses cannot satisfy readiness."
+            )
 
         return {
             "effective_preset": preset.code,
@@ -2036,6 +2090,8 @@ class CallsManualReportingOrchestrator:
             "source_period": source_period,
             "selected_manager_ids": sorted(filters.manager_ids),
             "selected_manager_extensions": sorted(filters.manager_extensions),
+            "analysis_instruction_version": filters.analysis_instruction_version,
+            "analysis_selection_policy": build_summary.get("analysis_selection_policy"),
             "manager_filter_logic": diagnostics_context["manager_filter_logic"],
             "uses_filters_intersection": diagnostics_context["manager_filter_logic"] == "intersection",
             "interactions_found_before_reuse_build": selected_interactions_count,
@@ -2182,6 +2238,10 @@ class CallsManualReportingOrchestrator:
             reason_codes.append("analysis_build_failed")
         if any(item.startswith("analysis_reuse_rejected:") for item in errors):
             reason_codes.append("analysis_reuse_rejected")
+        if build_summary.get("analyses_rejected_for_instruction_version", 0) or any(
+            "instruction_version_mismatch" in item for item in errors
+        ):
+            reason_codes.append("analysis_instruction_version_mismatch")
         if build_summary.get("quota_blocker") or any(item.startswith("quota_blocked_") for item in errors):
             reason_codes.append("quota_blocked")
         if build_summary.get("quota_blocked_previous_run", 0):
@@ -3047,11 +3107,14 @@ class CallsManualReportingOrchestrator:
         *,
         interactions: list[Interaction],
         include_controlled_samples: bool = False,
+        analysis_instruction_version: str | None = None,
     ) -> dict[UUID, Analysis]:
         """Return the best stable analysis row for each selected interaction.
 
         Normal manager_daily runs ignore controlled sample / verification rows
         and fall back past invalid latest rows to an older reusable stable row.
+        When a target instruction version is set, only rows with that exact
+        version can satisfy reuse; older rows may only explain rejection.
         """
         interaction_ids = [item.id for item in interactions]
         if not interaction_ids:
@@ -3073,6 +3136,7 @@ class CallsManualReportingOrchestrator:
             analysis = _select_stable_analysis_for_reporting(
                 candidates,
                 include_controlled_samples=include_controlled_samples,
+                analysis_instruction_version=analysis_instruction_version,
             )
             if analysis is not None:
                 selected[interaction_id] = analysis
@@ -3736,7 +3800,7 @@ class CallsManualReportingOrchestrator:
                     "Not a deliverable manager report",
                 ],
                 "call_status_legend": [
-                    f"preset=manager_daily",
+                    "preset=manager_daily",
                     f"mode={mode}",
                     f"period={period['date_from']}..{period['date_to']}",
                 ],
@@ -4752,7 +4816,6 @@ def build_manager_daily_payload(
         a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
     ]
     report_evidence_index = _build_report_evidence_index(artifacts=operational_meaningful_artifacts)
-    report_evidence_diagnostics = _build_report_evidence_diagnostics(index=report_evidence_index)
     call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
     unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
     call_list = _build_meaningful_call_list(
@@ -4919,6 +4982,21 @@ def build_manager_daily_payload(
         situation_evidence_quote=situation_evidence_quote,
         situation_day_coaching_view=situation_day_coaching_view,
         call_breakdown=call_breakdown,
+    )
+    semantic_case_block_sources = _build_semantic_case_block_sources(
+        index=report_evidence_index,
+        situation_evidence_quote=situation_evidence_quote,
+        situation_day_coaching_view=situation_day_coaching_view,
+        call_breakdown=call_breakdown,
+        call_breakdown_quality=call_breakdown_quality,
+        voice_of_customer=voice_of_customer,
+        additional_situations=additional_situations,
+        call_tomorrow=call_tomorrow,
+    )
+    report_evidence_diagnostics = _build_report_evidence_diagnostics(
+        index=report_evidence_index,
+        semantic_case_used_call_ids=_semantic_case_used_call_ids_from_block_sources(semantic_case_block_sources),
+        semantic_case_block_sources=semantic_case_block_sources,
     )
     problem_wording_diagnostics = _build_problem_wording_diagnostics(
         score_by_stage=score_by_stage,
@@ -5373,6 +5451,7 @@ def _build_base_meta(
             "manager_extensions": sorted(filters.manager_extensions),
             "min_duration_sec": filters.min_duration_sec,
             "max_duration_sec": filters.max_duration_sec,
+            "analysis_instruction_version": filters.analysis_instruction_version,
         },
         "report_composer": {
             "enabled": False,
@@ -7655,38 +7734,69 @@ def _select_stable_analysis_for_reporting(
     analyses: list[Analysis],
     *,
     include_controlled_samples: bool = False,
+    analysis_instruction_version: str | None = None,
 ) -> Analysis | None:
     """Pick the newest reusable analysis allowed by the reporting selection policy.
 
     Input rows must be sorted newest first. If no reusable allowed row exists,
     return the newest allowed row so the existing rejection diagnostics can
-    explain why the call has no reusable analysis.
+    explain why the call has no reusable analysis. With an exact instruction
+    version guard, a mismatched row can be returned only as that diagnostic
+    candidate; _is_analysis_reusable_for_reporting must still reject it.
     """
     allowed = [
         analysis
         for analysis in analyses
         if include_controlled_samples or not is_controlled_analysis(analysis)
     ]
+    required_instruction_version = _normalize_analysis_instruction_version(
+        analysis_instruction_version
+    )
+    if required_instruction_version:
+        matching_version = [
+            analysis
+            for analysis in allowed
+            if _analysis_instruction_version(analysis) == required_instruction_version
+        ]
+        if matching_version:
+            allowed = matching_version
+        elif allowed:
+            return allowed[0]
     if not allowed:
         return None
     fallback = allowed[0]
     for analysis in allowed:
-        reusable, _reason = _is_analysis_reusable_for_reporting(analysis)
+        reusable, _reason = _is_analysis_reusable_for_reporting(
+            analysis,
+            required_instruction_version=required_instruction_version,
+        )
         if reusable:
             return analysis
     return fallback
 
 
-def _is_analysis_reusable_for_reporting(analysis: Analysis | None) -> tuple[bool, str]:
+def _is_analysis_reusable_for_reporting(
+    analysis: Analysis | None,
+    *,
+    required_instruction_version: str | None = None,
+) -> tuple[bool, str]:
     """Return whether the persisted analysis is reusable for reporting."""
     if analysis is None:
         return False, "missing_analysis"
+    instruction_version = _analysis_instruction_version(analysis)
+    normalized_required_version = _normalize_analysis_instruction_version(
+        required_instruction_version
+    )
+    if normalized_required_version and instruction_version != normalized_required_version:
+        return False, _instruction_version_mismatch_reason(
+            expected=normalized_required_version,
+            actual=instruction_version,
+        )
     if bool(getattr(analysis, "is_failed", False)):
         fail_reason = str(getattr(analysis, "fail_reason", "") or "").strip()
         if fail_reason:
             return False, fail_reason
         return False, "analysis_marked_failed"
-    instruction_version = str(getattr(analysis, "instruction_version", "") or "").strip()
     if not instruction_version:
         return False, "missing_instruction_version"
     detail = getattr(analysis, "scores_detail", None)
@@ -7708,6 +7818,27 @@ def _is_analysis_reusable_for_reporting(analysis: Analysis | None) -> tuple[bool
     ):
         return False, SEMANTIC_EMPTY_ANALYSIS_REASON
     return True, "reusable"
+
+
+def _normalize_analysis_instruction_version(value: str | None) -> str | None:
+    """Normalize an optional exact instruction-version guard."""
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _analysis_instruction_version(analysis: Analysis | None) -> str:
+    """Return the normalized persisted instruction version for diagnostics."""
+    return str(getattr(analysis, "instruction_version", "") or "").strip()
+
+
+def _instruction_version_mismatch_reason(*, expected: str, actual: str) -> str:
+    """Build a stable reuse rejection reason for exact-version guards."""
+    return f"instruction_version_mismatch:expected={expected}:actual={actual or 'missing'}"
+
+
+def _is_instruction_version_mismatch_reason(reason: str | None) -> bool:
+    """Return True for instruction-version guard rejection tokens."""
+    return str(reason or "").startswith("instruction_version_mismatch:")
 
 
 def _is_coaching_core_eligible(artifact: ReportArtifact) -> bool:
@@ -7990,6 +8121,124 @@ CALL_BREAKDOWN_CORRECTIVE_RECOMMENDATION_MARKERS = (
     "предлож",
     "сформулир",
 )
+SEMANTIC_CASE_PROBLEM_TYPES = {"growth_zone", "missed_opportunity"}
+SEMANTIC_CASE_BLOCK_MIN_SCORE = {
+    "situation_day": 65,
+    "call_breakdown": 55,
+    "voice_of_customer": 50,
+    "additional_situations": 50,
+    "call_tomorrow": 50,
+}
+SEMANTIC_CASE_POSITIVE_DIAGNOSIS_MARKERS = (
+    "правильно отреагировал",
+    "правильно отреагировала",
+    "корректно отреагировал",
+    "корректно отреагировала",
+    "успешно",
+    "эффективно",
+    "хорошо",
+    "верно",
+    "продемонстрировал эффективные",
+    "продемонстрировала эффективные",
+)
+SEMANTIC_CASE_MANAGER_GAP_MARKERS = (
+    "не уточ",
+    "не выяс",
+    "не выяв",
+    "не закреп",
+    "не зафикс",
+    "не подытож",
+    "не провер",
+    "не соглас",
+    "не предлож",
+    "не перев",
+    "без конкрет",
+    "отсутств",
+    "не хват",
+    "слаб",
+    "упущ",
+    "риск",
+)
+SEMANTIC_CASE_BLOCK_EXPECTED_ROLES = {
+    "situation_day": {"coaching_problem"},
+    "call_breakdown": {"coaching_problem", "strong_practice"},
+    "voice_of_customer": {"customer_signal"},
+    "additional_situations": {"coaching_problem", "customer_signal", "neutral_summary", "strong_practice"},
+    "call_tomorrow": {"follow_up_action"},
+}
+SEMANTIC_CASE_PROBLEM_FIT_MIN_SCORE = {
+    "situation_day": 70,
+    "call_breakdown": 65,
+    "additional_situations": 55,
+}
+PROBLEM_SIGNAL_CATEGORY_MARKERS: dict[str, tuple[str, ...]] = {
+    "next_step_owner_timing": (
+        "кто делает",
+        "кто будет",
+        "когда",
+        "срок",
+        "дат",
+        "время",
+        "следующ",
+        "следующий шаг",
+        "зафикс",
+        "фиксир",
+        "договор",
+        "ответствен",
+        "созвон",
+        "перезвон",
+        "вернуться",
+        "подтверд",
+    ),
+    "needs_discovery": (
+        "потребност",
+        "задач",
+        "контекст",
+        "процесс",
+        "ситуац",
+        "боль",
+        "уточн",
+        "выясн",
+    ),
+    "qualification": (
+        "роль",
+        "лпр",
+        "решени",
+        "юрист",
+        "руковод",
+        "актуальн",
+        "интерес",
+        "уместн",
+    ),
+    "value_proposition": (
+        "ценност",
+        "выгод",
+        "предлож",
+        "презентац",
+        "демо",
+        "адапт",
+        "продукт",
+        "решени",
+    ),
+    "trust_contact": (
+        "довер",
+        "безопас",
+        "незнаком",
+        "мошен",
+        "канал",
+        "whatsapp",
+        "ватсап",
+    ),
+    "objection": (
+        "возраж",
+        "отказ",
+        "сомнен",
+        "дорого",
+        "не актуал",
+        "неактуал",
+        "не интересно",
+    ),
+}
 
 
 def _call_list_rows_by_interaction_id(call_list: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -8050,6 +8299,70 @@ def _issue_payloads(issues: list[Any]) -> list[dict[str, str]]:
     ]
 
 
+def _raw_semantic_case_available(detail: dict[str, Any]) -> bool:
+    evidence = detail.get("report_evidence")
+    return isinstance(evidence, dict) and isinstance(evidence.get("semantic_case"), dict)
+
+
+def _semantic_case_diagnostic_state(
+    *,
+    semantic_case_available: bool,
+    report_evidence_valid: bool,
+    report_evidence: dict[str, Any],
+) -> tuple[bool, str | None]:
+    if not semantic_case_available:
+        return False, "semantic_case_missing"
+    if not report_evidence_valid:
+        return False, "report_evidence_invalid"
+    semantic_case = report_evidence.get("semantic_case")
+    if not isinstance(semantic_case, dict):
+        return False, "semantic_case_missing"
+    if semantic_case.get("usable_in_report") is not True:
+        return False, "semantic_case_unusable"
+    if str(semantic_case.get("case_type") or "").strip().lower() == "insufficient_evidence":
+        return False, "semantic_case_insufficient_evidence"
+    quality = str(semantic_case.get("evidence_quality") or "").strip().lower()
+    if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
+        return False, "semantic_case_unsupported_quality"
+    return True, None
+
+
+def _report_evidence_source_for_state(*, report_evidence_valid: bool, semantic_case_valid: bool) -> str:
+    if semantic_case_valid:
+        return "semantic_case"
+    if report_evidence_valid:
+        return "report_evidence_v1"
+    return "legacy_fallback"
+
+
+def _semantic_case_block_fit_diagnostic_from_entry(item: dict[str, Any]) -> dict[str, Any]:
+    evidence = item.get("report_evidence")
+    if not isinstance(evidence, dict):
+        return {}
+    semantic_case = evidence.get("semantic_case")
+    if not isinstance(semantic_case, dict):
+        return {}
+    block_fit = semantic_case.get("report_block_fit")
+    if not isinstance(block_fit, dict):
+        return {}
+    diagnostic: dict[str, Any] = {}
+    for block_name, value in block_fit.items():
+        if not isinstance(value, dict):
+            continue
+        diagnostic[str(block_name)] = {
+            "fit": value.get("fit"),
+            "score": value.get("score"),
+            "reason_code": value.get("reason_code"),
+            "evidence_type": value.get("evidence_type"),
+            "block_role": value.get("block_role"),
+            "title_mode": value.get("title_mode"),
+            "problem_fit": value.get("problem_fit") if isinstance(value.get("problem_fit"), dict) else None,
+            "evidence_target": value.get("evidence_target"),
+            "gap_proven": value.get("gap_proven"),
+        }
+    return diagnostic
+
+
 def _build_report_evidence_index(*, artifacts: list[ReportArtifact]) -> dict[str, dict[str, Any]]:
     """Validate report_evidence once per report-day artifact and keep diagnostics."""
     index: dict[str, dict[str, Any]] = {}
@@ -8057,10 +8370,16 @@ def _build_report_evidence_index(*, artifacts: list[ReportArtifact]) -> dict[str
         source_analysis = artifact.analysis or artifact.original_analysis
         detail = dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
         available = isinstance(detail.get("report_evidence"), dict)
+        semantic_case_available = _raw_semantic_case_available(detail)
         validation = validate_report_evidence(detail, getattr(artifact.interaction, "text", None))
         valid = bool(available and validation.is_valid)
         normalized = dict(validation.normalized or {}) if valid else {}
         report_evidence = dict(normalized.get("report_evidence") or {}) if valid else {}
+        semantic_case_valid, semantic_case_filtered_reason = _semantic_case_diagnostic_state(
+            semantic_case_available=semantic_case_available,
+            report_evidence_valid=valid,
+            report_evidence=report_evidence,
+        )
         interaction_id = str(artifact.interaction.id)
         index[interaction_id] = {
             "interaction_id": interaction_id,
@@ -8070,16 +8389,28 @@ def _build_report_evidence_index(*, artifacts: list[ReportArtifact]) -> dict[str
             "report_evidence_valid": valid,
             "report_evidence_errors": _issue_payloads(list(validation.errors or [])),
             "report_evidence_warnings": _issue_payloads(list(validation.warnings or [])),
-            "report_evidence_source": "report_evidence" if valid else "legacy_fallback",
+            "report_evidence_source": _report_evidence_source_for_state(
+                report_evidence_valid=valid,
+                semantic_case_valid=semantic_case_valid,
+            ),
             "report_evidence_version": validation.version,
+            "semantic_case_available": semantic_case_available,
+            "semantic_case_valid": semantic_case_valid,
+            "semantic_case_filtered_reason": semantic_case_filtered_reason,
             "normalized": normalized,
             "report_evidence": report_evidence,
         }
     return index
 
 
-def _build_report_evidence_diagnostics(*, index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _build_report_evidence_diagnostics(
+    *,
+    index: dict[str, dict[str, Any]],
+    semantic_case_used_call_ids: set[str] | None = None,
+    semantic_case_block_sources: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Return payload-level report_evidence validation diagnostics."""
+    used_call_ids = {str(item) for item in semantic_case_used_call_ids or set() if str(item or "").strip()}
     rows = [
         {
             "interaction_id": item["interaction_id"],
@@ -8092,9 +8423,26 @@ def _build_report_evidence_diagnostics(*, index: dict[str, dict[str, Any]]) -> d
             "report_evidence_source": item.get("report_evidence_source") or "legacy_fallback",
             "report_evidence_version": item.get("report_evidence_version"),
             "call_report_summary_available": _valid_call_report_summary_from_entry(item) is not None,
+            "semantic_case_available": bool(item.get("semantic_case_available")),
+            "semantic_case_valid": bool(item.get("semantic_case_valid")),
+            "semantic_case_used": str(item.get("interaction_id") or "") in used_call_ids,
+            "semantic_case_report_block_fit": _semantic_case_block_fit_diagnostic_from_entry(item),
+            "semantic_case_filtered_reason": (
+                None
+                if str(item.get("interaction_id") or "") in used_call_ids
+                else (
+                    "not_selected_for_final_blocks"
+                    if item.get("semantic_case_valid")
+                    else item.get("semantic_case_filtered_reason")
+                )
+            ),
         }
         for item in index.values()
     ]
+    source_counts: dict[str, int] = {"semantic_case": 0, "report_evidence_v1": 0, "legacy_fallback": 0}
+    for item in rows:
+        source = str(item.get("report_evidence_source") or "legacy_fallback")
+        source_counts[source] = source_counts.get(source, 0) + 1
     return {
         "summary": {
             "calls_checked": len(rows),
@@ -8105,10 +8453,161 @@ def _build_report_evidence_diagnostics(*, index: dict[str, dict[str, Any]]) -> d
             ),
             "missing_count": sum(1 for item in rows if not item["report_evidence_available"]),
             "call_report_summary_available_count": sum(1 for item in rows if item["call_report_summary_available"]),
-            "source_policy": "valid_report_evidence_preferred_else_step8w_fallback",
+            "semantic_case_available_count": sum(1 for item in rows if item["semantic_case_available"]),
+            "semantic_case_valid_count": sum(1 for item in rows if item["semantic_case_valid"]),
+            "semantic_case_used_count": sum(1 for item in rows if item["semantic_case_used"]),
+            "semantic_case_filtered_count": sum(
+                1 for item in rows if item["semantic_case_filtered_reason"] is not None
+            ),
+            "report_evidence_source_counts": source_counts,
+            "source_policy": "valid_semantic_case_with_role_problem_fit_else_report_evidence_v1_else_step8w_fallback",
         },
+        "blocks": dict(semantic_case_block_sources or {}),
         "calls": sorted(rows, key=lambda item: str(item.get("interaction_id") or "")),
     }
+
+
+def _report_source_from_paths(paths: list[Any]) -> str:
+    normalized = " ".join(str(item or "") for item in paths)
+    if "report_evidence.semantic_case" in normalized:
+        return "semantic_case"
+    if "report_evidence" in normalized:
+        return "report_evidence_v1"
+    return "legacy_fallback"
+
+
+def _semantic_case_fallback_reason(
+    *,
+    index: dict[str, dict[str, Any]],
+    report_evidence_source: str,
+    semantic_case_used: bool,
+) -> str | None:
+    if semantic_case_used:
+        return None
+    if report_evidence_source == "semantic_case":
+        return "quality_gate_filtered_semantic_case"
+    if any(item.get("semantic_case_valid") for item in index.values()):
+        return "semantic_case_not_selected_for_block"
+    reasons = [
+        str(item.get("semantic_case_filtered_reason") or "")
+        for item in index.values()
+        if str(item.get("semantic_case_filtered_reason") or "").strip()
+    ]
+    return reasons[0] if reasons else "semantic_case_missing"
+
+
+def _source_block_diagnostic(
+    *,
+    index: dict[str, dict[str, Any]],
+    source_paths: list[Any],
+    call_ids: list[Any] | None = None,
+    semantic_case_used: bool | None = None,
+    quality_status: str | None = None,
+    selection_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    report_evidence_source = _report_source_from_paths(source_paths)
+    if semantic_case_used is None:
+        semantic_case_used = report_evidence_source == "semantic_case"
+    reason = _semantic_case_fallback_reason(
+        index=index,
+        report_evidence_source=report_evidence_source,
+        semantic_case_used=semantic_case_used,
+    )
+    return {
+        "report_evidence_source": report_evidence_source,
+        "source_paths": [str(item) for item in source_paths if str(item or "").strip()],
+        "semantic_case_used": semantic_case_used,
+        "semantic_case_filtered_reason": reason,
+        "quality_status": quality_status,
+        "call_ids": [str(item) for item in call_ids or [] if str(item or "").strip()],
+        "selection_diagnostics": dict(selection_diagnostics or {}),
+    }
+
+
+def _build_semantic_case_block_sources(
+    *,
+    index: dict[str, dict[str, Any]],
+    situation_evidence_quote: dict[str, Any] | None,
+    situation_day_coaching_view: dict[str, Any] | None,
+    call_breakdown: dict[str, Any] | None,
+    call_breakdown_quality: dict[str, Any] | None,
+    voice_of_customer: dict[str, Any] | None,
+    additional_situations: dict[str, Any] | None,
+    call_tomorrow: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    voice_rows = [
+        item for item in (voice_of_customer or {}).get("situations") or []
+        if isinstance(item, dict)
+    ]
+    tomorrow_rows = [
+        item for item in (call_tomorrow or {}).get("contacts") or []
+        if isinstance(item, dict)
+    ]
+    additional_rows = [
+        item for item in (additional_situations or {}).get("situations") or []
+        if isinstance(item, dict)
+    ]
+    call_breakdown_quality_status = str((call_breakdown_quality or {}).get("status") or "").strip() or None
+    call_breakdown_source_paths = [
+        (call_breakdown or {}).get("call_breakdown_source"),
+        (call_breakdown or {}).get("source_note"),
+        (call_breakdown_quality or {}).get("source"),
+    ]
+    call_breakdown_semantic_used = (
+        _report_source_from_paths(call_breakdown_source_paths) == "semantic_case"
+        and call_breakdown_quality_status != "insufficient_evidence"
+        and not (call_breakdown or {}).get("is_placeholder")
+    )
+    return {
+        "situation_day": _source_block_diagnostic(
+            index=index,
+            source_paths=[
+                (situation_evidence_quote or {}).get("source"),
+                (situation_day_coaching_view or {}).get("source"),
+            ],
+            call_ids=[(situation_evidence_quote or {}).get("call_id")],
+            selection_diagnostics=(situation_day_coaching_view or {}).get("selection_diagnostics"),
+        ),
+        "call_breakdown": _source_block_diagnostic(
+            index=index,
+            source_paths=call_breakdown_source_paths,
+            call_ids=[(call_breakdown or {}).get("call_id")],
+            semantic_case_used=call_breakdown_semantic_used,
+            quality_status=call_breakdown_quality_status,
+            selection_diagnostics=(call_breakdown or {}).get("selection_diagnostics"),
+        ),
+        "voice_of_customer": _source_block_diagnostic(
+            index=index,
+            source_paths=[
+                (voice_of_customer or {}).get("source_note"),
+                *[item.get("source") for item in voice_rows],
+            ],
+            call_ids=[item.get("call_id") for item in voice_rows],
+            selection_diagnostics=(voice_of_customer or {}).get("selection_diagnostics"),
+        ),
+        "additional_situations": _source_block_diagnostic(
+            index=index,
+            source_paths=[
+                (additional_situations or {}).get("source_note"),
+                *[item.get("source") for item in additional_rows],
+            ],
+        ),
+        "call_tomorrow": _source_block_diagnostic(
+            index=index,
+            source_paths=[item.get("source") for item in tomorrow_rows],
+            call_ids=[item.get("interaction_id") for item in tomorrow_rows],
+        ),
+    }
+
+
+def _semantic_case_used_call_ids_from_block_sources(
+    block_sources: dict[str, dict[str, Any]],
+) -> set[str]:
+    used: set[str] = set()
+    for item in block_sources.values():
+        if item.get("semantic_case_used"):
+            used.update(str(call_id) for call_id in item.get("call_ids") or [] if str(call_id or "").strip())
+    return used
 
 
 def _build_call_report_summary_diagnostics(
@@ -8489,6 +8988,21 @@ def _valid_report_evidence_for_artifact(
     return dict(evidence) if isinstance(evidence, dict) else None
 
 
+def _valid_semantic_case_from_evidence(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return a usable semantic_case from validated report_evidence."""
+    if not isinstance(evidence, dict):
+        return None
+    semantic_case = evidence.get("semantic_case")
+    if not isinstance(semantic_case, dict) or semantic_case.get("usable_in_report") is not True:
+        return None
+    if str(semantic_case.get("case_type") or "").strip().lower() == "insufficient_evidence":
+        return None
+    quality = str(semantic_case.get("evidence_quality") or "").strip().lower()
+    if quality not in REPORT_EVIDENCE_USABLE_QUALITIES:
+        return None
+    return dict(semantic_case)
+
+
 def _final_status_for_artifact(
     *,
     artifact: ReportArtifact,
@@ -8536,10 +9050,15 @@ def _report_evidence_stage_score_label(stage_code: str, score_by_stage: list[dic
     return None
 
 
-def _report_evidence_turns(candidate: dict[str, Any], *, limit: int = 320) -> list[dict[str, str]]:
+def _report_evidence_turns(
+    candidate: dict[str, Any],
+    *,
+    key: str = "dialogue_fragment",
+    limit: int = 320,
+) -> list[dict[str, str]]:
     """Return bounded report_evidence dialogue turns without inventing roles."""
     turns: list[dict[str, str]] = []
-    for turn in candidate.get("dialogue_fragment") or []:
+    for turn in candidate.get(key) or []:
         if not isinstance(turn, dict):
             continue
         text = _dialogue_turn_text(str(turn.get("text") or ""), limit=limit)
@@ -8552,6 +9071,111 @@ def _report_evidence_turns(candidate: dict[str, Any], *, limit: int = 320) -> li
         if len(turns) >= 4:
             break
     return turns
+
+
+def _semantic_case_turns(semantic_case: dict[str, Any], *, limit: int = 320) -> list[dict[str, str]]:
+    return _report_evidence_turns(semantic_case, key="best_dialogue_fragment", limit=limit)
+
+
+def _semantic_supporting_quote_text(value: Any) -> str | None:
+    """Return optional quote text from coaching_moment without requiring it."""
+    if isinstance(value, dict):
+        for key in ("quote", "text", "client_text", "manager_text", "supporting_quote"):
+            text = _dialogue_turn_text(str(value.get(key) or ""), limit=220)
+            if text:
+                return text
+        return None
+    text = _dialogue_turn_text(str(value or ""), limit=220)
+    return text or None
+
+
+def _semantic_case_coaching_moment(
+    semantic_case: dict[str, Any],
+    *,
+    block_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Extract the report-facing coaching moment, falling back to legacy semantic_case fields."""
+    fit_item = (
+        _semantic_case_block_fit_item(semantic_case, block_name or "")
+        if block_name
+        else None
+    )
+    raw = (fit_item or {}).get("coaching_moment") if fit_item is not None else None
+    if not isinstance(raw, dict):
+        raw = semantic_case.get("coaching_moment")
+    has_explicit_coaching_moment = isinstance(raw, dict)
+    coaching_moment = raw if isinstance(raw, dict) else {}
+    summary = _first_sentence(
+        str(
+            semantic_case.get("moment_summary")
+            or coaching_moment.get("summary")
+            or coaching_moment.get("moment_summary")
+            or semantic_case.get("manager_behavior")
+            or semantic_case.get("core_meaning")
+            or ""
+        ),
+        limit=260,
+    )
+    missing_action = _first_sentence(
+        str(
+            coaching_moment.get("missing_action")
+            or semantic_case.get("missing_action")
+            or semantic_case.get("coaching_diagnosis")
+            or ""
+        ),
+        limit=260,
+    )
+    why_it_matters = _first_sentence(
+        str(
+            coaching_moment.get("why_it_matters")
+            or semantic_case.get("why_it_matters")
+            or semantic_case.get("why_this_call_matters")
+            or semantic_case.get("core_meaning")
+            or ""
+        ),
+        limit=260,
+    )
+    supporting_quote = _semantic_supporting_quote_text(
+        coaching_moment.get("supporting_quote")
+        or semantic_case.get("supporting_quote")
+        or coaching_moment.get("quote")
+    )
+    if not any((summary, missing_action, why_it_matters, supporting_quote)):
+        return None
+    confidence = str(
+        coaching_moment.get("confidence")
+        or semantic_case.get("confidence")
+        or ""
+    ).strip().lower() or None
+    evidence_type = str(
+        coaching_moment.get("evidence_type")
+        or semantic_case.get("evidence_type")
+        or (fit_item or {}).get("evidence_type")
+        or ""
+    ).strip() or None
+    return {
+        "moment_summary": summary or None,
+        "missing_action": missing_action or None,
+        "why_it_matters": why_it_matters or None,
+        "supporting_quote": supporting_quote,
+        "evidence_type": evidence_type,
+        "confidence": confidence,
+        "has_explicit_coaching_moment": has_explicit_coaching_moment,
+    }
+
+
+def _semantic_case_supporting_quote(
+    *,
+    semantic_case: dict[str, Any],
+    turns: list[dict[str, str]],
+    block_name: str | None = None,
+) -> str | None:
+    moment = _semantic_case_coaching_moment(semantic_case, block_name=block_name) or {}
+    return (
+        str(moment.get("supporting_quote") or "").strip()
+        or _report_evidence_quote_text(turns)
+        or None
+    )
 
 
 def _report_evidence_quote_text(turns: list[dict[str, str]]) -> str:
@@ -8612,6 +9236,395 @@ def _report_evidence_candidate_rank(
         _extract_score_percent(artifact.analysis),
         artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
     )
+
+
+def _semantic_case_matches_focus(
+    *,
+    semantic_case: dict[str, Any],
+    focus_stage_code: str | None,
+) -> bool:
+    if not focus_stage_code:
+        return True
+    case_stage = str(semantic_case.get("stage_code") or "").strip()
+    return not case_stage or case_stage == focus_stage_code
+
+
+def _semantic_case_stage_code(
+    *,
+    semantic_case: dict[str, Any],
+    focus_stage_code: str | None,
+) -> str:
+    return str(semantic_case.get("stage_code") or "").strip() or str(focus_stage_code or "").strip()
+
+
+def _semantic_case_block_fit_item(semantic_case: dict[str, Any], block_name: str) -> dict[str, Any] | None:
+    block_fit = semantic_case.get("report_block_fit")
+    if not isinstance(block_fit, dict):
+        return None
+    item = block_fit.get(block_name)
+    return item if isinstance(item, dict) else None
+
+
+def _semantic_case_block_fit_score(semantic_case: dict[str, Any], block_name: str) -> int | None:
+    item = _semantic_case_block_fit_item(semantic_case, block_name)
+    if item is None:
+        return None
+    try:
+        score = int(item.get("score"))
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(100, score))
+
+
+def _semantic_case_block_fit_value(semantic_case: dict[str, Any], block_name: str, key: str) -> str | None:
+    item = _semantic_case_block_fit_item(semantic_case, block_name)
+    if item is None:
+        return None
+    value = str(item.get(key) or "").strip()
+    return value or None
+
+
+def _semantic_case_problem_fit_item(semantic_case: dict[str, Any], block_name: str) -> dict[str, Any] | None:
+    item = _semantic_case_block_fit_item(semantic_case, block_name)
+    if item is None:
+        return None
+    problem_fit = item.get("problem_fit")
+    return problem_fit if isinstance(problem_fit, dict) else None
+
+
+def _semantic_case_problem_fit_score(semantic_case: dict[str, Any], block_name: str) -> int | None:
+    problem_fit = _semantic_case_problem_fit_item(semantic_case, block_name)
+    if problem_fit is None:
+        return None
+    try:
+        score = int(problem_fit.get("score"))
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(100, score))
+
+
+def _semantic_case_problem_fit_text(semantic_case: dict[str, Any], block_name: str) -> str:
+    problem_fit = _semantic_case_problem_fit_item(semantic_case, block_name) or {}
+    return " ".join(
+        str(value or "")
+        for value in (
+            problem_fit.get("problem_signal"),
+            problem_fit.get("explanation"),
+            semantic_case.get("case_title"),
+            semantic_case.get("coaching_diagnosis"),
+            semantic_case.get("recommended_next_action"),
+        )
+    )
+
+
+def _problem_signal_categories(*values: Any) -> set[str]:
+    text = _summary_norm(" ".join(str(value or "") for value in values))
+    categories: set[str] = set()
+    for category, markers in PROBLEM_SIGNAL_CATEGORY_MARKERS.items():
+        if any(marker in text for marker in markers):
+            categories.add(category)
+    return categories
+
+
+def _problem_signal_token_overlap(left: Any, right: Any) -> float:
+    left_tokens = {
+        token
+        for token in re.findall(r"[a-zа-яё0-9]+", _summary_norm(left))
+        if len(token) >= 4
+    }
+    right_tokens = {
+        token
+        for token in re.findall(r"[a-zа-яё0-9]+", _summary_norm(right))
+        if len(token) >= 4
+    }
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(min(len(left_tokens), len(right_tokens)), 1)
+
+
+def _semantic_case_problem_matches_daily_focus(
+    *,
+    semantic_case: dict[str, Any],
+    block_name: str,
+    daily_focus: dict[str, Any] | None,
+) -> bool:
+    problem_statement = str((daily_focus or {}).get("problem_statement") or "").strip()
+    problem_signal = str((daily_focus or {}).get("problem_signal") or "").strip()
+    if not problem_statement and not problem_signal:
+        return True
+    case_problem_text = _semantic_case_problem_fit_text(semantic_case, block_name)
+    if not _summary_norm(case_problem_text):
+        return True
+    focus_categories = _problem_signal_categories(problem_statement, problem_signal)
+    case_categories = _problem_signal_categories(case_problem_text)
+    if focus_categories and case_categories:
+        return bool(focus_categories & case_categories)
+    return _problem_signal_token_overlap(
+        " ".join((problem_statement, problem_signal)),
+        case_problem_text,
+    ) >= 0.25
+
+
+def _semantic_case_turn_has_speaker(turns: list[dict[str, str]], speaker: str) -> bool:
+    expected = str(speaker or "").strip().lower()
+    return any(
+        str(turn.get("speaker") or "").strip().lower() == expected
+        and bool(str(turn.get("text") or "").strip())
+        for turn in turns
+    )
+
+
+def _semantic_case_text_bundle(semantic_case: dict[str, Any]) -> str:
+    return _summary_norm(
+        " ".join(
+            str(semantic_case.get(key) or "")
+            for key in (
+                "case_title",
+                "case_type",
+                "core_meaning",
+                "why_this_call_matters",
+                "customer_signal",
+                "manager_behavior",
+                "coaching_diagnosis",
+                "recommended_next_action",
+            )
+        )
+    )
+
+
+def _semantic_case_has_positive_diagnosis(semantic_case: dict[str, Any]) -> bool:
+    diagnosis = _summary_norm(semantic_case.get("coaching_diagnosis"))
+    if not diagnosis:
+        return False
+    return any(marker in diagnosis for marker in SEMANTIC_CASE_POSITIVE_DIAGNOSIS_MARKERS)
+
+
+def _semantic_case_has_manager_gap(semantic_case: dict[str, Any]) -> bool:
+    text = _semantic_case_text_bundle(semantic_case)
+    case_type = str(semantic_case.get("case_type") or "").strip().lower()
+    if case_type in SEMANTIC_CASE_PROBLEM_TYPES and any(marker in text for marker in SEMANTIC_CASE_MANAGER_GAP_MARKERS):
+        return True
+    evidence_type = _semantic_case_block_fit_value(semantic_case, "situation_day", "evidence_type")
+    return evidence_type == "manager_gap"
+
+
+def _semantic_case_problem_fragment_rejection_reason(
+    *,
+    turns: list[dict[str, str]],
+    min_information_score: int = 3,
+) -> str | None:
+    manager_text = _manager_text_from_turns(turns)
+    if not manager_text:
+        return "manager_fragment_missing"
+    if is_greeting_only_fragment(manager_text) or _dialogue_compact(manager_text) == "телефонныйзвонок":
+        return "problem_fragment_low_information"
+    if fragment_information_score(manager_text) < min_information_score:
+        return "problem_fragment_low_information"
+    return None
+
+
+def _semantic_case_block_rejection_reason(
+    *,
+    semantic_case: dict[str, Any],
+    turns: list[dict[str, str]],
+    block_name: str,
+    focus_stage_code: str | None,
+    daily_focus: dict[str, Any] | None = None,
+) -> str | None:
+    if focus_stage_code and not _semantic_case_matches_focus(
+        semantic_case=semantic_case,
+        focus_stage_code=focus_stage_code,
+    ):
+        return "stage_mismatch"
+    coaching_moment = _semantic_case_coaching_moment(semantic_case, block_name=block_name)
+    has_moment_summary = bool(
+        str((coaching_moment or {}).get("moment_summary") or "").strip()
+        or str((coaching_moment or {}).get("missing_action") or "").strip()
+    )
+    quote_required_blocks = {"voice_of_customer", "call_tomorrow"}
+    if not turns and not (has_moment_summary and block_name not in quote_required_blocks):
+        return "missing_grounded_fragment"
+
+    fit_item = _semantic_case_block_fit_item(semantic_case, block_name)
+    fit_score = _semantic_case_block_fit_score(semantic_case, block_name)
+    reason_code = _semantic_case_block_fit_value(semantic_case, block_name, "reason_code")
+    evidence_type = _semantic_case_block_fit_value(semantic_case, block_name, "evidence_type")
+    block_role = _semantic_case_block_fit_value(semantic_case, block_name, "block_role")
+    title_mode = _semantic_case_block_fit_value(semantic_case, block_name, "title_mode")
+    gap_proven_raw = fit_item.get("gap_proven") if fit_item is not None else None
+    problem_fit_score = _semantic_case_problem_fit_score(semantic_case, block_name)
+    min_score = SEMANTIC_CASE_BLOCK_MIN_SCORE.get(block_name, 50)
+    if fit_item is not None:
+        if fit_item.get("fit") is not True:
+            return reason_code or "report_block_fit_false"
+        if fit_score is None or fit_score < min_score:
+            return "report_block_fit_score_below_threshold"
+        expected_roles = SEMANTIC_CASE_BLOCK_EXPECTED_ROLES.get(block_name)
+        if block_role and expected_roles and block_role not in expected_roles:
+            return "block_role_mismatch"
+        min_problem_score = SEMANTIC_CASE_PROBLEM_FIT_MIN_SCORE.get(block_name)
+        if (
+            min_problem_score is not None
+            and problem_fit_score is not None
+            and problem_fit_score < min_problem_score
+        ):
+            return "problem_fit_score_below_threshold"
+
+    case_type = str(semantic_case.get("case_type") or "").strip().lower()
+    positive_diagnosis = _semantic_case_has_positive_diagnosis(semantic_case)
+
+    if block_name == "situation_day":
+        if block_role and block_role != "coaching_problem":
+            return "block_role_not_coaching_problem"
+        if title_mode and title_mode != "problem":
+            return "title_mode_not_problem"
+        if case_type not in SEMANTIC_CASE_PROBLEM_TYPES:
+            return (
+                "positive_diagnosis_not_problem_case"
+                if positive_diagnosis
+                else "case_type_not_problem_case"
+            )
+        if evidence_type is not None and evidence_type != "manager_gap":
+            return "situation_day_requires_manager_gap"
+        if gap_proven_raw is False:
+            return "manager_gap_not_proven"
+        if positive_diagnosis:
+            return "positive_diagnosis_not_problem_case"
+        if not _semantic_case_has_manager_gap(semantic_case):
+            return "manager_gap_missing"
+        if (
+            not has_moment_summary
+            and not _semantic_case_turn_has_speaker(turns, "manager")
+            and evidence_type != "manager_gap"
+        ):
+            return "manager_evidence_missing"
+        problem_fragment_reason = (
+            None
+            if has_moment_summary
+            else _semantic_case_problem_fragment_rejection_reason(turns=turns)
+        )
+        if problem_fragment_reason:
+            return problem_fragment_reason
+        if not _semantic_case_problem_matches_daily_focus(
+            semantic_case=semantic_case,
+            block_name=block_name,
+            daily_focus=daily_focus,
+        ):
+            return "problem_signal_mismatch"
+        return None
+
+    if block_name == "call_breakdown":
+        if block_role and block_role not in {"coaching_problem", "strong_practice"}:
+            return "block_role_mismatch"
+        if block_role == "coaching_problem" and title_mode and title_mode != "problem":
+            return "title_mode_not_problem"
+        if case_type in {"customer_signal", "service_issue"} and fit_item is None:
+            return "case_type_not_coachable_moment"
+        if positive_diagnosis and case_type != "strong_practice":
+            return "positive_diagnosis_not_problem_case"
+        if (
+            not has_moment_summary
+            and not _semantic_case_turn_has_speaker(turns, "manager")
+            and case_type != "strong_practice"
+        ):
+            return "manager_fragment_missing"
+        if block_role == "coaching_problem" and gap_proven_raw is False:
+            return "manager_gap_not_proven"
+        if block_role == "coaching_problem":
+            problem_fragment_reason = None if has_moment_summary else _semantic_case_problem_fragment_rejection_reason(
+                turns=turns,
+                min_information_score=3,
+            )
+            if problem_fragment_reason:
+                return problem_fragment_reason
+        if block_role == "coaching_problem" and not _semantic_case_problem_matches_daily_focus(
+            semantic_case=semantic_case,
+            block_name=block_name,
+            daily_focus=daily_focus,
+        ):
+            return "problem_signal_mismatch"
+        return None
+
+    if block_name == "voice_of_customer":
+        if block_role and block_role != "customer_signal":
+            return "block_role_not_customer_signal"
+        if not _semantic_case_turn_has_speaker(turns, "client") and not _semantic_case_turn_has_speaker(turns, "unknown"):
+            return "customer_quote_missing"
+        return None
+
+    if block_name == "additional_situations":
+        if block_role and block_role not in SEMANTIC_CASE_BLOCK_EXPECTED_ROLES["additional_situations"]:
+            return "block_role_mismatch"
+        if block_role == "coaching_problem":
+            if title_mode and title_mode != "problem":
+                return "title_mode_not_problem"
+            if gap_proven_raw is False:
+                return "manager_gap_not_proven"
+        return None
+
+    if block_name == "call_tomorrow":
+        if block_role and block_role != "follow_up_action":
+            return "block_role_not_follow_up_action"
+        return None
+
+    return None
+
+
+def _semantic_case_candidate_diagnostic(
+    *,
+    artifact: ReportArtifact,
+    semantic_case: dict[str, Any],
+    block_name: str,
+    rejection_reason: str | None,
+) -> dict[str, Any]:
+    ref = _artifact_call_reference(artifact)
+    fit_item = _semantic_case_block_fit_item(semantic_case, block_name) or {}
+    problem_fit = _semantic_case_problem_fit_item(semantic_case, block_name) or {}
+    return {
+        "call_id": ref["call_id"],
+        "client_call_reference": ref["client_call_reference"],
+        "case_title": str(semantic_case.get("case_title") or "").strip(),
+        "case_type": str(semantic_case.get("case_type") or "").strip() or None,
+        "stage_code": str(semantic_case.get("stage_code") or "").strip() or None,
+        "fit": fit_item.get("fit") if fit_item else None,
+        "fit_score": _semantic_case_block_fit_score(semantic_case, block_name),
+        "reason_code": str(fit_item.get("reason_code") or "").strip() or None,
+        "evidence_type": str(fit_item.get("evidence_type") or "").strip() or None,
+        "block_role": str(fit_item.get("block_role") or "").strip() or None,
+        "title_mode": str(fit_item.get("title_mode") or "").strip() or None,
+        "problem_fit_score": _semantic_case_problem_fit_score(semantic_case, block_name),
+        "problem_fit_signal": str(problem_fit.get("problem_signal") or "").strip() or None,
+        "evidence_target": str(fit_item.get("evidence_target") or "").strip() or None,
+        "gap_proven": fit_item.get("gap_proven") if fit_item else None,
+        "rejection_reason": rejection_reason,
+    }
+
+
+def _semantic_case_selection_diagnostics(
+    *,
+    block_name: str,
+    selected: dict[str, Any] | None,
+    rejected: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "block": block_name,
+        "selected_candidate": selected,
+        "rejected_candidates": rejected[:12],
+    }
+
+
+def _semantic_case_scripts(*, semantic_case: dict[str, Any], stage_code: str) -> list[str]:
+    scripts: list[str] = []
+    action = _first_sentence(str(semantic_case.get("recommended_next_action") or ""), limit=220)
+    if action:
+        scripts.append(action)
+    for item in _SITUATION_STAGE_SCRIPT_FALLBACKS.get(stage_code) or []:
+        phrase = _first_sentence(str(item or ""), limit=220)
+        if phrase and phrase not in scripts:
+            scripts.append(phrase)
+        if len(scripts) >= 3:
+            break
+    return scripts[:3]
 
 
 def _call_breakdown_summary_line(
@@ -8751,8 +9764,23 @@ def _apply_call_breakdown_quality_gate(
 
     focus_stage = _daily_focus_stage_code(daily_focus)
     block_stage = str(call_breakdown.get("stage_code") or "").strip()
+    source_allows_optional_quote = source in {
+        "report_evidence.semantic_case",
+        "report_evidence.manager_coaching_moments",
+    }
+    optional_quote_evidence_type = str(call_breakdown.get("evidence_type") or "").strip().lower()
+    quote_optional = bool(
+        source_allows_optional_quote
+        and str(call_breakdown.get("moment_summary") or "").strip()
+        and optional_quote_evidence_type
+        in {"absence_in_context", "inferred_from_dialogue", "manager_gap", ""}
+    )
+    fallback_moment_summary = _clean_call_breakdown_cell(
+        (call_breakdown or {}).get("moment_summary")
+    )
 
     rendered: list[list[str]] = []
+    rendered_fragment_present = False
 
     def reject(index: int, reason: str, row: list[Any]) -> None:
         quality["filtered_rows_count"] += 1
@@ -8773,24 +9801,38 @@ def _apply_call_breakdown_quality_gate(
             reject(index, "stage_mismatch", row)
             continue
         padded = [*row, "", "", "", ""][:4]
-        moment, what, fragment, recommendation = [_clean_call_breakdown_cell(item) for item in padded]
+        moment, what, fragment, recommendation = [
+            _clean_call_breakdown_cell(item)
+            for item in padded
+        ]
         fragment_reason = _call_breakdown_fragment_reject_reason(fragment)
         if fragment_reason:
-            reject(index, fragment_reason, row)
-            continue
+            missing_optional_quote = quote_optional and fragment_reason in {
+                "missing_evidence",
+                "no_confirming_fragment",
+            }
+            if not missing_optional_quote:
+                reject(index, fragment_reason, row)
+                continue
         if _call_breakdown_recommendation_polarity_mismatch(what=what, recommendation=recommendation):
             reject(index, "recommendation_polarity_mismatch", row)
             continue
         if _call_breakdown_duplicate_problem_wording(what=what, recommendation=recommendation):
             reject(index, "duplicate_problem_wording", row)
             continue
-        cleaned_row = [moment or f"Момент {len(rendered) + 1}", what, fragment, recommendation]
+        moment_cell = fragment
+        if fragment_reason and quote_optional:
+            moment_cell = fallback_moment_summary or what or fragment
+        cleaned_row = [moment or f"Момент {len(rendered) + 1}", what, moment_cell, recommendation]
         rendered.append(cleaned_row)
+        if not fragment_reason:
+            rendered_fragment_present = True
         quality["rendered_rows"].append(
             {
                 "index": len(rendered),
                 "moment": cleaned_row[0],
-                "fragment_present": True,
+                "fragment_present": not fragment_reason,
+                "quote_optional": bool(fragment_reason and quote_optional),
             }
         )
 
@@ -8803,8 +9845,8 @@ def _apply_call_breakdown_quality_gate(
         quality["status"] = "warning"
     result = dict(call_breakdown)
     result["rows"] = rendered
-    result["call_breakdown_fragment_present"] = True
-    if result.get("call_breakdown_evidence_strength") == "missing":
+    result["call_breakdown_fragment_present"] = rendered_fragment_present
+    if rendered_fragment_present and result.get("call_breakdown_evidence_strength") == "missing":
         result["call_breakdown_evidence_strength"] = "medium"
     result["call_breakdown_quality"] = quality
     return result, quality
@@ -9112,6 +10154,129 @@ def _report_evidence_situation_candidate_rank(
     return (base[0], client_grounding_rank, *base[1:])
 
 
+def _semantic_case_situation_rank(
+    *,
+    semantic_case: dict[str, Any],
+    score_by_stage: list[dict[str, Any]],
+    artifact: ReportArtifact,
+) -> tuple[Any, ...]:
+    base = _report_evidence_candidate_rank(
+        candidate=semantic_case,
+        score_by_stage=score_by_stage,
+        artifact=artifact,
+    )
+    fit_score = _semantic_case_block_fit_score(semantic_case, "situation_day")
+    problem_fit_score = _semantic_case_problem_fit_score(semantic_case, "situation_day")
+    case_type = str(semantic_case.get("case_type") or "").strip().lower()
+    evidence_type = _semantic_case_block_fit_value(semantic_case, "situation_day", "evidence_type")
+    block_role = _semantic_case_block_fit_value(semantic_case, "situation_day", "block_role")
+    title_mode = _semantic_case_block_fit_value(semantic_case, "situation_day", "title_mode")
+    case_type_rank = {"missed_opportunity": 0, "growth_zone": 1}.get(case_type, 9)
+    evidence_type_rank = 0 if evidence_type == "manager_gap" else 1 if evidence_type is None else 5
+    return (
+        base[0],
+        0 if block_role == "coaching_problem" else 1 if block_role is None else 5,
+        0 if title_mode == "problem" else 1 if title_mode is None else 5,
+        100 - (problem_fit_score if problem_fit_score is not None else 60),
+        100 - (fit_score if fit_score is not None else 60),
+        case_type_rank,
+        evidence_type_rank,
+        base[1],
+        base[3],
+        base[4],
+    )
+
+
+def _build_semantic_case_situation(
+    *,
+    artifact: ReportArtifact,
+    semantic_case: dict[str, Any],
+    turns: list[dict[str, str]],
+    score_by_stage: list[dict[str, Any]],
+    focus_stage_code: str | None,
+) -> dict[str, Any]:
+    """Build Situation Day from one coherent validated semantic_case."""
+    ref = _artifact_call_reference(artifact)
+    stage_code = _semantic_case_stage_code(
+        semantic_case=semantic_case,
+        focus_stage_code=focus_stage_code,
+    )
+    stage_name = _stage_name_for_code(stage_code, score_by_stage)
+    coaching_moment = (
+        _semantic_case_coaching_moment(semantic_case, block_name="situation_day")
+        or {}
+    )
+    quote_text = _semantic_case_supporting_quote(
+        semantic_case=semantic_case,
+        turns=turns,
+        block_name="situation_day",
+    ) or ""
+    dialogue_is_partial = any(turn.get("speaker") == "unknown" for turn in turns)
+    client_grounded = _client_turn_from_turns(turns) is not None
+    moment_summary = str(coaching_moment.get("moment_summary") or "").strip()
+    missing_action = str(coaching_moment.get("missing_action") or "").strip()
+    why_it_matters = (
+        str(coaching_moment.get("why_it_matters") or "").strip()
+        if coaching_moment.get("has_explicit_coaching_moment")
+        else ""
+    )
+    coaching_view = {
+        "pattern_title": _first_sentence(str(semantic_case.get("case_title") or ""), limit=180)
+        or "Ситуация дня из semantic_case",
+        "stage_code": stage_code,
+        "stage_label": stage_name,
+        "stage_score_label": _report_evidence_stage_score_label(stage_code, score_by_stage),
+        "what_happened": moment_summary
+        or _first_sentence(str(semantic_case.get("manager_behavior") or ""), limit=260),
+        "meaning": _first_sentence(
+            str(
+                why_it_matters
+                or semantic_case.get("core_meaning")
+                or semantic_case.get("why_this_call_matters")
+                or ""
+            ),
+            limit=260,
+        ),
+        "what_was_missing": missing_action
+        or _first_sentence(str(semantic_case.get("coaching_diagnosis") or ""), limit=260),
+        "next_time_action": _first_sentence(
+            str(semantic_case.get("recommended_next_action") or ""),
+            limit=260,
+        ),
+        "scripts": _semantic_case_scripts(semantic_case=semantic_case, stage_code=stage_code),
+        "moment_summary": moment_summary or None,
+        "missing_action": missing_action or None,
+        "why_it_matters": why_it_matters or None,
+        "supporting_quote": quote_text or None,
+        "evidence_type": coaching_moment.get("evidence_type")
+        or _semantic_case_block_fit_value(semantic_case, "situation_day", "evidence_type"),
+        "confidence": coaching_moment.get("confidence"),
+        "source": "report_evidence.semantic_case",
+        "dialogue_is_partial": dialogue_is_partial,
+    }
+    return {
+        "situation_title": str(semantic_case.get("case_title") or "").strip(),
+        "evidence_quote": {
+            **ref,
+            "client_text": quote_text,
+            "manager_text": _manager_text_from_turns(turns),
+            "criterion_code": None,
+            "stage_code": stage_code,
+            "source": "report_evidence.semantic_case",
+            "evidence_quality": semantic_case.get("evidence_quality"),
+            "client_grounded": client_grounded,
+        },
+        "dialogue_excerpt": {
+            **ref,
+            "source": "report_evidence.semantic_case",
+            "is_partial": dialogue_is_partial,
+            "partial_reason": "speaker_roles_unavailable" if dialogue_is_partial else None,
+            "turns": turns,
+        },
+        "coaching_view": coaching_view,
+    }
+
+
 def _build_report_evidence_situation(
     *,
     artifacts: list[ReportArtifact],
@@ -9120,7 +10285,9 @@ def _build_report_evidence_situation(
     score_by_stage: list[dict[str, Any]],
     daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Build Situation Day from valid report_evidence.situation_candidates when usable."""
+    """Build Situation Day from semantic_case first, then situation_candidates."""
+    semantic_candidates: list[tuple[tuple[Any, ...], ReportArtifact, dict[str, Any], list[dict[str, str]]]] = []
+    semantic_rejections: list[dict[str, Any]] = []
     candidates: list[tuple[tuple[int, int, int, int, float, datetime], ReportArtifact, dict[str, Any], dict[str, Any], list[dict[str, str]]]] = []
     focus_stage_code = _daily_focus_stage_code(daily_focus)
     for artifact in artifacts:
@@ -9135,6 +10302,38 @@ def _build_report_evidence_situation(
         )
         if evidence is None:
             continue
+        semantic_case = _valid_semantic_case_from_evidence(evidence)
+        if semantic_case is not None:
+            turns = _semantic_case_turns(semantic_case)
+            rejection_reason = _semantic_case_block_rejection_reason(
+                semantic_case=semantic_case,
+                turns=turns,
+                block_name="situation_day",
+                focus_stage_code=focus_stage_code,
+                daily_focus=daily_focus,
+            )
+            if rejection_reason:
+                semantic_rejections.append(
+                    _semantic_case_candidate_diagnostic(
+                        artifact=artifact,
+                        semantic_case=semantic_case,
+                        block_name="situation_day",
+                        rejection_reason=rejection_reason,
+                    )
+                )
+            else:
+                semantic_candidates.append(
+                    (
+                        _semantic_case_situation_rank(
+                            semantic_case=semantic_case,
+                            score_by_stage=score_by_stage,
+                            artifact=artifact,
+                        ),
+                        artifact,
+                        semantic_case,
+                        turns,
+                    )
+                )
         for candidate in evidence.get("situation_candidates") or []:
             if not isinstance(candidate, dict) or candidate.get("usable_in_report") is not True:
                 continue
@@ -9161,6 +10360,28 @@ def _build_report_evidence_situation(
                     turns,
                 )
             )
+    if semantic_candidates:
+        semantic_candidates.sort(key=lambda item: item[0])
+        _rank, artifact, semantic_case, turns = semantic_candidates[0]
+        result = _build_semantic_case_situation(
+            artifact=artifact,
+            semantic_case=semantic_case,
+            turns=turns,
+            score_by_stage=score_by_stage,
+            focus_stage_code=focus_stage_code,
+        )
+        result["selection_diagnostics"] = _semantic_case_selection_diagnostics(
+            block_name="situation_day",
+            selected=_semantic_case_candidate_diagnostic(
+                artifact=artifact,
+                semantic_case=semantic_case,
+                block_name="situation_day",
+                rejection_reason=None,
+            ),
+            rejected=semantic_rejections,
+        )
+        result.setdefault("coaching_view", {})["selection_diagnostics"] = result["selection_diagnostics"]
+        return result
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -9256,7 +10477,18 @@ def _build_call_breakdown_from_report_evidence(
     score_by_stage: list[dict[str, Any]],
     daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Build РАЗБОР ЗВОНКА from valid manager_coaching_moments when available."""
+    """Build РАЗБОР ЗВОНКА from semantic_case first, then manager_coaching_moments."""
+    semantic_candidates: list[
+        tuple[
+            tuple[Any, ...],
+            ReportArtifact,
+            dict[str, Any],
+            list[dict[str, str]],
+            str | None,
+            str,
+        ]
+    ] = []
+    semantic_rejections: list[dict[str, Any]] = []
     candidates: list[
         tuple[
             tuple[int, int, int, int, float, datetime],
@@ -9280,6 +10512,74 @@ def _build_call_breakdown_from_report_evidence(
         )
         if evidence is None:
             continue
+        semantic_case = _valid_semantic_case_from_evidence(evidence)
+        if semantic_case is not None:
+            turns = _semantic_case_turns(semantic_case)
+            rejection_reason = _semantic_case_block_rejection_reason(
+                semantic_case=semantic_case,
+                turns=turns,
+                block_name="call_breakdown",
+                focus_stage_code=focus_stage_code,
+                daily_focus=daily_focus,
+            )
+            if rejection_reason:
+                semantic_rejections.append(
+                    _semantic_case_candidate_diagnostic(
+                        artifact=artifact,
+                        semantic_case=semantic_case,
+                        block_name="call_breakdown",
+                        rejection_reason=rejection_reason,
+                    )
+                )
+                continue
+            fragment = _semantic_case_supporting_quote(
+                semantic_case=semantic_case,
+                turns=turns,
+                block_name="call_breakdown",
+            )
+            evidence_strength = _call_breakdown_fragment_strength(
+                fragment=fragment,
+                evidence_quality=str(semantic_case.get("evidence_quality") or ""),
+            )
+            fit_score = _semantic_case_block_fit_score(semantic_case, "call_breakdown")
+            problem_fit_score = _semantic_case_problem_fit_score(semantic_case, "call_breakdown")
+            block_role = _semantic_case_block_fit_value(
+                semantic_case,
+                "call_breakdown",
+                "block_role",
+            )
+            title_mode = _semantic_case_block_fit_value(
+                semantic_case,
+                "call_breakdown",
+                "title_mode",
+            )
+            semantic_candidates.append(
+                (
+                    (
+                        CALL_BREAKDOWN_EVIDENCE_STRENGTH_RANK.get(evidence_strength, 9),
+                        (
+                            0
+                            if block_role == "coaching_problem"
+                            else 1
+                            if block_role == "strong_practice"
+                            else 2
+                        ),
+                        0 if title_mode == "problem" else 1 if title_mode is None else 5,
+                        100 - (problem_fit_score if problem_fit_score is not None else 60),
+                        100 - (fit_score if fit_score is not None else 60),
+                        *_report_evidence_candidate_rank(
+                            candidate=semantic_case,
+                            score_by_stage=score_by_stage,
+                            artifact=artifact,
+                        ),
+                    ),
+                    artifact,
+                    semantic_case,
+                    turns,
+                    fragment,
+                    evidence_strength,
+                )
+            )
         for moment in evidence.get("manager_coaching_moments") or []:
             if not isinstance(moment, dict) or moment.get("usable_in_report") is not True:
                 continue
@@ -9311,6 +10611,78 @@ def _build_call_breakdown_from_report_evidence(
                     evidence_strength,
                 )
             )
+    if semantic_candidates:
+        semantic_candidates.sort(key=lambda item: item[0])
+        _rank, best_artifact, best_case, _turns, fragment, best_strength = semantic_candidates[0]
+        ref = _artifact_call_reference(best_artifact)
+        stage_code = _semantic_case_stage_code(
+            semantic_case=best_case,
+            focus_stage_code=focus_stage_code,
+        )
+        stage_name = _stage_name_for_code(stage_code, score_by_stage)
+        coaching_moment = (
+            _semantic_case_coaching_moment(best_case, block_name="call_breakdown")
+            or {}
+        )
+        moment_summary = str(coaching_moment.get("moment_summary") or "").strip()
+        missing_action = str(coaching_moment.get("missing_action") or "").strip()
+        why_it_matters = str(coaching_moment.get("why_it_matters") or "").strip()
+        what = _first_sentence(
+            str(
+                moment_summary
+                or best_case.get("manager_behavior")
+                or best_case.get("core_meaning")
+                or ""
+            ),
+            limit=220,
+        )
+        better = _first_sentence(str(best_case.get("recommended_next_action") or ""), limit=240)
+        result = {
+            "is_placeholder": False,
+            "call_id": ref["call_id"],
+            "client_label": ref["client_label"],
+            "client_phone": ref["client_phone"],
+            "date_label": ref["date_label"],
+            "time_label": ref["time_label"],
+            "client_call_reference": ref["client_call_reference"],
+            "stage_code": stage_code,
+            "stage_name": stage_name,
+            "stage_steps": [],
+            "worked": [],
+            "to_fix": [],
+            "recommendation": None,
+            "rows": [
+                [
+                    "1",
+                    f"{stage_name}: {what}".strip(),
+                    fragment or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
+                    better or "Закрепить следующий шаг конкретной формулировкой.",
+                ]
+            ],
+            "summary_line": _call_breakdown_summary_line(ref=ref, evidence_strength=best_strength),
+            "source_note": "report_evidence.semantic_case",
+            "call_breakdown_source": "report_evidence.semantic_case",
+            "call_breakdown_evidence_strength": best_strength,
+            "call_breakdown_fragment_present": fragment is not None,
+            "moment_summary": moment_summary or None,
+            "missing_action": missing_action or None,
+            "why_it_matters": why_it_matters or None,
+            "supporting_quote": fragment,
+            "evidence_type": coaching_moment.get("evidence_type")
+            or _semantic_case_block_fit_value(best_case, "call_breakdown", "evidence_type"),
+            "confidence": coaching_moment.get("confidence"),
+        }
+        result["selection_diagnostics"] = _semantic_case_selection_diagnostics(
+            block_name="call_breakdown",
+            selected=_semantic_case_candidate_diagnostic(
+                artifact=best_artifact,
+                semantic_case=best_case,
+                block_name="call_breakdown",
+                rejection_reason=None,
+            ),
+            rejected=semantic_rejections,
+        )
+        return result
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -9323,7 +10695,10 @@ def _build_call_breakdown_from_report_evidence(
     best_candidates.sort(key=lambda item: item[0])
     rows: list[list[str]] = []
     fragment_present = False
-    for index, (_moment_rank, moment, _turns, fragment, _strength) in enumerate(best_candidates[:3], start=1):
+    for index, (_moment_rank, moment, _turns, fragment, _strength) in enumerate(
+        best_candidates[:3],
+        start=1,
+    ):
         moment_stage_code = str(moment.get("stage_code") or "").strip()
         stage_name = _stage_name_for_code(moment_stage_code, score_by_stage)
         if fragment:
@@ -9346,6 +10721,15 @@ def _build_call_breakdown_from_report_evidence(
     if not rows:
         return None
     ref = _artifact_call_reference(best_artifact)
+    best_moment_summary = _first_sentence(
+        str(best_moment.get("moment_summary") or best_moment.get("what_happened") or ""),
+        limit=260,
+    )
+    best_missing_action = _first_sentence(
+        str(best_moment.get("missing_action") or best_moment.get("what_better") or ""),
+        limit=260,
+    )
+    best_why_it_matters = _first_sentence(str(best_moment.get("why_it_matters") or ""), limit=260)
     return {
         "is_placeholder": False,
         "call_id": ref["call_id"],
@@ -9355,7 +10739,10 @@ def _build_call_breakdown_from_report_evidence(
         "time_label": ref["time_label"],
         "client_call_reference": ref["client_call_reference"],
         "stage_code": str(best_moment.get("stage_code") or "").strip(),
-        "stage_name": _stage_name_for_code(str(best_moment.get("stage_code") or ""), score_by_stage),
+        "stage_name": _stage_name_for_code(
+            str(best_moment.get("stage_code") or ""),
+            score_by_stage,
+        ),
         "stage_steps": [],
         "worked": [],
         "to_fix": [],
@@ -9366,6 +10753,12 @@ def _build_call_breakdown_from_report_evidence(
         "call_breakdown_source": "report_evidence.manager_coaching_moments",
         "call_breakdown_evidence_strength": best_strength,
         "call_breakdown_fragment_present": fragment_present,
+        "moment_summary": best_moment_summary or None,
+        "missing_action": best_missing_action or None,
+        "why_it_matters": best_why_it_matters or None,
+        "supporting_quote": _best_fragment,
+        "evidence_type": best_moment.get("evidence_type"),
+        "confidence": best_moment.get("confidence"),
     }
 
 
@@ -9375,10 +10768,13 @@ def _build_voice_of_customer_from_report_evidence(
     report_evidence_index: dict[str, dict[str, Any]],
     call_list_by_interaction_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Build Голос клиента from valid report_evidence.voice_of_customer candidates."""
-    rows: list[tuple[tuple[int, int, datetime], dict[str, Any]]] = []
+    """Build Голос клиента from semantic_case first, then voice_of_customer candidates."""
+    rows: list[tuple[tuple[int, int, int, datetime], dict[str, Any]]] = []
     seen: set[str] = set()
     signal_rank = {"high": 0, "medium": 1, "low": 2}
+    semantic_used = False
+    semantic_rejections: list[dict[str, Any]] = []
+    semantic_selections: list[dict[str, Any]] = []
     for artifact in artifacts:
         if not _is_report_evidence_sales_like(
             artifact=artifact,
@@ -9397,6 +10793,96 @@ def _build_voice_of_customer_from_report_evidence(
         )
         summary_action = _summary_text((summary or {}).get("manager_next_action"), limit=220)
         ref = _artifact_call_reference(artifact)
+        semantic_case = _valid_semantic_case_from_evidence(evidence)
+        if semantic_case is not None:
+            semantic_turns = _semantic_case_turns(semantic_case)
+            rejection_reason = _semantic_case_block_rejection_reason(
+                semantic_case=semantic_case,
+                turns=semantic_turns,
+                block_name="voice_of_customer",
+                focus_stage_code=None,
+            )
+            if rejection_reason:
+                semantic_rejections.append(
+                    _semantic_case_candidate_diagnostic(
+                        artifact=artifact,
+                        semantic_case=semantic_case,
+                        block_name="voice_of_customer",
+                        rejection_reason=rejection_reason,
+                    )
+                )
+                semantic_turns = []
+            semantic_turn = next(
+                (
+                    turn
+                    for turn in semantic_turns
+                    if turn.get("speaker") in {"client", "unknown"} and str(turn.get("text") or "").strip()
+                ),
+                None,
+            )
+            quote = _dialogue_turn_text(str((semantic_turn or {}).get("text") or ""), limit=180)
+            if len(quote) >= 5 and quote not in seen:
+                seen.add(quote)
+                semantic_used = True
+                semantic_selections.append(
+                    _semantic_case_candidate_diagnostic(
+                        artifact=artifact,
+                        semantic_case=semantic_case,
+                        block_name="voice_of_customer",
+                        rejection_reason=None,
+                    )
+                )
+                meaning = _first_sentence(
+                    str(
+                        semantic_case.get("customer_signal")
+                        or semantic_case.get("core_meaning")
+                        or semantic_case.get("why_this_call_matters")
+                        or ""
+                    ),
+                    limit=180,
+                )
+                category = _voice_customer_signal_category(
+                    quote=quote,
+                    meaning=meaning,
+                    context=semantic_case.get("core_meaning"),
+                )
+                semantic_action = _summary_text(semantic_case.get("recommended_next_action"), limit=220)
+                if _voice_customer_summary_action_specific(semantic_action, category=category):
+                    action = semantic_action
+                    action_source = "semantic_case.recommended_next_action"
+                elif category is not None:
+                    action = VOICE_CUSTOMER_SIGNAL_ACTIONS[category]
+                    action_source = "deterministic_customer_signal"
+                else:
+                    action = None
+                    action_source = None
+                context = _voice_customer_context_with_action(meaning=meaning, action=action)
+                context_value = context[:257].rstrip() + "…" if context and len(context) > 260 else context
+                rows.append(
+                    (
+                        (
+                            0,
+                            REPORT_EVIDENCE_PRIORITY_RANK.get(str(semantic_case.get("priority") or "").lower(), 9),
+                            0 if str((semantic_turn or {}).get("speaker") or "").lower() == "client" else 1,
+                            artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+                        ),
+                        {
+                            "call_id": ref["call_id"],
+                            "client_label": ref["client_label"],
+                            "client_phone": ref["client_phone"],
+                            "date_label": ref["date_label"],
+                            "time_label": ref["time_label"],
+                            "client_call_reference": ref["client_call_reference"],
+                            "quote": quote,
+                            "context": context_value,
+                            "interpretation": context_value,
+                            "manager_action": action,
+                            "manager_action_source": action_source,
+                            "customer_signal": category,
+                            "source": "report_evidence.semantic_case",
+                        },
+                    )
+                )
         for item in evidence.get("voice_of_customer") or []:
             if not isinstance(item, dict) or item.get("usable_in_report") is not True:
                 continue
@@ -9426,11 +10912,13 @@ def _build_voice_of_customer_from_report_evidence(
             rows.append(
                 (
                     (
+                        1,
                         signal_rank.get(str(item.get("business_signal") or "").lower(), 9),
                         0 if str(item.get("speaker") or "").lower() == "client" else 1,
                         artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
                     ),
                     {
+                        "call_id": ref["call_id"],
                         "client_label": ref["client_label"],
                         "client_phone": ref["client_phone"],
                         "date_label": ref["date_label"],
@@ -9452,7 +10940,16 @@ def _build_voice_of_customer_from_report_evidence(
     return {
         "is_placeholder": False,
         "situations": [item for _rank, item in rows[:3]],
-        "source_note": "report_evidence.voice_of_customer",
+        "source_note": (
+            "report_evidence.semantic_case+voice_of_customer"
+            if semantic_used
+            else "report_evidence.voice_of_customer"
+        ),
+        "selection_diagnostics": _semantic_case_selection_diagnostics(
+            block_name="voice_of_customer",
+            selected=semantic_selections[0] if semantic_selections else None,
+            rejected=semantic_rejections,
+        ),
     }
 
 
@@ -9463,9 +10960,12 @@ def _build_additional_situations_from_report_evidence(
     call_list_by_interaction_id: dict[str, dict[str, Any]],
     top_situation_title: str | None,
 ) -> dict[str, Any] | None:
-    """Build additional situations from valid report_evidence additional_situations."""
+    """Build additional situations from semantic_case, then report_evidence items."""
     rows: list[tuple[tuple[int, int, datetime], dict[str, Any]]] = []
     seen_titles = {str(top_situation_title or "").strip().lower()}
+    semantic_used = False
+    semantic_rejections: list[dict[str, Any]] = []
+    semantic_selection: dict[str, Any] | None = None
     for artifact in artifacts:
         if not _is_report_evidence_sales_like(
             artifact=artifact,
@@ -9479,6 +10979,110 @@ def _build_additional_situations_from_report_evidence(
         if evidence is None:
             continue
         ref = _artifact_call_reference(artifact)
+        semantic_case = _valid_semantic_case_from_evidence(evidence)
+        if semantic_case is not None:
+            turns = _semantic_case_turns(semantic_case)
+            rejection_reason = _semantic_case_block_rejection_reason(
+                semantic_case=semantic_case,
+                turns=turns,
+                block_name="additional_situations",
+                focus_stage_code=None,
+            )
+            if rejection_reason:
+                semantic_rejections.append(
+                    _semantic_case_candidate_diagnostic(
+                        artifact=artifact,
+                        semantic_case=semantic_case,
+                        block_name="additional_situations",
+                        rejection_reason=rejection_reason,
+                    )
+                )
+            else:
+                coaching_moment = _semantic_case_coaching_moment(
+                    semantic_case,
+                    block_name="additional_situations",
+                ) or {}
+                stage_code = _semantic_case_stage_code(
+                    semantic_case=semantic_case,
+                    focus_stage_code=None,
+                )
+                title = _first_sentence(
+                    str(semantic_case.get("case_title") or ""),
+                    limit=120,
+                ).rstrip(".")
+                title_key = title.strip().lower()
+                moment_summary = str(coaching_moment.get("moment_summary") or "").strip()
+                supporting_quote = str(
+                    _semantic_case_supporting_quote(
+                        semantic_case=semantic_case,
+                        turns=turns,
+                        block_name="additional_situations",
+                    ) or ""
+                ).strip()
+                if title and title_key not in seen_titles and moment_summary:
+                    seen_titles.add(title_key)
+                    semantic_used = True
+                    semantic_selection = _semantic_case_candidate_diagnostic(
+                        artifact=artifact,
+                        semantic_case=semantic_case,
+                        block_name="additional_situations",
+                        rejection_reason=None,
+                    )
+                    rows.append(
+                        (
+                            (
+                                REPORT_EVIDENCE_PRIORITY_RANK.get(
+                                    str(semantic_case.get("priority") or "").lower(),
+                                    9,
+                                ),
+                                REPORT_EVIDENCE_QUALITY_RANK.get(
+                                    str(semantic_case.get("evidence_quality") or "").lower(),
+                                    9,
+                                ),
+                                artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
+                            ),
+                            {
+                                "kind": (
+                                    "strength"
+                                    if str(semantic_case.get("case_type") or "").strip().lower()
+                                    == "strong_practice"
+                                    else "gap"
+                                ),
+                                "title": title,
+                                "stage_id": _stage_funnel_label_for_code(stage_code),
+                                "stage_code": stage_code,
+                                "problem_signal": _focus_problem_signal(
+                                    " ".join(part for part in (stage_code, title) if part),
+                                    fallback=stage_code or "additional_semantic_case",
+                                ),
+                                "signal": 1,
+                                "evidence_call_id": str(artifact.interaction.id),
+                                "client_call_reference": ref["client_call_reference"],
+                                "evidence_quote": supporting_quote or None,
+                                "supporting_quote": supporting_quote or None,
+                                "evidence_quality": semantic_case.get("evidence_quality"),
+                                "evidence_type": coaching_moment.get("evidence_type")
+                                or _semantic_case_block_fit_value(
+                                    semantic_case,
+                                    "additional_situations",
+                                    "evidence_type",
+                                ),
+                                "confidence": coaching_moment.get("confidence"),
+                                "moment_summary": moment_summary,
+                                "missing_action": coaching_moment.get("missing_action"),
+                                "why_it_matters": coaching_moment.get("why_it_matters"),
+                                "interpretation": coaching_moment.get("why_it_matters"),
+                                "client_said": moment_summary,
+                                "meant": coaching_moment.get("why_it_matters"),
+                                "how_to": _first_sentence(
+                                    str(semantic_case.get("recommended_next_action") or ""),
+                                    limit=180,
+                                ),
+                                "why": coaching_moment.get("why_it_matters"),
+                                "source": "report_evidence.semantic_case",
+                            },
+                        )
+                    )
         for item in evidence.get("additional_situations") or []:
             if not isinstance(item, dict) or item.get("usable_in_report") is not True:
                 continue
@@ -9557,7 +11161,16 @@ def _build_additional_situations_from_report_evidence(
     return {
         "is_placeholder": False,
         "situations": [item for _rank, item in rows[:3]],
-        "source_note": "report_evidence.additional_situations",
+        "source_note": (
+            "report_evidence.semantic_case+additional_situations"
+            if semantic_used
+            else "report_evidence.additional_situations"
+        ),
+        "selection_diagnostics": _semantic_case_selection_diagnostics(
+            block_name="additional_situations",
+            selected=semantic_selection,
+            rejected=semantic_rejections,
+        ),
     }
 
 
@@ -10026,6 +11639,7 @@ def _build_call_tomorrow(
         )
 
         grouped[hotness["code"]].append({
+            "interaction_id": interaction_id,
             "client_label": client_label,
             "client_call_reference": str(row.get("client_call_reference") or "").strip() or client_label,
             "client_phone": row.get("client_phone"),
@@ -10067,6 +11681,7 @@ def _build_call_tomorrow(
                 continue
             seen.add(item["client_label"])
             contacts.append({
+                "interaction_id": item["interaction_id"],
                 "client_label": item["client_label"],
                 "client_call_reference": item["client_call_reference"],
                 "client_phone": item["client_phone"],

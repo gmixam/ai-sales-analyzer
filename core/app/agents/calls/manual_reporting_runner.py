@@ -46,6 +46,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Opt in to using analyses marked controlled_sample or verification.",
     )
+    parser.add_argument(
+        "--analysis-instruction-version",
+        help="Only reuse analyses with this exact instruction_version.",
+    )
     parser.add_argument("--model", help="Optional report-composer model selection placeholder")
     parser.add_argument(
         "--no-delivery",
@@ -85,6 +89,9 @@ async def _run(args: argparse.Namespace) -> dict:
             max_duration_sec=args.max_duration_sec,
             force_retry_quota_blocked=args.force_retry_quota_blocked,
             include_controlled_samples=args.include_controlled_samples,
+            analysis_instruction_version=(
+                (args.analysis_instruction_version or "").strip() or None
+            ),
         )
         delivery_mode = "preview_only" if args.no_delivery else args.delivery_mode
         return await orchestrator.run_report(
