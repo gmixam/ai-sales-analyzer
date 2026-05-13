@@ -25,7 +25,7 @@ os.environ.setdefault("ONLINEPBX_API_KEY", "test-key")
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CORE_ROOT = PROJECT_ROOT / "core"
+CORE_ROOT = PROJECT_ROOT if (PROJECT_ROOT / "app").exists() else PROJECT_ROOT / "core"
 if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
@@ -99,7 +99,10 @@ class AIProviderRoutingTests(unittest.TestCase):
             context["analysis_result_contract_template"]["instruction_version"],
             APPROVED_INSTRUCTION_VERSION,
         )
-        self.assertEqual(APPROVED_INSTRUCTION_VERSION, "edo_sales_mvp1_call_analysis_v8_report_summary")
+        self.assertEqual(
+            APPROVED_INSTRUCTION_VERSION,
+            "edo_sales_mvp1_call_analysis_v13_cm_evidence",
+        )
         self.assertIn("REPORT_EVIDENCE_CONTRACT.md", context["source_of_truth_priority"])
         self.assertIn("report_evidence_contract_markdown", context["approved_sources"])
         report_evidence_source = context["approved_sources"]["report_evidence_contract_markdown"]
@@ -958,6 +961,14 @@ class AIProviderRoutingTests(unittest.TestCase):
         instruction = CallsAnalyzer._build_analysis_retry_instruction(error)
 
         self.assertIn('report_evidence_version="v1"', instruction)
+        self.assertIn("`report_evidence.semantic_case`", instruction)
+        self.assertIn("`report_block_fit`", instruction)
+        self.assertIn("block role", instruction)
+        self.assertIn("problem_fit", instruction)
+        self.assertIn("For `fit=false` or not-relevant block items, prefer `coaching_moment=null`", instruction)
+        self.assertIn("never use `none` or `insufficient` there", instruction)
+        self.assertIn("must be a non-empty exact transcript substring", instruction)
+        self.assertIn("`case_type=insufficient_evidence`", instruction)
         self.assertIn("`manager_coaching_moments` must contain at least one item", instruction)
         self.assertIn("return an explicit `evidence_quality=insufficient`", instruction)
         self.assertIn("Do not return `follow_up_candidates` for `refusal`, `tech_service`, or `not_suitable`", instruction)
