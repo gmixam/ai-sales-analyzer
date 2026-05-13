@@ -25,7 +25,7 @@ os.environ.setdefault("ONLINEPBX_API_KEY", "test-key")
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CORE_ROOT = PROJECT_ROOT if (PROJECT_ROOT / "app").exists() else PROJECT_ROOT / "core"
+CORE_ROOT = PROJECT_ROOT / "core"
 if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
