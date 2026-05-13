@@ -31,6 +31,7 @@ const {
   AlignmentType,
   BorderStyle,
   WidthType,
+  TableLayoutType,
   Footer,
   VerticalAlign,
   PageBreak,
@@ -218,19 +219,20 @@ function buildWhatHappenedText(s) {
 function buildDialogueParagraphs(excerpt, quote) {
   const source = excerpt || null;
   const turns = (source?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 4);
-  if (turns.length === 0 && quote && cleanText(quote.client_text)) {
-    turns.push({ speaker: "client", text: quote.client_text });
+  const quoteFallback = quoteText(quote);
+  if (turns.length === 0 && quoteFallback) {
+    turns.push({ speaker: "client", text: quoteFallback });
   }
   if (turns.length === 0) {
-    return [bodyPara("Недостаточно подтверждённых фрагментов звонков для доказательного разбора ситуации дня.", { color: COLORS.gray, size: SZ.cell })];
+    return [bodyPara("Недостаточно подтверждений из звонков для доказательного разбора ситуации дня.", { color: COLORS.gray, size: SZ.cell })];
   }
   const partial = source?.is_partial !== false;
   const reason = cleanText(source?.partial_reason);
-  let partialText = "Фрагмент звонка передан частично.";
+  let partialText = "Подтверждение из звонка передано частично.";
   if (reason === "speaker_roles_unavailable") {
-    partialText = "Фрагмент звонка передан частично: роли участников определены не полностью.";
+    partialText = "Подтверждение из звонка передано частично: роли участников определены не полностью.";
   } else if (reason === "low_information_fragment_only") {
-    partialText = "Доступен только слабый фрагмент: в звонке не найдено более содержательное подтверждение.";
+    partialText = "Доступно только слабое подтверждение: в звонке не найдено более содержательное.";
   }
   const paras = partial
     ? [bodyPara(partialText, { color: COLORS.gray, size: SZ.cell, italic: true })]
@@ -239,6 +241,60 @@ function buildDialogueParagraphs(excerpt, quote) {
     paras.push(bodyPara(`${dialogueSpeakerLabel(turn.speaker)}: ${shortQuote(turn.text, 320)}`, { size: SZ.cell }));
   }
   return paras;
+}
+
+function quoteText(value) {
+  if (!value) return "";
+  if (typeof value === "string") return cleanText(value).replace(/^«|»$/g, "");
+  return firstNonEmpty(
+    value.text,
+    value.quote,
+    value.client_text,
+    value.manager_text,
+    value.fragment,
+    value.excerpt,
+  );
+}
+
+function dialogueExcerptText(excerpt, limit = 360) {
+  const turns = (excerpt?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 3);
+  if (turns.length === 0) return "";
+  return turns
+    .map((turn) => `${dialogueSpeakerLabel(turn.speaker)}: ${shortQuote(turn.text, Math.floor(limit / turns.length))}`)
+    .join(" / ");
+}
+
+function situationMomentSummary(s) {
+  return firstNonEmpty(
+    s.coaching_moment?.summary,
+    s.moment_summary,
+    s.coaching_view?.moment_summary,
+    s.coaching_view?.summary,
+    s.coaching_view?.what_happened,
+    dialogueExcerptText(s.dialogue_excerpt),
+    quoteText(s.evidence_quote),
+  );
+}
+
+function situationSupportingQuote(s) {
+  return firstNonEmpty(
+    quoteText(s.coaching_moment?.supporting_quote),
+    quoteText(s.supporting_quote),
+    dialogueExcerptText(s.dialogue_excerpt),
+    quoteText(s.evidence_quote),
+  );
+}
+
+function buildSupportingQuoteParagraph(text, opts = {}) {
+  const quote = cleanText(text);
+  if (!quote) return null;
+  return new Paragraph({
+    children: [
+      new TextRun({ text: "Подтверждение из звонка: ", bold: true, size: opts.size || SZ.cell, color: COLORS.heading, font: "Arial" }),
+      new TextRun({ text: `«${shortQuote(quote, opts.limit || 420)}»`, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial", italics: true }),
+    ],
+    spacing: { before: opts.before || 40, after: opts.after || 0 },
+  });
 }
 
 function buildSituationReviewRows(s) {
@@ -260,7 +316,7 @@ function buildSituationReviewRows(s) {
           children: [new TextRun({ text: line, size: SZ.cell, font: "Arial", color: COLORS.black })],
           spacing: { before: 0, after: 40 },
         })))
-      : cell(value, { size: SZ.cell });
+      : cell(value, { size: SZ.cell, width: { size: 70, type: WidthType.PERCENTAGE } });
     return new TableRow({ children: [labelCell(label), contentCell] });
   });
 }
@@ -321,7 +377,7 @@ function normalizeBreakdownMoment(value, index) {
   return text;
 }
 
-const CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных.";
+const CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет сохранённого подтверждения из звонка.";
 
 function breakdownFragmentOrNote(value) {
   const text = cleanText(value);
@@ -329,30 +385,70 @@ function breakdownFragmentOrNote(value) {
   return text;
 }
 
-function splitBreakdownFragment(value) {
-  const text = cleanText(value);
-  const match = text.match(/\s*Фрагмент:\s*[«"](.+?)[»"]\.?\s*$/);
-  if (!match) return { what: text, fragment: CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE };
+function breakdownSupportingQuote(value) {
+  const text = quoteText(value);
+  if (!text || text === "—" || text === CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE) return "";
+  return text;
+}
+
+function normalizeBreakdownObject(row, index) {
+  const fallbackFragment = breakdownSupportingQuote(firstNonEmpty(
+    quoteText(row.supporting_quote),
+    dialogueExcerptText(row.dialogue_excerpt),
+    quoteText(row.fragment),
+    quoteText(row.quote),
+    quoteText(row.evidence_quote),
+  ));
   return {
-    what: text.slice(0, match.index).replace(/[.\s]+$/, "") || "—",
-    fragment: breakdownFragmentOrNote(match[1]),
+    moment: normalizeBreakdownMoment(firstNonEmpty(row.moment, row.time, row.time_label, row.label), index),
+    what: firstNonEmpty(row.what, row.what_happened, row.problem, row.issue, row.description, "—"),
+    moment_summary: firstNonEmpty(row.coaching_moment?.summary, row.moment_summary, row.summary, fallbackFragment, "—"),
+    supporting_quote: breakdownSupportingQuote(firstNonEmpty(
+      quoteText(row.coaching_moment?.supporting_quote),
+      quoteText(row.supporting_quote),
+      dialogueExcerptText(row.dialogue_excerpt),
+      quoteText(row.fragment),
+      quoteText(row.quote),
+      quoteText(row.evidence_quote),
+    )),
+    better: firstNonEmpty(row.better, row.recommendation, row.next_action, row.what_to_do, "—"),
   };
 }
 
-function normalizeBreakdownRow(row, index) {
+function splitBreakdownFragment(value) {
+  const text = cleanText(value);
+  const match = text.match(/\s*Фрагмент:\s*[«"](.+?)[»"]\.?\s*$/);
+  if (!match) return { what: text, moment_summary: text || CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE, supporting_quote: "" };
+  return {
+    what: text.slice(0, match.index).replace(/[.\s]+$/, "") || "—",
+    moment_summary: breakdownFragmentOrNote(match[1]),
+    supporting_quote: breakdownSupportingQuote(match[1]),
+  };
+}
+
+function normalizeBreakdownRow(row, index, context = {}) {
+  if (!Array.isArray(row) && row && typeof row === "object") {
+    return normalizeBreakdownObject(row, index);
+  }
+  const parentMomentSummary = firstNonEmpty(context.moment_summary, context.coaching_moment?.summary);
   if (row.length >= 4) {
+    const quote = breakdownSupportingQuote(row[2]);
+    const momentSummary = firstNonEmpty(parentMomentSummary, breakdownFragmentOrNote(row[2]));
     return {
       moment: normalizeBreakdownMoment(row[0], index),
       what: row[1] || "—",
-      fragment: breakdownFragmentOrNote(row[2]),
+      moment_summary: momentSummary,
+      supporting_quote: quote && quote !== momentSummary ? quote : "",
       better: row[3] || "—",
     };
   }
   const split = splitBreakdownFragment(row[1] || "");
+  const momentSummary = firstNonEmpty(parentMomentSummary, split.moment_summary, "—");
   return {
     moment: normalizeBreakdownMoment(row[0], index),
     what: split.what || "—",
-    fragment: split.fragment || "—",
+    moment_summary: momentSummary,
+    supporting_quote: split.supporting_quote && split.supporting_quote !== momentSummary ? split.supporting_quote : "",
     better: row[2] || "—",
   };
 }
@@ -575,6 +671,20 @@ function dataFromBundle(bundle) {
     window_end: readiness.window_end || "",
     in_report: includedInReport,
   } : null;
+  const payloadBreakdownRows = payload.call_breakdown?.stages || payload.call_breakdown?.moments || [];
+  const breakdownRows = payloadBreakdownRows.length > 0 ? payloadBreakdownRows : (callBreakdown.rows || []);
+  const breakdownSource = String(
+    payload.call_breakdown?.call_breakdown_source
+    || payload.call_breakdown?.source_note
+    || callBreakdown.source_note
+    || "",
+  );
+  const breakdownMomentContext = (
+    breakdownSource.includes("semantic_case")
+    || (breakdownRows.length === 1 && payload.call_breakdown?.moment_summary)
+  )
+    ? payload.call_breakdown
+    : {};
 
   const agreed   = safeNumber(outcomeMap["ДОГОВОРЕННОСТЬ"]);
   const rescheduled = safeNumber(outcomeMap["ПЕРЕНОС"]);
@@ -647,6 +757,9 @@ function dataFromBundle(bundle) {
       call_example: situation.call_example || {},
       evidence_quote: payload.situation_evidence_quote || null,
       dialogue_excerpt: payload.situation_dialogue_excerpt || null,
+      coaching_moment: payload.coaching_moment || payload.situation_coaching_moment || situation.coaching_moment || null,
+      moment_summary: firstNonEmpty(payload.moment_summary, payload.situation_moment_summary, situation.moment_summary),
+      supporting_quote: payload.supporting_quote || payload.situation_supporting_quote || situation.supporting_quote || null,
       focus_stage_deep_dive: payload.focus_stage_deep_dive || null,
       focus_stage_recommendation: payload.focus_stage_recommendation || null,
       coaching_view: payload.situation_day_coaching_view || null,
@@ -665,7 +778,7 @@ function dataFromBundle(bundle) {
       time: payload.call_breakdown?.time_label || "—",
       reference: payload.call_breakdown?.client_call_reference || "",
       summary: payload.call_breakdown?.summary_line || "",
-      stages: (callBreakdown.rows || []).map((row, index) => normalizeBreakdownRow(row, index + 1)),
+      stages: breakdownRows.map((row, index) => normalizeBreakdownRow(row, index + 1, breakdownMomentContext)),
     },
     voice_of_customer: (voice.rows || []).map((row) => ({
       client: row[0] || "Клиент",
@@ -752,7 +865,7 @@ const COLORS = {
   green:       "2E8B57",  // status: positive
   orange:      "E87722",  // status: warning / priority
   red:         "C0392B",  // priority indicators, situation title
-  gray:        "888888",  // meta / secondary
+  gray:        "5F6368",  // meta / secondary, darkened for PDF readability
   black:       "1A1A1A",  // body text
   sectionBg:   "1F3864",  // section header background (dark navy)
   sectionText: "FFFFFF",  // section header text (white on dark)
@@ -762,8 +875,9 @@ const COLORS = {
   altRow:      "F9F9F9",
 };
 
-// 4-role type scale
-const SZ = { h1: 38, h2: 26, accent: 24, body: 22, cell: 20, meta: 18, caption: 16 };
+// 5-role type scale, stored in half-points:
+// display 20pt, section 14.5pt, body 11.5pt, table 11pt, caption 9pt.
+const SZ = { h1: 40, h2: 29, accent: 23, body: 23, cell: 22, meta: 20, caption: 18 };
 
 const BORDER_THIN = {
   top:    { style: BorderStyle.SINGLE, size: 4, color: "CCCCCC" },
@@ -782,7 +896,7 @@ const BORDER_NONE = {
 function cell(text, opts = {}) {
   const {
     bold = false,
-    size = 22,
+    size = SZ.cell,
     color = COLORS.black,
     align = AlignmentType.LEFT,
     shading = null,
@@ -905,11 +1019,30 @@ function labelCell(text) {
 // Right-column cell accepting pre-built Paragraph objects (for numbered lists, etc.).
 function cellMultiPara(paras) {
   return new TableCell({
+    width: { size: 70, type: WidthType.PERCENTAGE },
     borders: BORDER_THIN,
     verticalAlign: VerticalAlign.TOP,
     margins: { top: 60, bottom: 60, left: 80, right: 80 },
     children: paras,
   });
+}
+
+function cellParagraphs(paras, opts = {}) {
+  const {
+    shading = null,
+    borders = BORDER_THIN,
+    vertAlign = VerticalAlign.TOP,
+    width = null,
+  } = opts;
+  const cellOpts = {
+    borders,
+    verticalAlign: vertAlign,
+    margins: { top: 60, bottom: 60, left: 80, right: 80 },
+    children: paras,
+  };
+  if (shading) cellOpts.shading = shading;
+  if (width) cellOpts.width = width;
+  return new TableCell(cellOpts);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1199,10 +1332,10 @@ function buildBally() {
   rows.push(
     new TableRow({
       children: [
-        headCell("Этап", { width: { size: 34, type: WidthType.PERCENTAGE } }),
-        headCell("Балл", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Статус", { width: { size: 18, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Основная проблема", { width: { size: 36, type: WidthType.PERCENTAGE } }),
+        headCell("Этап", { width: { size: 32, type: WidthType.PERCENTAGE } }),
+        headCell("Балл", { width: { size: 9, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Статус", { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Основная проблема", { width: { size: 46, type: WidthType.PERCENTAGE } }),
       ],
     })
   );
@@ -1219,10 +1352,10 @@ function buildBally() {
       : null;
 
     const rowCells = [
-      cell(st.name, { color: nameColor, bold: st.priority, shading: rowShading }),
-      cell(scoreStr, { align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
-      cell(status, { align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
-      cell(stageProblem(st), { shading: rowShading, size: SZ.cell }),
+      cell(st.name, { width: { size: 32, type: WidthType.PERCENTAGE }, color: nameColor, bold: st.priority, shading: rowShading }),
+      cell(scoreStr, { width: { size: 9, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
+      cell(status, { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
+      cell(stageProblem(st), { width: { size: 46, type: WidthType.PERCENTAGE }, shading: rowShading, size: SZ.cell }),
     ];
 
     rows.push(new TableRow({ children: rowCells }));
@@ -1232,6 +1365,7 @@ function buildBally() {
     blockHeading("📈", "БАЛЛЫ ПО ЭТАПАМ"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows,
     }),
     spacer(4),
@@ -1248,14 +1382,16 @@ function buildBally() {
 
 function buildSituatsiya() {
   const s = DATA.situation;
-  const callRef = buildCallReference(s.dialogue_excerpt || s.evidence_quote);
+  const callRef = buildCallReference(s.dialogue_excerpt || s.supporting_quote || s.evidence_quote);
   const whatHappenedText = buildWhatHappenedText(s);
+  const momentSummary = situationMomentSummary(s);
+  const supportingQuote = situationSupportingQuote(s);
   const reviewRows = buildSituationReviewRows(s);
-  const hasDialogue = Boolean(s.dialogue_excerpt || s.evidence_quote);
+  const hasMoment = Boolean(momentSummary || supportingQuote);
   const patternTitle = buildSituationPatternTitle(s);
   const stageMeta = buildSituationStageMeta(s);
 
-  if (!whatHappenedText && reviewRows.length === 0 && !hasDialogue) {
+  if (!whatHappenedText && reviewRows.length === 0 && !hasMoment) {
     return [
       blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
       bodyPara("Данных за этот день недостаточно.", { color: COLORS.gray }),
@@ -1269,22 +1405,32 @@ function buildSituatsiya() {
     result.push(bodyPara(s.scope_note, { color: COLORS.gray, size: SZ.meta }));
   }
   if (stageMeta) {
-    result.push(bodyPara(stageMeta, { bold: true, color: COLORS.heading }));
+    result.push(subHeading("Фокусный этап"));
+    result.push(bodyPara(stageMeta.replace(/^Фокусный этап:\s*/i, ""), { size: SZ.cell }));
   } else if (s.title) {
-    result.push(bodyPara(cleanText(s.title), { bold: true, color: COLORS.heading }));
+    result.push(subHeading("Фокусный этап"));
+    result.push(bodyPara(cleanText(s.title), { size: SZ.cell }));
   }
   if (callRef) {
-    result.push(bodyPara(`${s.example_label || "Пример"}: ${callRef}`, { bold: true, color: COLORS.heading }));
+    result.push(subHeading(s.example_label || "Пример из сегодня"));
+    result.push(bodyPara(callRef, { size: SZ.cell }));
   }
   if (whatHappenedText) {
     result.push(subHeading("Что произошло"));
-    result.push(bodyPara(whatHappenedText, { color: COLORS.orange }));
+    result.push(bodyPara(whatHappenedText, { size: SZ.cell }));
   }
-  result.push(subHeading("Фрагмент звонка"));
-  result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.evidence_quote));
+  if (momentSummary) {
+    result.push(subHeading("Суть момента"));
+    result.push(bodyPara(momentSummary, { size: SZ.cell }));
+  }
+  if (supportingQuote && supportingQuote !== momentSummary) {
+    result.push(subHeading("Подтверждение из звонка"));
+    result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.supporting_quote || s.evidence_quote));
+  }
   if (reviewRows.length > 0) {
     result.push(new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows: reviewRows,
     }));
   }
@@ -1295,28 +1441,48 @@ function buildSituatsiya() {
 // Block 7 — РАЗБОР ЗВОНКА
 // ──────────────────────────────────────────────────────────────
 
+function buildBreakdownMomentCell(s, i) {
+  const summary = firstNonEmpty(s.moment_summary, s.summary, s.fragment, "—");
+  const quote = firstNonEmpty(s.supporting_quote, "");
+  const paras = [
+    new Paragraph({
+      children: [new TextRun({ text: summary, size: SZ.cell, color: COLORS.black, font: "Arial" })],
+      spacing: { before: 0, after: quote && quote !== summary ? 40 : 0 },
+    }),
+  ];
+  const quotePara = quote && quote !== summary
+    ? buildSupportingQuoteParagraph(quote, { size: SZ.cell, limit: 260, before: 0 })
+    : null;
+  if (quotePara) paras.push(quotePara);
+  return cellParagraphs(paras, {
+    width: { size: 28, type: WidthType.PERCENTAGE },
+    shading: altShading(i),
+  });
+}
+
 function buildRazbor() {
   const { block_label, client, time, reference, summary, stages, scope_note } = DATA.call_breakdown;
   const callReference = reference || `${client} · ${time}`;
   const summaryLine = summary || callReference;
+  const displaySummaryLine = summaryLine.replace(/подтверждающий фрагмент ограничен/gi, "подтверждение из звонка ограничено");
   if (!stages || stages.length === 0) {
     return [
       blockHeading("🔍", block_label || "РАЗБОР ЗВОНКА"),
       ...(scope_note ? [bodyPara(scope_note, { color: COLORS.gray, size: SZ.meta })] : []),
-      bodyPara(summaryLine, { color: COLORS.gray }),
-      bodyPara("Недостаточно данных для детального разбора звонка.", { color: COLORS.gray }),
+      bodyPara(displaySummaryLine, { color: COLORS.gray, size: SZ.meta }),
+      bodyPara("Недостаточно данных для детального разбора звонка.", { color: COLORS.gray, size: SZ.meta }),
     ];
   }
   const introLine = summaryLine.includes("подтверждающий фрагмент ограничен")
-    ? summaryLine
-    : `${summaryLine} · Звонок выбран как наиболее показательный для основного паттерна дня.`;
+    ? displaySummaryLine
+    : `${displaySummaryLine} · Звонок выбран как наиболее показательный для основного паттерна дня.`;
   const headerRows = [
     new TableRow({
       children: [
-        headCell("Момент / время", { width: { size: 14, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Что было",       { width: { size: 30, type: WidthType.PERCENTAGE } }),
-        headCell("Фрагмент",       { width: { size: 26, type: WidthType.PERCENTAGE } }),
-        headCell("Рекомендация",   { width: { size: 30, type: WidthType.PERCENTAGE } }),
+        headCell("Момент / время", { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Что было",       { width: { size: 31, type: WidthType.PERCENTAGE } }),
+        headCell("Суть момента",   { width: { size: 28, type: WidthType.PERCENTAGE } }),
+        headCell("Рекомендация",   { width: { size: 31, type: WidthType.PERCENTAGE } }),
       ],
     }),
   ];
@@ -1324,10 +1490,10 @@ function buildRazbor() {
   const dataRows = stages.map((s, i) =>
     new TableRow({
       children: [
-        cell(s.moment, { align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
-        cell(s.what,   { shading: altShading(i) }),
-        cell(s.fragment, { shading: altShading(i), italic: true, size: SZ.cell }),
-        cell(s.better, { shading: altShading(i), color: COLORS.heading }),
+        cell(s.moment, { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
+        cell(s.what,   { width: { size: 31, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        buildBreakdownMomentCell(s, i),
+        cell(s.better, { width: { size: 31, type: WidthType.PERCENTAGE }, shading: altShading(i), color: COLORS.heading }),
       ],
     })
   );
@@ -1335,10 +1501,11 @@ function buildRazbor() {
   return [
     blockHeading("🔍", block_label || "РАЗБОР ЗВОНКА"),
     ...(scope_note ? [bodyPara(scope_note, { color: COLORS.gray, size: SZ.meta })] : []),
-    bodyPara(introLine, { color: COLORS.gray }),
+    bodyPara(introLine, { color: COLORS.gray, size: SZ.meta }),
     spacer(4),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows: [...headerRows, ...dataRows],
     }),
   ];
@@ -1357,18 +1524,18 @@ function buildGolos() {
   }
   const headerRow = new TableRow({
     children: [
-      headCell("Клиент / звонок", { width: { size: 26, type: WidthType.PERCENTAGE } }),
-      headCell("Что сказал клиент", { width: { size: 34, type: WidthType.PERCENTAGE } }),
-      headCell("Что это значит / Что делать", { width: { size: 40, type: WidthType.PERCENTAGE } }),
+      headCell("Клиент / звонок", { width: { size: 20, type: WidthType.PERCENTAGE } }),
+      headCell("Что сказал клиент", { width: { size: 36, type: WidthType.PERCENTAGE } }),
+      headCell("Что это значит / Что делать", { width: { size: 44, type: WidthType.PERCENTAGE } }),
     ],
   });
 
   const dataRows = DATA.voice_of_customer.map((v, i) =>
     new TableRow({
       children: [
-        cell(v.client, { shading: altShading(i), size: SZ.cell }),
-        cell(v.quote,  { shading: altShading(i), italic: true }),
-        cell(v.interpretation, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
+        cell(v.client, { width: { size: 20, type: WidthType.PERCENTAGE }, shading: altShading(i), size: SZ.cell }),
+        cell(v.quote,  { width: { size: 36, type: WidthType.PERCENTAGE }, shading: altShading(i), italic: true }),
+        cell(v.interpretation, { width: { size: 44, type: WidthType.PERCENTAGE }, shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
       ],
     })
   );
@@ -1382,6 +1549,7 @@ function buildGolos() {
     spacer(4),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows: [headerRow, ...dataRows],
     }),
   ];
@@ -1467,7 +1635,7 @@ function buildChellendj() {
 
   function clCell(text) {
     return new TableCell({
-      width: { size: 28, type: WidthType.PERCENTAGE },
+      width: { size: 30, type: WidthType.PERCENTAGE },
       borders: BORDER_THIN,
       shading: { fill: "FFE082", type: ShadingType.CLEAR },
       verticalAlign: VerticalAlign.TOP,
@@ -1482,6 +1650,7 @@ function buildChellendj() {
   function clContentCell(paras) {
     return new TableCell({
       borders: BORDER_THIN,
+      width: { size: 70, type: WidthType.PERCENTAGE },
       shading: { fill: "FFFBEA", type: ShadingType.CLEAR },
       verticalAlign: VerticalAlign.TOP,
       margins: { top: 80, bottom: 80, left: 100, right: 100 },
@@ -1494,7 +1663,7 @@ function buildChellendj() {
     rows.push(new TableRow({ children: [
       clCell("База"),
       clContentCell([new Paragraph({
-        children: [new TextRun({ text: c.scope_note, size: SZ.cell, color: COLORS.gray, font: "Arial" })],
+        children: [new TextRun({ text: c.scope_note, size: SZ.cell, color: COLORS.black, font: "Arial" })],
         spacing: { before: 0, after: 0 },
       })]),
     ]}));
@@ -1504,7 +1673,7 @@ function buildChellendj() {
     rows.push(new TableRow({ children: [
       clCell("Цель"),
       clContentCell([new Paragraph({
-        children: [new TextRun({ text: c.goal_line, bold: true, size: SZ.body, color: COLORS.heading, font: "Arial" })],
+        children: [new TextRun({ text: c.goal_line, size: SZ.cell, color: COLORS.black, font: "Arial" })],
         spacing: { before: 0, after: 0 },
       })]),
     ]}));
@@ -1515,7 +1684,7 @@ function buildChellendj() {
     rows.push(new TableRow({ children: [
       clCell("Фокус на завтра"),
       clContentCell(contextLines.map((line) => new Paragraph({
-        children: [new TextRun({ text: line, size: SZ.cell, color: COLORS.gray, font: "Arial" })],
+        children: [new TextRun({ text: line, size: SZ.cell, color: COLORS.black, font: "Arial" })],
         spacing: { before: 0, after: 20 },
       }))),
     ]}));
@@ -1525,7 +1694,7 @@ function buildChellendj() {
     rows.push(new TableRow({ children: [
       clCell("Фраза для завтра"),
       clContentCell([new Paragraph({
-        children: [new TextRun({ text: `«${c.phrase_line}»`, italic: true, size: SZ.body, color: COLORS.heading, font: "Arial" })],
+        children: [new TextRun({ text: `«${c.phrase_line}»`, size: SZ.cell, color: COLORS.black, font: "Arial" })],
         spacing: { before: 0, after: 0 },
       })]),
     ]}));
@@ -1542,6 +1711,7 @@ function buildChellendj() {
     blockHeading("🏆", "ЧЕЛЛЕНДЖ НА ЗАВТРА"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows,
     }),
   ];
@@ -1560,10 +1730,10 @@ function buildPozvoni() {
   }
   const headerRow = new TableRow({
     children: [
-      headCell("Приоритет", { width: { size: 12, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Клиент",    { width: { size: 28, type: WidthType.PERCENTAGE } }),
-      headCell("Контекст", { width: { size: 22, type: WidthType.PERCENTAGE } }),
-      headCell("Рекомендация", { width: { size: 38, type: WidthType.PERCENTAGE } }),
+      headCell("Приоритет", { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Клиент",    { width: { size: 22, type: WidthType.PERCENTAGE } }),
+      headCell("Контекст", { width: { size: 20, type: WidthType.PERCENTAGE } }),
+      headCell("Рекомендация", { width: { size: 48, type: WidthType.PERCENTAGE } }),
     ],
   });
 
@@ -1574,10 +1744,10 @@ function buildPozvoni() {
 
     return new TableRow({
       children: [
-        cell(`${c.priority} ${c.label}`, { align: AlignmentType.CENTER, color: prioColor, bold: true, shading: altShading(i) }),
-        cell(c.client, { shading: altShading(i) }),
-        cell(c.situation, { shading: altShading(i), color: COLORS.gray, size: SZ.cell }),
-        cell(c.recommendation, { shading: altShading(i), color: COLORS.heading, size: SZ.cell }),
+        cell(`${c.priority} ${c.label}`, { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: prioColor, bold: true, shading: altShading(i) }),
+        cell(c.client, { width: { size: 22, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        cell(c.situation, { width: { size: 20, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        cell(c.recommendation, { width: { size: 48, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
       ],
     });
   });
@@ -1586,6 +1756,7 @@ function buildPozvoni() {
     blockHeading("📞", "КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows: [headerRow, ...dataRows],
     }),
   ];
@@ -1605,10 +1776,10 @@ function buildSpisokZvonkov() {
 
   const headerRow = new TableRow({
     children: [
-      headCell("#",       { width: { size: 5, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Клиент",  { width: { size: 38, type: WidthType.PERCENTAGE } }),
-      headCell("Тип / суть", { width: { size: 22, type: WidthType.PERCENTAGE } }),
-      headCell("Контекст",{ width: { size: 20, type: WidthType.PERCENTAGE } }),
+      headCell("#",       { width: { size: 4, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Клиент",  { width: { size: 30, type: WidthType.PERCENTAGE } }),
+      headCell("Тип / суть", { width: { size: 21, type: WidthType.PERCENTAGE } }),
+      headCell("Контекст",{ width: { size: 30, type: WidthType.PERCENTAGE } }),
       headCell("Статус",  { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
     ],
   });
@@ -1616,11 +1787,11 @@ function buildSpisokZvonkov() {
   const dataRows = DATA.all_calls.map((c, i) =>
     new TableRow({
       children: [
-        cell(String(c.n),   { align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
-        cell(c.client,      { shading: altShading(i) }),
-        cell(c.topic,       { shading: altShading(i), size: SZ.cell, color: COLORS.gray }),
-        cell(c.context,     { shading: altShading(i), size: SZ.cell, color: COLORS.gray }),
-        cell(c.status,      { align: AlignmentType.CENTER, shading: altShading(i), bold: true, color: statusColor(c.status) }),
+        cell(String(c.n),   { width: { size: 4, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: altShading(i) }),
+        cell(c.client,      { width: { size: 30, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        cell(c.topic,       { width: { size: 21, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        cell(c.context,     { width: { size: 30, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        cell(c.status,      { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: altShading(i), bold: true, color: statusColor(c.status) }),
       ],
     })
   );
@@ -1629,6 +1800,7 @@ function buildSpisokZvonkov() {
     blockHeading("📋", "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      layout: TableLayoutType.FIXED,
       rows: [headerRow, ...dataRows],
     }),
     spacer(6),
@@ -1808,7 +1980,7 @@ async function main() {
   console.log("  [✓] СИТУАЦИЯ ДНЯ: interpretation + 3 scripts + why");
   console.log("  [✓] ГОЛОС КЛИЕНТА: 3 human-readable columns");
   console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
-  console.log("  [✓] РАЗБОР ЗВОНКА: 4 columns with Фрагмент");
+  console.log("  [✓] РАЗБОР ЗВОНКА: 4 columns with Суть момента + optional quote");
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: filtered valid only, dynamic heading, reference-style cards");
   console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: card with Цель / Фокус / Фраза");
   console.log("  [✓] УТРЕННЯЯ КАРТОЧКА removed from PDF/DOCX (payload preserved)");
