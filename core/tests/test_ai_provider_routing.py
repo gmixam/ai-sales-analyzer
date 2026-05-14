@@ -101,7 +101,7 @@ class AIProviderRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             APPROVED_INSTRUCTION_VERSION,
-            "edo_sales_mvp1_call_analysis_v13_cm_evidence",
+            "edo_sales_mvp1_call_analysis_v14_proof_layer",
         )
         self.assertIn("REPORT_EVIDENCE_CONTRACT.md", context["source_of_truth_priority"])
         self.assertIn("report_evidence_contract_markdown", context["approved_sources"])
@@ -925,6 +925,8 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertIn("`report_block_fit`", instruction)
         self.assertIn("block role", instruction)
         self.assertIn("problem_fit", instruction)
+        self.assertIn("proof_type", instruction)
+        self.assertIn("counter_evidence", instruction)
         self.assertIn("For `fit=false` or not-relevant block items, prefer `coaching_moment=null`", instruction)
         self.assertIn("never use `none` or `insufficient` there", instruction)
         self.assertIn("must be a non-empty exact transcript substring", instruction)

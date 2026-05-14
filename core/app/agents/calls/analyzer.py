@@ -41,7 +41,7 @@ REPORT_EVIDENCE_SOURCE_DIR_CANDIDATES = [
 ]
 
 APPROVED_SCHEMA_VERSION = "call_analysis.v1"
-APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v13_cm_evidence"
+APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v14_proof_layer"
 APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
 NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
@@ -1021,7 +1021,11 @@ class CallsAnalyzer:
                 "Each relevant `fit=true` report block item must include block role, title mode, "
                 "evidence target, gap_proven, a `coaching_moment` with `summary`, optional "
                 "`missing_action`, optional `why_it_matters`, optional `supporting_quote`, "
-                "`evidence_type`, and `confidence`, and problem_fit for problem-oriented blocks. "
+                "`evidence_type`, `confidence`, `gap_claim`, `proof_type`, `proof_explanation`, "
+                "`quote_role`, and `counter_evidence`, and problem_fit for problem-oriented blocks. "
+                "For problem blocks, the quote must prove the manager gap, not merely mention the topic; "
+                "if the quote shows the manager did the allegedly missing action, put it in "
+                "`counter_evidence` and mark the problem block `fit=false`. "
                 "For `fit=false` or not-relevant block items, prefer `coaching_moment=null` instead "
                 "of a weak placeholder. `coaching_moment.evidence_type` must be only "
                 "`direct_quote`, `absence_in_context`, or `inferred_from_dialogue`; never use "

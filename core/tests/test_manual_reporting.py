@@ -42,6 +42,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     _build_meaningful_call_list,
     _build_report_evidence_situation,
     _build_selection_model_counters,
+    _semantic_case_block_rejection_reason,
     _classify_meaningful_call,
     _select_stable_analysis_for_reporting,
     classify_provider_error,
@@ -689,6 +690,28 @@ class ReportEvidenceValidationTests(unittest.TestCase):
         ]["coaching_moment"]
         self.assertEqual(moment["supporting_quote"], None)
         self.assertEqual(moment["evidence_type"], "absence_in_context")
+
+    def test_report_evidence_semantic_case_rejects_counter_evidence_quote_for_problem_gap(self):
+        detail = _valid_report_evidence_detail_with_semantic_case()
+        quote = "А вы, Жанар, может быть, кем являетесь в компании?"
+        detail["report_evidence"]["semantic_case"]["report_block_fit"]["situation_day"]["coaching_moment"] = {
+            "summary": "Менеджер не выяснил роль клиента в компании.",
+            "missing_action": "Нужно было уточнить роль клиента и кто принимает решение.",
+            "why_it_matters": "Без роли клиента сложно понять, с кем согласовывать следующий шаг.",
+            "supporting_quote": quote,
+            "evidence_type": "direct_quote",
+            "confidence": "high",
+            "gap_claim": "Менеджер не уточнил роль клиента и ЛПР.",
+            "proof_type": "direct_gap",
+            "proof_explanation": "Цитата ошибочно выбрана как доказательство отсутствия уточнения роли.",
+            "quote_role": "proves_gap",
+            "counter_evidence": [],
+        }
+
+        result = self._validate(detail, transcript=f"{self.transcript} Менеджер: {quote}")
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("coaching_moment_proof_conflict", self._issue_codes(result.errors))
 
     def test_report_evidence_semantic_case_ungrounded_fragment_fails(self):
         detail = _valid_report_evidence_detail_with_semantic_case()
@@ -1398,6 +1421,167 @@ class ManualReportingPayloadTests(unittest.TestCase):
             for item in situation_diagnostics["rejected_candidates"]
         }
         self.assertIn("problem_signal_mismatch", rejected_reasons)
+
+    def test_report_layer_situation_day_rejects_counter_evidence_proof_quote(self) -> None:
+        quote = "А вы, Жанар, может быть, кем являетесь в компании?"
+        semantic_case = _valid_semantic_case()
+        semantic_case.update(
+            {
+                "case_title": "Роль клиента не уточнена",
+                "core_meaning": "Клиент готов смотреть материалы, но роль клиента якобы не выяснена.",
+                "manager_behavior": "Менеджер якобы не уточнил роль клиента.",
+                "coaching_diagnosis": "Нужно уточнять роль клиента в компании.",
+                "best_dialogue_fragment": [
+                    {
+                        "speaker": "manager",
+                        "text": quote,
+                        "timestamp_start": None,
+                        "timestamp_end": None,
+                    }
+                ],
+            }
+        )
+        semantic_case["report_block_fit"]["situation_day"]["coaching_moment"] = {
+            "summary": "Менеджер не выяснил роль клиента в компании.",
+            "missing_action": "Нужно было уточнить роль клиента и кто принимает решение.",
+            "why_it_matters": "Без роли клиента сложно понять, с кем согласовывать следующий шаг.",
+            "supporting_quote": quote,
+            "evidence_type": "direct_quote",
+            "confidence": "high",
+            "gap_claim": "Менеджер не уточнил роль клиента и ЛПР.",
+            "proof_type": "direct_gap",
+            "proof_explanation": "Цитата ошибочно выбрана как доказательство отсутствия уточнения роли.",
+            "quote_role": "proves_gap",
+            "counter_evidence": [],
+        }
+
+        reason = _semantic_case_block_rejection_reason(
+            semantic_case=semantic_case,
+            turns=[{"speaker": "manager", "text": quote}],
+            block_name="situation_day",
+            focus_stage_code=None,
+            daily_focus=None,
+        )
+
+        self.assertEqual(reason, "proof_quote_looks_like_counter_evidence")
+
+    def test_manager_daily_situation_day_rejects_counter_evidence_proof_quote(self) -> None:
+        manager = _manager()
+        fallback_artifact = _artifact_for_manager(
+            manager,
+            score_percent=64.0,
+            level="basic",
+            call_date="2026-03-25 10:00:00",
+        )
+        fallback_artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        fallback_detail = fallback_artifact.analysis.scores_detail
+        fallback_detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        fallback_detail["score_by_stage"] = [
+            {
+                "stage_code": "completion_next_step",
+                "stage_name": "Завершение и следующий шаг",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "next_step_fixed",
+                        "criterion_name": "Фиксация следующего шага",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Менеджер не закрепил срок следующего контакта.",
+                    }
+                ],
+            }
+        ]
+        fallback_detail["gaps"] = [{"criterion_code": "next_step_fixed", "title": "Legacy gap"}]
+        fallback_detail.update(_valid_report_evidence_detail_with_semantic_case())
+
+        proof_artifact = _artifact_for_manager(
+            manager,
+            score_percent=63.0,
+            level="basic",
+            call_date="2026-03-25 11:00:00",
+        )
+        quote = "А вы, Жанар, может быть, кем являетесь в компании?"
+        proof_artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            f"Менеджер: {quote}"
+        )
+        proof_detail = proof_artifact.analysis.scores_detail
+        proof_detail["classification"] = fallback_detail["classification"]
+        proof_detail["score_by_stage"] = fallback_detail["score_by_stage"]
+        proof_detail["gaps"] = [{"criterion_code": "next_step_fixed", "title": "Legacy gap"}]
+        proof_evidence = json.loads(json.dumps(_valid_report_evidence_detail_with_semantic_case()))
+        semantic_case = proof_evidence["report_evidence"]["semantic_case"]
+        semantic_case.update(
+            {
+                "case_title": "Роль клиента не уточнена",
+                "core_meaning": "Клиент готов смотреть материалы, но роль клиента якобы не выяснена.",
+                "why_this_call_matters": "Без роли клиента менеджер не понимает, кто влияет на решение.",
+                "customer_signal": "Клиент готов посмотреть материалы.",
+                "manager_behavior": "Менеджер якобы не уточнил роль клиента.",
+                "coaching_diagnosis": "Нужно уточнять роль клиента в компании.",
+                "recommended_next_action": "Уточните роль клиента и кто принимает решение.",
+                "best_dialogue_fragment": [
+                    {
+                        "speaker": "manager",
+                        "text": quote,
+                        "timestamp_start": None,
+                        "timestamp_end": None,
+                    }
+                ],
+            }
+        )
+        semantic_case["report_block_fit"]["situation_day"]["score"] = 98
+        semantic_case["report_block_fit"]["situation_day"]["problem_fit"] = {
+            "score": 98,
+            "problem_signal": "Роль клиента не уточнена",
+            "explanation": "Кейс ошибочно считает, что менеджер не уточнил роль клиента.",
+        }
+        semantic_case["report_block_fit"]["situation_day"]["coaching_moment"] = {
+            "summary": "Менеджер не выяснил роль клиента в компании.",
+            "missing_action": "Нужно было уточнить роль клиента и кто принимает решение.",
+            "why_it_matters": "Без роли клиента сложно понять, с кем согласовывать следующий шаг.",
+            "supporting_quote": quote,
+            "evidence_type": "direct_quote",
+            "confidence": "high",
+            "gap_claim": "Менеджер не уточнил роль клиента и ЛПР.",
+            "proof_type": "direct_gap",
+            "proof_explanation": "Цитата ошибочно выбрана как доказательство отсутствия уточнения роли.",
+            "quote_role": "proves_gap",
+            "counter_evidence": [],
+        }
+        proof_detail.update(proof_evidence)
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[proof_artifact, fallback_artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(payload["situation_evidence_quote"]["call_id"], str(fallback_artifact.interaction.id))
+        proof_call_diagnostics = next(
+            item
+            for item in payload["report_evidence_diagnostics"]["calls"]
+            if item["interaction_id"] == str(proof_artifact.interaction.id)
+        )
+        error_codes = {
+            item["code"]
+            for item in proof_call_diagnostics["report_evidence_errors"]
+        }
+        self.assertFalse(proof_call_diagnostics["report_evidence_valid"])
+        self.assertIn("coaching_moment_proof_conflict", error_codes)
 
     def test_manager_daily_block_fit_rejects_customer_signal_as_problem_situation(self) -> None:
         manager = _manager()

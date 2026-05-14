@@ -216,6 +216,20 @@ function buildWhatHappenedText(s) {
   return "";
 }
 
+function compactSemanticText(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[ё]/g, "е")
+    .replace(/[^a-zа-я0-9]+/g, " ")
+    .trim();
+}
+
+function sameMeaningText(left, right) {
+  const a = compactSemanticText(left);
+  const b = compactSemanticText(right);
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
 function buildDialogueParagraphs(excerpt, quote) {
   const source = excerpt || null;
   const turns = (source?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 4);
@@ -285,6 +299,17 @@ function situationSupportingQuote(s) {
   );
 }
 
+function looksLikeManagerSpeechScript(value) {
+  const text = cleanText(value);
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (text.includes("?") || lower.includes("пожалуйста") || lower.includes("подскажите")) return true;
+  if (/^(уточнить|зафиксировать|согласовать|отправить|проверить|поднять|спросить|объяснить|закрыть|сделать)\b/.test(lower)) {
+    return false;
+  }
+  return ["добрый день", "давайте", "я отправлю", "могу", "предлагаю"].some((marker) => lower.includes(marker));
+}
+
 function buildSupportingQuoteParagraph(text, opts = {}) {
   const quote = cleanText(text);
   if (!quote) return null;
@@ -300,7 +325,10 @@ function buildSupportingQuoteParagraph(text, opts = {}) {
 function buildSituationReviewRows(s) {
   const dive = s.focus_stage_deep_dive || {};
   const view = s.coaching_view || {};
-  const scripts = (view.scripts || []).map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
+  const scripts = (view.scripts || [])
+    .map((item) => cleanText(item))
+    .filter((item) => looksLikeManagerSpeechScript(item))
+    .slice(0, 3);
   const rowSpecs = [
     ["Что это значит", firstNonEmpty(view.meaning, dive.why_it_matters)],
     ["Что не хватило в разговоре", firstNonEmpty(view.what_was_missing, dive.what_went_wrong)],
@@ -1419,11 +1447,11 @@ function buildSituatsiya() {
     result.push(subHeading("Что произошло"));
     result.push(bodyPara(whatHappenedText, { size: SZ.cell }));
   }
-  if (momentSummary) {
+  if (momentSummary && !sameMeaningText(momentSummary, whatHappenedText)) {
     result.push(subHeading("Суть момента"));
     result.push(bodyPara(momentSummary, { size: SZ.cell }));
   }
-  if (supportingQuote && supportingQuote !== momentSummary) {
+  if (supportingQuote && !sameMeaningText(supportingQuote, momentSummary)) {
     result.push(subHeading("Подтверждение из звонка"));
     result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.supporting_quote || s.evidence_quote));
   }

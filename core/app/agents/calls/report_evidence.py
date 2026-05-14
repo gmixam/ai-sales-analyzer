@@ -135,6 +135,20 @@ class CoachingMomentEvidenceType(StrEnum):
     INFERRED_FROM_DIALOGUE = "inferred_from_dialogue"
 
 
+class CoachingMomentProofType(StrEnum):
+    DIRECT_GAP = "direct_gap"
+    ABSENCE_IN_CONTEXT = "absence_in_context"
+    SEQUENCE_INFERENCE = "sequence_inference"
+    CONTEXT_SUPPORT = "context_support"
+
+
+class CoachingMomentQuoteRole(StrEnum):
+    PROVES_GAP = "proves_gap"
+    SUPPORTS_CONTEXT = "supports_context"
+    COUNTER_EVIDENCE = "counter_evidence"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class ReportBlockRole(StrEnum):
     COACHING_PROBLEM = "coaching_problem"
     CUSTOMER_SIGNAL = "customer_signal"
@@ -292,6 +306,11 @@ class CoachingMoment(_ReportEvidenceModel):
     supporting_quote: str | None = None
     evidence_type: CoachingMomentEvidenceType
     confidence: Priority
+    gap_claim: str | None = Field(default=None, max_length=280)
+    proof_type: CoachingMomentProofType | None = None
+    proof_explanation: str | None = Field(default=None, max_length=420)
+    quote_role: CoachingMomentQuoteRole | None = None
+    counter_evidence: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ReportBlockFit(_ReportEvidenceModel):
@@ -994,6 +1013,8 @@ def _validate_semantic_case_block_fit(
         if item.coaching_moment is not None:
             _validate_coaching_moment(
                 coaching_moment=item.coaching_moment,
+                block_name=block_name,
+                block_fit_item=item,
                 transcript=transcript,
                 path=f"{item_path}.coaching_moment",
                 errors=errors,
@@ -1147,6 +1168,8 @@ def _semantic_case_has_non_quote_coaching_moment(semantic_case: SemanticCase) ->
 def _validate_coaching_moment(
     *,
     coaching_moment: CoachingMoment,
+    block_name: str,
+    block_fit_item: ReportBlockFitItem,
     transcript: str | None,
     path: str,
     errors: list[ReportEvidenceValidationIssue],
@@ -1199,6 +1222,103 @@ def _validate_coaching_moment(
                 message="coaching_moment with evidence_type=direct_quote should include a grounded supporting_quote.",
             )
         )
+    proof_conflict = _coaching_moment_problem_proof_conflict(
+        coaching_moment=coaching_moment,
+        block_name=block_name,
+        block_fit_item=block_fit_item,
+    )
+    if proof_conflict is not None:
+        errors.append(
+            _issue(
+                code="coaching_moment_proof_conflict",
+                path=path,
+                message=proof_conflict,
+            )
+        )
+
+
+def _coaching_moment_problem_proof_conflict(
+    *,
+    coaching_moment: CoachingMoment,
+    block_name: str,
+    block_fit_item: ReportBlockFitItem,
+) -> str | None:
+    if block_name not in {"situation_day", "call_breakdown"}:
+        return None
+    if block_fit_item.fit is not True:
+        return None
+    if block_fit_item.evidence_type != ReportBlockEvidenceType.MANAGER_GAP:
+        return None
+    if block_fit_item.block_role not in {None, ReportBlockRole.COACHING_PROBLEM}:
+        return None
+    counter_evidence = [
+        item for item in coaching_moment.counter_evidence if _normalized_text(item)
+    ]
+    if counter_evidence:
+        return "Problem-oriented coaching_moment contains counter_evidence and must not be used as proven manager gap."
+    if coaching_moment.quote_role == CoachingMomentQuoteRole.COUNTER_EVIDENCE:
+        return "supporting_quote is marked as counter_evidence, not proof of the manager gap."
+    if (
+        coaching_moment.quote_role == CoachingMomentQuoteRole.SUPPORTS_CONTEXT
+        and coaching_moment.proof_type
+        not in {
+            CoachingMomentProofType.ABSENCE_IN_CONTEXT,
+            CoachingMomentProofType.SEQUENCE_INFERENCE,
+        }
+    ):
+        return "supporting_quote only supports context and does not prove the manager gap."
+    if coaching_moment.proof_type == CoachingMomentProofType.CONTEXT_SUPPORT:
+        return "proof_type=context_support is not enough for a problem block."
+    if (
+        coaching_moment.evidence_type == CoachingMomentEvidenceType.DIRECT_QUOTE
+        and coaching_moment.supporting_quote
+        and _quote_looks_like_counter_evidence_for_gap(coaching_moment)
+    ):
+        return "supporting_quote appears to show the allegedly missing manager action, so it is counter-evidence rather than proof."
+    return None
+
+
+def _quote_looks_like_counter_evidence_for_gap(coaching_moment: CoachingMoment) -> bool:
+    quote = _normalized_text(coaching_moment.supporting_quote)
+    if not quote:
+        return False
+    claim = _normalized_text(
+        " ".join(
+            str(value or "")
+            for value in (
+                coaching_moment.gap_claim,
+                coaching_moment.summary,
+                coaching_moment.missing_action,
+                coaching_moment.proof_explanation,
+            )
+        )
+    )
+    if not claim:
+        return False
+    checks = (
+        (
+            ("роль", "лпр", "решени", "кем", "руковод", "должност"),
+            ("кем являет", "кем вы", "какая роль", "роль", "принимаете решение", "руковод", "являетесь"),
+        ),
+        (
+            ("удоб", "уместн", "не провер"),
+            ("удобно", "можете говорить", "сейчас говорить", "вам удобно"),
+        ),
+        (
+            ("срок", "дат", "время", "следующ", "ответствен", "когда", "созвон", "перезвон"),
+            ("когда", "срок", "дат", "время", "завтра", "понедельник", "вторник", "сред", "четверг", "пятниц", "перезвон", "созвон"),
+        ),
+        (
+            ("процесс", "как сейчас", "документ", "потребност", "задач"),
+            ("как сейчас", "как у вас", "какой процесс", "документ", "задач", "потребност"),
+        ),
+    )
+    for claim_markers, quote_markers in checks:
+        if any(marker in claim for marker in claim_markers) and any(
+            marker in quote for marker in quote_markers
+        ):
+            return True
+    return False
 
 
 def _semantic_case_text_is_generic(value: str | None, *, allow_short: bool) -> bool:

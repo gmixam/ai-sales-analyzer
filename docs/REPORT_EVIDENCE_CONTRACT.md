@@ -94,6 +94,8 @@ report_block_fit.evidence_type: manager_gap | customer_signal | strong_practice 
 report_block_fit.block_role: coaching_problem | customer_signal | follow_up_action | neutral_summary | strong_practice
 report_block_fit.title_mode: problem | neutral | positive
 report_block_fit.reason_code: manager_gap_with_direct_evidence | manager_gap_with_indirect_evidence | missed_opportunity_with_customer_signal | coachable_manager_moment | direct_customer_signal | client_requested_next_action | strong_manager_practice | service_context | customer_signal_without_manager_gap | positive_diagnosis_not_problem_case | weak_manager_evidence | weak_customer_evidence | insufficient_evidence | not_relevant_for_block | no_follow_up_needed
+coaching_moment.proof_type: direct_gap | absence_in_context | sequence_inference | context_support
+coaching_moment.quote_role: proves_gap | supports_context | counter_evidence | not_applicable
 ```
 
 Canonical `stage_code` values come from `docs/mvp1_sources/MVP1_CHECKLIST_DEFINITION_v1.md`:
@@ -218,7 +220,12 @@ Used by `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛ
           "why_it_matters": "Без конкретного шага открытый интерес может потеряться после отправки материалов.",
           "supporting_quote": null,
           "evidence_type": "absence_in_context",
-          "confidence": "medium"
+          "confidence": "medium",
+          "gap_claim": "В доступной записи не зафиксирован конкретный срок возврата к обсуждению.",
+          "proof_type": "absence_in_context",
+          "proof_explanation": "Клиент просит материалы, а менеджер соглашается отправить их без даты следующего контакта.",
+          "quote_role": "not_applicable",
+          "counter_evidence": []
         }
       },
       "call_breakdown": {
@@ -265,7 +272,7 @@ Field intent:
 - `recommended_next_action` — concrete next manager action or coaching action.
 - `best_dialogue_fragment` — optional best grounded evidence fragment for this case, 1-3 turns when a short exact fragment proves the moment.
 - `report_block_fit` — machine-readable block suitability for one call. It does not select final report content; it tells the deterministic Reporting layer which blocks this call can safely support.
-- `report_block_fit.*.coaching_moment` — structured meaning for the block: what happened or what was missing, why it matters, optional supporting quote, evidence type, and confidence.
+- `report_block_fit.*.coaching_moment` — structured meaning for the block: what happened or what was missing, why it matters, optional supporting quote, evidence type, confidence, and proof metadata for problem blocks.
 - `usable_in_report` — whether this semantic case is safe for manager-facing rendering.
 
 Rules:
@@ -280,6 +287,9 @@ Rules:
 - Starting with `edo_sales_mvp1_call_analysis_v11_role_problem_fit`, fresh block-fit items should also include `block_role`, `title_mode`, `problem_fit`, `evidence_target`, and `gap_proven`.
 - Starting with `edo_sales_mvp1_call_analysis_v12_coaching_moment`, fresh relevant block-fit items should include `coaching_moment`; `supporting_quote` is optional and must be omitted/null when no short exact transcript quote is needed or available.
 - Starting with `edo_sales_mvp1_call_analysis_v13_cm_evidence`, `coaching_moment.evidence_type` is strictly limited to `direct_quote`, `absence_in_context`, or `inferred_from_dialogue`; do not use `none` or `insufficient` there. `direct_quote` requires a non-empty exact transcript substring in `supporting_quote`; otherwise use `supporting_quote=null` with `absence_in_context` / `inferred_from_dialogue`, or `coaching_moment=null` for an irrelevant `fit=false` block.
+- Starting with `edo_sales_mvp1_call_analysis_v14_proof_layer`, problem-oriented `situation_day` and `call_breakdown` fits must include proof metadata: `gap_claim`, `proof_type`, `proof_explanation`, `quote_role`, and `counter_evidence`.
+- For problem blocks, a quote may support the context but must not be mislabelled as proof when it actually shows the manager performed the allegedly missing action. Such phrases belong in `counter_evidence`, `quote_role=counter_evidence`, and the problem block must not be `fit=true`.
+- `proof_type=context_support` is not enough for a `fit=true` manager-gap problem block. Use `direct_gap`, `absence_in_context`, or `sequence_inference` only when the evidence genuinely proves the manager gap.
 - `block_role` separates problem blocks from neutral/action blocks: `coaching_problem` explains what went wrong, `customer_signal` shows the client signal as-is, `follow_up_action` shows what to do next, `neutral_summary` shows an important fact, and `strong_practice` shows good manager behavior.
 - `problem_fit` describes the concrete problem inside the call. Reporting compares it with the daily focus problem before using the case in `СИТУАЦИЯ ДНЯ` or the main `РАЗБОР ЗВОНКА`.
 - `СИТУАЦИЯ ДНЯ` requires `block_role=coaching_problem`, `title_mode=problem`, a manager gap, a missed opportunity or coachable problem, and `gap_proven=true` when a manager gap is claimed. A pure customer signal without manager gap must be `situation_day.fit=false` with `reason_code=customer_signal_without_manager_gap`.
@@ -507,6 +517,7 @@ Validator requirements:
 26. Block fit is block-specific: a valid `semantic_case` can be suitable for `ГОЛОС КЛИЕНТА` or follow-up while being rejected for `СИТУАЦИЯ ДНЯ`.
 27. `semantic_case.report_block_fit.*.coaching_moment`, when present, must use `evidence_type=direct_quote|absence_in_context|inferred_from_dialogue` and `confidence=high|medium|low`; it must never use `none`, `insufficient`, or the parent `report_block_fit.*.evidence_type` enum.
 28. `coaching_moment.supporting_quote` is optional for absence/inferred cases, but `direct_quote` requires a non-empty exact transcript substring. When a direct quote cannot be copied exactly, use `supporting_quote=null` with `absence_in_context` / `inferred_from_dialogue`, or `coaching_moment=null` for an irrelevant `fit=false` block.
+29. For `situation_day` and problem `call_breakdown`, `coaching_moment` proof metadata must not contradict the selected quote. If the quote proves the manager did the missing action, validation rejects the problem moment as counter-evidence.
 
 ### Step 8Z implementation note
 
@@ -553,6 +564,8 @@ Prompt behavior:
 - fresh relevant `fit=true` report block fits should include `coaching_moment`; irrelevant `fit=false` block fits should normally use `coaching_moment=null`;
 - `coaching_moment.evidence_type` is limited to `direct_quote`, `absence_in_context`, or `inferred_from_dialogue`; never use `none` or `insufficient` there;
 - `coaching_moment.evidence_type=direct_quote` requires `supporting_quote` to be a non-empty exact transcript substring; otherwise use `supporting_quote=null` with absence/inferred evidence or make the irrelevant block `coaching_moment=null`;
+- problem-oriented `situation_day` and `call_breakdown` moments require `gap_claim`, `proof_type`, `proof_explanation`, `quote_role`, and `counter_evidence`;
+- a `fit=true` manager-gap problem block must not use `proof_type=context_support`; if a quote only supports context or disproves the gap, the block must be rejected or marked as non-problem for that report block;
 - absence-based moments must be worded cautiously, for example `в доступной записи/фрагменте не зафиксировано...`;
 - unreliable speaker roles must be `unknown`;
 - weak/insufficient evidence must not become strong manager-facing proof;
@@ -563,7 +576,7 @@ Prompt behavior:
 - `business_outcome` is a semantic signal only; deterministic resolver rules remain final authority.
 - starting with Step 8AH-5, fresh prompts also require `call_report_summary` when enough transcript/metadata exists, with `hotness=hot|warm|low` only and manager-voiced `suggested_manager_phrase` that does not copy client quotes.
 
-Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v13_cm_evidence`. This marks the coaching-moment grounding change that keeps `report_evidence.semantic_case.report_block_fit.*.coaching_moment.evidence_type` inside `direct_quote | absence_in_context | inferred_from_dialogue`, requires exact transcript substrings for direct quotes, and prefers `coaching_moment=null` for irrelevant `fit=false` blocks, without changing `schema_version=call_analysis.v1`, `report_evidence_version=v1`, or checklist scoring.
+Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v14_proof_layer`. This marks the proof-layer change for problem-oriented `semantic_case.report_block_fit.*.coaching_moment`: LLM2 must state the exact gap claim, how it is proven, what role the quote plays, and any counter-evidence. It keeps the v13 coaching-moment evidence-type rules, does not change `schema_version=call_analysis.v1`, `report_evidence_version=v1`, or checklist scoring.
 
 ### Step 8AB runtime verification note
 

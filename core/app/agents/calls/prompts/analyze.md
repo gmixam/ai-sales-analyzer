@@ -70,6 +70,8 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - Every quote and every `dialogue_fragment[].text` must be copied verbatim from the transcript.
 - Every `semantic_case.best_dialogue_fragment[].text` must also be copied verbatim from the transcript.
 - `semantic_case.report_block_fit.*.coaching_moment` is a structured explanation of the moment to coach. Its `supporting_quote` is optional; do not invent a quote just to fill it.
+- For problem blocks, `coaching_moment` must include proof fields: `gap_claim`, `proof_type`, `proof_explanation`, `quote_role`, and `counter_evidence`.
+- A quote used for `situation_day` or problem `call_breakdown` must prove the manager gap, not merely mention the same topic. If the quote shows that the manager did the allegedly missing action, put it in `counter_evidence`, set `quote_role=counter_evidence`, and do not mark the problem block as `fit=true`.
 - `semantic_case.report_block_fit.*.coaching_moment.evidence_type` has only three allowed values: `direct_quote`, `absence_in_context`, `inferred_from_dialogue`. Never use `none`, `insufficient`, empty strings, or any `report_block_fit.*.evidence_type` enum value inside `coaching_moment.evidence_type`.
 - If `coaching_moment.evidence_type=direct_quote`, `coaching_moment.supporting_quote` must be a non-empty exact substring copied from the transcript. If you cannot copy an exact transcript substring, do not use `direct_quote`.
 - When no exact quote is safe, set `coaching_moment.supporting_quote=null` and use `evidence_type=absence_in_context` or `evidence_type=inferred_from_dialogue` only when the available transcript genuinely supports that explanation.
@@ -110,6 +112,8 @@ This package is additive. It must not change checklist scoring, stage applicabil
   `weak_manager_evidence`, `weak_customer_evidence`, `insufficient_evidence`,
   `not_relevant_for_block`, `no_follow_up_needed`
 - `semantic_case.report_block_fit.*.coaching_moment.evidence_type`: `direct_quote | absence_in_context | inferred_from_dialogue`
+- `semantic_case.report_block_fit.*.coaching_moment.proof_type`: `direct_gap | absence_in_context | sequence_inference | context_support`
+- `semantic_case.report_block_fit.*.coaching_moment.quote_role`: `proves_gap | supports_context | counter_evidence | not_applicable`
 - `semantic_case.report_block_fit.*.coaching_moment.confidence`: `high | medium | low`
 - `business_outcome.status`: `agreement | rescheduled | refusal | open | tech_service | not_suitable`
 - `stage_code`: one of the checklist stage codes:
@@ -272,7 +276,12 @@ Return one coherent per-call semantic analysis for report usage when the call ha
         "why_it_matters": "Без конкретного шага интерес клиента легко теряется после отправки материалов.",
         "supporting_quote": "Хорошо, я отправлю.",
         "evidence_type": "direct_quote",
-        "confidence": "high"
+        "confidence": "high",
+        "gap_claim": "Менеджер не закрепил конкретный срок следующего контакта.",
+        "proof_type": "sequence_inference",
+        "proof_explanation": "Клиент попросил материалы, менеджер согласился отправить, но в доступном фрагменте не согласовал дату возврата.",
+        "quote_role": "supports_context",
+        "counter_evidence": []
       }
     },
     "call_breakdown": {
@@ -295,7 +304,12 @@ Return one coherent per-call semantic analysis for report usage when the call ha
         "why_it_matters": "Это переводит открытый интерес в управляемый следующий шаг.",
         "supporting_quote": null,
         "evidence_type": "absence_in_context",
-        "confidence": "medium"
+        "confidence": "medium",
+        "gap_claim": "В доступной записи не зафиксирован срок возврата.",
+        "proof_type": "absence_in_context",
+        "proof_explanation": "Вывод основан на отсутствии согласованной даты в доступной записи, а не на одной прямой цитате.",
+        "quote_role": "not_applicable",
+        "counter_evidence": []
       }
     },
     "voice_of_customer": {
@@ -314,7 +328,12 @@ Return one coherent per-call semantic analysis for report usage when the call ha
         "why_it_matters": "Сигнал клиента можно использовать для точного follow-up без давления.",
         "supporting_quote": "Отправьте информацию, мы посмотрим.",
         "evidence_type": "direct_quote",
-        "confidence": "high"
+        "confidence": "high",
+        "gap_claim": null,
+        "proof_type": "context_support",
+        "proof_explanation": "Цитата доказывает клиентский сигнал, а не manager gap.",
+        "quote_role": "supports_context",
+        "counter_evidence": []
       }
     },
     "additional_situations": {
@@ -399,6 +418,7 @@ Semantic-case rules:
 - For each relevant `fit=true` block item, fill `block_role`, `title_mode`, `evidence_target`, `gap_proven`, and `coaching_moment`. Use `problem_fit` for problem-oriented blocks and `null` for neutral customer/follow-up blocks.
 - For `fit=false`, irrelevant, or `reason_code=not_relevant_for_block` block items, set `score=0` and prefer `coaching_moment:null`. Only fill `coaching_moment` on a `fit=false` item when there is still a real, grounded caution the reporting layer may inspect.
 - `coaching_moment` is the report-facing meaning of the block: what happened or what was missing, why it matters, and optionally the quote that supports it.
+- For problem-oriented blocks, `gap_claim` states the exact manager gap, `proof_type` explains how it is proven, `proof_explanation` explains why the evidence proves the gap, `quote_role` states whether the quote proves the gap or only supports context, and `counter_evidence` lists transcript phrases that weaken or disprove the gap.
 - `coaching_moment.evidence_type` must be exactly one of `direct_quote`, `absence_in_context`, or `inferred_from_dialogue`. Do not use `none`, `insufficient`, `manager_gap`, `customer_signal`, `follow_up`, `service_issue`, or `strong_practice` for this field.
 - `coaching_moment.supporting_quote` is optional only for `absence_in_context` and `inferred_from_dialogue`. Use it only for a short exact transcript substring. Set it to `null` for absence or inferred cases.
 - `coaching_moment.evidence_type=direct_quote` means `supporting_quote` is required, non-empty, and copied verbatim from the transcript. If the quote is approximate, paraphrased, translated, reconstructed, or copied from prompt examples, use `supporting_quote:null` with `inferred_from_dialogue` / `absence_in_context`, or set `coaching_moment:null` for a not-fit block.
@@ -415,10 +435,12 @@ Semantic-case rules:
 - `evidence_target` must say what the quoted fragment proves: manager gap, client signal, follow-up action, service context, or strong practice.
 - When there is no quote, `evidence_target` must say what the coaching moment is based on: absence in the available record, dialogue sequence, client signal, or follow-up context.
 - `gap_proven=true` only when the transcript fragment proves the manager gap. Use `false` when there is a suspected gap but the fragment does not prove it; use `null` for non-problem blocks.
+- `quote_role=proves_gap` only when the quote directly proves the manager gap. If the quote is just context, use `quote_role=supports_context`; if it shows the manager did the missing action, use `quote_role=counter_evidence`, add it to `counter_evidence`, and do not set `gap_proven=true`.
 - Use `fit=true` only when the call can safely be used in that specific report block. Use `fit=false` when the call has meaning but belongs in another block.
 - For `situation_day`, use `fit=true` only when the call contains a manager gap, missed opportunity, or coachable problem tied to the stage and the case title is a problem title. A pure client request or customer signal without a manager gap must be `fit=false` with `reason_code=customer_signal_without_manager_gap`, `block_role=customer_signal`, `title_mode=neutral`, and `gap_proven=false`.
 - For `situation_day`, do not use neutral titles such as `Запланирована демонстрация системы`. Use a problem title such as `Демо назначено без фиксации цели, срока или ответственного`.
 - For `situation_day`, `problem_fit.score` should be high only when the manager gap is the main reason this call should become a coaching case. If the main issue is merely customer interest, service context, or successful handling, set `fit=false`.
+- For `situation_day`, actively check counter-evidence before setting `fit=true`: if the claimed gap is "role not clarified" and the manager asks "кем являетесь?", that quote is counter-evidence, not proof. If the claimed gap is "convenience not checked" and the manager asks whether it is convenient to talk, that is counter-evidence. If the claimed gap is "next step/date not fixed" and a date/time is agreed, that is counter-evidence.
 - If `coaching_diagnosis` is positive, such as the manager responded correctly, do not mark `situation_day.fit=true`; use `reason_code=positive_diagnosis_not_problem_case`.
 - For `call_breakdown`, use `fit=true` only when there is a coachable manager moment or strong practice that can be shown with a grounded fragment. If this is a problem breakdown, use `block_role=coaching_problem`, `title_mode=problem`, and `gap_proven=true`. A client-only quote is usually weak for this block unless the manager behavior is also evidenced.
 - For `voice_of_customer`, use `fit=true` when there is a direct client signal or customer quote that reveals need, objection, risk, price, timing, product interest, refusal, or service issue. This block can be neutral even if the manager did everything correctly.
