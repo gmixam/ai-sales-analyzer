@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     openai_model_stt: str = Field(default="whisper-1")
     openai_max_retries: int = Field(default=3, ge=1)
     openai_timeout_sec: int = Field(default=120, ge=1)
+    llm3_enabled: bool = Field(default=False)
 
     # Speech-to-text
     stt_provider: str = Field(default="assemblyai")
@@ -66,6 +67,10 @@ class Settings(BaseSettings):
     ai_llm2_providers_json: str = Field(default="")
     ai_llm2_fixed_account_alias: str = Field(default="")
     ai_llm2_force_account_alias: str = Field(default="")
+    ai_llm3_routing_policy: str = Field(default="fixed")
+    ai_llm3_providers_json: str = Field(default="")
+    ai_llm3_fixed_account_alias: str = Field(default="")
+    ai_llm3_force_account_alias: str = Field(default="")
 
     # OnlinePBX
     onlinepbx_domain: str
@@ -133,6 +138,7 @@ class Settings(BaseSettings):
         "ai_stt_routing_policy",
         "ai_llm1_routing_policy",
         "ai_llm2_routing_policy",
+        "ai_llm3_routing_policy",
     )
     @classmethod
     def normalize_ai_routing_policy(cls, value: str) -> str:

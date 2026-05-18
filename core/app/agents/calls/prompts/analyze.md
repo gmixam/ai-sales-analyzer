@@ -53,6 +53,7 @@ In addition to all existing required MVP-1 fields, return these top-level fields
     "business_outcome": null,
     "call_report_summary": null,
     "semantic_case": null,
+    "block_candidates": {},
     "situation_candidates": [],
     "manager_coaching_moments": [],
     "voice_of_customer": [],
@@ -69,9 +70,11 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - Use only the transcript and provided segments/metadata.
 - Every quote and every `dialogue_fragment[].text` must be copied verbatim from the transcript.
 - Every `semantic_case.best_dialogue_fragment[].text` must also be copied verbatim from the transcript.
+- Every `block_candidates.*.supporting_quote`, when present, must be copied verbatim from the transcript.
 - `semantic_case.report_block_fit.*.coaching_moment` is a structured explanation of the moment to coach. Its `supporting_quote` is optional; do not invent a quote just to fill it.
 - For problem blocks, `coaching_moment` must include proof fields: `gap_claim`, `proof_type`, `proof_explanation`, `quote_role`, and `counter_evidence`.
 - A quote used for `situation_day` or problem `call_breakdown` must prove the manager gap, not merely mention the same topic. If the quote shows that the manager did the allegedly missing action, put it in `counter_evidence`, set `quote_role=counter_evidence`, and do not mark the problem block as `fit=true`.
+- A product-offer quote is usually not `direct_gap` proof for missing qualification. If the problem is "manager offered product before qualifying", use `sequence_inference` or `absence_in_context`; the product-offer quote is normally `quote_role=supports_context`.
 - `semantic_case.report_block_fit.*.coaching_moment.evidence_type` has only three allowed values: `direct_quote`, `absence_in_context`, `inferred_from_dialogue`. Never use `none`, `insufficient`, empty strings, or any `report_block_fit.*.evidence_type` enum value inside `coaching_moment.evidence_type`.
 - If `coaching_moment.evidence_type=direct_quote`, `coaching_moment.supporting_quote` must be a non-empty exact substring copied from the transcript. If you cannot copy an exact transcript substring, do not use `direct_quote`.
 - When no exact quote is safe, set `coaching_moment.supporting_quote=null` and use `evidence_type=absence_in_context` or `evidence_type=inferred_from_dialogue` only when the available transcript genuinely supports that explanation.
@@ -115,11 +118,20 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - `semantic_case.report_block_fit.*.coaching_moment.proof_type`: `direct_gap | absence_in_context | sequence_inference | context_support`
 - `semantic_case.report_block_fit.*.coaching_moment.quote_role`: `proves_gap | supports_context | counter_evidence | not_applicable`
 - `semantic_case.report_block_fit.*.coaching_moment.confidence`: `high | medium | low`
+- `block_candidates` keys: `situation_day | call_breakdown | voice_of_customer | money_on_table | tomorrow_follow_up | tomorrow_challenge | call_list_context`
+- `block_candidates.*.role`: `coaching_problem | customer_signal | follow_up_action | neutral_summary | strong_practice | commercial_opportunity | skill_challenge | call_list_context`
+- `block_candidates.*.title_mode`: `problem | neutral | positive`
+- `block_candidates.*.proof_type`: `direct_gap | absence_in_context | sequence_inference | context_support`
+- `block_candidates.*.quote_role`: `proves_gap | supports_context | counter_evidence | not_applicable`
 - `business_outcome.status`: `agreement | rescheduled | refusal | open | tech_service | not_suitable`
 - `stage_code`: one of the checklist stage codes:
   `contact_start`, `qualification_primary`, `needs_discovery`, `presentation`,
   `objection_handling`, `completion_next_step`, `sale_processing`, `sale_final`,
   `cross_stage_transition`
+- Every `fit=true` `block_candidates.*` item must include `stage_code` explicitly.
+  Choose the dominant checklist stage for that block; use `cross_stage_transition`
+  only when the useful report material is genuinely cross-stage. Never leave
+  `stage_code` empty, null, or hidden in a different field on usable block candidates.
 
 ### Strict `business_outcome.status` enum rules
 Use only these values in `report_evidence.business_outcome.status`:
@@ -454,6 +466,172 @@ Good semantic-case pattern:
 - `manager_behavior`: what the manager actually did or missed.
 - `core_meaning`: the business/coaching interpretation.
 - `recommended_next_action`: the next concrete manager/coaching action.
+
+### `block_candidates` (v15 block-ready material)
+For every business-meaningful call with enough transcript content, evaluate whether the call can support these manager daily blocks:
+- `situation_day`
+- `call_breakdown`
+- `voice_of_customer`
+- `money_on_table`
+- `tomorrow_follow_up`
+- `tomorrow_challenge`
+- `call_list_context`
+
+Return `report_evidence.block_candidates` as an additive object. It must not replace `semantic_case`, `report_block_fit`, or the legacy candidate arrays. Use `fit=false`, `score=0`, and a concrete `insufficiency_reason` when a call should not support a block.
+
+Minimal shape:
+
+```json
+{
+  "situation_day": {
+    "fit": true,
+    "score": 86,
+    "role": "coaching_problem",
+    "title_mode": "problem",
+    "stage_code": "qualification_primary",
+    "main_thesis": "Менеджер перешел к предложению продукта до выяснения задачи клиента.",
+    "what_happened": "Менеджер предложил отправить информацию о продукте, но в доступной части звонка не зафиксировал вопросы о роли клиента, текущем процессе и задаче.",
+    "why_it_matters": "Без квалификации предложение может оказаться не связанным с реальной задачей клиента.",
+    "what_was_missing": "Не было зафиксировано, какую задачу клиент хочет решить и кто принимает решение.",
+    "better_next_action": "Сначала уточнить задачу, роль клиента и текущий процесс, затем связать продукт с выявленной потребностью.",
+    "proof_type": "sequence_inference",
+    "proof_explanation": "Вывод основан на последовательности: менеджер предлагает отправить информацию, а предварительные вопросы о задаче клиента в доступном фрагменте отсутствуют.",
+    "supporting_quote": "может, я вам скину информацию о нашем продукте",
+    "quote_role": "supports_context",
+    "counter_evidence": [],
+    "insufficiency_reason": null
+  },
+  "call_breakdown": {
+    "fit": true,
+    "score": 82,
+    "role": "coaching_problem",
+    "title_mode": "problem",
+    "stage_code": "qualification_primary",
+    "main_thesis": "Звонок подходит для разбора раннего предложения без квалификации.",
+    "moments": [
+      {
+        "situation": "Менеджер рано предлагает отправить информацию.",
+        "essence": "Клиент еще не сформулировал задачу, роль и процесс.",
+        "proof": "Последовательность реплик показывает предложение продукта до квалификации.",
+        "better_action": "Сначала задать 2-3 вопроса о задаче, текущем процессе и ответственном."
+      }
+    ],
+    "proof_type": "sequence_inference",
+    "proof_explanation": "Разбор основан на порядке действий, а не на одной цитате.",
+    "supporting_quote": null,
+    "quote_role": "not_applicable",
+    "counter_evidence": [],
+    "insufficiency_reason": null
+  },
+  "voice_of_customer": {
+    "fit": true,
+    "score": 76,
+    "role": "customer_signal",
+    "title_mode": "neutral",
+    "stage_code": "qualification_primary",
+    "customer_signal": "Клиент проявил интерес к материалам, но еще не обозначил задачу.",
+    "what_it_means": "Сигнал можно использовать для follow-up с уточнением потребности.",
+    "manager_action": "Вернуться не с общей презентацией, а с вопросом о процессе и критериях.",
+    "proof_type": "context_support",
+    "proof_explanation": "Доказан клиентский/диалоговый контекст, а не manager gap.",
+    "supporting_quote": null,
+    "quote_role": "supports_context",
+    "counter_evidence": [],
+    "insufficiency_reason": null
+  },
+  "money_on_table": {
+    "fit": false,
+    "score": 0,
+    "role": "neutral_summary",
+    "title_mode": "neutral",
+    "stage_code": null,
+    "commercial_opportunity": null,
+    "signal_strength": "low",
+    "what_was_monetizable": null,
+    "manager_action": null,
+    "next_commercial_action": null,
+    "proof_type": "context_support",
+    "proof_explanation": "Нет достаточного коммерческого сигнала.",
+    "supporting_quote": null,
+    "quote_role": "not_applicable",
+    "counter_evidence": [],
+    "insufficiency_reason": "generic_interest_without_commercial_bridge"
+  },
+  "tomorrow_follow_up": {
+    "fit": true,
+    "score": 80,
+    "role": "follow_up_action",
+    "title_mode": "neutral",
+    "stage_code": "completion_next_step",
+    "client_next_action": "Отправить материалы и уточнить, какую задачу клиент хочет закрыть.",
+    "why_follow_up": "Клиент не отказался и оставил возможность продолжить разговор.",
+    "opening_phrase": "Добрый день. Отправляю материалы и хочу уточнить: какую задачу вы хотите решить в первую очередь?",
+    "risk_if_no_follow_up": "Контакт останется на уровне общего интереса без следующего шага.",
+    "proof_type": "context_support",
+    "proof_explanation": "Follow-up основан на открытом интересе и незавершенном следующем шаге.",
+    "supporting_quote": null,
+    "quote_role": "supports_context",
+    "counter_evidence": [],
+    "insufficiency_reason": null
+  },
+  "tomorrow_challenge": {
+    "fit": true,
+    "score": 70,
+    "role": "coaching_problem",
+    "title_mode": "problem",
+    "stage_code": "qualification_primary",
+    "skill_signal": "Квалификация перед презентацией",
+    "practice_focus": "Перед отправкой материалов выяснять задачу, роль и текущий процесс.",
+    "behavior_standard": "До предложения продукта задать минимум два вопроса о задаче клиента и критериях решения.",
+    "example_phrase": "Чтобы отправить не общий материал, уточню: какую задачу вы хотите решить и кто будет принимать решение?",
+    "proof_type": "sequence_inference",
+    "proof_explanation": "Сигнал основан на порядке действий в звонке.",
+    "supporting_quote": null,
+    "quote_role": "not_applicable",
+    "counter_evidence": [],
+    "insufficiency_reason": null
+  },
+  "call_list_context": {
+    "fit": true,
+    "score": 75,
+    "role": "neutral_summary",
+    "title_mode": "neutral",
+    "stage_code": "qualification_primary",
+    "short_topic": "Клиент попросил материалы",
+    "short_context": "Менеджер предложил отправить информацию, но задача клиента в доступном фрагменте не уточнена.",
+    "final_action_hint": "Отправить материалы и уточнить задачу клиента.",
+    "proof_type": "context_support",
+    "proof_explanation": "Краткий контекст основан на содержании звонка.",
+    "supporting_quote": null,
+    "quote_role": "supports_context",
+    "counter_evidence": [],
+    "insufficiency_reason": null
+  }
+}
+```
+
+Block-candidate rules:
+- For every `fit=true` block candidate, `stage_code` is mandatory and must be
+  one of the canonical checklist stage codes. Do not make the Reporting layer
+  infer the stage from text. For `fit=false`, `stage_code` may be `null`.
+- `situation_day`: use `fit=true` only for a strong teachable case. Usually this is `role=coaching_problem` and `title_mode=problem`; a strong-practice case is allowed only when the block can render it explicitly as positive. Provide a specific thesis, what happened, why it matters, what was missing or what worked well, and better next action. Do not make `what_was_missing` and `better_next_action` identical.
+- `call_breakdown`: provide one to three `moments`; each moment needs `situation`, `essence`, `proof`, and `better_action`. If the same call is also useful for `situation_day`, go deeper and do not repeat the same wording.
+- `voice_of_customer`: show a real customer signal. Do not force a manager mistake. Prefer a client quote; if no direct quote exists, use `proof_type=context_support` or an indirect explanation and say why.
+- `money_on_table`: use `fit=true` only for a real commercial bridge to revenue, payment, invoice, upsell, cross-sell, or next commercial step. Do not invent money potential from generic interest or service-only calls.
+- `tomorrow_follow_up`: provide a client-specific next action, reason to follow up, manager opening phrase, and risk if no follow-up happens. Do not create follow-up for refusal/not suitable unless there is explicit allowed continuation.
+- `tomorrow_challenge`: provide the skill this call indicates, what to practice, a concrete behavior standard, and optional example phrase. One call is only a signal; the Reporting layer aggregates across calls before choosing the final challenge.
+- `call_list_context`: provide short topic, short context, and final action hint. Do not use generic `Обсуждение с клиентом`, invented client names, or technical fragments as business context.
+
+Strict proof-type rules for block candidates:
+- `direct_gap` means one quote or short fragment directly proves the manager gap.
+- `sequence_inference` means the gap is proven by event order.
+- `absence_in_context` means the gap is proven by a missing action in the available transcript/recording context.
+- `context_support` means the quote supports context but does not prove a problem by itself.
+- `quote_role=proves_gap` is allowed only when `proof_type=direct_gap`.
+- `quote_role=supports_context` means the quote may be useful context, while the proof is sequence, absence, or a neutral customer signal.
+- `quote_role=counter_evidence` means the quote weakens or disproves the claimed gap. If counter-evidence exists, do not mark the manager-gap block as `fit=true`.
+- For missing qualification before product offering, a quote like `могу скинуть информацию о продукте` is context, not `direct_gap`. Use `sequence_inference` or `absence_in_context` unless a transcript fragment directly proves the manager skipped or mishandled qualification.
+- `proof_type=context_support` is not enough for a `fit=true` manager-gap `situation_day` or problem `call_breakdown`.
 
 ### `situation_candidates`
 Return 0..N candidates for `СИТУАЦИЯ ДНЯ`:

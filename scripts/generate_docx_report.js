@@ -115,6 +115,18 @@ function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+const PROOF_TYPE_LABELS = {
+  direct_gap: "Подтверждение из звонка",
+  sequence_inference: "Суть момента",
+  absence_in_context: "Что не было зафиксировано",
+  context_support: "Контекст из звонка",
+};
+
+function proofTypeLabel(value, fallback = "Подтверждение из звонка") {
+  const key = cleanText(value).toLowerCase();
+  return PROOF_TYPE_LABELS[key] || fallback;
+}
+
 function firstNonEmpty(...values) {
   for (const value of values) {
     const text = cleanText(value);
@@ -175,8 +187,8 @@ function dialogueSpeakerLabel(speaker) {
 
 function primaryStageForSituation(s) {
   const stageCode = cleanText(s.coaching_view?.stage_code || s.focus_stage_deep_dive?.stage_code || s.focus_stage_recommendation?.stage_code);
-  return DATA.stages.find((stage) => stage.priority)
-    || DATA.stages.find((stage) => cleanText(stage.code) === stageCode)
+  return DATA.stages.find((stage) => cleanText(stage.code) === stageCode)
+    || DATA.stages.find((stage) => stage.priority)
     || null;
 }
 
@@ -230,7 +242,7 @@ function sameMeaningText(left, right) {
   return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
 }
 
-function buildDialogueParagraphs(excerpt, quote) {
+function buildDialogueParagraphs(excerpt, quote, opts = {}) {
   const source = excerpt || null;
   const turns = (source?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 4);
   const quoteFallback = quoteText(quote);
@@ -242,9 +254,10 @@ function buildDialogueParagraphs(excerpt, quote) {
   }
   const partial = source?.is_partial !== false;
   const reason = cleanText(source?.partial_reason);
-  let partialText = "Подтверждение из звонка передано частично.";
+  const evidenceLabel = opts.label || "Подтверждение из звонка";
+  let partialText = `${evidenceLabel} передано частично.`;
   if (reason === "speaker_roles_unavailable") {
-    partialText = "Подтверждение из звонка передано частично: роли участников определены не полностью.";
+    partialText = `${evidenceLabel} передано частично: роли участников определены не полностью.`;
   } else if (reason === "low_information_fragment_only") {
     partialText = "Доступно только слабое подтверждение: в звонке не найдено более содержательное.";
   }
@@ -299,6 +312,15 @@ function situationSupportingQuote(s) {
   );
 }
 
+function situationProofType(s) {
+  return firstNonEmpty(
+    s.coaching_view?.proof_type,
+    s.coaching_moment?.proof_type,
+    s.evidence_quote?.proof_type,
+    s.supporting_quote?.proof_type,
+  );
+}
+
 function looksLikeManagerSpeechScript(value) {
   const text = cleanText(value);
   if (!text) return false;
@@ -313,9 +335,10 @@ function looksLikeManagerSpeechScript(value) {
 function buildSupportingQuoteParagraph(text, opts = {}) {
   const quote = cleanText(text);
   if (!quote) return null;
+  const label = opts.label || "Подтверждение из звонка";
   return new Paragraph({
     children: [
-      new TextRun({ text: "Подтверждение из звонка: ", bold: true, size: opts.size || SZ.cell, color: COLORS.heading, font: "Arial" }),
+      new TextRun({ text: `${label}: `, bold: true, size: opts.size || SZ.cell, color: COLORS.heading, font: "Arial" }),
       new TextRun({ text: `«${shortQuote(quote, opts.limit || 420)}»`, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial", italics: true }),
     ],
     spacing: { before: opts.before || 40, after: opts.after || 0 },
@@ -439,6 +462,10 @@ function normalizeBreakdownObject(row, index) {
       quoteText(row.quote),
       quoteText(row.evidence_quote),
     )),
+    proof_type: firstNonEmpty(row.proof_type, row.coaching_moment?.proof_type, row.evidence_type),
+    supporting_quote_proof_type: firstNonEmpty(row.supporting_quote_proof_type, row.quote_proof_type),
+    quote_role: firstNonEmpty(row.quote_role, row.coaching_moment?.quote_role),
+    supporting_quote_repeated_with_situation_day: Boolean(row.supporting_quote_repeated_with_situation_day),
     better: firstNonEmpty(row.better, row.recommendation, row.next_action, row.what_to_do, "—"),
   };
 }
@@ -459,6 +486,8 @@ function normalizeBreakdownRow(row, index, context = {}) {
     return normalizeBreakdownObject(row, index);
   }
   const parentMomentSummary = firstNonEmpty(context.moment_summary, context.coaching_moment?.summary);
+  const parentProofType = firstNonEmpty(context.proof_type, context.evidence_type, context.coaching_moment?.proof_type);
+  const parentQuoteRole = firstNonEmpty(context.quote_role, context.coaching_moment?.quote_role);
   if (row.length >= 4) {
     const quote = breakdownSupportingQuote(row[2]);
     const momentSummary = firstNonEmpty(parentMomentSummary, breakdownFragmentOrNote(row[2]));
@@ -467,6 +496,10 @@ function normalizeBreakdownRow(row, index, context = {}) {
       what: row[1] || "—",
       moment_summary: momentSummary,
       supporting_quote: quote && quote !== momentSummary ? quote : "",
+      proof_type: parentProofType,
+      supporting_quote_proof_type: parentQuoteRole === "supports_context" ? "context_support" : parentProofType,
+      quote_role: parentQuoteRole,
+      supporting_quote_repeated_with_situation_day: Boolean(context.repetition_reduced_with_situation_day),
       better: row[3] || "—",
     };
   }
@@ -477,6 +510,10 @@ function normalizeBreakdownRow(row, index, context = {}) {
     what: split.what || "—",
     moment_summary: momentSummary,
     supporting_quote: split.supporting_quote && split.supporting_quote !== momentSummary ? split.supporting_quote : "",
+    proof_type: parentProofType,
+    supporting_quote_proof_type: parentQuoteRole === "supports_context" ? "context_support" : parentProofType,
+    quote_role: parentQuoteRole,
+    supporting_quote_repeated_with_situation_day: Boolean(context.repetition_reduced_with_situation_day),
     better: row[2] || "—",
   };
 }
@@ -709,6 +746,7 @@ function dataFromBundle(bundle) {
   );
   const breakdownMomentContext = (
     breakdownSource.includes("semantic_case")
+    || breakdownSource.includes("block_candidates")
     || (breakdownRows.length === 1 && payload.call_breakdown?.moment_summary)
   )
     ? payload.call_breakdown
@@ -1418,6 +1456,8 @@ function buildSituatsiya() {
   const hasMoment = Boolean(momentSummary || supportingQuote);
   const patternTitle = buildSituationPatternTitle(s);
   const stageMeta = buildSituationStageMeta(s);
+  const rawProofLabel = proofTypeLabel(situationProofType(s));
+  const proofLabel = rawProofLabel === "Суть момента" && momentSummary ? "Контекст из звонка" : rawProofLabel;
 
   if (!whatHappenedText && reviewRows.length === 0 && !hasMoment) {
     return [
@@ -1452,8 +1492,8 @@ function buildSituatsiya() {
     result.push(bodyPara(momentSummary, { size: SZ.cell }));
   }
   if (supportingQuote && !sameMeaningText(supportingQuote, momentSummary)) {
-    result.push(subHeading("Подтверждение из звонка"));
-    result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.supporting_quote || s.evidence_quote));
+    result.push(subHeading(proofLabel));
+    result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.supporting_quote || s.evidence_quote, { label: proofLabel }));
   }
   if (reviewRows.length > 0) {
     result.push(new Table({
@@ -1471,15 +1511,25 @@ function buildSituatsiya() {
 
 function buildBreakdownMomentCell(s, i) {
   const summary = firstNonEmpty(s.moment_summary, s.summary, s.fragment, "—");
-  const quote = firstNonEmpty(s.supporting_quote, "");
+  const quote = s.supporting_quote_repeated_with_situation_day ? "" : firstNonEmpty(s.supporting_quote, "");
+  const proofLabel = proofTypeLabel(s.proof_type, "Суть момента");
+  const quoteLabel = proofTypeLabel(
+    firstNonEmpty(s.supporting_quote_proof_type, s.quote_role === "supports_context" ? "context_support" : "", s.proof_type),
+  );
+  const labelSummary = cleanText(s.proof_type) && !quote;
   const paras = [
     new Paragraph({
-      children: [new TextRun({ text: summary, size: SZ.cell, color: COLORS.black, font: "Arial" })],
+      children: labelSummary
+        ? [
+            new TextRun({ text: `${proofLabel}: `, bold: true, size: SZ.cell, color: COLORS.heading, font: "Arial" }),
+            new TextRun({ text: summary, size: SZ.cell, color: COLORS.black, font: "Arial" }),
+          ]
+        : [new TextRun({ text: summary, size: SZ.cell, color: COLORS.black, font: "Arial" })],
       spacing: { before: 0, after: quote && quote !== summary ? 40 : 0 },
     }),
   ];
   const quotePara = quote && quote !== summary
-    ? buildSupportingQuoteParagraph(quote, { size: SZ.cell, limit: 260, before: 0 })
+    ? buildSupportingQuoteParagraph(quote, { size: SZ.cell, limit: 260, before: 0, label: quoteLabel })
     : null;
   if (quotePara) paras.push(quotePara);
   return cellParagraphs(paras, {

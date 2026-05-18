@@ -477,6 +477,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 recommendations=list(payload.get("recommendations") or []),
             ),
             "call_example": dict(payload["key_problem_of_day"].get("call_example") or {}),
+            "coaching_view": dict(payload.get("situation_day_coaching_view") or {}),
+            "dialogue_excerpt": dict(payload.get("situation_dialogue_excerpt") or {}),
+            "evidence_quote": dict(payload.get("situation_evidence_quote") or {}),
+            "evidence_packet": dict(payload.get("situation_day_evidence_packet") or {}),
             "scripts": _build_situation_scripts(
                 key_problem=dict(payload.get("key_problem_of_day") or {}),
                 recommendations=list(payload.get("recommendations") or []),
@@ -864,6 +868,79 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.append(str(section["note"]))
         return lines
     if kind == "situation_card":
+        coaching_view = dict(section.get("coaching_view") or {})
+        if coaching_view:
+            dialogue_turns = [
+                turn
+                for turn in (dict(section.get("dialogue_excerpt") or {}).get("turns") or [])
+                if isinstance(turn, dict) and str(turn.get("text") or "").strip()
+            ]
+            speaker_labels = {
+                "manager": "Менеджер",
+                "client": "Клиент",
+                "evidence": "Доказательный фрагмент",
+                "context": "Контекст",
+                "unknown": "Фрагмент",
+            }
+            stage_label = str(coaching_view.get("stage_label") or "").strip()
+            stage_score = str(coaching_view.get("stage_score_label") or "").strip()
+            focus_stage = (
+                f"Фокусный этап: {stage_label} — {stage_score}"
+                if stage_label and stage_score
+                else f"Фокусный этап: {stage_label}"
+                if stage_label
+                else ""
+            )
+            evidence_status = str(coaching_view.get("situation_day_evidence_status") or "").strip()
+            example_ref = (
+                dict(section.get("dialogue_excerpt") or {}).get("client_call_reference")
+                or dict(section.get("evidence_quote") or {}).get("client_call_reference")
+                or ""
+            )
+            lines = [
+                str(coaching_view.get("pattern_title") or section.get("situation_title") or section.get("label") or "Ситуация дня"),
+                str(section.get("scope_note") or ""),
+                focus_stage,
+                (
+                    f"{section.get('example_label') or 'Пример из сегодня'}: {example_ref}"
+                    if example_ref and evidence_status != "insufficient"
+                    else ""
+                ),
+                f"Что произошло: {coaching_view.get('what_happened') or 'Нет данных'}",
+            ]
+            if dialogue_turns:
+                lines.append("Контекст:")
+                for turn in dialogue_turns[:10]:
+                    speaker = speaker_labels.get(str(turn.get("speaker") or "").strip().lower(), "Фрагмент")
+                    lines.append(f"- {speaker}: {turn.get('text')}")
+            lines.extend(
+                [
+                    f"Что это значит: {coaching_view.get('meaning') or coaching_view.get('why_it_matters') or 'Нет данных'}",
+                    f"Что не хватило в разговоре: {coaching_view.get('what_was_missing') or 'Нет данных'}",
+                    f"Что делать в следующий раз: {coaching_view.get('next_time_action') or 'Нет данных'}",
+                ]
+            )
+            if coaching_view.get("situation_day_evidence_status"):
+                lines.append(
+                    "Статус доказательства: "
+                    f"{coaching_view.get('situation_day_evidence_status')}"
+                    + (
+                        f" / {coaching_view.get('proof_strength')}"
+                        if coaching_view.get("proof_strength")
+                        else ""
+                    )
+                )
+            if evidence_status == "insufficient" and coaching_view.get("insufficiency_reason"):
+                lines.append(f"Причина: {coaching_view.get('insufficiency_reason')}")
+            scripts = [
+                str(item)
+                for item in (coaching_view.get("scripts") or [])
+                if str(item).strip()
+            ]
+            if scripts:
+                lines.append("Варианты речёвок:")
+                lines.extend([f"- {item}" for item in scripts])
+            return [line for line in lines if line and not line.endswith(": ")]
         lines = [
             str(section.get("situation_title") or section.get("label") or "Ситуация дня"),
             str(section.get("scope_note") or ""),
@@ -1227,6 +1304,70 @@ def _render_html_section(section: dict[str, Any]) -> str:
             if example.get("client_call_reference") or example.get("client_label") or example.get("time_label")
             else ""
         )
+        coaching_view = dict(section.get("coaching_view") or {})
+        if coaching_view:
+            dialogue_turns = [
+                turn
+                for turn in (dict(section.get("dialogue_excerpt") or {}).get("turns") or [])
+                if isinstance(turn, dict) and str(turn.get("text") or "").strip()
+            ]
+            speaker_labels = {
+                "manager": "Менеджер",
+                "client": "Клиент",
+                "evidence": "Доказательный фрагмент",
+                "context": "Контекст",
+                "unknown": "Фрагмент",
+            }
+            scene_html = ""
+            if dialogue_turns:
+                scene_items = "".join(
+                    "<li>"
+                    f"<strong>{html.escape(speaker_labels.get(str(turn.get('speaker') or '').strip().lower(), 'Фрагмент'))}:</strong> "
+                    f"{html.escape(str(turn.get('text') or ''))}"
+                    "</li>"
+                    for turn in dialogue_turns[:10]
+                )
+                scene_html = f"<div class=\"mini-card\"><strong>Контекст</strong><ol>{scene_items}</ol></div>"
+            status_html = ""
+            evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
+            if coaching_view.get("situation_day_evidence_status"):
+                strength = str(coaching_view.get("proof_strength") or "")
+                reason = str(coaching_view.get("insufficiency_reason") or "")
+                status_html = (
+                    "<p class=\"muted\"><strong>Статус доказательства:</strong> "
+                    f"{html.escape(evidence_status + (f' / {strength}' if strength else ''))}</p>"
+                    + (
+                        f"<p class=\"muted\"><strong>Причина:</strong> {html.escape(reason)}</p>"
+                        if evidence_status == "insufficient" and reason
+                        else ""
+                    )
+                )
+            dialogue_ref = str(
+                (dict(section.get("dialogue_excerpt") or {}).get("client_call_reference"))
+                or (dict(section.get("evidence_quote") or {}).get("client_call_reference"))
+                or ""
+            ).strip()
+            coaching_example_html = (
+                "<div class=\"mini-card\">"
+                f"<strong>{html.escape(example_label)}:</strong> {html.escape(dialogue_ref)}"
+                "</div>"
+                if dialogue_ref and evidence_status != "insufficient"
+                else "" if evidence_status == "insufficient" else example_html
+            )
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+                f"<h3>{html.escape(str(coaching_view.get('pattern_title') or section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
+                f"{scope_note_html}"
+                f"<p><strong>Фокусный этап:</strong> {html.escape(str(coaching_view.get('stage_label') or ''))} — {html.escape(str(coaching_view.get('stage_score_label') or '—'))}</p>"
+                f"{coaching_example_html}"
+                f"<p><strong>Что произошло:</strong> {html.escape(str(coaching_view.get('what_happened') or 'Нет данных'))}</p>"
+                f"{scene_html}"
+                f"<p><strong>Что это значит:</strong> {html.escape(str(coaching_view.get('meaning') or coaching_view.get('why_it_matters') or 'Нет данных'))}</p>"
+                f"<p><strong>Что не хватило:</strong> {html.escape(str(coaching_view.get('what_was_missing') or 'Нет данных'))}</p>"
+                f"<p><strong>Что делать в следующий раз:</strong> {html.escape(str(coaching_view.get('next_time_action') or 'Нет данных'))}</p>"
+                f"{status_html}"
+                "</article></div></section>"
+            )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
             f"<h3>{html.escape(str(section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
@@ -3219,7 +3360,7 @@ def _build_v5_voice_of_customer_section(
     rows = [
         [
             f"{item.get('client_call_reference') or item.get('client_label') or 'Клиент'}",
-            item.get("quote") or "—",
+            item.get("quote_context") or item.get("quote") or "—",
             str(item.get("interpretation") or "").strip()
             or (
                 _build_voice_reply_line(item.get("context"), item.get("quote"))
@@ -3872,6 +4013,70 @@ def _manager_status_text_color(
             if example.get("client_call_reference") or example.get("client_label") or example.get("time_label")
             else ""
         )
+        coaching_view = dict(section.get("coaching_view") or {})
+        if coaching_view:
+            dialogue_turns = [
+                turn
+                for turn in (dict(section.get("dialogue_excerpt") or {}).get("turns") or [])
+                if isinstance(turn, dict) and str(turn.get("text") or "").strip()
+            ]
+            speaker_labels = {
+                "manager": "Менеджер",
+                "client": "Клиент",
+                "evidence": "Доказательный фрагмент",
+                "context": "Контекст",
+                "unknown": "Фрагмент",
+            }
+            scene_html = ""
+            if dialogue_turns:
+                scene_items = "".join(
+                    "<li>"
+                    f"<strong>{html.escape(speaker_labels.get(str(turn.get('speaker') or '').strip().lower(), 'Фрагмент'))}:</strong> "
+                    f"{html.escape(str(turn.get('text') or ''))}"
+                    "</li>"
+                    for turn in dialogue_turns[:10]
+                )
+                scene_html = f"<div class=\"mini-card\"><strong>Контекст</strong><ol>{scene_items}</ol></div>"
+            status_html = ""
+            evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
+            if coaching_view.get("situation_day_evidence_status"):
+                strength = str(coaching_view.get("proof_strength") or "")
+                reason = str(coaching_view.get("insufficiency_reason") or "")
+                status_html = (
+                    "<p class=\"muted\"><strong>Статус доказательства:</strong> "
+                    f"{html.escape(evidence_status + (f' / {strength}' if strength else ''))}</p>"
+                    + (
+                        f"<p class=\"muted\"><strong>Причина:</strong> {html.escape(reason)}</p>"
+                        if evidence_status == "insufficient" and reason
+                        else ""
+                    )
+                )
+            dialogue_ref = str(
+                (dict(section.get("dialogue_excerpt") or {}).get("client_call_reference"))
+                or (dict(section.get("evidence_quote") or {}).get("client_call_reference"))
+                or ""
+            ).strip()
+            coaching_example_html = (
+                "<div class=\"mini-card\">"
+                f"<strong>{html.escape(example_label)}:</strong> {html.escape(dialogue_ref)}"
+                "</div>"
+                if dialogue_ref and evidence_status != "insufficient"
+                else "" if evidence_status == "insufficient" else example_html
+            )
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
+                f"<h3>{html.escape(str(coaching_view.get('pattern_title') or section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"
+                f"{scope_note_html}"
+                f"<p><strong>Фокусный этап:</strong> {html.escape(str(coaching_view.get('stage_label') or ''))} — {html.escape(str(coaching_view.get('stage_score_label') or '—'))}</p>"
+                f"{coaching_example_html}"
+                f"<p><strong>Что произошло:</strong> {html.escape(str(coaching_view.get('what_happened') or 'Нет данных'))}</p>"
+                f"{scene_html}"
+                f"<p><strong>Что это значит:</strong> {html.escape(str(coaching_view.get('meaning') or coaching_view.get('why_it_matters') or 'Нет данных'))}</p>"
+                f"<p><strong>Что не хватило:</strong> {html.escape(str(coaching_view.get('what_was_missing') or 'Нет данных'))}</p>"
+                f"<p><strong>Что делать в следующий раз:</strong> {html.escape(str(coaching_view.get('next_time_action') or 'Нет данных'))}</p>"
+                f"{status_html}"
+                "</article></div></section>"
+            )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
             f"<h3>{html.escape(str(section.get('situation_title') or section.get('label') or 'СИТУАЦИЯ ДНЯ'))}</h3>"

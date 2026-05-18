@@ -157,6 +157,17 @@ class ReportBlockRole(StrEnum):
     STRONG_PRACTICE = "strong_practice"
 
 
+class BlockCandidateRole(StrEnum):
+    COACHING_PROBLEM = "coaching_problem"
+    CUSTOMER_SIGNAL = "customer_signal"
+    FOLLOW_UP_ACTION = "follow_up_action"
+    NEUTRAL_SUMMARY = "neutral_summary"
+    STRONG_PRACTICE = "strong_practice"
+    COMMERCIAL_OPPORTUNITY = "commercial_opportunity"
+    SKILL_CHALLENGE = "skill_challenge"
+    CALL_LIST_CONTEXT = "call_list_context"
+
+
 class ReportBlockTitleMode(StrEnum):
     PROBLEM = "problem"
     NEUTRAL = "neutral"
@@ -338,10 +349,101 @@ class SemanticCase(_ReportEvidenceModel):
     usable_in_report: bool = True
 
 
+class BlockCandidateBase(_ReportEvidenceModel):
+    fit: bool
+    score: int = Field(ge=0, le=100)
+    role: BlockCandidateRole | None = None
+    title_mode: ReportBlockTitleMode | None = None
+    stage_code: str | None = None
+    main_thesis: str | None = Field(default=None, max_length=360)
+    why_it_matters: str | None = Field(default=None, max_length=420)
+    proof_type: CoachingMomentProofType | None = None
+    proof_explanation: str | None = Field(default=None, max_length=520)
+    supporting_quote: str | None = None
+    quote_role: CoachingMomentQuoteRole | None = None
+    counter_evidence: list[str] = Field(default_factory=list, max_length=3)
+    insufficiency_reason: str | None = Field(default=None, max_length=360)
+
+
+class SituationDayBlockCandidate(BlockCandidateBase):
+    what_happened: str | None = Field(default=None, max_length=520)
+    what_was_missing: str | None = Field(default=None, max_length=420)
+    better_next_action: str | None = Field(default=None, max_length=420)
+
+
+class CallBreakdownMoment(_ReportEvidenceModel):
+    situation: str | None = Field(default=None, max_length=360)
+    essence: str | None = Field(default=None, max_length=420)
+    proof: str | None = Field(default=None, max_length=420)
+    proof_explanation: str | None = Field(default=None, max_length=420)
+    what_was_missing: str | None = Field(default=None, max_length=360)
+    better_next_action: str | None = Field(default=None, max_length=360)
+    better_action: str | None = Field(default=None, max_length=360)
+
+
+class CallBreakdownBlockCandidate(BlockCandidateBase):
+    moments: list[CallBreakdownMoment] = Field(default_factory=list, max_length=3)
+
+
+class VoiceOfCustomerBlockCandidate(BlockCandidateBase):
+    customer_signal: str | None = Field(default=None, max_length=420)
+    customer_need_or_objection: str | None = Field(default=None, max_length=420)
+    what_it_means: str | None = Field(default=None, max_length=420)
+    manager_should_do: str | None = Field(default=None, max_length=420)
+    manager_action: str | None = Field(default=None, max_length=420)
+
+
+class MoneyOnTableBlockCandidate(BlockCandidateBase):
+    commercial_opportunity: str | None = Field(default=None, max_length=420)
+    signal_strength: BusinessSignal | None = None
+    monetizable_signal: str | None = Field(default=None, max_length=420)
+    what_was_monetizable: str | None = Field(default=None, max_length=420)
+    manager_action_or_gap: str | None = Field(default=None, max_length=420)
+    manager_action: str | None = Field(default=None, max_length=420)
+    next_commercial_action: str | None = Field(default=None, max_length=420)
+
+
+class TomorrowFollowUpBlockCandidate(BlockCandidateBase):
+    client_label: str | None = Field(default=None, max_length=120)
+    next_action: str | None = Field(default=None, max_length=420)
+    client_next_action: str | None = Field(default=None, max_length=420)
+    why_follow_up: str | None = Field(default=None, max_length=420)
+    opening_phrase: str | None = Field(default=None, max_length=280)
+    risk_if_not_followed_up: str | None = Field(default=None, max_length=420)
+    risk_if_no_follow_up: str | None = Field(default=None, max_length=420)
+
+
+class TomorrowChallengeBlockCandidate(BlockCandidateBase):
+    skill: str | None = Field(default=None, max_length=240)
+    skill_signal: str | None = Field(default=None, max_length=240)
+    practice_action: str | None = Field(default=None, max_length=420)
+    practice_focus: str | None = Field(default=None, max_length=420)
+    behavior_standard: str | None = Field(default=None, max_length=420)
+    example_phrase: str | None = Field(default=None, max_length=280)
+
+
+class CallListContextBlockCandidate(BlockCandidateBase):
+    short_topic: str | None = Field(default=None, max_length=120)
+    short_context: str | None = Field(default=None, max_length=280)
+    action_hint: str | None = Field(default=None, max_length=280)
+    final_action_hint: str | None = Field(default=None, max_length=280)
+
+
+class ReportBlockCandidates(_ReportEvidenceModel):
+    situation_day: SituationDayBlockCandidate | None = None
+    call_breakdown: CallBreakdownBlockCandidate | None = None
+    voice_of_customer: VoiceOfCustomerBlockCandidate | None = None
+    money_on_table: MoneyOnTableBlockCandidate | None = None
+    tomorrow_follow_up: TomorrowFollowUpBlockCandidate | None = None
+    tomorrow_challenge: TomorrowChallengeBlockCandidate | None = None
+    call_list_context: CallListContextBlockCandidate | None = None
+
+
 class ReportEvidence(_ReportEvidenceModel):
     business_outcome: BusinessOutcomeEvidence | None = None
     call_report_summary: CallReportSummary | None = None
     semantic_case: SemanticCase | None = None
+    block_candidates: ReportBlockCandidates | None = None
     situation_candidates: list[SituationCandidate] = Field(default_factory=list)
     manager_coaching_moments: list[ManagerCoachingMoment] = Field(default_factory=list)
     voice_of_customer: list[VoiceOfCustomerItem] = Field(default_factory=list)
@@ -518,6 +620,15 @@ def _validate_package_semantics(
             warnings=warnings,
         )
 
+    if evidence.block_candidates is not None:
+        _validate_block_candidates(
+            block_candidates=evidence.block_candidates,
+            stage_codes=stage_codes,
+            transcript=transcript,
+            errors=errors,
+            warnings=warnings,
+        )
+
     for index, item in enumerate(evidence.situation_candidates):
         base = f"report_evidence.situation_candidates[{index}]"
         _validate_stage_code(item.stage_code, stage_codes, f"{base}.stage_code", errors)
@@ -611,6 +722,741 @@ def _validate_package_semantics(
             errors=errors,
             warnings=warnings,
         )
+
+
+BLOCK_CANDIDATE_NAMES = (
+    "situation_day",
+    "call_breakdown",
+    "voice_of_customer",
+    "money_on_table",
+    "tomorrow_follow_up",
+    "tomorrow_challenge",
+    "call_list_context",
+)
+
+BLOCK_CANDIDATE_REQUIRED_FIELDS = {
+    "situation_day": (
+        "main_thesis",
+        "what_happened",
+        "why_it_matters",
+        "what_was_missing",
+        "better_next_action",
+    ),
+    "call_breakdown": ("main_thesis", "why_it_matters"),
+    "voice_of_customer": (
+        "customer_signal",
+        "customer_need_or_objection",
+        "manager_should_do",
+    ),
+    "money_on_table": (
+        "commercial_opportunity",
+        "signal_strength",
+        "monetizable_signal",
+        "manager_action_or_gap",
+        "next_commercial_action",
+    ),
+    "tomorrow_follow_up": (
+        "client_label",
+        "next_action",
+        "why_follow_up",
+        "opening_phrase",
+        "risk_if_not_followed_up",
+    ),
+    "tomorrow_challenge": ("skill", "practice_action", "behavior_standard"),
+    "call_list_context": ("short_topic", "short_context"),
+}
+
+BLOCK_CANDIDATE_TEXT_FIELDS = {
+    "situation_day": (
+        "main_thesis",
+        "what_happened",
+        "why_it_matters",
+        "what_was_missing",
+        "better_next_action",
+    ),
+    "call_breakdown": ("main_thesis", "why_it_matters"),
+    "voice_of_customer": (
+        "customer_signal",
+        "customer_need_or_objection",
+        "manager_should_do",
+    ),
+    "money_on_table": (
+        "commercial_opportunity",
+        "monetizable_signal",
+        "manager_action_or_gap",
+        "next_commercial_action",
+    ),
+    "tomorrow_follow_up": (
+        "next_action",
+        "why_follow_up",
+        "opening_phrase",
+        "risk_if_not_followed_up",
+    ),
+    "tomorrow_challenge": ("practice_action", "behavior_standard", "example_phrase"),
+    "call_list_context": ("short_topic", "short_context", "action_hint"),
+}
+
+BLOCK_CANDIDATE_FIELD_ALIASES = {
+    "voice_of_customer": {
+        "customer_need_or_objection": ("customer_need_or_objection", "what_it_means"),
+        "manager_should_do": ("manager_should_do", "manager_action"),
+    },
+    "money_on_table": {
+        "monetizable_signal": ("monetizable_signal", "what_was_monetizable"),
+        "manager_action_or_gap": ("manager_action_or_gap", "manager_action"),
+    },
+    "tomorrow_follow_up": {
+        "next_action": ("next_action", "client_next_action"),
+        "risk_if_not_followed_up": (
+            "risk_if_not_followed_up",
+            "risk_if_no_follow_up",
+        ),
+    },
+    "tomorrow_challenge": {
+        "skill": ("skill", "skill_signal"),
+        "practice_action": ("practice_action", "practice_focus"),
+    },
+    "call_list_context": {
+        "action_hint": ("action_hint", "final_action_hint"),
+    },
+}
+
+CALL_BREAKDOWN_MOMENT_FIELD_ALIASES = {
+    "proof": ("proof", "proof_explanation"),
+    "better_next_action": ("better_next_action", "better_action"),
+}
+
+
+def _block_candidate_field_value(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    field: str,
+) -> Any:
+    aliases = BLOCK_CANDIDATE_FIELD_ALIASES.get(block_name, {}).get(field, (field,))
+    for alias in aliases:
+        value = getattr(candidate, alias, None)
+        if isinstance(value, StrEnum):
+            return value
+        if _normalized_text(value):
+            return value
+    return getattr(candidate, field, None)
+
+
+def _call_breakdown_moment_field_value(
+    *,
+    moment: CallBreakdownMoment,
+    field: str,
+) -> Any:
+    aliases = CALL_BREAKDOWN_MOMENT_FIELD_ALIASES.get(field, (field,))
+    for alias in aliases:
+        value = getattr(moment, alias, None)
+        if _normalized_text(value):
+            return value
+    return getattr(moment, field, None)
+
+BLOCK_CANDIDATE_ALLOWED_ROLES = {
+    "situation_day": {
+        BlockCandidateRole.COACHING_PROBLEM,
+        BlockCandidateRole.STRONG_PRACTICE,
+    },
+    "call_breakdown": {
+        BlockCandidateRole.COACHING_PROBLEM,
+        BlockCandidateRole.STRONG_PRACTICE,
+    },
+    "voice_of_customer": {BlockCandidateRole.CUSTOMER_SIGNAL},
+    "money_on_table": {BlockCandidateRole.COMMERCIAL_OPPORTUNITY},
+    "tomorrow_follow_up": {BlockCandidateRole.FOLLOW_UP_ACTION},
+    "tomorrow_challenge": {
+        BlockCandidateRole.COACHING_PROBLEM,
+        BlockCandidateRole.SKILL_CHALLENGE,
+    },
+    "call_list_context": {
+        BlockCandidateRole.NEUTRAL_SUMMARY,
+        BlockCandidateRole.CALL_LIST_CONTEXT,
+    },
+}
+
+BLOCK_CANDIDATE_EXPECTED_TITLE_MODE = {
+    "voice_of_customer": {ReportBlockTitleMode.NEUTRAL},
+    "money_on_table": {ReportBlockTitleMode.NEUTRAL, ReportBlockTitleMode.PROBLEM},
+    "tomorrow_follow_up": {ReportBlockTitleMode.NEUTRAL},
+    "call_list_context": {ReportBlockTitleMode.NEUTRAL},
+}
+
+BLOCK_CANDIDATE_PROBLEM_BLOCKS = {
+    "situation_day",
+    "call_breakdown",
+    "tomorrow_challenge",
+}
+
+
+def _validate_block_candidates(
+    *,
+    block_candidates: ReportBlockCandidates,
+    stage_codes: set[str],
+    transcript: str | None,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    for block_name in BLOCK_CANDIDATE_NAMES:
+        candidate = getattr(block_candidates, block_name)
+        if candidate is None:
+            continue
+        path = f"report_evidence.block_candidates.{block_name}"
+        _validate_block_candidate(
+            block_name=block_name,
+            candidate=candidate,
+            stage_codes=stage_codes,
+            transcript=transcript,
+            path=path,
+            errors=errors,
+            warnings=warnings,
+        )
+
+
+def _validate_block_candidate(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    stage_codes: set[str],
+    transcript: str | None,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    stage_code = _as_non_empty_str(candidate.stage_code)
+    if candidate.fit and not stage_code:
+        errors.append(
+            _issue(
+                code="block_candidate_missing_stage_code",
+                path=f"{path}.stage_code",
+                message="fit=true block candidate must include canonical stage_code.",
+            )
+        )
+    elif stage_code:
+        _validate_stage_code(stage_code, stage_codes, f"{path}.stage_code", errors)
+
+    if candidate.fit and candidate.score < 50:
+        errors.append(
+            _issue(
+                code="block_candidate_low_fit_score",
+                path=f"{path}.score",
+                message="block_candidates item has fit=true but score is below 50.",
+            )
+        )
+    elif not candidate.fit and candidate.score > 60:
+        warnings.append(
+            _issue(
+                code="block_candidate_high_nonfit_score",
+                path=f"{path}.score",
+                message="block_candidates item has fit=false but score is above 60.",
+            )
+        )
+
+    if candidate.supporting_quote:
+        _validate_grounded_text(
+            text=candidate.supporting_quote,
+            transcript=transcript,
+            path=f"{path}.supporting_quote",
+            evidence_quality=EvidenceQuality.INSUFFICIENT if not candidate.fit else None,
+            usable_in_report=candidate.fit,
+            errors=errors,
+            warnings=warnings,
+        )
+
+    if not candidate.fit:
+        return
+
+    _validate_block_candidate_required_fields(
+        block_name=block_name,
+        candidate=candidate,
+        path=path,
+        errors=errors,
+    )
+    _validate_block_candidate_role(
+        block_name=block_name,
+        candidate=candidate,
+        path=path,
+        errors=errors,
+    )
+    _validate_block_candidate_text_quality(
+        block_name=block_name,
+        candidate=candidate,
+        path=path,
+        errors=errors,
+    )
+    _validate_block_candidate_duplicates(
+        block_name=block_name,
+        candidate=candidate,
+        path=path,
+        errors=errors,
+    )
+    _validate_block_candidate_proof(
+        block_name=block_name,
+        candidate=candidate,
+        path=path,
+        errors=errors,
+    )
+
+
+def _validate_block_candidate_required_fields(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    common_fields = (
+        "role",
+        "title_mode",
+        "proof_type",
+        "proof_explanation",
+        "quote_role",
+    )
+    for field in common_fields + BLOCK_CANDIDATE_REQUIRED_FIELDS[block_name]:
+        value = _block_candidate_field_value(
+            block_name=block_name,
+            candidate=candidate,
+            field=field,
+        )
+        if isinstance(value, list):
+            missing = not value
+        elif isinstance(value, StrEnum):
+            missing = False
+        else:
+            missing = not _normalized_text(value)
+        if missing:
+            errors.append(
+                _issue(
+                    code="block_candidate_missing_required_field",
+                    path=f"{path}.{field}",
+                    message=f"fit=true block candidate must include {field}.",
+                )
+            )
+
+    if block_name == "call_breakdown":
+        _validate_call_breakdown_candidate_moments(
+            candidate=candidate,
+            path=path,
+            errors=errors,
+        )
+
+
+def _validate_call_breakdown_candidate_moments(
+    *,
+    candidate: BlockCandidateBase,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    if not isinstance(candidate, CallBreakdownBlockCandidate):
+        return
+    if not candidate.moments:
+        errors.append(
+            _issue(
+                code="block_candidate_missing_required_field",
+                path=f"{path}.moments",
+                message="call_breakdown block candidate must include one to three moments.",
+            )
+        )
+        return
+    for index, moment in enumerate(candidate.moments):
+        moment_path = f"{path}.moments[{index}]"
+        for field in ("situation", "essence", "proof", "better_next_action"):
+            if not _normalized_text(
+                _call_breakdown_moment_field_value(moment=moment, field=field)
+            ):
+                errors.append(
+                    _issue(
+                        code="block_candidate_missing_required_field",
+                        path=f"{moment_path}.{field}",
+                        message=f"call_breakdown moment must include {field}.",
+                    )
+                )
+        if (
+            _normalized_text(moment.what_was_missing)
+            and _normalized_text(moment.what_was_missing)
+            == _normalized_text(
+                _call_breakdown_moment_field_value(
+                    moment=moment,
+                    field="better_next_action",
+                )
+            )
+        ):
+            errors.append(
+                _issue(
+                    code="block_candidate_duplicate_missing_action",
+                    path=moment_path,
+                    message=(
+                        "what_was_missing and better_next_action must not repeat "
+                        "identical text."
+                    ),
+                )
+            )
+
+
+def _validate_block_candidate_role(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    if candidate.role is None:
+        return
+    allowed_roles = BLOCK_CANDIDATE_ALLOWED_ROLES[block_name]
+    if candidate.role not in allowed_roles:
+        errors.append(
+            _issue(
+                code="block_candidate_role_mismatch",
+                path=f"{path}.role",
+                message=(
+                    f"{block_name} block candidate uses role={candidate.role}, "
+                    "which is not valid for this block."
+                ),
+            )
+        )
+
+    if candidate.title_mode is None:
+        return
+    expected_title_modes = BLOCK_CANDIDATE_EXPECTED_TITLE_MODE.get(block_name)
+    if candidate.role == BlockCandidateRole.COACHING_PROBLEM:
+        expected_title_modes = {ReportBlockTitleMode.PROBLEM}
+    elif candidate.role == BlockCandidateRole.STRONG_PRACTICE:
+        expected_title_modes = {ReportBlockTitleMode.POSITIVE}
+    elif candidate.role == BlockCandidateRole.SKILL_CHALLENGE:
+        expected_title_modes = {ReportBlockTitleMode.PROBLEM, ReportBlockTitleMode.NEUTRAL}
+    if expected_title_modes is not None and candidate.title_mode not in expected_title_modes:
+        errors.append(
+            _issue(
+                code="block_candidate_title_mode_mismatch",
+                path=f"{path}.title_mode",
+                message=f"{block_name} block candidate title_mode does not match its role.",
+            )
+        )
+
+
+def _validate_block_candidate_text_quality(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    for field in BLOCK_CANDIDATE_TEXT_FIELDS[block_name]:
+        value = _block_candidate_field_value(
+            block_name=block_name,
+            candidate=candidate,
+            field=field,
+        )
+        if not _normalized_text(value):
+            continue
+        allow_short = block_name == "call_list_context" and field == "short_topic"
+        if _semantic_case_text_is_generic(value, allow_short=allow_short):
+            errors.append(
+                _issue(
+                    code="block_candidate_generic_field",
+                    path=f"{path}.{field}",
+                    message=(
+                        f"block_candidates.{block_name}.{field} must be concrete "
+                        "and block-ready."
+                    ),
+                )
+            )
+
+    if isinstance(candidate, CallBreakdownBlockCandidate):
+        for index, moment in enumerate(candidate.moments):
+            for field in ("situation", "essence", "proof", "better_next_action"):
+                value = _call_breakdown_moment_field_value(
+                    moment=moment,
+                    field=field,
+                )
+                if _normalized_text(value) and _semantic_case_text_is_generic(
+                    value,
+                    allow_short=False,
+                ):
+                    errors.append(
+                        _issue(
+                            code="block_candidate_generic_field",
+                            path=f"{path}.moments[{index}].{field}",
+                            message=(
+                                f"call_breakdown moment {field} must be concrete "
+                                "and block-ready."
+                            ),
+                        )
+                    )
+
+
+def _validate_block_candidate_duplicates(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    if isinstance(candidate, SituationDayBlockCandidate):
+        missing = _normalized_text(candidate.what_was_missing)
+        action = _normalized_text(candidate.better_next_action)
+        if missing and missing == action:
+            errors.append(
+                _issue(
+                    code="block_candidate_duplicate_missing_action",
+                    path=path,
+                    message=(
+                        "what_was_missing and better_next_action must not repeat "
+                        "identical text."
+                    ),
+                )
+            )
+
+    if block_name == "situation_day":
+        return
+
+
+def _validate_block_candidate_proof(
+    *,
+    block_name: str,
+    candidate: BlockCandidateBase,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    if candidate.proof_type is None or candidate.quote_role is None:
+        return
+
+    if (
+        candidate.supporting_quote
+        and candidate.quote_role == CoachingMomentQuoteRole.NOT_APPLICABLE
+    ):
+        errors.append(
+            _issue(
+                code="block_candidate_quote_role_conflict",
+                path=f"{path}.quote_role",
+                message=(
+                    "quote_role=not_applicable cannot be used when "
+                    "supporting_quote is present."
+                ),
+            )
+        )
+
+    if candidate.quote_role == CoachingMomentQuoteRole.COUNTER_EVIDENCE:
+        errors.append(
+            _issue(
+                code="block_candidate_proof_conflict",
+                path=f"{path}.quote_role",
+                message=(
+                    "fit=true block candidate cannot use a counter-evidence quote "
+                    "as report proof."
+                ),
+            )
+        )
+
+    counter_evidence = [
+        item for item in candidate.counter_evidence if _normalized_text(item)
+    ]
+    if counter_evidence and candidate.role == BlockCandidateRole.COACHING_PROBLEM:
+        errors.append(
+            _issue(
+                code="block_candidate_proof_conflict",
+                path=f"{path}.counter_evidence",
+                message=(
+                    "Problem-oriented block candidate contains counter_evidence "
+                    "and must not be used as a proven manager gap."
+                ),
+            )
+        )
+
+    if candidate.proof_type == CoachingMomentProofType.DIRECT_GAP:
+        if candidate.role != BlockCandidateRole.COACHING_PROBLEM:
+            errors.append(
+                _issue(
+                    code="block_candidate_direct_gap_wrong_role",
+                    path=f"{path}.proof_type",
+                    message=(
+                        "proof_type=direct_gap is only valid for coaching_problem "
+                        "block candidates."
+                    ),
+                )
+            )
+        if candidate.quote_role != CoachingMomentQuoteRole.PROVES_GAP:
+            errors.append(
+                _issue(
+                    code="block_candidate_quote_role_conflict",
+                    path=f"{path}.quote_role",
+                    message="proof_type=direct_gap requires quote_role=proves_gap.",
+                )
+            )
+        if not _normalized_text(candidate.supporting_quote):
+            errors.append(
+                _issue(
+                    code="block_candidate_direct_gap_without_quote",
+                    path=f"{path}.supporting_quote",
+                    message="proof_type=direct_gap requires a grounded supporting_quote.",
+                )
+            )
+        elif _block_candidate_direct_gap_overclaimed(candidate):
+            errors.append(
+                _issue(
+                    code="block_candidate_direct_gap_overclaim",
+                    path=f"{path}.supporting_quote",
+                    message=(
+                        "supporting_quote is context or counter-evidence, not "
+                        "direct proof of the claimed manager gap."
+                    ),
+                )
+            )
+
+    if (
+        candidate.quote_role == CoachingMomentQuoteRole.PROVES_GAP
+        and candidate.proof_type != CoachingMomentProofType.DIRECT_GAP
+    ):
+        errors.append(
+            _issue(
+                code="block_candidate_quote_role_conflict",
+                path=f"{path}.quote_role",
+                message="quote_role=proves_gap requires proof_type=direct_gap.",
+            )
+        )
+
+    if (
+        candidate.quote_role == CoachingMomentQuoteRole.SUPPORTS_CONTEXT
+        and candidate.proof_type == CoachingMomentProofType.DIRECT_GAP
+    ):
+        errors.append(
+            _issue(
+                code="block_candidate_quote_role_conflict",
+                path=f"{path}.quote_role",
+                message="quote_role=supports_context cannot be used with proof_type=direct_gap.",
+            )
+        )
+
+    if (
+        block_name in BLOCK_CANDIDATE_PROBLEM_BLOCKS
+        and candidate.role == BlockCandidateRole.COACHING_PROBLEM
+        and candidate.proof_type == CoachingMomentProofType.CONTEXT_SUPPORT
+    ):
+        errors.append(
+            _issue(
+                code="block_candidate_context_support_problem_claim",
+                path=f"{path}.proof_type",
+                message=(
+                    "proof_type=context_support is not enough for a "
+                    "problem-oriented block candidate."
+                ),
+            )
+        )
+
+
+def _block_candidate_direct_gap_overclaimed(candidate: BlockCandidateBase) -> bool:
+    claim_text = _block_candidate_gap_claim_text(candidate)
+    return (
+        _quote_looks_like_counter_evidence_for_gap_text(
+            supporting_quote=candidate.supporting_quote,
+            gap_claim_text=claim_text,
+        )
+        or _quote_looks_like_context_only_for_gap_text(
+            supporting_quote=candidate.supporting_quote,
+            gap_claim_text=claim_text,
+        )
+    )
+
+
+def _block_candidate_gap_claim_text(candidate: BlockCandidateBase) -> str:
+    parts: list[str | None] = [
+        candidate.main_thesis,
+        candidate.why_it_matters,
+        candidate.proof_explanation,
+    ]
+    if isinstance(candidate, SituationDayBlockCandidate):
+        parts.extend(
+            [
+                candidate.what_happened,
+                candidate.what_was_missing,
+                candidate.better_next_action,
+            ]
+        )
+    elif isinstance(candidate, CallBreakdownBlockCandidate):
+        for moment in candidate.moments:
+            parts.extend(
+                [
+                    moment.situation,
+                    moment.essence,
+                    _call_breakdown_moment_field_value(
+                        moment=moment,
+                        field="proof",
+                    ),
+                    moment.what_was_missing,
+                    _call_breakdown_moment_field_value(
+                        moment=moment,
+                        field="better_next_action",
+                    ),
+                ]
+            )
+    elif isinstance(candidate, VoiceOfCustomerBlockCandidate):
+        parts.extend(
+            [
+                candidate.customer_signal,
+                _block_candidate_field_value(
+                    block_name="voice_of_customer",
+                    candidate=candidate,
+                    field="customer_need_or_objection",
+                ),
+                _block_candidate_field_value(
+                    block_name="voice_of_customer",
+                    candidate=candidate,
+                    field="manager_should_do",
+                ),
+            ]
+        )
+    elif isinstance(candidate, MoneyOnTableBlockCandidate):
+        parts.extend(
+            [
+                candidate.commercial_opportunity,
+                _block_candidate_field_value(
+                    block_name="money_on_table",
+                    candidate=candidate,
+                    field="monetizable_signal",
+                ),
+                _block_candidate_field_value(
+                    block_name="money_on_table",
+                    candidate=candidate,
+                    field="manager_action_or_gap",
+                ),
+                candidate.next_commercial_action,
+            ]
+        )
+    elif isinstance(candidate, TomorrowFollowUpBlockCandidate):
+        parts.extend(
+            [
+                _block_candidate_field_value(
+                    block_name="tomorrow_follow_up",
+                    candidate=candidate,
+                    field="next_action",
+                ),
+                candidate.why_follow_up,
+                _block_candidate_field_value(
+                    block_name="tomorrow_follow_up",
+                    candidate=candidate,
+                    field="risk_if_not_followed_up",
+                ),
+            ]
+        )
+    elif isinstance(candidate, TomorrowChallengeBlockCandidate):
+        parts.extend(
+            [
+                _block_candidate_field_value(
+                    block_name="tomorrow_challenge",
+                    candidate=candidate,
+                    field="skill",
+                ),
+                _block_candidate_field_value(
+                    block_name="tomorrow_challenge",
+                    candidate=candidate,
+                    field="practice_action",
+                ),
+                candidate.behavior_standard,
+            ]
+        )
+    return " ".join(str(part or "") for part in parts)
 
 
 REPORT_BLOCK_FIT_ITEM_NAMES = (
@@ -1255,7 +2101,10 @@ def _coaching_moment_problem_proof_conflict(
         item for item in coaching_moment.counter_evidence if _normalized_text(item)
     ]
     if counter_evidence:
-        return "Problem-oriented coaching_moment contains counter_evidence and must not be used as proven manager gap."
+        return (
+            "Problem-oriented coaching_moment contains counter_evidence and must "
+            "not be used as proven manager gap."
+        )
     if coaching_moment.quote_role == CoachingMomentQuoteRole.COUNTER_EVIDENCE:
         return "supporting_quote is marked as counter_evidence, not proof of the manager gap."
     if (
@@ -1274,16 +2123,34 @@ def _coaching_moment_problem_proof_conflict(
         and coaching_moment.supporting_quote
         and _quote_looks_like_counter_evidence_for_gap(coaching_moment)
     ):
-        return "supporting_quote appears to show the allegedly missing manager action, so it is counter-evidence rather than proof."
+        return (
+            "supporting_quote appears to show the allegedly missing manager action, "
+            "so it is counter-evidence rather than proof."
+        )
+    if (
+        coaching_moment.proof_type == CoachingMomentProofType.DIRECT_GAP
+        and coaching_moment.supporting_quote
+        and _quote_looks_like_context_only_for_gap_text(
+            supporting_quote=coaching_moment.supporting_quote,
+            gap_claim_text=" ".join(
+                str(value or "")
+                for value in (
+                    coaching_moment.gap_claim,
+                    coaching_moment.summary,
+                    coaching_moment.missing_action,
+                    coaching_moment.proof_explanation,
+                )
+            ),
+        )
+    ):
+        return "supporting_quote is context, not direct proof of the claimed manager gap."
     return None
 
 
 def _quote_looks_like_counter_evidence_for_gap(coaching_moment: CoachingMoment) -> bool:
-    quote = _normalized_text(coaching_moment.supporting_quote)
-    if not quote:
-        return False
-    claim = _normalized_text(
-        " ".join(
+    return _quote_looks_like_counter_evidence_for_gap_text(
+        supporting_quote=coaching_moment.supporting_quote,
+        gap_claim_text=" ".join(
             str(value or "")
             for value in (
                 coaching_moment.gap_claim,
@@ -1291,14 +2158,33 @@ def _quote_looks_like_counter_evidence_for_gap(coaching_moment: CoachingMoment) 
                 coaching_moment.missing_action,
                 coaching_moment.proof_explanation,
             )
-        )
+        ),
     )
+
+
+def _quote_looks_like_counter_evidence_for_gap_text(
+    *,
+    supporting_quote: str | None,
+    gap_claim_text: str | None,
+) -> bool:
+    quote = _normalized_text(supporting_quote)
+    if not quote:
+        return False
+    claim = _normalized_text(gap_claim_text)
     if not claim:
         return False
     checks = (
         (
             ("роль", "лпр", "решени", "кем", "руковод", "должност"),
-            ("кем являет", "кем вы", "какая роль", "роль", "принимаете решение", "руковод", "являетесь"),
+            (
+                "кем являет",
+                "кем вы",
+                "какая роль",
+                "роль",
+                "принимаете решение",
+                "руковод",
+                "являетесь",
+            ),
         ),
         (
             ("удоб", "уместн", "не провер"),
@@ -1306,7 +2192,20 @@ def _quote_looks_like_counter_evidence_for_gap(coaching_moment: CoachingMoment) 
         ),
         (
             ("срок", "дат", "время", "следующ", "ответствен", "когда", "созвон", "перезвон"),
-            ("когда", "срок", "дат", "время", "завтра", "понедельник", "вторник", "сред", "четверг", "пятниц", "перезвон", "созвон"),
+            (
+                "когда",
+                "срок",
+                "дат",
+                "время",
+                "завтра",
+                "понедельник",
+                "вторник",
+                "сред",
+                "четверг",
+                "пятниц",
+                "перезвон",
+                "созвон",
+            ),
         ),
         (
             ("процесс", "как сейчас", "документ", "потребност", "задач"),
@@ -1319,6 +2218,112 @@ def _quote_looks_like_counter_evidence_for_gap(coaching_moment: CoachingMoment) 
         ):
             return True
     return False
+
+
+def _quote_looks_like_context_only_for_gap_text(
+    *,
+    supporting_quote: str | None,
+    gap_claim_text: str | None,
+) -> bool:
+    quote = _normalized_text(supporting_quote)
+    claim = _normalized_text(gap_claim_text)
+    if not quote or not claim:
+        return False
+
+    missing_qualification_claim = (
+        any(
+            marker in claim
+            for marker in (
+                "не уточн",
+                "не выясн",
+                "не выяв",
+                "не спрос",
+                "без квалификац",
+                "до выяснен",
+                "до выявлен",
+                "перед выяснен",
+                "перед выявлен",
+            )
+        )
+        and any(
+            marker in claim
+            for marker in (
+                "роль",
+                "лпр",
+                "решени",
+                "процесс",
+                "потребност",
+                "задач",
+                "контекст",
+                "квалификац",
+            )
+        )
+    )
+    product_or_presentation_quote = any(
+        marker in quote
+        for marker in (
+            "скину информац",
+            "скинуть информац",
+            "отправлю информац",
+            "отправить информац",
+            "пришлю информац",
+            "информацию о продукт",
+            "о нашем продукт",
+            "расскажу про",
+            "расскажу о",
+            "предлож",
+            "тариф",
+            "коммерческ",
+            "кп",
+        )
+    )
+    if missing_qualification_claim and product_or_presentation_quote:
+        return True
+
+    missing_next_step_claim = any(
+        marker in claim
+        for marker in (
+            "не закреп",
+            "не зафикс",
+            "не соглас",
+            "без срока",
+            "без даты",
+        )
+    ) and any(
+        marker in claim
+        for marker in ("срок", "дат", "следующ", "возврат", "перезвон", "созвон")
+    )
+    dispatch_quote = any(
+        marker in quote
+        for marker in (
+            "скину",
+            "отправлю",
+            "пришлю",
+            "направлю",
+            "отправить",
+            "скинуть",
+            "выслать",
+        )
+    )
+    quote_has_timing = any(
+        marker in quote
+        for marker in (
+            "когда",
+            "срок",
+            "дата",
+            "дату",
+            "завтра",
+            "сегодня",
+            "понедельник",
+            "вторник",
+            "сред",
+            "четверг",
+            "пятниц",
+            "созвон",
+            "перезвон",
+        )
+    )
+    return missing_next_step_claim and dispatch_quote and not quote_has_timing
 
 
 def _semantic_case_text_is_generic(value: str | None, *, allow_short: bool) -> bool:

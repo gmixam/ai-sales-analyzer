@@ -1,7 +1,7 @@
 # Report Evidence Contract — LLM2 to Reporting Layer
 
-**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC; `manager_daily` preferred-source wiring implemented in Step 8AD; semantic-case upgrade target added on 2026-05-12.
-**Date:** 2026-05-12
+**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC; `manager_daily` preferred-source wiring implemented in Step 8AD; semantic-case upgrade target added on 2026-05-12; v15 block-ready candidate target added on 2026-05-14.
+**Date:** 2026-05-14
 **Milestone:** 6.5 `Business-ready Report Pack`
 **Scope:** `manager_daily` first, reusable for weekly/future reports later.
 
@@ -11,7 +11,7 @@ Step 8W made `СИТУАЦИЯ ДНЯ` evidence-based by letting the reporting l
 
 That fallback is intentionally temporary for legacy analyses. The target architecture is that LLM2 prepares meaningful per-call analysis and report-ready evidence during call analysis, and the reporting layer only selects, aggregates, validates, ranks, and renders already prepared semantic cases and candidates.
 
-The next upgrade changes the role boundary: LLM2 must produce a coherent semantic understanding of the call for the report blocks, not only fragments or block-specific candidate material. Reporting remains deterministic and does not become an AI interpretation layer.
+The next upgrade changes the role boundary: LLM2 must produce a coherent semantic understanding of the call and block-ready material for the report blocks, not only fragments or generic candidate text. Reporting remains deterministic and does not become an AI interpretation layer.
 
 ## Source Documents
 
@@ -46,6 +46,8 @@ Reporting layer -> deterministic selection, aggregation, rendering, delivery
 - Produces the approved call analysis contract.
 - Adds a report-ready `report_evidence` package for downstream reports.
 - Produces a coherent `report_evidence.semantic_case` when the call has enough business meaning for report usage.
+- Evaluates whether this exact call can support `situation_day`, `call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, `tomorrow_challenge`, and `call_list_context`.
+- Produces block-ready `report_evidence.block_candidates` material for suitable blocks: fit score, role, thesis, what happened, why it matters, proof, quote role, and next action.
 - Grounds semantic conclusions and evidence in transcript text or marks evidence as insufficient.
 - Does not choose which report a call belongs to.
 - Does not write final report blocks; it analyzes one call.
@@ -54,7 +56,7 @@ Reporting layer -> deterministic selection, aggregation, rendering, delivery
 - Is deterministic and is not an AI analysis layer.
 - Selects report scope, report-day calls, `meaningful_calls`, and `coaching_core`.
 - Runs `BusinessOutcomeResolver` for final manager-facing outcome.
-- Validates and ranks `report_evidence.semantic_case` and legacy `report_evidence` candidates.
+- Validates and ranks `report_evidence.block_candidates`, `report_evidence.semantic_case`, and legacy `report_evidence` candidates.
 - Falls back to Step 8W legacy evidence logic when `report_evidence` is missing or invalid.
 
 ## Additive Contract
@@ -70,6 +72,7 @@ Top-level shape:
     "business_outcome": {},
     "call_report_summary": {},
     "semantic_case": {},
+    "block_candidates": {},
     "situation_candidates": [],
     "manager_coaching_moments": [],
     "voice_of_customer": [],
@@ -96,6 +99,10 @@ report_block_fit.title_mode: problem | neutral | positive
 report_block_fit.reason_code: manager_gap_with_direct_evidence | manager_gap_with_indirect_evidence | missed_opportunity_with_customer_signal | coachable_manager_moment | direct_customer_signal | client_requested_next_action | strong_manager_practice | service_context | customer_signal_without_manager_gap | positive_diagnosis_not_problem_case | weak_manager_evidence | weak_customer_evidence | insufficient_evidence | not_relevant_for_block | no_follow_up_needed
 coaching_moment.proof_type: direct_gap | absence_in_context | sequence_inference | context_support
 coaching_moment.quote_role: proves_gap | supports_context | counter_evidence | not_applicable
+block_candidate.key: situation_day | call_breakdown | voice_of_customer | money_on_table | tomorrow_follow_up | tomorrow_challenge | call_list_context
+block_candidate.role: coaching_problem | customer_signal | follow_up_action | neutral_summary | strong_practice | commercial_opportunity | skill_challenge | call_list_context
+block_candidate.proof_type: direct_gap | absence_in_context | sequence_inference | context_support
+block_candidate.quote_role: proves_gap | supports_context | counter_evidence | not_applicable
 ```
 
 Canonical `stage_code` values come from `docs/mvp1_sources/MVP1_CHECKLIST_DEFINITION_v1.md`:
@@ -299,6 +306,121 @@ Rules:
 - `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` is a follow-up/action block and does not require a manager gap.
 - `semantic_case` may overlap with `situation_candidates`, `manager_coaching_moments`, `voice_of_customer`, and `follow_up_candidates`; those older fields remain structured subviews and backward-compatible fallback material.
 - Reporting layer may use `semantic_case` as preferred meaning source, but final status, report scope, inclusion/exclusion, hotness priority, and rendering remain deterministic.
+
+## 3A. Block-Ready Candidates (v15)
+
+Used by `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДЕНЬГИ НА СТОЛЕ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, `ЧЕЛЛЕНДЖ НА ЗАВТРА`, and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` context enrichment.
+
+Starting with instruction version `edo_sales_mvp1_call_analysis_v15_block_ready`, fresh business-meaningful LLM2 analyses should prepare optional `report_evidence.block_candidates`. This is a block-ready layer above `semantic_case.report_block_fit`: `report_block_fit` says whether a call is suitable for a block, while `block_candidates` contains enough grounded material for that block to be rendered without the Reporting layer inventing the core meaning.
+
+The layer is additive and backward-compatible. Older `semantic_case.report_block_fit`, `situation_candidates`, `manager_coaching_moments`, `voice_of_customer`, `additional_situations`, `follow_up_candidates`, and `call_report_summary` remain valid fallback material until the v15 schema/reporting steps fully consume `block_candidates`.
+
+Preferred shape:
+
+```json
+{
+  "block_candidates": {
+    "situation_day": {
+      "fit": true,
+      "score": 86,
+      "role": "coaching_problem",
+      "title_mode": "problem",
+      "stage_code": "qualification_primary",
+      "main_thesis": "Менеджер перешел к предложению продукта до выяснения задачи клиента.",
+      "what_happened": "Менеджер предложил отправить информацию о продукте, но в доступной части звонка не зафиксировал вопросы о роли клиента, текущем процессе и задаче.",
+      "why_it_matters": "Без квалификации предложение может оказаться не связанным с реальной задачей клиента.",
+      "what_was_missing": "Не было зафиксировано, какую задачу клиент хочет решить и кто принимает решение.",
+      "better_next_action": "Сначала уточнить задачу, роль клиента и текущий процесс, затем связать продукт с выявленной потребностью.",
+      "proof_type": "sequence_inference",
+      "proof_explanation": "Вывод основан на последовательности: менеджер предлагает отправить информацию, а предварительные вопросы о задаче клиента в доступном фрагменте отсутствуют.",
+      "supporting_quote": "может, я вам скину информацию о нашем продукте",
+      "quote_role": "supports_context",
+      "counter_evidence": [],
+      "insufficiency_reason": null
+    },
+    "call_breakdown": {
+      "fit": true,
+      "score": 82,
+      "role": "coaching_problem",
+      "title_mode": "problem",
+      "stage_code": "qualification_primary",
+      "main_thesis": "Звонок полезен для детального разбора раннего предложения без квалификации.",
+      "moments": [
+        {
+          "situation": "Менеджер рано предлагает отправить информацию.",
+          "essence": "Клиент еще не сформулировал задачу, роль и процесс.",
+          "proof": "Последовательность реплик показывает предложение продукта до квалификации.",
+          "better_action": "Сначала задать 2-3 вопроса о задаче, текущем процессе и ответственном."
+        }
+      ],
+      "proof_type": "sequence_inference",
+      "proof_explanation": "Разбор основан на порядке действий, а не на одной цитате.",
+      "supporting_quote": null,
+      "quote_role": "not_applicable",
+      "counter_evidence": [],
+      "insufficiency_reason": null
+    },
+    "voice_of_customer": {
+      "fit": true,
+      "score": 76,
+      "role": "customer_signal",
+      "title_mode": "neutral",
+      "stage_code": "qualification_primary",
+      "customer_signal": "Клиент проявил интерес к материалам, но еще не обозначил задачу.",
+      "what_it_means": "Сигнал можно использовать для follow-up с уточнением потребности.",
+      "manager_action": "Вернуться не с общей презентацией, а с вопросом о процессе и критериях.",
+      "proof_type": "context_support",
+      "proof_explanation": "Цитата подтверждает клиентский/диалоговый контекст, но не доказывает manager gap.",
+      "supporting_quote": null,
+      "quote_role": "supports_context",
+      "counter_evidence": [],
+      "insufficiency_reason": null
+    },
+    "money_on_table": {
+      "fit": false,
+      "score": 0,
+      "role": "neutral_summary",
+      "title_mode": "neutral",
+      "stage_code": null,
+      "commercial_opportunity": null,
+      "signal_strength": "low",
+      "what_was_monetizable": null,
+      "manager_action": null,
+      "next_commercial_action": null,
+      "proof_type": "context_support",
+      "proof_explanation": "В звонке нет достаточного коммерческого сигнала для revenue/opportunity block.",
+      "supporting_quote": null,
+      "quote_role": "not_applicable",
+      "counter_evidence": [],
+      "insufficiency_reason": "generic_interest_without_commercial_bridge"
+    }
+  }
+}
+```
+
+Block keys:
+- Every `fit=true` block candidate must include a non-empty canonical
+  `stage_code`. The code should identify the dominant checklist stage for the
+  block material; use `cross_stage_transition` only when the useful material is
+  genuinely cross-stage. `fit=false` candidates may use `stage_code=null`.
+- `situation_day` prepares one teachable situation of the day. It usually requires `role=coaching_problem`, `title_mode=problem`, a specific problem or teachable thesis, what happened, why it matters, what was missing or what worked well, better next action, proof type, proof explanation, and fit score. It must not use generic stage statements or weak quote-only proof when the real proof is absence or sequence.
+- `call_breakdown` prepares one to three moments for a detailed call breakdown. Each moment must contain situation, essence, proof, and better action. If the same call is also suitable for `situation_day`, the breakdown must go deeper and must not repeat the Situation Day wording.
+- `voice_of_customer` prepares a real customer signal. It does not require a manager mistake. It should identify the customer need, doubt, objection, motivation, or risk, include a customer quote when available, and say what the manager should do with that signal. If no direct quote exists, mark the proof as indirect/contextual and explain why.
+- `money_on_table` prepares commercial potential only when there is a real bridge to revenue, payment, invoice, upsell, cross-sell, or next commercial step. Do not invent money potential from generic interest or service-only calls.
+- `tomorrow_follow_up` prepares client-specific next action, why this client is worth follow-up, a recommended manager opening phrase, and the risk if there is no follow-up. Inclusion and final status remain deterministic Reporting layer decisions.
+- `tomorrow_challenge` prepares a possible skill challenge signal: the skill indicated by this call, what the manager should practice, a concrete behavior standard, and an optional example phrase. The Reporting layer aggregates across calls before choosing the final challenge.
+- `call_list_context` prepares short topic, short context, and final action hint for the daily call list. It must not use generic text such as `Обсуждение с клиентом`, invented client names, or technical fragments as business context.
+
+Proof model:
+- `direct_gap` means one quote or short fragment directly proves the manager gap.
+- `sequence_inference` means the gap is proven by event order.
+- `absence_in_context` means the gap is proven by a missing action in the available transcript/recording context.
+- `context_support` means the quote supports context but does not prove a problem by itself.
+- `quote_role=proves_gap` is allowed only with `proof_type=direct_gap`.
+- `quote_role=supports_context` means the quote may be displayed as context, but the proof is sequence, absence, or a neutral customer signal.
+- `quote_role=counter_evidence` means the quote weakens or disproves the claimed gap; a manager-gap block with such counter-evidence must not be `fit=true`.
+- A product-offer quote such as an offer to send product information is usually not `direct_gap` for a missing qualification claim. For the claim "manager did not qualify before offering product", the proof is normally `sequence_inference` or `absence_in_context`: the product-offer quote supports context, while the gap is the order of actions or the missing qualification questions.
+- `proof_type=context_support` is not enough for `fit=true` `situation_day` or problem `call_breakdown` manager-gap candidates.
 
 ## 4. Situation Day Candidates
 
@@ -518,6 +640,13 @@ Validator requirements:
 27. `semantic_case.report_block_fit.*.coaching_moment`, when present, must use `evidence_type=direct_quote|absence_in_context|inferred_from_dialogue` and `confidence=high|medium|low`; it must never use `none`, `insufficient`, or the parent `report_block_fit.*.evidence_type` enum.
 28. `coaching_moment.supporting_quote` is optional for absence/inferred cases, but `direct_quote` requires a non-empty exact transcript substring. When a direct quote cannot be copied exactly, use `supporting_quote=null` with `absence_in_context` / `inferred_from_dialogue`, or `coaching_moment=null` for an irrelevant `fit=false` block.
 29. For `situation_day` and problem `call_breakdown`, `coaching_moment` proof metadata must not contradict the selected quote. If the quote proves the manager did the missing action, validation rejects the problem moment as counter-evidence.
+30. `report_evidence.block_candidates`, when present, remain additive v15 material; invalid block candidates are excluded from preferred report rendering and the Reporting layer falls back to other validated material.
+31. Fresh LLM2 outputs must provide `block_candidates.*.stage_code` for every `fit=true` item. Missing or unknown stage code is a contract repair issue for the analyzer retry path and a candidate rejection reason for Reporting.
+32. `block_candidates.*.fit=true` requires a concrete block-specific thesis/action and a `score` from `0` to `100`; weak, generic, or incomplete candidates should use `fit=false` with a clear `insufficiency_reason`.
+33. Problem-oriented `block_candidates.situation_day` and `block_candidates.call_breakdown` must use `proof_type=direct_gap|absence_in_context|sequence_inference`; `context_support` is allowed only for neutral/customer/context blocks or for rejected problem candidates.
+34. `block_candidates.*.supporting_quote` must be an exact transcript substring when present. If the quote only gives context, use `quote_role=supports_context` and explain the actual proof through sequence or absence.
+35. For a missing-qualification claim, a manager product-offer quote is not direct proof of the gap. It can support context, but `direct_gap` is allowed only when the quote itself directly shows the missing/wrong manager behavior.
+36. `block_candidates.situation_day.what_was_missing` and `better_next_action` must not be identical; missing-action diagnosis and next action must be separate.
 
 ### Step 8Z implementation note
 
@@ -566,6 +695,10 @@ Prompt behavior:
 - `coaching_moment.evidence_type=direct_quote` requires `supporting_quote` to be a non-empty exact transcript substring; otherwise use `supporting_quote=null` with absence/inferred evidence or make the irrelevant block `coaching_moment=null`;
 - problem-oriented `situation_day` and `call_breakdown` moments require `gap_claim`, `proof_type`, `proof_explanation`, `quote_role`, and `counter_evidence`;
 - a `fit=true` manager-gap problem block must not use `proof_type=context_support`; if a quote only supports context or disproves the gap, the block must be rejected or marked as non-problem for that report block;
+- fresh v15 prompts require optional `report_evidence.block_candidates` for `situation_day`, `call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, `tomorrow_challenge`, and `call_list_context` when enough transcript content exists;
+- block candidates must be block-ready: each suitable block needs fit score, role, title mode, concrete thesis or signal, proof type, proof explanation, quote role, counter-evidence, and the action the manager/report should take;
+- every fresh `fit=true` block candidate must include explicit canonical `stage_code`; the analyzer repair prompt and Reporting candidate validation now reject usable block candidates without it;
+- for a missing-qualification problem, a product-offer quote is `context_support`, not `direct_gap`; the proof should be `sequence_inference` or `absence_in_context` unless a quote directly proves the gap;
 - absence-based moments must be worded cautiously, for example `в доступной записи/фрагменте не зафиксировано...`;
 - unreliable speaker roles must be `unknown`;
 - weak/insufficient evidence must not become strong manager-facing proof;
@@ -576,7 +709,7 @@ Prompt behavior:
 - `business_outcome` is a semantic signal only; deterministic resolver rules remain final authority.
 - starting with Step 8AH-5, fresh prompts also require `call_report_summary` when enough transcript/metadata exists, with `hotness=hot|warm|low` only and manager-voiced `suggested_manager_phrase` that does not copy client quotes.
 
-Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v14_proof_layer`. This marks the proof-layer change for problem-oriented `semantic_case.report_block_fit.*.coaching_moment`: LLM2 must state the exact gap claim, how it is proven, what role the quote plays, and any counter-evidence. It keeps the v13 coaching-moment evidence-type rules, does not change `schema_version=call_analysis.v1`, `report_evidence_version=v1`, or checklist scoring.
+Fresh analyzer runs now use instruction version `edo_sales_mvp1_call_analysis_v15_block_ready`. This marks the block-ready report-evidence change: LLM2 must evaluate exact report-block readiness and prepare optional `report_evidence.block_candidates` for `situation_day`, `call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, `tomorrow_challenge`, and `call_list_context`. It preserves the v14 proof-layer requirements for problem-oriented `semantic_case.report_block_fit.*.coaching_moment`, does not change `schema_version=call_analysis.v1`, `report_evidence_version=v1`, or checklist scoring.
 
 ### Step 8AB runtime verification note
 
@@ -662,12 +795,13 @@ Reporting layer remains deterministic.
 For report blocks that need meaning, source preference is:
 
 ```text
-valid report_evidence.semantic_case + block-specific suitability
+valid report_evidence.block_candidates[block]
+-> valid report_evidence.semantic_case + block-specific suitability
 -> existing valid report_evidence v1 candidates
 -> Step 8W legacy fallback
 ```
 
-`semantic_case` is preferred only when it is valid, evidence-grounded, non-generic, block-suitable, and compatible with deterministic report scope and final outcome rules. It does not override `BusinessOutcomeResolver`, report-day scope, `coaching_core`, `data_scope`, or tomorrow inclusion/exclusion.
+`block_candidates` are preferred only after the v15 schema/reporting steps validate them as evidence-grounded, non-generic, block-suitable, and compatible with deterministic report scope and final outcome rules. `semantic_case` remains the preferred fallback semantic source when no valid block-ready candidate exists. Neither source overrides `BusinessOutcomeResolver`, report-day scope, `coaching_core`, `data_scope`, or tomorrow inclusion/exclusion.
 
 ### Situation Day
 
@@ -748,12 +882,13 @@ Prompt update must be a separate bounded step.
 1. Keep the approved MVP-1 analysis contract intact.
 2. Add a new section asking LLM2 to produce `report_evidence_version` and `report_evidence`.
 3. Add a new section asking LLM2 to produce `report_evidence.semantic_case` as the coherent per-call semantic analysis for report usage.
-4. Instruct LLM2 to quote only transcript-grounded text.
-5. Instruct LLM2 to use `speaker=unknown` when roles are unreliable.
-6. Instruct LLM2 to set `usable_in_report=false` for weak/ambiguous candidates.
-7. Instruct LLM2 that `report_evidence.business_outcome` is a signal; final reporting status is resolved deterministically.
-8. Add examples for refusal, tech/service, open follow-up, rescheduled, agreement, semantic case, and insufficient evidence.
-9. Add negative examples: invented dialogue, generic semantic case, open labeled as agreement, refusal turned into follow-up, service call treated as sales coaching.
+4. Add a v15 section asking LLM2 to produce optional `report_evidence.block_candidates` for the target manager daily blocks when enough evidence exists.
+5. Instruct LLM2 to quote only transcript-grounded text.
+6. Instruct LLM2 to use `speaker=unknown` when roles are unreliable.
+7. Instruct LLM2 to set `usable_in_report=false` or `fit=false` for weak/ambiguous candidates.
+8. Instruct LLM2 that `report_evidence.business_outcome` is a signal; final reporting status is resolved deterministically.
+9. Add examples for refusal, tech/service, open follow-up, rescheduled, agreement, semantic case, block-ready candidate, and insufficient evidence.
+10. Add negative examples: invented dialogue, generic semantic case, product-offer quote mislabeled as `direct_gap` for missing qualification, open labeled as agreement, refusal turned into follow-up, service call treated as sales coaching.
 
 ## Rollout Plan
 

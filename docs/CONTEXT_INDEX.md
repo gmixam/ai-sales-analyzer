@@ -4,6 +4,24 @@
 Этот файл задаёт быстрый и стабильный порядок входа в задачу для ИИ-кодера.
 Использовать как стартовую точку в новой сессии.
 
+## Текущая рабочая рамка на 2026-05-15
+
+Сейчас активная задача относится к `LLM2 v15 semantic/report-block quality stabilization`.
+
+Для этой задачи не считать `MANUAL_OUTPUT_VALIDATION_SPEC.md` текущим stage-specific source по умолчанию. Он остаётся историческим источником для старой single-call validation. Текущий вход для LLM2/report-quality задач:
+
+1. [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
+2. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
+3. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
+4. [TMP_LLM2_QUALITY_CHANGESET_AND_TEST_PLAN.md](../TMP_LLM2_QUALITY_CHANGESET_AND_TEST_PLAN.md)
+5. [review_packages/llm2_quality_docs_audit_2026-05-15.md](../review_packages/llm2_quality_docs_audit_2026-05-15.md)
+
+Текущий runtime-факт: свежие LLM2 анализы используют `edo_sales_mvp1_call_analysis_v15_block_ready`.
+
+Текущий baseline для качества: persisted calls/analyses -> ready-only/no-delivery `manager_daily` payload/preview. Не использовать отсутствие сохранённых PDF/drafts как blocker для LLM2 quality comparison и не включать PDF persistence repair в этот changeset без отдельного решения.
+
+`docs/LLM2_MANAGER_DAILY_INSTRUCTIONS_MAP.md` пока читать только как inventory/historical map: он требует refresh под v15 `block_candidates` перед использованием как onboarding source.
+
 ## Обязательный порядок чтения
 
 ### 1. [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
@@ -43,7 +61,7 @@
 - не возвращаться к уже закрытым вопросам без причины.
 
 ### 7. [docs/MANUAL_OUTPUT_VALIDATION_SPEC.md](docs/MANUAL_OUTPUT_VALIDATION_SPEC.md)
-Читать по умолчанию, когда задача относится к текущему этапу.
+Читать по умолчанию только для исторической Manual Output Validation / single-call validation задачи. Для текущей LLM2 v15 report-quality задачи использовать рабочую рамку выше.
 
 Зачем читать:
 - понять stage-specific policies для Manual Output Validation;

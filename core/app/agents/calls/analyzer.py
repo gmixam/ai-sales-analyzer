@@ -41,7 +41,13 @@ REPORT_EVIDENCE_SOURCE_DIR_CANDIDATES = [
 ]
 
 APPROVED_SCHEMA_VERSION = "call_analysis.v1"
-APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v14_proof_layer"
+APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v15_block_ready"
+EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION = (
+    "edo_sales_mvp1_call_analysis_v16_context_evidence"
+)
+CONTEXT_EVIDENCE_INSTRUCTION_VERSIONS = {
+    EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION,
+}
 APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
 NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
@@ -526,6 +532,14 @@ class CallsAnalyzer:
             return prompt_path.read_text(encoding="utf-8")
         return f"# Missing {prompt_name} prompt\nReturn approved MVP-1 contract JSON only.\n"
 
+    def _get_analyze_prompt(self, instruction_version: str = APPROVED_INSTRUCTION_VERSION) -> str:
+        """Load the default analyzer prompt plus optional experimental overlays."""
+        base_prompt = self._get_prompt("analyze")
+        if str(instruction_version or "").strip() in CONTEXT_EVIDENCE_INSTRUCTION_VERSIONS:
+            overlay = self._get_prompt("analyze_v16_context_evidence")
+            return f"{base_prompt.rstrip()}\n\n{overlay.strip()}\n"
+        return base_prompt
+
     def _resolve_source_file(self, key: str) -> Path | None:
         """Resolve one approved MVP-1 source file across known runtime locations."""
         filename = MVP1_SOURCE_FILE_NAMES[key]
@@ -571,11 +585,14 @@ class CallsAnalyzer:
             instruction_version=instruction_version,
         )
 
-    def get_prompt_assets(self) -> PromptAssetSet:
+    def get_prompt_assets(
+        self,
+        instruction_version: str = APPROVED_INSTRUCTION_VERSION,
+    ) -> PromptAssetSet:
         """Return loaded analyzer-related prompts."""
         return PromptAssetSet(
             classify=self._get_prompt("classify"),
-            analyze=self._get_prompt("analyze"),
+            analyze=self._get_analyze_prompt(instruction_version),
             agreements=self._get_prompt("agreements"),
             insights=self._get_prompt("insights"),
         )
@@ -672,7 +689,7 @@ class CallsAnalyzer:
         llm1_first_pass: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble the approved input context for the LLM call."""
-        prompt_assets = self.get_prompt_assets()
+        prompt_assets = self.get_prompt_assets(instruction_version=instruction_version)
         runtime_fallback_note = (
             "Runtime fallback for Manual Live Validation: the original docs/mvp1_sources files are "
             "not available inside this container, so rely on the embedded approved checklist "
@@ -754,7 +771,7 @@ class CallsAnalyzer:
         instruction_version: str = APPROVED_INSTRUCTION_VERSION,
     ) -> dict[str, Any]:
         """Assemble the separate first-pass context used before the final analysis call."""
-        prompt_assets = self.get_prompt_assets()
+        prompt_assets = self.get_prompt_assets(instruction_version=instruction_version)
         checklist_definition = self.build_checklist_definition()
         contract_template = self.build_contract_template(
             interaction=interaction,
@@ -839,7 +856,7 @@ class CallsAnalyzer:
         )
 
         messages = [
-            {"role": "system", "content": self.get_prompt_assets().analyze},
+            {"role": "system", "content": self._get_analyze_prompt(instruction_version)},
             {
                 "role": "user",
                 "content": json.dumps(
@@ -998,7 +1015,11 @@ class CallsAnalyzer:
             "The JSON above failed strict approved-contract validation with this error:\n"
             f"{exc}\n\n"
             "Return one corrected JSON object only. Preserve the approved schema, include "
-            "all required stage and criterion fields, and do not add explanations."
+            "all required stage and criterion fields, and do not add explanations. "
+            "For `report_evidence.block_candidates`, every `fit=true` item must include "
+            "a non-empty canonical `stage_code` from the checklist; use "
+            "`cross_stage_transition` only for true cross-stage material and never omit "
+            "`stage_code` on usable block candidates."
         )
         if reason_code == SEMANTIC_EMPTY_ANALYSIS_REASON:
             return (
@@ -1018,6 +1039,12 @@ class CallsAnalyzer:
                 "`customer_signal`, `manager_behavior`, `coaching_diagnosis`, `recommended_next_action`, "
                 "optional grounded `best_dialogue_fragment`, and `report_block_fit` for `situation_day`, "
                 "`call_breakdown`, `voice_of_customer`, `additional_situations`, and `call_tomorrow`. "
+                "Also prepare optional v15 `report_evidence.block_candidates` for `situation_day`, "
+                "`call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, "
+                "`tomorrow_challenge`, and `call_list_context` when enough transcript content exists. "
+                "Each suitable block candidate must be block-ready: include `fit`, `score`, `role`, "
+                "`title_mode`, a concrete thesis or signal, what happened, why it matters, proof type, "
+                "proof explanation, quote role, counter-evidence, and the next/report action. "
                 "Each relevant `fit=true` report block item must include block role, title mode, "
                 "evidence target, gap_proven, a `coaching_moment` with `summary`, optional "
                 "`missing_action`, optional `why_it_matters`, optional `supporting_quote`, "
@@ -1026,6 +1053,12 @@ class CallsAnalyzer:
                 "For problem blocks, the quote must prove the manager gap, not merely mention the topic; "
                 "if the quote shows the manager did the allegedly missing action, put it in "
                 "`counter_evidence` and mark the problem block `fit=false`. "
+                "`proof_type=direct_gap` is allowed only when one quote or short fragment directly proves "
+                "the manager gap; use `sequence_inference` for event order, `absence_in_context` for a "
+                "missing action in the available record, and `context_support` only for context that does "
+                "not prove a problem. For missing qualification before product offering, a product-offer "
+                "quote is usually `quote_role=supports_context`, not `direct_gap`; the proof should be "
+                "`sequence_inference` or `absence_in_context` unless the quote directly proves the gap. "
                 "For `fit=false` or not-relevant block items, prefer `coaching_moment=null` instead "
                 "of a weak placeholder. `coaching_moment.evidence_type` must be only "
                 "`direct_quote`, `absence_in_context`, or `inferred_from_dialogue`; never use "
@@ -1420,6 +1453,12 @@ class CallsAnalyzer:
             }
             for stage in CHECKLIST_DEFINITION["stages"]
         }
+        self._validate_report_evidence_block_candidate_stage_codes(
+            contract=contract,
+            allowed_stage_codes=set(allowed_stage_map),
+            interaction_id=str(interaction.id),
+            raw_response=json.dumps(raw_contract, ensure_ascii=False),
+        )
         for stage in contract["score_by_stage"] or []:
             stage_code = stage.get("stage_code")
             if stage_code not in allowed_stage_map:
@@ -1554,6 +1593,49 @@ class CallsAnalyzer:
                 normalized_result=deepcopy(contract),
                 reason_code=reason_codes[0],
             )
+
+    @staticmethod
+    def _validate_report_evidence_block_candidate_stage_codes(
+        *,
+        contract: dict[str, Any],
+        allowed_stage_codes: set[str],
+        interaction_id: str,
+        raw_response: str,
+    ) -> None:
+        """Require explicit stage_code on fresh fit=true block-ready material."""
+        report_evidence = contract.get("report_evidence")
+        if not isinstance(report_evidence, dict):
+            return
+        block_candidates = report_evidence.get("block_candidates")
+        if not isinstance(block_candidates, dict):
+            return
+        for block_name, raw_candidate in block_candidates.items():
+            if not isinstance(raw_candidate, dict):
+                continue
+            if not CallsAnalyzer._report_block_candidate_fit_is_true(raw_candidate.get("fit")):
+                continue
+            path = f"report_evidence.block_candidates.{block_name}.stage_code"
+            stage_code = str(raw_candidate.get("stage_code") or "").strip()
+            if not stage_code:
+                raise LLMResponseError(
+                    f"{path} is required when fit=true.",
+                    interaction_id=interaction_id,
+                    raw_response=raw_response,
+                )
+            if stage_code not in allowed_stage_codes:
+                raise LLMResponseError(
+                    f"{path} has unknown stage_code: {stage_code}",
+                    interaction_id=interaction_id,
+                    raw_response=raw_response,
+                )
+
+    @staticmethod
+    def _report_block_candidate_fit_is_true(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        return str(value or "").strip().lower() in {"true", "1", "yes"}
 
     @staticmethod
     def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

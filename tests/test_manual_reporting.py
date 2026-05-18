@@ -45,6 +45,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     _semantic_case_block_rejection_reason,
     _classify_meaningful_call,
     _select_stable_analysis_for_reporting,
+    _validated_report_block_candidates,
     classify_provider_error,
     build_manager_daily_payload,
     build_rop_weekly_payload,
@@ -52,6 +53,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     resolve_report_delivery_options,
     resolve_report_preset,
 )
+from app.agents.calls.analyzer import APPROVED_INSTRUCTION_VERSION  # noqa: E402
 from app.agents.calls.analysis_purpose import (  # noqa: E402
     ANALYSIS_PURPOSE_CONTROLLED_SAMPLE,
     ANALYSIS_PURPOSE_PRODUCTION,
@@ -102,11 +104,16 @@ def _analysis(
     return SimpleNamespace(
         id=uuid4(),
         interaction_id=uuid4(),
-        instruction_version="analysis_v1",
+        instruction_version=APPROVED_INSTRUCTION_VERSION,
         score_total=score_percent,
         scores_detail={
             "call": {
                 "contact_phone": "+77070000000",
+            },
+            "classification": {
+                "call_type": "sales_primary",
+                "scenario_type": "cold_outbound",
+                "analysis_eligibility": "eligible",
             },
             "score": {
                 "checklist_score": {
@@ -603,6 +610,40 @@ class ReportEvidenceValidationTests(unittest.TestCase):
         self.assertFalse(result.is_valid)
         self.assertIn("invalid_stage_code", self._issue_codes(result.errors))
 
+    def test_report_layer_rejects_fit_true_block_candidate_without_stage_code(self):
+        candidate = {
+            "fit": True,
+            "score": 86,
+            "role": "coaching_problem",
+            "title_mode": "problem",
+            "main_thesis": "Менеджер не закрепил срок возврата после отправки материалов.",
+            "what_happened": "Клиент попросил материалы, менеджер согласился отправить их.",
+            "why_it_matters": "Без срока возврата интерес клиента может потеряться.",
+            "what_was_missing": "Не был зафиксирован срок следующего контакта.",
+            "better_next_action": "Согласовать конкретную дату следующего контакта.",
+            "proof_type": "sequence_inference",
+            "proof_explanation": "В звонке есть запрос материалов и согласие менеджера без даты возврата.",
+            "supporting_quote": "Хорошо, отправлю информацию.",
+            "quote_role": "supports_context",
+            "counter_evidence": [],
+        }
+
+        normalized, errors, warnings = _validated_report_block_candidates(
+            raw_report_evidence={"block_candidates": {"situation_day": candidate}},
+            transcript="Клиент: Скиньте материалы. Менеджер: Хорошо, отправлю информацию.",
+        )
+
+        self.assertEqual(normalized, {})
+        self.assertEqual(warnings, [])
+        self.assertIn(
+            {
+                "block": "situation_day",
+                "reason": "stage_code_missing",
+                "path": "report_evidence.block_candidates.situation_day",
+            },
+            errors,
+        )
+
     def test_report_evidence_unsupported_speaker_fails(self):
         detail = _valid_report_evidence_detail()
         detail["report_evidence"]["quote_bank"][0]["speaker"] = "operator"
@@ -843,6 +884,7 @@ class ReportEvidenceValidationTests(unittest.TestCase):
         self.assertIn("If all applicable criteria are at max, return at least one grounded `manager_coaching_moment`", prompt)
         self.assertIn("Sales-like minimum package", prompt)
         self.assertIn("Do not use an empty array to express \"no usable evidence\" for a sales-like outcome", prompt)
+        self.assertIn("Every `fit=true` `block_candidates.*` item must include `stage_code` explicitly", prompt)
         self.assertIn("Never use `support`, `service`, or `tech_service` as `stage_code`", prompt)
         self.assertIn("return at least one `manager_coaching_moment`", prompt)
         self.assertIn("semantic signal, not final report authority", prompt)
@@ -1231,6 +1273,225 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["voice_of_customer"]["source_note"], "report_evidence.semantic_case+voice_of_customer")
         self.assertEqual(payload["voice_of_customer"]["situations"][0]["source"], "report_evidence.semantic_case")
         self.assertIn("Клиент попросил отправить материалы", payload["voice_of_customer"]["situations"][0]["context"])
+
+    def test_manager_daily_prefers_block_candidates_before_semantic_case(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["call"]["contact_name"] = "Алия"
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "completion_next_step",
+                "stage_name": "Завершение и следующий шаг",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "next_step_fixed",
+                        "criterion_name": "Фиксация следующего шага",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Менеджер не закрепил срок следующего контакта.",
+                    }
+                ],
+            }
+        ]
+        detail["gaps"] = [{"criterion_code": "next_step_fixed", "title": "Legacy gap"}]
+        evidence_detail = _valid_report_evidence_detail_with_semantic_case()
+        evidence_detail["report_evidence"]["block_candidates"] = {
+            "situation_day": {
+                "fit": True,
+                "score": 94,
+                "role": "coaching_problem",
+                "title_mode": "problem",
+                "stage_code": "completion_next_step",
+                "main_thesis": "Блок-кандидат: интерес клиента остался без контрольной даты.",
+                "what_happened": "Менеджер согласился отправить материалы, но не перевел открытый интерес в срок возврата.",
+                "why_it_matters": "Без контрольной даты теплый интерес может зависнуть после отправки материалов.",
+                "what_was_missing": "Не было зафиксировано, когда менеджер вернется к обсуждению.",
+                "better_next_action": "Сразу согласовать дату следующего касания после отправки материалов.",
+                "proof_type": "sequence_inference",
+                "proof_explanation": "Вывод основан на последовательности: клиент попросил материалы, менеджер согласился отправить их без даты возврата.",
+                "supporting_quote": "Хорошо, отправлю информацию.",
+                "quote_role": "supports_context",
+                "counter_evidence": [],
+            },
+            "call_breakdown": {
+                "fit": True,
+                "score": 91,
+                "role": "coaching_problem",
+                "title_mode": "problem",
+                "stage_code": "completion_next_step",
+                "main_thesis": "Разбор глубже: интерес не получил контрольную точку.",
+                "what_happened": "Менеджер согласился отправить материалы без даты возврата.",
+                "why_it_matters": "Следующий контакт остается на инициативе клиента.",
+                "what_was_missing": "Не хватило конкретной даты или времени возврата.",
+                "better_next_action": "Предложить конкретный слот для следующего контакта.",
+                "proof_type": "sequence_inference",
+                "proof_explanation": "В звонке есть запрос материалов и согласие менеджера, но нет фиксации даты следующего касания.",
+                "supporting_quote": "Хорошо, отправлю информацию.",
+                "quote_role": "supports_context",
+                "moments": [
+                    {
+                        "situation": "Менеджер ответил согласием на отправку материалов.",
+                        "essence": "Глубина момента в том, что интерес не получил контрольную точку.",
+                        "proof_explanation": "Запрос материалов завершился согласием менеджера без даты возврата.",
+                        "better_action": "Сразу предложить дату возврата к обсуждению.",
+                        "proof_type": "sequence_inference",
+                        "supporting_quote": "Хорошо, отправлю информацию.",
+                        "quote_role": "supports_context",
+                    }
+                ],
+            },
+        }
+        detail.update(evidence_detail)
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        diagnostics = payload["report_evidence_diagnostics"]
+        self.assertEqual(diagnostics["summary"]["block_candidates_available_count"], 1)
+        self.assertEqual(diagnostics["summary"]["block_candidates_valid_count"], 1)
+        self.assertEqual(diagnostics["summary"]["report_evidence_source_counts"]["block_candidates"], 1)
+        block_diagnostics = diagnostics["blocks"]
+        self.assertEqual(block_diagnostics["situation_day"]["report_evidence_source"], "block_candidates")
+        self.assertEqual(block_diagnostics["call_breakdown"]["report_evidence_source"], "block_candidates")
+        self.assertFalse(block_diagnostics["situation_day"]["semantic_case_used"])
+        self.assertFalse(block_diagnostics["call_breakdown"]["semantic_case_used"])
+        coaching_view = payload["situation_day_coaching_view"]
+        self.assertEqual(coaching_view["source"], "report_evidence.block_candidates.situation_day")
+        self.assertIn("Блок-кандидат", coaching_view["pattern_title"])
+        self.assertEqual(coaching_view["proof_type"], "sequence_inference")
+        self.assertEqual(
+            payload["daily_coaching_focus"]["problem_statement"],
+            "Не было зафиксировано, когда менеджер вернется к обсуждению.",
+        )
+        self.assertEqual(
+            payload["daily_coaching_focus"]["problem_statement_source"],
+            "situation_day_selected_case",
+        )
+        breakdown = payload["call_breakdown"]
+        self.assertEqual(breakdown["call_breakdown_source"], "report_evidence.block_candidates.call_breakdown")
+        self.assertEqual(breakdown["proof_type"], "sequence_inference")
+        self.assertIn("контрольную точку", breakdown["rows"][0][2])
+        self.assertNotIn("не уточнил срок", breakdown["rows"][0][1])
+
+    def test_manager_daily_situation_day_block_candidate_focus_override_happens_before_deep_dive(self) -> None:
+        artifact = _artifact(64.0, "basic")
+        artifact.interaction.text = (
+            "Клиент: У нас сейчас всё на бумаге. "
+            "Менеджер: Может, я вам скину информацию о нашем продукте."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "completion_next_step",
+                "stage_name": "Завершение и договорённости",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "ns_next_step_fixed",
+                        "criterion_name": "Фиксация следующего шага",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Следующий шаг не был закреплён достаточно конкретно.",
+                    }
+                ],
+            },
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 1,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_need_or_trigger",
+                        "criterion_name": "Потребность клиента",
+                        "score": 1,
+                        "max_score": 2,
+                        "comment": "Часть контекста клиента была раскрыта.",
+                    }
+                ],
+            },
+        ]
+        detail["gaps"] = [{"criterion_code": "ns_next_step_fixed", "title": "Legacy next step gap"}]
+        evidence_detail = _valid_report_evidence_detail()
+        evidence_detail["report_evidence"]["follow_up_candidates"][0]["client_label"] = None
+        evidence_detail["report_evidence"]["block_candidates"] = {
+            "situation_day": {
+                "fit": True,
+                "score": 92,
+                "role": "coaching_problem",
+                "title_mode": "problem",
+                "stage_code": "qualification_primary",
+                "main_thesis": "Менеджер предложил продукт до выяснения задачи клиента.",
+                "what_happened": "Менеджер перешёл к отправке материалов до фиксации задачи клиента.",
+                "why_it_matters": "Без понимания задачи предложение может не попасть в реальный контекст клиента.",
+                "what_was_missing": "Не было зафиксировано, какую задачу клиент хочет решить.",
+                "better_next_action": "Сначала уточнить задачу клиента, затем предлагать материал.",
+                "proof_type": "sequence_inference",
+                "proof_explanation": "Сначала клиент описал бумажный процесс, затем менеджер сразу предложил отправить продукт без уточнения задачи.",
+                "supporting_quote": "Может, я вам скину информацию о нашем продукте.",
+                "quote_role": "supports_context",
+                "counter_evidence": [],
+            }
+        }
+        detail.update(evidence_detail)
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        diagnostics = payload["report_evidence_diagnostics"]
+        self.assertFalse(diagnostics["calls"][0]["report_evidence_valid"])
+        self.assertEqual(diagnostics["blocks"]["situation_day"]["report_evidence_source"], "block_candidates")
+        coaching_view = payload["situation_day_coaching_view"]
+        self.assertEqual(coaching_view["source"], "report_evidence.block_candidates.situation_day")
+        self.assertEqual(coaching_view["stage_code"], "qualification_primary")
+        self.assertEqual(
+            coaching_view["selection_diagnostics"]["selection_mode"],
+            "best_block_candidate_after_focus_mismatch",
+        )
+        self.assertEqual(payload["daily_coaching_focus"]["stage_code"], "qualification_primary")
+        self.assertEqual(
+            payload["daily_coaching_focus"]["focus_override_reason"],
+            "best_block_candidate_after_focus_mismatch",
+        )
+        self.assertEqual(payload["focus_stage_deep_dive"]["stage_code"], "qualification_primary")
+        self.assertEqual(sections["challenge"]["focus_stage_code"], "qualification_primary")
+        self.assertEqual(sections["main_focus_for_tomorrow"]["focus_stage_code"], "qualification_primary")
+        self.assertNotIn(
+            "situation_stage_mismatch:qualification_primary",
+            payload["daily_coaching_focus_validation"]["issues"],
+        )
 
     def test_manager_daily_semantic_coaching_moment_does_not_require_fragment(self) -> None:
         artifact = _artifact(64.0, "basic")
@@ -1918,8 +2179,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
                 "product_interest",
                 "Client asked for proposal materials.",
                 "Отправить КП и завтра уточнить, появились ли вопросы.",
-                "Отправить КП и завтра уточнить",
-                "уточнить задачу клиента",
+                "перед отправкой КП уточнить объем",
+                "безопасный канал",
             ),
         ]
         for quote, topic, meaning, summary_action, expected, forbidden in cases:
@@ -1962,7 +2223,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
                     for section in build_report_render_model(payload)["sections"]
                 }["voice_of_customer"]["rows"][0]
 
-                self.assertEqual(row[1], quote)
+                self.assertIn(quote, row[1])
+                self.assertIn("Клиент:", row[1])
                 self.assertIn(expected, row[2])
                 self.assertNotIn(forbidden, row[2])
 
@@ -1998,8 +2260,10 @@ class ManualReportingPayloadTests(unittest.TestCase):
             for section in build_report_render_model(payload)["sections"]
         }["voice_of_customer"]["rows"][0]
 
-        self.assertEqual(row[1], "Нам текущей системы достаточно.")
-        self.assertIn("что именно закрывает текущее решение", row[2])
+        self.assertIn("Нам текущей системы достаточно.", row[1])
+        self.assertIn("Клиент:", row[1])
+        self.assertIn("текущ", row[2].lower())
+        self.assertRegex(row[2].lower(), r"ручн|риск|закрывает")
         self.assertNotIn("уточнить задачу клиента", row[2])
 
     def test_step8ah1_unified_client_call_reference_in_manager_daily_blocks(self) -> None:

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.core_shared.config.settings import Settings, settings
 from app.core_shared.exceptions import ConfigurationError
 
-AIRoutingLayer = Literal["stt", "llm1", "llm2"]
+AIRoutingLayer = Literal["stt", "llm1", "llm2", "llm3"]
 AIRoutingPolicy = Literal["fixed", "failover", "weighted_ab", "manual_force"]
 AIExecutionMode = Literal["openai_compatible", "vendor_specific"]
 
@@ -75,6 +75,18 @@ EXECUTION_CAPABILITY_MAP: dict[tuple[AIRoutingLayer, str], AIExecutionCapability
         "openai",
     ): AIExecutionCapability(
         layer="llm2",
+        provider="openai",
+        execution_mode="openai_compatible",
+        supports_api_base=True,
+        supports_endpoint=False,
+        supports_model=True,
+        requires_openai_compatible_api=True,
+    ),
+    (
+        "llm3",
+        "openai",
+    ): AIExecutionCapability(
+        layer="llm3",
         provider="openai",
         execution_mode="openai_compatible",
         supports_api_base=True,
@@ -553,7 +565,7 @@ class AIProviderRouter:
                     "notes": "Prepared from legacy classification model settings.",
                 }
             ]
-        else:
+        elif layer == "llm2":
             entries = [
                 {
                     "provider": "openai",
@@ -566,6 +578,21 @@ class AIProviderRouter:
                     "weight": 1,
                     "tags": ["legacy", "single_provider", "llm2"],
                     "notes": "Derived automatically from legacy analyzer settings.",
+                }
+            ]
+        else:
+            entries = [
+                {
+                    "provider": "openai",
+                    "account_alias": "legacy_openai_llm3_primary",
+                    "model": self.settings.openai_model_analyze,
+                    "api_key_env": "OPENAI_API_KEY_LLM3_MAIN",
+                    "timeout_sec": self.settings.openai_timeout_sec,
+                    "max_retries_for_this_provider": self.settings.openai_max_retries,
+                    "priority": 1,
+                    "weight": 1,
+                    "tags": ["legacy", "single_provider", "llm3"],
+                    "notes": "Derived automatically for optional report-composer LLM3.",
                 }
             ]
 

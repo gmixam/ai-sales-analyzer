@@ -29,7 +29,11 @@ CORE_ROOT = PROJECT_ROOT if (PROJECT_ROOT / "app").exists() else PROJECT_ROOT / 
 if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
-from app.agents.calls.analyzer import APPROVED_INSTRUCTION_VERSION, CallsAnalyzer
+from app.agents.calls.analyzer import (
+    APPROVED_INSTRUCTION_VERSION,
+    EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION,
+    CallsAnalyzer,
+)
 from app.agents.calls.extractor import CallsExtractor
 from app.agents.calls.orchestrator import CallsManualPilotOrchestrator
 from app.core_shared.ai_routing import AIProviderRouter
@@ -101,7 +105,7 @@ class AIProviderRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             APPROVED_INSTRUCTION_VERSION,
-            "edo_sales_mvp1_call_analysis_v14_proof_layer",
+            "edo_sales_mvp1_call_analysis_v15_block_ready",
         )
         self.assertIn("REPORT_EVIDENCE_CONTRACT.md", context["source_of_truth_priority"])
         self.assertIn("report_evidence_contract_markdown", context["approved_sources"])
@@ -111,6 +115,48 @@ class AIProviderRoutingTests(unittest.TestCase):
             or "REPORT_EVIDENCE_CONTRACT.md" in report_evidence_source
         )
         self.assertIn("report_evidence", report_evidence_source)
+
+    def test_experimental_v16_prompt_context_adds_context_evidence_overlay(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="prompt-context-v16-case",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=300,
+            text="Клиент: Ладно, хорошо, я перезвоню.",
+            metadata_={
+                "external_call_code": "prompt-context-v16-case",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-05-14 09:00:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        default_context = analyzer.build_prompt_context(interaction)
+        experimental_context = analyzer.build_prompt_context(
+            interaction,
+            instruction_version=EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION,
+        )
+
+        self.assertNotIn(
+            "LLM2 v16 Context Evidence Overlay",
+            default_context["prompt_assets"]["analyze"],
+        )
+        self.assertIn(
+            "LLM2 v16 Context Evidence Overlay",
+            experimental_context["prompt_assets"]["analyze"],
+        )
+        self.assertEqual(
+            experimental_context["analysis_result_contract_template"]["instruction_version"],
+            EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION,
+        )
+        self.assertIn(
+            "Do not treat the presence of a short quote as proof",
+            experimental_context["prompt_assets"]["analyze"],
+        )
 
     def test_analyzer_score_population_handles_dict_wrapped_stage_scores(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
@@ -929,11 +975,54 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertIn("counter_evidence", instruction)
         self.assertIn("For `fit=false` or not-relevant block items, prefer `coaching_moment=null`", instruction)
         self.assertIn("never use `none` or `insufficient` there", instruction)
+        self.assertIn("every `fit=true` item must include", instruction)
+        self.assertIn("canonical `stage_code`", instruction)
         self.assertIn("must be a non-empty exact transcript substring", instruction)
         self.assertIn("`case_type=insufficient_evidence`", instruction)
         self.assertIn("`manager_coaching_moments` must contain at least one item", instruction)
         self.assertIn("return an explicit `evidence_quality=insufficient`", instruction)
         self.assertIn("Do not return `follow_up_candidates` for `refusal`, `tech_service`, or `not_suitable`", instruction)
+
+    def test_analyzer_rejects_fit_true_block_candidate_without_stage_code(self) -> None:
+        with self.assertRaises(AnalysisError) as ctx:
+            CallsAnalyzer._validate_report_evidence_block_candidate_stage_codes(
+                contract={
+                    "report_evidence": {
+                        "block_candidates": {
+                            "situation_day": {
+                                "fit": True,
+                                "score": 80,
+                            }
+                        }
+                    }
+                },
+                allowed_stage_codes={"qualification_primary"},
+                interaction_id="sales-call",
+                raw_response="{}",
+            )
+
+        self.assertIn("report_evidence.block_candidates.situation_day.stage_code", str(ctx.exception))
+
+    def test_analyzer_rejects_fit_true_block_candidate_unknown_stage_code(self) -> None:
+        with self.assertRaises(AnalysisError) as ctx:
+            CallsAnalyzer._validate_report_evidence_block_candidate_stage_codes(
+                contract={
+                    "report_evidence": {
+                        "block_candidates": {
+                            "situation_day": {
+                                "fit": True,
+                                "score": 80,
+                                "stage_code": "support",
+                            }
+                        }
+                    }
+                },
+                allowed_stage_codes={"qualification_primary"},
+                interaction_id="sales-call",
+                raw_response="{}",
+            )
+
+        self.assertIn("unknown stage_code", str(ctx.exception))
 
     def test_persist_analysis_stores_raw_llm_response_separately_from_normalized_result(self) -> None:
         class _FakeQuery:
