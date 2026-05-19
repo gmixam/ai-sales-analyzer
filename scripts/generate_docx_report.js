@@ -453,7 +453,7 @@ function normalizeBreakdownObject(row, index) {
   return {
     moment: normalizeBreakdownMoment(firstNonEmpty(row.moment, row.time, row.time_label, row.label), index),
     what: firstNonEmpty(row.what, row.what_happened, row.problem, row.issue, row.description, "—"),
-    moment_summary: firstNonEmpty(row.coaching_moment?.summary, row.moment_summary, row.summary, fallbackFragment, "—"),
+    moment_summary: firstNonEmpty(row.coaching_moment?.summary, row.moment_summary, row.summary, ""),
     supporting_quote: breakdownSupportingQuote(firstNonEmpty(
       quoteText(row.coaching_moment?.supporting_quote),
       quoteText(row.supporting_quote),
@@ -481,6 +481,25 @@ function splitBreakdownFragment(value) {
   };
 }
 
+function splitBreakdownSummaryAndProof(value) {
+  const text = cleanText(value);
+  if (!text || text === "—") return { summary: "", proof: "" };
+  const split = splitBreakdownFragment(text);
+  if (split.supporting_quote) {
+    return { summary: split.what || "", proof: split.supporting_quote };
+  }
+  const dialogueMatch = text.match(/(?:^|\s)(менеджер|клиент|оператор|продавец|собеседник)\s*:/i);
+  if (dialogueMatch) {
+    const index = dialogueMatch.index || 0;
+    return {
+      summary: cleanText(text.slice(0, index).replace(/[ .:-]+$/, "")),
+      proof: text.slice(index).trim(),
+    };
+  }
+  if (/^[«"].+[»"]$/.test(text)) return { summary: "", proof: text };
+  return { summary: text, proof: "" };
+}
+
 function normalizeBreakdownRow(row, index, context = {}) {
   if (!Array.isArray(row) && row && typeof row === "object") {
     return normalizeBreakdownObject(row, index);
@@ -489,13 +508,14 @@ function normalizeBreakdownRow(row, index, context = {}) {
   const parentProofType = firstNonEmpty(context.proof_type, context.evidence_type, context.coaching_moment?.proof_type);
   const parentQuoteRole = firstNonEmpty(context.quote_role, context.coaching_moment?.quote_role);
   if (row.length >= 4) {
-    const quote = breakdownSupportingQuote(row[2]);
-    const momentSummary = firstNonEmpty(parentMomentSummary, breakdownFragmentOrNote(row[2]));
+    const splitProof = splitBreakdownSummaryAndProof(row[2]);
+    const quote = breakdownSupportingQuote(splitProof.proof);
+    const momentSummary = firstNonEmpty(parentMomentSummary, splitProof.summary);
     return {
       moment: normalizeBreakdownMoment(row[0], index),
       what: row[1] || "—",
       moment_summary: momentSummary,
-      supporting_quote: quote && quote !== momentSummary ? quote : "",
+      supporting_quote: quote,
       proof_type: parentProofType,
       supporting_quote_proof_type: parentQuoteRole === "supports_context" ? "context_support" : parentProofType,
       quote_role: parentQuoteRole,
@@ -813,6 +833,7 @@ function dataFromBundle(bundle) {
       name: `${stage.funnel_label || ""} ${stage.stage_name || ""}`.trim(),
       score10: stage.score ?? null,
       score5: stage.score === null || stage.score === undefined ? null : safeNumber((safeNumber(stage.score) / 2).toFixed(1), null),
+      calls_count: safeNumber(stage.calls_count, 0),
       priority: Boolean(stage.is_priority),
       problem_summary: stage.problem_summary || "",
       problem_source: stage.problem_source || "",
@@ -1411,10 +1432,11 @@ function buildBally() {
   rows.push(
     new TableRow({
       children: [
-        headCell("Этап", { width: { size: 32, type: WidthType.PERCENTAGE } }),
+        headCell("Этап", { width: { size: 29, type: WidthType.PERCENTAGE } }),
         headCell("Балл", { width: { size: 9, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+        headCell("Звонков", { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
         headCell("Статус", { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Основная проблема", { width: { size: 46, type: WidthType.PERCENTAGE } }),
+        headCell("Основная проблема", { width: { size: 39, type: WidthType.PERCENTAGE } }),
       ],
     })
   );
@@ -1431,10 +1453,11 @@ function buildBally() {
       : null;
 
     const rowCells = [
-      cell(st.name, { width: { size: 32, type: WidthType.PERCENTAGE }, color: nameColor, bold: st.priority, shading: rowShading }),
+      cell(st.name, { width: { size: 29, type: WidthType.PERCENTAGE }, color: nameColor, bold: st.priority, shading: rowShading }),
       cell(scoreStr, { width: { size: 9, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
+      cell(String(st.calls_count ?? 0), { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: rowShading, size: SZ.cell }),
       cell(status, { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
-      cell(stageProblem(st), { width: { size: 46, type: WidthType.PERCENTAGE }, shading: rowShading, size: SZ.cell }),
+      cell(stageProblem(st), { width: { size: 39, type: WidthType.PERCENTAGE }, shading: rowShading, size: SZ.cell }),
     ];
 
     rows.push(new TableRow({ children: rowCells }));
@@ -1523,32 +1546,31 @@ function buildSituatsiya() {
 // ──────────────────────────────────────────────────────────────
 
 function buildBreakdownMomentCell(s, i) {
-  const summary = firstNonEmpty(s.moment_summary, s.summary, s.fragment, "—");
   const quote = s.supporting_quote_repeated_with_situation_day ? "" : firstNonEmpty(s.supporting_quote, "");
-  const proofLabel = proofTypeLabel(s.proof_type, "Суть момента");
-  const quoteLabel = proofTypeLabel(
+  const rawQuoteLabel = proofTypeLabel(
     firstNonEmpty(s.supporting_quote_proof_type, s.quote_role === "supports_context" ? "context_support" : "", s.proof_type),
+    "Подтверждение из звонка",
   );
-  const labelSummary = cleanText(s.proof_type) && !quote;
-  const paras = [
-    new Paragraph({
-      children: labelSummary
-        ? [
-            new TextRun({ text: `${proofLabel}: `, bold: true, size: SZ.cell, color: COLORS.heading, font: "Arial" }),
-            new TextRun({ text: summary, size: SZ.cell, color: COLORS.black, font: "Arial" }),
-          ]
-        : [new TextRun({ text: summary, size: SZ.cell, color: COLORS.black, font: "Arial" })],
-      spacing: { before: 0, after: quote && quote !== summary ? 40 : 0 },
-    }),
-  ];
-  const quotePara = quote && quote !== summary
-    ? buildSupportingQuoteParagraph(quote, { size: SZ.cell, limit: 260, before: 0, label: quoteLabel })
-    : null;
-  if (quotePara) paras.push(quotePara);
+  const quoteLabel = rawQuoteLabel === "Суть момента" ? "Подтверждение из звонка" : rawQuoteLabel;
+  const proof = firstNonEmpty(quote, "");
+  const paras = proof
+    ? [buildSupportingQuoteParagraph(proof, { size: SZ.cell, limit: 300, before: 0, label: quoteLabel })]
+    : [new Paragraph({
+        children: [new TextRun({ text: "—", size: SZ.cell, color: COLORS.gray, font: "Arial" })],
+        spacing: { before: 0, after: 0 },
+      })];
   return cellParagraphs(paras, {
     width: { size: 28, type: WidthType.PERCENTAGE },
     shading: altShading(i),
   });
+}
+
+function breakdownWhatText(s) {
+  const what = cleanText(s.what);
+  const summary = cleanText(firstNonEmpty(s.moment_summary, s.summary, ""));
+  if (!what) return summary || "—";
+  if (!summary || sameMeaningText(what, summary)) return what;
+  return `${what}. ${summary}`;
 }
 
 function buildRazbor() {
@@ -1572,7 +1594,7 @@ function buildRazbor() {
       children: [
         headCell("Момент / время", { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
         headCell("Что было",       { width: { size: 31, type: WidthType.PERCENTAGE } }),
-        headCell("Суть момента",   { width: { size: 28, type: WidthType.PERCENTAGE } }),
+        headCell("Подтверждение из звонка", { width: { size: 28, type: WidthType.PERCENTAGE } }),
         headCell("Рекомендация",   { width: { size: 31, type: WidthType.PERCENTAGE } }),
       ],
     }),
@@ -1582,7 +1604,7 @@ function buildRazbor() {
     new TableRow({
       children: [
         cell(s.moment, { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: altShading(i), color: COLORS.gray }),
-        cell(s.what,   { width: { size: 31, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
+        cell(breakdownWhatText(s), { width: { size: 31, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
         buildBreakdownMomentCell(s, i),
         cell(s.better, { width: { size: 31, type: WidthType.PERCENTAGE }, shading: altShading(i), color: COLORS.heading }),
       ],
@@ -1722,6 +1744,8 @@ function buildDopSituatsii() {
 // ──────────────────────────────────────────────────────────────
 
 function buildChellendj() {
+  return [];
+
   const c = DATA.challenge;
 
   function clCell(text) {
@@ -2071,9 +2095,9 @@ async function main() {
   console.log("  [✓] СИТУАЦИЯ ДНЯ: interpretation + 3 scripts + why");
   console.log("  [✓] ГОЛОС КЛИЕНТА: 3 human-readable columns");
   console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
-  console.log("  [✓] РАЗБОР ЗВОНКА: 4 columns with Суть момента + optional quote");
+  console.log("  [✓] РАЗБОР ЗВОНКА: 4 columns with separate confirmation from call");
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: filtered valid only, dynamic heading, reference-style cards");
-  console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: card with Цель / Фокус / Фраза");
+  console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: temporarily hidden");
   console.log("  [✓] УТРЕННЯЯ КАРТОЧКА removed from PDF/DOCX (payload preserved)");
   console.log("  [✓] Deleted: КЛЮЧЕВАЯ ПРОБЛЕМА, РЕКОМЕНДАЦИИ, ДИНАМИКА");
   console.log("  [✓] Footer: Конфиденциально on all pages except first");

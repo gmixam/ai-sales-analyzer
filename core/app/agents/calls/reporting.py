@@ -6124,6 +6124,7 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             "funnel_label": funnel_label,
             "stage_name": stage_name,
             "score": avg,
+            "calls_count": len(scores),
             "is_priority": is_priority,
             "criteria_detail": criteria_detail,
             "problem_summary": problem_summary,

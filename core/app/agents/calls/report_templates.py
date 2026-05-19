@@ -589,6 +589,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {
             **_section_meta(template, "challenge"),
             **challenge,
+            "hidden": True,
+            "hidden_reason": "temporarily_hidden_before_first_manager_report",
         },
         {
             **_section_meta(template, "call_tomorrow"),
@@ -644,7 +646,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             "summary_line": morning_card["summary_line"],
             "open_calls": morning_card["open_calls"],
             "financial_line": money_on_table["highlight_line"],
-            "challenge": morning_card["challenge"],
+            "challenge": "",
             "call_tomorrow_contacts": list((_build_v5_call_tomorrow_section(section=dict(payload.get("call_tomorrow") or {}))).get("contacts") or [])[:3],
         },
     ]
@@ -865,6 +867,8 @@ def _render_text_report(report: dict[str, Any]) -> str:
         lines.extend([f"- {item['label']}: {_value(item.get('value'))}" for item in report["summary_cards"]])
         lines.append("")
     for section in report["sections"]:
+        if section.get("hidden"):
+            continue
         if _section_hidden_when_empty(section):
             continue
         lines.append(section["label"])
@@ -879,6 +883,8 @@ def _render_text_report(report: dict[str, Any]) -> str:
 
 def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     """Render one section as text lines."""
+    if section.get("hidden"):
+        return []
     kind = section["kind"]
     if kind == "header_card":
         lines = [
@@ -917,13 +923,14 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             )
         return [line for line in lines if line]
     if kind == "stage_scores_table":
-        lines = ["Этап | Сегодня | Среднее | Шкала | Приоритет"]
+        lines = ["Этап | Сегодня | Звонков | Среднее | Шкала | Приоритет"]
         for row in section.get("stage_rows") or []:
             lines.append(
                 " | ".join(
                     [
                         f"{row.get('funnel_label', '')} {row.get('stage_name', '')}".strip(),
                         str(row.get("score", "—")),
+                        str(row.get("calls_count") or 0),
                         "—",
                         str(row.get("bar_text") or "—"),
                         "●" if row.get("is_priority") else ("✓" if row.get("bar_pct", 0) >= 80 else "—"),
@@ -1010,7 +1017,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         lines = [line for line in lines if line]
         rows = section.get("rows") or []
         if rows:
-            lines.append("Момент / время | Что было | Фрагмент | Рекомендация")
+            lines.append("Момент / время | Что было | Подтверждение из звонка | Рекомендация")
             lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
         else:
             if CALL_BREAKDOWN_INSUFFICIENT_EVIDENCE_MESSAGE not in lines:
@@ -1240,6 +1247,8 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
 
 def _render_html_section(section: dict[str, Any]) -> str:
     """Render one HTML section."""
+    if section.get("hidden"):
+        return ""
     kind = section["kind"]
     title = f"<div class=\"section-bar\">{html.escape(section['label'])}</div>"
     classes = ["section"]
@@ -1308,6 +1317,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
                 "<tr>"
                 f"<td>{html.escape((str(row.get('funnel_label') or '') + ' ' + str(row.get('stage_name') or '')).strip())}</td>"
                 f"<td>{html.escape(str(row.get('score') or '—'))}</td>"
+                f"<td>{html.escape(str(row.get('calls_count') or 0))}</td>"
                 "<td>—</td>"
                 f"<td>{html.escape(str(row.get('bar_text') or '—'))}</td>"
                 f"<td>{'●' if row.get('is_priority') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
@@ -1316,13 +1326,13 @@ def _render_html_section(section: dict[str, Any]) -> str:
             for crit in row.get("criteria_detail") or []:
                 rows.append(
                     "<tr class=\"sub-row\">"
-                    f"<td colspan=\"5\">{html.escape(str(crit.get('name') or 'Критерий'))}: {html.escape(str(crit.get('score') or '—'))}</td>"
+                    f"<td colspan=\"6\">{html.escape(str(crit.get('name') or 'Критерий'))}: {html.escape(str(crit.get('score') or '—'))}</td>"
                     "</tr>"
                 )
-        body = "".join(rows) or "<tr><td colspan=\"5\">Данные по этапам появятся после накопления базы.</td></tr>"
+        body = "".join(rows) or "<tr><td colspan=\"6\">Данные по этапам появятся после накопления базы.</td></tr>"
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-            "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
+            "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Звонков</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
             f"<tbody>{body}</tbody></table></div></section>"
         )
     if kind == "situation_card":
@@ -1423,7 +1433,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}{intro}"
-            "<table><thead><tr><th>Момент / время</th><th>Что было</th><th>Фрагмент</th><th>Рекомендация</th></tr></thead>"
+            "<table><thead><tr><th>Момент / время</th><th>Что было</th><th>Подтверждение из звонка</th><th>Рекомендация</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "voice_of_customer":
@@ -1973,17 +1983,18 @@ def _render_manager_daily_pdf_report(
         [
             f"{row.get('funnel_label', '')} {row.get('stage_name', '')}".strip(),
             str(row.get("score") or "—"),
+            str(row.get("calls_count") or 0),
             "—",
             str(row.get("bar_text") or "—"),
             "Приоритет" if row.get("is_priority") else "Норма",
         ]
         for row in review.get("stage_rows") or []
-    ] or [["Данные по этапам появятся после накопления базы.", "", "", "", ""]]
-    review_col_widths = [216, 46, 54, 150, 45]
+    ] or [["Данные по этапам появятся после накопления базы.", "", "", "", "", ""]]
+    review_col_widths = [190, 44, 46, 50, 135, 46]
     review_bottom = draw_table(
         page2,
         top=88,
-        columns=["Этап", "Сегодня", "Среднее", "Шкала", "Статус"],
+        columns=["Этап", "Сегодня", "Звонков", "Среднее", "Шкала", "Статус"],
         rows=review_rows,
         col_widths=review_col_widths,
         body_size=7.5,
@@ -2035,7 +2046,7 @@ def _render_manager_daily_pdf_report(
         breakdown_bottom = draw_table(
             page3,
             top=116 if breakdown_note else 104,
-            columns=["Момент / время", "Что было", "Фрагмент", "Рекомендация"],
+            columns=["Момент / время", "Что было", "Подтверждение из звонка", "Рекомендация"],
             rows=[list(map(str, row)) for row in (call_breakdown.get("rows") or [])],
             col_widths=[66, 152, 138, 155],
             body_size=7.0,
@@ -2083,13 +2094,14 @@ def _render_manager_daily_pdf_report(
         challenge_top = additional_top + 2
     else:
         challenge_top = additional_top
-    draw_section_bar(page4, top=challenge_top, title=challenge["label"], color=accent)
-    draw_rect(page4, left=margin, top=challenge_top + 30, box_width=width - (margin * 2), box_height=106, fill=light_blue)
-    draw_rect(page4, left=margin, top=challenge_top + 30, box_width=4, box_height=106, fill=accent)
-    draw_text(page4, left=margin + 12, top=challenge_top + 42, text=str(challenge.get("goal_line") or ""), size=9.2, color=accent, max_width=width - (margin * 2) - 24)
-    draw_text(page4, left=margin + 12, top=challenge_top + 62, text=str(challenge.get("today_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page4, left=margin + 12, top=challenge_top + 80, text=str(challenge.get("record_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page4, left=margin + 12, top=challenge_top + 98, text=f"Фраза для завтра: {challenge.get('phrase_line') or ''}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+    if not challenge.get("hidden"):
+        draw_section_bar(page4, top=challenge_top, title=challenge["label"], color=accent)
+        draw_rect(page4, left=margin, top=challenge_top + 30, box_width=width - (margin * 2), box_height=106, fill=light_blue)
+        draw_rect(page4, left=margin, top=challenge_top + 30, box_width=4, box_height=106, fill=accent)
+        draw_text(page4, left=margin + 12, top=challenge_top + 42, text=str(challenge.get("goal_line") or ""), size=9.2, color=accent, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=challenge_top + 62, text=str(challenge.get("today_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=challenge_top + 80, text=str(challenge.get("record_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page4, left=margin + 12, top=challenge_top + 98, text=f"Фраза для завтра: {challenge.get('phrase_line') or ''}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
     footer(page4, 4)
 
     page5 = add_page()
@@ -2990,6 +3002,7 @@ def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[s
             "stage_name": str(item.get("stage_name") or ""),
             "score": _value(score_on_5),
             "score_float": score_float,
+            "calls_count": int(item.get("calls_count") or 0),
             "bar_pct": bar_pct,
             "bar_text": _progress_bar_20(score_on_5),
             "is_priority": bool(item.get("is_priority")),
@@ -3249,20 +3262,27 @@ def _build_v5_call_breakdown_section(
 
 
 def _normalize_call_breakdown_row(*, row: list[Any] | tuple[Any, ...], index: int) -> list[str]:
-    """Return `Момент / время | Что было | Фрагмент | Рекомендация` from old/new rows."""
+    """Return `Момент / время | Что было | Подтверждение из звонка | Рекомендация`."""
     values = [str(item or "").strip() for item in row]
     if len(values) >= 4:
+        moment_summary, confirming_fragment = _split_call_breakdown_summary_and_proof(values[2])
+        what = _call_breakdown_merge_what_and_summary(values[1], moment_summary)
         return [
             _call_breakdown_moment_label(values[0], index=index),
-            values[1] or "—",
-            _call_breakdown_fragment_or_note(values[2]),
+            what,
+            _call_breakdown_fragment_or_note(confirming_fragment),
             values[3] or "—",
         ]
     moment = _call_breakdown_moment_label(values[0] if values else "", index=index)
     what_raw = values[1] if len(values) > 1 else ""
     recommendation = values[2] if len(values) > 2 else ""
     what, fragment = _split_call_breakdown_fragment(what_raw)
-    return [moment, what or "—", _call_breakdown_fragment_or_note(fragment), recommendation or "—"]
+    return [
+        moment,
+        _call_breakdown_merge_what_and_summary(what, fragment),
+        _call_breakdown_fragment_or_note(fragment),
+        recommendation or "—",
+    ]
 
 
 CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
@@ -3283,6 +3303,39 @@ def _call_breakdown_fragment_or_note(value: str) -> str:
     if not text or text == "—":
         return ""
     return text
+
+
+def _split_call_breakdown_summary_and_proof(value: str) -> tuple[str, str]:
+    """Split old `Суть момента` content into interpretation and confirming dialogue."""
+    text = _clean_reader_text(value).strip()
+    if not text or text == "—":
+        return "", ""
+    embedded_what, embedded_fragment = _split_call_breakdown_fragment(text)
+    if embedded_fragment:
+        return embedded_what, embedded_fragment
+    dialogue_match = re.search(r"(?i)(?:^|\s)(менеджер|клиент|оператор|продавец|собеседник)\s*:", text)
+    if dialogue_match:
+        summary = text[: dialogue_match.start()].strip(" .:-")
+        proof = text[dialogue_match.start():].strip()
+        return summary, proof
+    if re.match(r"^[«\"].+[»\"]$", text):
+        return "", text
+    return text, ""
+
+
+def _call_breakdown_merge_what_and_summary(what: str, summary: str) -> str:
+    """Keep interpretation in `Что было` and reserve the proof column for dialogue/evidence."""
+    base = _clean_reader_text(what).strip()
+    extra = _clean_reader_text(summary).strip()
+    if not base:
+        return extra or "—"
+    if not extra or extra == base:
+        return base
+    normalized_base = re.sub(r"\s+", " ", base).strip(" .").lower()
+    normalized_extra = re.sub(r"\s+", " ", extra).strip(" .").lower()
+    if normalized_extra in normalized_base or normalized_base in normalized_extra:
+        return base if len(base) >= len(extra) else extra
+    return f"{base}. {extra}"
 
 
 def _call_breakdown_moment_label(value: str, *, index: int) -> str:

@@ -3132,7 +3132,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ", rendered["text"])
         self.assertNotIn("Дополнительные ситуации появятся", rendered["text"])
         self.assertNotIn("Дополнительные ситуации появятся", rendered["html"])
-        self.assertIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["text"])
+        self.assertNotIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["text"])
 
     def test_step8ah11a_expanded_coaching_scope_is_explicit_for_non_report_day_blocks(self) -> None:
         manager = _manager()
@@ -5908,7 +5908,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("<html>", rendered["html"])
         self.assertIn("ДЕНЬГИ НА СТОЛЕ", rendered["html"])
         self.assertIn("PIPELINE ТЁПЛЫХ ЛИДОВ", rendered["html"])
-        self.assertIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["html"])
+        self.assertNotIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["html"])
         self.assertIn("СВОДНАЯ ТАБЛИЦА ЗВОНКОВ", rendered["html"])
         self.assertIn("УТРЕННЯЯ КАРТОЧКА", rendered["html"])
         self.assertNotIn("КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ", rendered["html"])
@@ -5936,7 +5936,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "СИТУАЦИЯ ДНЯ",
             "РАЗБОР ЗВОНКА",
             "ГОЛОС КЛИЕНТА",
-            "ЧЕЛЛЕНДЖ НА ЗАВТРА",
             "ПОЗВОНИ ЗАВТРА",
             "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ",
             "УТРЕННЯЯ КАРТОЧКА",

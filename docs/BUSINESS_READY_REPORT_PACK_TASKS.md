@@ -2549,3 +2549,28 @@ Some transcript scenes still label speaker context as `Контекст` instead
   - Тимур `не заинтересован` now renders as `Отказ`, not `Договорённость`;
   - Толеген `не рассматривает ЭДО` now renders as `Отказ`, not `Перенос`;
   - Толеген service issue with saving a document now renders as `Тех/сервис`, not `Перенос`.
+
+## Step DDC-10 — First Manager Report Polish
+
+**Status:** IN PROGRESS 2026-05-19.
+
+**Goal:** make the first manager-facing report cleaner before sending it to a real manager.
+
+**Scope:**
+
+- `РАЗБОР ЗВОНКА`:
+  - rename the old `Суть момента` column to `Подтверждение из звонка`;
+  - move interpretive/commentary text into `Что было`;
+  - keep only dialogue/evidence in `Подтверждение из звонка`.
+- `ЧЕЛЛЕНДЖ НА ЗАВТРА`:
+  - temporarily hide the entire block from text/HTML/PDF/DOCX renderers;
+  - keep payload data available for future rework.
+- `БАЛЛЫ ПО ЭТАПАМ`:
+  - add a `Звонков` column;
+  - source it from the count of calls where the stage appeared in the stage aggregation.
+
+**Acceptance:**
+
+- manager-facing report does not show `ЧЕЛЛЕНДЖ НА ЗАВТРА`;
+- `РАЗБОР ЗВОНКА` no longer labels the proof column as `Суть момента`;
+- `БАЛЛЫ ПО ЭТАПАМ` displays the stage call count in PDF/HTML/text/DOCX paths.
