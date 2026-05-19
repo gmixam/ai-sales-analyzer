@@ -230,10 +230,68 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertIn("давайте сейчас уточню", rendered_rows)
         self.assertRegex(rendered_rows, r"резюм|правильно понял")
         self.assertRegex(rendered_rows, r"демо|созвон")
+        self.assertNotIn("coachable-момент", rendered_rows)
 
         situation_title = inputs["situation_evidence_packet"]["problem_title"].lower()
         moment_whats = [str(row[1] if len(row) > 1 else "").lower().strip() for row in rows]
         self.assertNotIn(situation_title, moment_whats)
+
+    def test_deterministic_non_b2b_rows_do_not_render_meta_coachable_wording(self) -> None:
+        module = _load_call_breakdown_composer_module()
+        call_id = str(uuid4())
+        selected_call = {
+            "call_id": call_id,
+            "client_label": "Айгуль",
+            "client_call_reference": "Айгуль • 14.05.2026 • 11:20",
+            "stage_code": "completion_next_step",
+            "stage_name": "Завершение и следующий шаг",
+        }
+        transcript_scenes = [
+            {
+                "scene_id": "closing",
+                "call_id": call_id,
+                "purpose": "next_step",
+                "turns": [
+                    {
+                        "speaker": "client",
+                        "text": "Мне нужно понять стоимость и когда можно начать.",
+                    },
+                    {
+                        "speaker": "manager",
+                        "text": "Я уточню и позже вам перезвоню.",
+                    },
+                    {
+                        "speaker": "client",
+                        "text": "Хорошо, буду ждать.",
+                    },
+                ],
+            }
+        ]
+        situation_evidence_packet = {
+            "status": "verified",
+            "call_id": call_id,
+            "problem_title": "Следующий шаг остался общим",
+            "client_context": "Клиент спросил стоимость и срок начала работы.",
+            "observed_manager_behavior": "Менеджер ответил общим обещанием уточнить и перезвонить.",
+            "missing_action": "не был назван срок возврата и конкретный формат продолжения",
+            "causal_link": "Без срока клиент не понимает, когда ждать ответ.",
+            "manager_lesson": "вернуться сегодня до 17:00 с расчетом стоимости",
+            "dialogue_excerpt": {"call_id": call_id, "turns": transcript_scenes[0]["turns"]},
+            "proof_type": "direct_quote",
+            "proof_strength": "medium",
+        }
+
+        result = module.compose_call_breakdown(
+            selected_call=selected_call,
+            transcript_scenes=transcript_scenes,
+            situation_evidence_packet=situation_evidence_packet,
+            llm2_facts={"score_by_stage": []},
+            llm3_enabled=False,
+        )
+
+        rendered_rows = " ".join(" ".join(map(str, row)) for row in result.get("rows") or []).lower()
+        self.assertNotIn("coachable-момент", rendered_rows)
+        self.assertIn("менеджер услышал важный сигнал клиента", rendered_rows)
 
     def test_llm3_payload_preserves_selected_verified_call_scope(self) -> None:
         module = _load_call_breakdown_composer_module()

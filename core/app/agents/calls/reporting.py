@@ -39,6 +39,7 @@ from app.agents.calls.situation_day_composer import (
     SITUATION_DAY_COMPOSER_VERSION,
     compose_situation_day,
 )
+from app.agents.calls.situation_day_writer import compose_situation_day_view
 from app.agents.calls.voice_of_customer_composer import compose_voice_of_customer
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
 from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError, SemanticAnalysisError
@@ -5201,6 +5202,31 @@ def build_manager_daily_payload(
             previous_view=situation_day_coaching_view,
         )
         situation_dialogue_excerpt = None
+    situation_day_coaching_view = _apply_situation_day_writer(
+        report_evidence_situation=report_evidence_situation,
+        situation_evidence_quote=situation_evidence_quote,
+        situation_dialogue_excerpt=situation_dialogue_excerpt,
+        situation_day_evidence_packet=situation_day_evidence_packet,
+        situation_day_coaching_view=situation_day_coaching_view,
+    )
+    if (
+        situation_day_evidence_packet is not None
+        and situation_day_evidence_packet.get("status") == "verified"
+        and situation_day_coaching_view is not None
+    ):
+        situation_day_evidence_packet = {
+            **situation_day_evidence_packet,
+            "observed_manager_behavior": situation_day_coaching_view.get("what_happened")
+            or situation_day_evidence_packet.get("observed_manager_behavior"),
+            "missing_action": situation_day_coaching_view.get("manager_error")
+            or situation_day_coaching_view.get("what_was_missing")
+            or situation_day_evidence_packet.get("missing_action"),
+            "causal_link": situation_day_coaching_view.get("evidence_explanation")
+            or situation_day_coaching_view.get("meaning")
+            or situation_day_evidence_packet.get("causal_link"),
+            "manager_lesson": situation_day_coaching_view.get("next_time_action")
+            or situation_day_evidence_packet.get("manager_lesson"),
+        }
     situation_call_id_for_breakdown = str(
         ((situation_day_evidence_packet or {}).get("dialogue_excerpt") or {}).get("call_id")
         or (situation_evidence_quote or {}).get("call_id")
@@ -7163,6 +7189,72 @@ def _build_report_evidence_registry_diagnostics(
         "selected_call_breakdown": (report_block_routes.get("call_breakdown") or [{}])[0],
         "selected_situation_day": (report_block_routes.get("situation_day") or [{}])[0],
     }
+
+
+def _apply_situation_day_writer(
+    *,
+    report_evidence_situation: dict[str, Any] | None,
+    situation_evidence_quote: dict[str, Any] | None,
+    situation_dialogue_excerpt: dict[str, Any] | None,
+    situation_day_evidence_packet: dict[str, Any] | None,
+    situation_day_coaching_view: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize every selected Situation Day path through one report-facing writer."""
+    if not situation_day_coaching_view:
+        return situation_day_coaching_view
+    if str(situation_day_coaching_view.get("situation_day_evidence_status") or "").strip() == "insufficient":
+        return situation_day_coaching_view
+
+    dialogue_excerpt = (
+        dict(situation_dialogue_excerpt or {})
+        or dict((situation_day_evidence_packet or {}).get("dialogue_excerpt") or {})
+        or dict((report_evidence_situation or {}).get("dialogue_excerpt") or {})
+    )
+    evidence_quote = dict(situation_evidence_quote or {})
+    selected = {
+        **dict(report_evidence_situation or {}),
+        "coaching_view": dict(situation_day_coaching_view or {}),
+        "evidence_quote": evidence_quote,
+        "dialogue_excerpt": dialogue_excerpt,
+    }
+    call_reference = {
+        key: value
+        for source in (dialogue_excerpt, evidence_quote)
+        for key, value in source.items()
+        if key
+        in {
+            "call_id",
+            "client_label",
+            "client_name",
+            "client_phone",
+            "date_label",
+            "time_label",
+            "client_call_reference",
+        }
+    }
+    writer_view = compose_situation_day_view(
+        selected,
+        dialogue_turns=[
+            turn
+            for turn in dialogue_excerpt.get("turns") or []
+            if isinstance(turn, dict)
+        ],
+        call_reference=call_reference,
+        source_note=str(situation_day_coaching_view.get("source") or "").strip() or None,
+    )
+    merged = dict(situation_day_coaching_view)
+    original_source = merged.get("source")
+    original_selection = dict(merged.get("selection_diagnostics") or {})
+    merged.update(writer_view)
+    if original_source:
+        merged["source"] = original_source
+    if original_selection:
+        merged["selection_diagnostics"] = original_selection
+    merged.setdefault("meaning", writer_view.get("evidence_explanation"))
+    merged.setdefault("why_it_matters", writer_view.get("evidence_explanation"))
+    merged.setdefault("how_to_improve", writer_view.get("next_time_action"))
+    merged["situation_day_writer_applied"] = True
+    return merged
 
 
 def _no_verified_situation_day_result(

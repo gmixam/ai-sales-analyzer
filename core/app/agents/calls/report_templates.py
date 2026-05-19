@@ -150,6 +150,50 @@ def build_report_render_model(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_render_model(payload=payload, template=template)
 
 
+def _situation_day_value(coaching_view: dict[str, Any], *keys: str, fallback: str = "Нет данных") -> str:
+    for key in keys:
+        value = str(coaching_view.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _situation_day_scripts(coaching_view: dict[str, Any]) -> list[str]:
+    return [str(item).strip() for item in (coaching_view.get("scripts") or []) if str(item).strip()]
+
+
+def _render_situation_day_text_lines(coaching_view: dict[str, Any]) -> list[str]:
+    lines = [
+        f"Суть момента: {_situation_day_value(coaching_view, 'moment_summary', 'meaning', 'why_it_matters')}",
+        f"Что произошло: {_situation_day_value(coaching_view, 'what_happened')}",
+        f"В чем ошибка менеджера: {_situation_day_value(coaching_view, 'manager_error', 'manager_gap', 'what_was_missing')}",
+        f"Как сделать лучше: {_situation_day_value(coaching_view, 'how_to_improve', 'better_next_action', 'next_time_action')}",
+    ]
+    scripts = _situation_day_scripts(coaching_view)
+    if scripts:
+        lines.append("Варианты речёвок:")
+        lines.extend([f"- {item}" for item in scripts])
+    return lines
+
+
+def _render_situation_day_html_body(coaching_view: dict[str, Any]) -> str:
+    scripts = _situation_day_scripts(coaching_view)
+    scripts_html = ""
+    if scripts:
+        scripts_html = (
+            "<div class=\"mini-card\"><strong>Варианты речёвок</strong><ol>"
+            + "".join(f"<li>{html.escape(item)}</li>" for item in scripts)
+            + "</ol></div>"
+        )
+    return (
+        f"<p><strong>Суть момента:</strong> {html.escape(_situation_day_value(coaching_view, 'moment_summary', 'meaning', 'why_it_matters'))}</p>"
+        f"<p><strong>Что произошло:</strong> {html.escape(_situation_day_value(coaching_view, 'what_happened'))}</p>"
+        f"<p><strong>В чем ошибка менеджера:</strong> {html.escape(_situation_day_value(coaching_view, 'manager_error', 'manager_gap', 'what_was_missing'))}</p>"
+        f"<p><strong>Как сделать лучше:</strong> {html.escape(_situation_day_value(coaching_view, 'how_to_improve', 'better_next_action', 'next_time_action'))}</p>"
+        f"{scripts_html}"
+    )
+
+
 def _render_docx_first_pdf_report(
     *,
     payload: dict[str, Any],
@@ -870,18 +914,6 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
     if kind == "situation_card":
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
-            dialogue_turns = [
-                turn
-                for turn in (dict(section.get("dialogue_excerpt") or {}).get("turns") or [])
-                if isinstance(turn, dict) and str(turn.get("text") or "").strip()
-            ]
-            speaker_labels = {
-                "manager": "Менеджер",
-                "client": "Клиент",
-                "evidence": "Доказательный фрагмент",
-                "context": "Контекст",
-                "unknown": "Фрагмент",
-            }
             stage_label = str(coaching_view.get("stage_label") or "").strip()
             stage_score = str(coaching_view.get("stage_score_label") or "").strip()
             focus_stage = (
@@ -906,20 +938,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                     if example_ref and evidence_status != "insufficient"
                     else ""
                 ),
-                f"Что произошло: {coaching_view.get('what_happened') or 'Нет данных'}",
             ]
-            if dialogue_turns:
-                lines.append("Контекст:")
-                for turn in dialogue_turns[:10]:
-                    speaker = speaker_labels.get(str(turn.get("speaker") or "").strip().lower(), "Фрагмент")
-                    lines.append(f"- {speaker}: {turn.get('text')}")
-            lines.extend(
-                [
-                    f"Что это значит: {coaching_view.get('meaning') or coaching_view.get('why_it_matters') or 'Нет данных'}",
-                    f"Что не хватило в разговоре: {coaching_view.get('what_was_missing') or 'Нет данных'}",
-                    f"Что делать в следующий раз: {coaching_view.get('next_time_action') or 'Нет данных'}",
-                ]
-            )
+            lines.extend(_render_situation_day_text_lines(coaching_view))
             if coaching_view.get("situation_day_evidence_status"):
                 lines.append(
                     "Статус доказательства: "
@@ -932,14 +952,6 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                 )
             if evidence_status == "insufficient" and coaching_view.get("insufficiency_reason"):
                 lines.append(f"Причина: {coaching_view.get('insufficiency_reason')}")
-            scripts = [
-                str(item)
-                for item in (coaching_view.get("scripts") or [])
-                if str(item).strip()
-            ]
-            if scripts:
-                lines.append("Варианты речёвок:")
-                lines.extend([f"- {item}" for item in scripts])
             return [line for line in lines if line and not line.endswith(": ")]
         lines = [
             str(section.get("situation_title") or section.get("label") or "Ситуация дня"),
@@ -1306,28 +1318,6 @@ def _render_html_section(section: dict[str, Any]) -> str:
         )
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
-            dialogue_turns = [
-                turn
-                for turn in (dict(section.get("dialogue_excerpt") or {}).get("turns") or [])
-                if isinstance(turn, dict) and str(turn.get("text") or "").strip()
-            ]
-            speaker_labels = {
-                "manager": "Менеджер",
-                "client": "Клиент",
-                "evidence": "Доказательный фрагмент",
-                "context": "Контекст",
-                "unknown": "Фрагмент",
-            }
-            scene_html = ""
-            if dialogue_turns:
-                scene_items = "".join(
-                    "<li>"
-                    f"<strong>{html.escape(speaker_labels.get(str(turn.get('speaker') or '').strip().lower(), 'Фрагмент'))}:</strong> "
-                    f"{html.escape(str(turn.get('text') or ''))}"
-                    "</li>"
-                    for turn in dialogue_turns[:10]
-                )
-                scene_html = f"<div class=\"mini-card\"><strong>Контекст</strong><ol>{scene_items}</ol></div>"
             status_html = ""
             evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):
@@ -1360,11 +1350,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
                 f"{scope_note_html}"
                 f"<p><strong>Фокусный этап:</strong> {html.escape(str(coaching_view.get('stage_label') or ''))} — {html.escape(str(coaching_view.get('stage_score_label') or '—'))}</p>"
                 f"{coaching_example_html}"
-                f"<p><strong>Что произошло:</strong> {html.escape(str(coaching_view.get('what_happened') or 'Нет данных'))}</p>"
-                f"{scene_html}"
-                f"<p><strong>Что это значит:</strong> {html.escape(str(coaching_view.get('meaning') or coaching_view.get('why_it_matters') or 'Нет данных'))}</p>"
-                f"<p><strong>Что не хватило:</strong> {html.escape(str(coaching_view.get('what_was_missing') or 'Нет данных'))}</p>"
-                f"<p><strong>Что делать в следующий раз:</strong> {html.escape(str(coaching_view.get('next_time_action') or 'Нет данных'))}</p>"
+                f"{_render_situation_day_html_body(coaching_view)}"
                 f"{status_html}"
                 "</article></div></section>"
             )
@@ -4015,28 +4001,6 @@ def _manager_status_text_color(
         )
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
-            dialogue_turns = [
-                turn
-                for turn in (dict(section.get("dialogue_excerpt") or {}).get("turns") or [])
-                if isinstance(turn, dict) and str(turn.get("text") or "").strip()
-            ]
-            speaker_labels = {
-                "manager": "Менеджер",
-                "client": "Клиент",
-                "evidence": "Доказательный фрагмент",
-                "context": "Контекст",
-                "unknown": "Фрагмент",
-            }
-            scene_html = ""
-            if dialogue_turns:
-                scene_items = "".join(
-                    "<li>"
-                    f"<strong>{html.escape(speaker_labels.get(str(turn.get('speaker') or '').strip().lower(), 'Фрагмент'))}:</strong> "
-                    f"{html.escape(str(turn.get('text') or ''))}"
-                    "</li>"
-                    for turn in dialogue_turns[:10]
-                )
-                scene_html = f"<div class=\"mini-card\"><strong>Контекст</strong><ol>{scene_items}</ol></div>"
             status_html = ""
             evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):
@@ -4069,11 +4033,7 @@ def _manager_status_text_color(
                 f"{scope_note_html}"
                 f"<p><strong>Фокусный этап:</strong> {html.escape(str(coaching_view.get('stage_label') or ''))} — {html.escape(str(coaching_view.get('stage_score_label') or '—'))}</p>"
                 f"{coaching_example_html}"
-                f"<p><strong>Что произошло:</strong> {html.escape(str(coaching_view.get('what_happened') or 'Нет данных'))}</p>"
-                f"{scene_html}"
-                f"<p><strong>Что это значит:</strong> {html.escape(str(coaching_view.get('meaning') or coaching_view.get('why_it_matters') or 'Нет данных'))}</p>"
-                f"<p><strong>Что не хватило:</strong> {html.escape(str(coaching_view.get('what_was_missing') or 'Нет данных'))}</p>"
-                f"<p><strong>Что делать в следующий раз:</strong> {html.escape(str(coaching_view.get('next_time_action') or 'Нет данных'))}</p>"
+                f"{_render_situation_day_html_body(coaching_view)}"
                 f"{status_html}"
                 "</article></div></section>"
             )

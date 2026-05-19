@@ -2213,3 +2213,60 @@ Checks passed: all three call-breakdown render rows have `bare_fragment_dash_cou
 - Тимур no longer routes a customer-signal-like semantic case with `fit=false` into coaching problem blocks.
 
 **Next:** UI rerun for 2026-05-18 can be repeated on this branch; then human-review fallback wording quality before expanding the same registry/router policy deeper into remaining blocks.
+
+## Step 8AH-11 — Unified Situation Day Writer and rendering
+
+**Status:** DONE 2026-05-19.
+
+**Goal:** evidence selection may keep multiple fallback paths, but final `Ситуация дня` must have one writer contract and one template. This closes the human-review finding where Толеген, Тимур, and Алишер received different block structures and uneven wording.
+
+**Tasks:**
+
+1. `SDW-1` Add `SituationDayWriter`.
+   - Input: selected evidence item / composer result / transcript scene / diagnostics.
+   - Output: `moment_summary`, `what_happened`, `manager_error`, `evidence_explanation`, `next_time_action`, `scripts`, `role_confidence`, `quality`.
+   - Rule: `what_happened` must be narrative explanation, not raw transcript.
+
+2. `SDW-2` Route all Situation Day paths through the writer.
+   - `SituationDayComposer`, Evidence Registry fallback, and legacy evidence path become selectors only.
+   - Final report-facing shape is produced only by `SituationDayWriter`.
+
+3. `SDW-3` Unify template rendering.
+   - New order: `Суть момента`, `Что произошло`, `В чем ошибка менеджера`, `Как сделать лучше`, `Варианты речёвок`.
+   - Remove separate `Контекст` / `Подтверждение из звонка` mini-card from Situation Day.
+   - Evidence must be embedded into explanation with roles when reliable.
+
+4. `SDW-4` Add minimal speaker role mapping diagnostics.
+   - Use STT diarization metadata when present.
+   - Add report-layer confidence fallback.
+   - If role confidence is low, do not render raw dialogue as proof.
+
+5. `SDW-5` Remove internal meta wording from Call Breakdown.
+   - Ban rendered `coachable-момент`.
+   - `Что было` must start from concrete manager behavior.
+
+**Acceptance on 2026-05-18 ready-data-only rerun:**
+
+- Толеген / Тимур / Алишер have identical Situation Day section structure.
+- No `Контекст из звонка` vs `Подтверждение из звонка` naming divergence.
+- `Что произошло` explains the situation and includes evidence only as role-labeled support.
+- Verified Situation Day always has at least two scripts.
+- Report contains no rendered `coachable-момент`.
+- Human review score target: at least `10/12` for each manager on readability, evidence fit, role clarity, scripts, and non-duplication.
+
+**Out of scope for this step:** full STT provider replacement, re-transcription of historical calls, LLM2 prompt changes, PDF design redesign, delivery changes.
+
+**Implementation result:**
+- `SituationDayWriter` added and integrated after Situation Day verification;
+- all selected Situation Day paths now pass through one report-facing writer contract;
+- template renders one structure: `Суть момента`, `Что произошло`, `В чем ошибка менеджера`, `Как сделать лучше`, `Варианты речёвок`;
+- separate `Контекст` / `Подтверждение из звонка` mini-card removed from Situation Day rendering;
+- Call Breakdown deterministic fallback no longer renders `coachable-момент`;
+- payload exposes `situation_day_writer_quality`, `role_confidence`, and `situation_day_writer_applied`.
+
+**Verification:**
+- `docker compose exec -T api pytest -q tests/test_situation_day_writer.py tests/test_report_templates_situation_day.py tests/test_call_breakdown_composer.py tests/test_situation_day_composer.py tests/test_report_block_router.py tests/test_report_evidence_registry.py tests/test_voice_of_customer_composer.py` → `37 passed`;
+- ready-data-only preview for `2026-05-18` completed in `/tmp/ui_2026-05-18_sdw_rerun_v3.json`;
+- Алишер / Тимур / Толеген all have `situation_day_writer_applied=true`, at least 2 scripts, no separate context-label mini-card, and no rendered `coachable`.
+
+**Residual:** speaker roles remain `role_confidence=low` on these historical calls because persisted STT metadata does not reliably map raw `A/B` speakers to `client/manager`. Full role resolver remains a separate next step.
