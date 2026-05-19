@@ -162,7 +162,20 @@ def _situation_day_scripts(coaching_view: dict[str, Any]) -> list[str]:
     return [str(item).strip() for item in (coaching_view.get("scripts") or []) if str(item).strip()]
 
 
+def _situation_day_is_insufficient(coaching_view: dict[str, Any]) -> bool:
+    return str(coaching_view.get("situation_day_evidence_status") or "").strip() == "insufficient"
+
+
+def _situation_day_insufficient_message(_coaching_view: dict[str, Any]) -> str:
+    return (
+        "Данных для этого блока недостаточно: не найден надежно подтвержденный "
+        "эпизод, который можно безопасно показать менеджеру."
+    )
+
+
 def _render_situation_day_text_lines(coaching_view: dict[str, Any]) -> list[str]:
+    if _situation_day_is_insufficient(coaching_view):
+        return [_situation_day_insufficient_message(coaching_view)]
     lines = [
         f"Суть момента: {_situation_day_value(coaching_view, 'moment_summary', 'meaning', 'why_it_matters')}",
         f"Что произошло: {_situation_day_value(coaching_view, 'what_happened')}",
@@ -177,6 +190,8 @@ def _render_situation_day_text_lines(coaching_view: dict[str, Any]) -> list[str]
 
 
 def _render_situation_day_html_body(coaching_view: dict[str, Any]) -> str:
+    if _situation_day_is_insufficient(coaching_view):
+        return f"<p class=\"muted\">{html.escape(_situation_day_insufficient_message(coaching_view))}</p>"
     scripts = _situation_day_scripts(coaching_view)
     scripts_html = ""
     if scripts:
@@ -924,6 +939,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                 else ""
             )
             evidence_status = str(coaching_view.get("situation_day_evidence_status") or "").strip()
+            if _situation_day_is_insufficient(coaching_view):
+                return [_situation_day_insufficient_message(coaching_view)]
             example_ref = (
                 dict(section.get("dialogue_excerpt") or {}).get("client_call_reference")
                 or dict(section.get("evidence_quote") or {}).get("client_call_reference")
@@ -1318,6 +1335,11 @@ def _render_html_section(section: dict[str, Any]) -> str:
         )
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
+            if _situation_day_is_insufficient(coaching_view):
+                return (
+                    f"<section class=\"{' '.join(classes)}\">{title}"
+                    f"<div class=\"section-body\">{_render_situation_day_html_body(coaching_view)}</div></section>"
+                )
             status_html = ""
             evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):
@@ -4001,6 +4023,11 @@ def _manager_status_text_color(
         )
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
+            if _situation_day_is_insufficient(coaching_view):
+                return (
+                    f"<section class=\"{' '.join(classes)}\">{title}"
+                    f"<div class=\"section-body\">{_render_situation_day_html_body(coaching_view)}</div></section>"
+                )
             status_html = ""
             evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):

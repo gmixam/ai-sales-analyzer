@@ -58,6 +58,42 @@ class SituationDayTemplateTests(unittest.TestCase):
         self.assertIn("Варианты речёвок", html)
         self.assertNotIn("<strong>Контекст</strong>", html)
 
+    def test_insufficient_situation_day_hides_internal_fields(self) -> None:
+        report_templates = _load_report_templates_module()
+        section = {
+            "id": "situation_day",
+            "label": "СИТУАЦИЯ ДНЯ",
+            "kind": "situation_card",
+            "coaching_view": {
+                "pattern_title": "Нет надежно подтвержденной ситуации дня",
+                "situation_day_evidence_status": "insufficient",
+                "proof_strength": "insufficient",
+                "insufficiency_reason": "situation_day_quote_not_grounded_in_transcript",
+                "moment_summary": "Нет данных",
+                "what_happened": "Механизм не нашел достаточно сильную мини-сцену.",
+                "manager_error": "Нет данных",
+                "next_time_action": "Нет данных",
+                "scripts": ["Нет данных"],
+            },
+        }
+
+        text_lines = report_templates._section_to_text_lines(section)
+        html = report_templates._render_html_section(section)
+
+        self.assertEqual(
+            text_lines,
+            [
+                "Данных для этого блока недостаточно: не найден надежно подтвержденный "
+                "эпизод, который можно безопасно показать менеджеру."
+            ],
+        )
+        self.assertIn("Данных для этого блока недостаточно", html)
+        self.assertNotIn("Суть момента", html)
+        self.assertNotIn("Что произошло", html)
+        self.assertNotIn("В чем ошибка менеджера", html)
+        self.assertNotIn("Варианты речёвок", html)
+        self.assertNotIn("situation_day_quote_not_grounded_in_transcript", html)
+
 
 if __name__ == "__main__":
     unittest.main()
