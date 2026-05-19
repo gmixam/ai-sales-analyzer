@@ -28,6 +28,11 @@ from app.agents.calls.orchestrator import (
     CallsManualPilotOrchestrator,
     analysis_contract_failure_reason,
 )
+from app.agents.calls.report_block_router import route_evidence_items
+from app.agents.calls.report_evidence_registry import (
+    build_report_evidence_registry,
+    report_evidence_registry_as_dicts,
+)
 from app.agents.calls.report_evidence import validate_report_evidence
 from app.agents.calls.report_templates import get_active_template_version, render_report_artifact
 from app.agents.calls.situation_day_composer import (
@@ -4529,6 +4534,8 @@ def _finalize_daily_coaching_focus(
 SITUATION_FOCUS_OVERRIDE_SELECTION_MODES = {
     "best_semantic_case_after_focus_mismatch",
     "best_block_candidate_after_focus_mismatch",
+    "evidence_registry_single_manager_gap",
+    "evidence_registry_repeated_weak_manager_gap",
 }
 
 
@@ -4565,6 +4572,7 @@ def _maybe_override_daily_focus_from_situation(
         candidate_source == "report_evidence.block_candidates"
         or situation_source.startswith("report_evidence.block_candidates")
         or situation_source == "report_evidence.semantic_case"
+        or situation_source.startswith("report_evidence.evidence_registry")
     )
     if not focus_stage or not situation_stage:
         return daily_focus
@@ -4991,6 +4999,7 @@ def build_manager_daily_payload(
         artifacts=artifacts,
         call_list_by_interaction_id=call_list_by_interaction_id,
     )
+    report_evidence_registry_items = build_report_evidence_registry(coaching_content_artifacts)
     report_bounds = _report_day_bounds(period=period, filters=filters)
     artifact_by_id = _artifact_by_interaction_id(coaching_content_artifacts)
     coaching_data_scope = _coaching_base_data_scope(
@@ -5033,6 +5042,14 @@ def build_manager_daily_payload(
     )
     if composer_situation is not None:
         report_evidence_situation = composer_situation
+    else:
+        registry_situation = _build_situation_day_from_evidence_registry(
+            artifacts=coaching_content_artifacts,
+            evidence_items=report_evidence_registry_items,
+            score_by_stage=score_by_stage,
+        )
+        if registry_situation is not None:
+            report_evidence_situation = registry_situation
     situation_evidence_quote = (report_evidence_situation or {}).get("evidence_quote")
     situation_day_coaching_view = (report_evidence_situation or {}).get("coaching_view")
     no_verified_situation_day = bool((report_evidence_situation or {}).get("no_verified_situation_day"))
@@ -5042,16 +5059,26 @@ def build_manager_daily_payload(
         situation_day_coaching_view=situation_day_coaching_view,
     )
     situation_selected_call_id = str((situation_evidence_quote or {}).get("call_id") or "").strip() or None
-    situation_rejected_call_ids = _situation_day_rejected_call_ids(report_evidence_situation)
-    call_breakdown = _build_call_breakdown_from_report_evidence(
-        artifacts=coaching_content_artifacts,
-        report_evidence_index=report_evidence_index,
-        call_list_by_interaction_id=call_list_by_interaction_id,
-        score_by_stage=score_by_stage,
-        daily_focus=daily_coaching_focus,
-        excluded_call_ids=situation_rejected_call_ids,
-        preferred_call_id=situation_selected_call_id,
+    report_block_routes = route_evidence_items(
+        report_evidence_registry_items,
+        selected_situation_call_id=situation_selected_call_id,
     )
+    situation_rejected_call_ids = _situation_day_rejected_call_ids(report_evidence_situation)
+    call_breakdown = _build_call_breakdown_from_evidence_registry_route(
+        artifacts=coaching_content_artifacts,
+        routed_items=report_block_routes.get("call_breakdown") or [],
+        score_by_stage=score_by_stage,
+    )
+    if call_breakdown is None:
+        call_breakdown = _build_call_breakdown_from_report_evidence(
+            artifacts=coaching_content_artifacts,
+            report_evidence_index=report_evidence_index,
+            call_list_by_interaction_id=call_list_by_interaction_id,
+            score_by_stage=score_by_stage,
+            daily_focus=daily_coaching_focus,
+            excluded_call_ids=situation_rejected_call_ids,
+            preferred_call_id=situation_selected_call_id,
+        )
     if call_breakdown is None:
         call_breakdown = _build_call_breakdown(
             improve_items=improve_items,
@@ -5264,6 +5291,10 @@ def build_manager_daily_payload(
         semantic_case_used_call_ids=_semantic_case_used_call_ids_from_block_sources(semantic_case_block_sources),
         semantic_case_block_sources=semantic_case_block_sources,
     )
+    report_evidence_registry_diagnostics = _build_report_evidence_registry_diagnostics(
+        evidence_items=report_evidence_registry_items,
+        report_block_routes=report_block_routes,
+    )
     problem_wording_diagnostics = _build_problem_wording_diagnostics(
         score_by_stage=score_by_stage,
         daily_focus=daily_coaching_focus,
@@ -5374,6 +5405,8 @@ def build_manager_daily_payload(
             "challenge": coaching_data_scope,
         },
         "report_evidence_diagnostics": report_evidence_diagnostics,
+        "report_evidence_registry_diagnostics": report_evidence_registry_diagnostics,
+        "report_block_router_diagnostics": report_block_routes.get("diagnostics"),
         "call_report_summary_diagnostics": call_report_summary_diagnostics,
         "call_list": call_list,
         "focus_criterion_dynamics": focus_dynamics,
@@ -6799,6 +6832,337 @@ def _build_verified_situation_day_from_composer(
     verified["selection_diagnostics"] = selection_diagnostics
     verified.setdefault("coaching_view", {})["selection_diagnostics"] = selection_diagnostics
     return verified, prepared
+
+
+def _registry_item_dicts(evidence_items: Any) -> list[dict[str, Any]]:
+    """Return Evidence Registry items as plain dictionaries for report-layer helpers."""
+    try:
+        return report_evidence_registry_as_dicts(evidence_items)
+    except TypeError:
+        return [dict(item) for item in evidence_items or [] if isinstance(item, dict)]
+
+
+def _registry_item_turns(item: dict[str, Any], *, limit: int = 320) -> list[dict[str, str]]:
+    """Normalize Evidence Registry dialogue scenes to report-layer turn payloads."""
+    turns: list[dict[str, str]] = []
+    for raw_turn in item.get("dialogue_scene") or item.get("dialogue_fragment") or []:
+        if not isinstance(raw_turn, dict):
+            continue
+        text = _dialogue_turn_text(str(raw_turn.get("text") or raw_turn.get("quote") or ""), limit=limit)
+        if not text:
+            continue
+        speaker = str(raw_turn.get("speaker") or "unknown").strip().lower()
+        if speaker not in {"manager", "client", "unknown"}:
+            speaker = "unknown"
+        turns.append({"speaker": speaker, "text": text})
+        if len(turns) >= 8:
+            break
+    return turns
+
+
+def _registry_item_quote(item: dict[str, Any], turns: list[dict[str, str]]) -> str | None:
+    return (
+        _dialogue_turn_text(str(item.get("supporting_quote") or ""), limit=260)
+        or _report_evidence_quote_text(turns)
+        or None
+    )
+
+
+def _registry_item_has_counter_evidence(item: dict[str, Any]) -> bool:
+    counter = item.get("counter_evidence")
+    if isinstance(counter, list):
+        return any(str(value or "").strip() for value in counter)
+    return bool(str(counter or "").strip())
+
+
+def _registry_item_score(item: dict[str, Any]) -> float:
+    router = item.get("router") if isinstance(item.get("router"), dict) else {}
+    diagnostics = item.get("diagnostics") if isinstance(item.get("diagnostics"), dict) else {}
+    for value in (router.get("score"), item.get("score"), diagnostics.get("score")):
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+    priority = str(diagnostics.get("priority") or item.get("priority") or "").lower()
+    if priority == "high":
+        return 80.0
+    if priority == "medium":
+        return 60.0
+    if priority == "low":
+        return 40.0
+    return 0.0
+
+
+def _registry_manager_gap_items(evidence_items: Any) -> list[dict[str, Any]]:
+    """Keep manager-gap Evidence Registry items with at least some grounded context."""
+    result: list[dict[str, Any]] = []
+    for item in _registry_item_dicts(evidence_items):
+        evidence_type = str(item.get("evidence_type") or "").strip()
+        if evidence_type not in {"manager_gap", "manager_coaching_moment", "stage_gap"}:
+            continue
+        suitability = item.get("block_suitability") if isinstance(item.get("block_suitability"), dict) else {}
+        situation_suitability = (
+            suitability.get("situation_day") if isinstance(suitability.get("situation_day"), dict) else None
+        )
+        if situation_suitability is not None and situation_suitability.get("eligible") is False:
+            continue
+        if str(item.get("proof_strength") or "").strip() == "insufficient":
+            continue
+        if _registry_item_has_counter_evidence(item):
+            continue
+        turns = _registry_item_turns(item)
+        quote = _registry_item_quote(item, turns)
+        if not turns and not quote:
+            continue
+        normalized = dict(item)
+        normalized["_registry_turns"] = turns
+        normalized["_registry_quote"] = quote
+        result.append(normalized)
+    return result
+
+
+def _registry_candidate_sort_key(item: dict[str, Any]) -> tuple[int, float, str]:
+    strength_rank = {"strong": 0, "medium": 1, "weak": 2}
+    return (
+        strength_rank.get(str(item.get("proof_strength") or "").strip(), 9),
+        -_registry_item_score(item),
+        str(item.get("evidence_id") or item.get("item_id") or ""),
+    )
+
+
+def _build_situation_day_from_evidence_registry(
+    *,
+    artifacts: list[ReportArtifact],
+    evidence_items: Any,
+    score_by_stage: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build a conservative Situation Day fallback from the shared Evidence Registry."""
+    candidates = _registry_manager_gap_items(evidence_items)
+    if not candidates:
+        return None
+
+    strong_or_medium = [
+        item for item in candidates if str(item.get("proof_strength") or "").strip() in {"strong", "medium"}
+    ]
+    selection_mode = "evidence_registry_single_manager_gap"
+    pattern_count = 1
+    if strong_or_medium:
+        selected = sorted(strong_or_medium, key=_registry_candidate_sort_key)[0]
+    else:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for item in candidates:
+            stage_code = str(item.get("stage_code") or "").strip()
+            problem_title = _summary_norm(str(item.get("problem_title") or item.get("manager_gap") or ""))
+            key = stage_code or problem_title[:80]
+            if not key:
+                continue
+            groups.setdefault(key, []).append(item)
+        repeated_groups = [items for items in groups.values() if len(items) >= 2]
+        if not repeated_groups:
+            return None
+        repeated_groups.sort(key=lambda items: (len(items), _registry_item_score(items[0])), reverse=True)
+        selected = sorted(repeated_groups[0], key=_registry_candidate_sort_key)[0]
+        selection_mode = "evidence_registry_repeated_weak_manager_gap"
+        pattern_count = len(repeated_groups[0])
+
+    call_id = str(selected.get("call_id") or "").strip()
+    artifact = next((item for item in artifacts if str(item.interaction.id) == call_id), None)
+    if artifact is None:
+        return None
+    turns = selected.get("_registry_turns") or []
+    quote = selected.get("_registry_quote")
+    if not quote:
+        return None
+    ref = _artifact_call_reference(artifact)
+    stage_code = str(selected.get("stage_code") or "").strip()
+    stage_label = _stage_name_for_code(stage_code, score_by_stage)
+    diagnostics = selected.get("diagnostics") if isinstance(selected.get("diagnostics"), dict) else {}
+    problem_title = _first_sentence(
+        str(selected.get("problem_title") or selected.get("manager_gap") or ""),
+        limit=160,
+    ).rstrip(".")
+    manager_gap = _first_sentence(str(selected.get("manager_gap") or problem_title), limit=260)
+    what_better = _first_sentence(str(diagnostics.get("what_better") or ""), limit=260)
+    customer_context = _dialogue_turn_text(
+        str(selected.get("customer_context") or " ".join(turn["text"] for turn in turns)),
+        limit=520,
+    )
+    if pattern_count > 1:
+        what_happened = (
+            f"В {pattern_count} звонках повторяется похожий момент: "
+            f"{manager_gap or problem_title}."
+        )
+        proof_explanation = (
+            "Это выбрано как ситуация дня не из-за одной короткой фразы, "
+            "а как повторяющийся управленческий разрыв в звонках за день."
+        )
+    else:
+        what_happened = manager_gap or problem_title
+        proof_explanation = customer_context
+    coaching_view = {
+        "source": "report_evidence.evidence_registry.situation_day_fallback.v1",
+        "pattern_title": problem_title or "Проблемная ситуация дня",
+        "stage_code": stage_code or None,
+        "stage_label": stage_label,
+        "what_happened": what_happened,
+        "what_was_missing": manager_gap,
+        "next_time_action": what_better or "В похожем моменте явно зафиксировать следующий шаг и критерий решения клиента.",
+        "meaning": proof_explanation,
+        "proof_explanation": proof_explanation,
+        "supporting_quote": quote,
+        "proof_type": selected.get("proof_type") or "sequence_inference",
+        "proof_strength": "medium" if pattern_count > 1 else selected.get("proof_strength"),
+        "quote_role": "supports_context",
+        "selection_diagnostics": {
+            "selection_mode": selection_mode,
+            "selected_evidence_id": selected.get("evidence_id") or selected.get("item_id"),
+            "selected_call_id": call_id,
+            "pattern_count": pattern_count,
+            "source": selected.get("source"),
+        },
+    }
+    return {
+        "situation_title": coaching_view["pattern_title"],
+        "evidence_quote": {
+            **ref,
+            "source": "report_evidence.evidence_registry.situation_day_fallback.v1",
+            "stage_code": stage_code or None,
+            "client_text": quote,
+            "manager_text": quote,
+            "source_evidence_id": selected.get("evidence_id") or selected.get("item_id"),
+        },
+        "dialogue_excerpt": {
+            **ref,
+            "source": "report_evidence.evidence_registry.situation_day_fallback.v1",
+            "is_partial": True,
+            "partial_reason": "evidence_registry_dialogue_scene",
+            "turns": turns,
+        },
+        "coaching_view": coaching_view,
+        "selection_diagnostics": coaching_view["selection_diagnostics"],
+    }
+
+
+def _build_call_breakdown_from_evidence_registry_route(
+    *,
+    artifacts: list[ReportArtifact],
+    routed_items: list[dict[str, Any]],
+    score_by_stage: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Compose Call Breakdown from the router-selected Evidence Registry item."""
+    for item in routed_items:
+        call_id = str(item.get("call_id") or "").strip()
+        artifact = next((artifact for artifact in artifacts if str(artifact.interaction.id) == call_id), None)
+        if artifact is None:
+            continue
+        turns = _registry_item_turns(item)
+        quote = _registry_item_quote(item, turns)
+        if not turns and not quote:
+            continue
+        ref = _artifact_call_reference(artifact)
+        diagnostics = item.get("diagnostics") if isinstance(item.get("diagnostics"), dict) else {}
+        stage_code = str(item.get("stage_code") or "").strip()
+        stage_label = _stage_name_for_code(stage_code, score_by_stage)
+        context_text = _dialogue_turn_text(
+            " ".join(turn["text"] for turn in turns) or str(item.get("customer_context") or ""),
+            limit=700,
+        )
+        manager_gap = _first_sentence(
+            str(item.get("manager_gap") or item.get("problem_title") or ""),
+            limit=300,
+        )
+        better = _first_sentence(str(diagnostics.get("what_better") or ""), limit=260)
+        packet = {
+            "status": "verified",
+            "proof_strength": item.get("proof_strength") or "medium",
+            "problem_claim": item.get("problem_title") or manager_gap,
+            "problem_title": item.get("problem_title") or manager_gap,
+            "observed_manager_behavior": manager_gap or context_text,
+            "missing_action": manager_gap,
+            "customer_context": context_text,
+            "customer_reaction": _dialogue_turn_text(str((turns[-1] or {}).get("text") or ""), limit=260)
+            if turns
+            else None,
+            "causal_link": item.get("customer_context") or context_text,
+            "manager_lesson": better or "Зафиксировать конкретный следующий шаг и проверить понимание клиента.",
+            "proof_type": item.get("proof_type") or "sequence_inference",
+            "quote_role": "supports_context",
+            "dialogue_excerpt": {
+                **ref,
+                "source": "report_evidence.evidence_registry.call_breakdown_route.v1",
+                "is_partial": True,
+                "partial_reason": "evidence_registry_dialogue_scene",
+                "turns": turns,
+            },
+        }
+        view = {
+            "call_id": call_id,
+            "stage_code": stage_code or None,
+            "stage_label": stage_label,
+            "pattern_title": item.get("problem_title") or manager_gap,
+            "what_happened": manager_gap or context_text,
+            "what_was_missing": manager_gap,
+            "next_time_action": better or packet["manager_lesson"],
+            "meaning": packet["causal_link"],
+            "proof_type": packet["proof_type"],
+            "proof_strength": packet["proof_strength"],
+        }
+        result = compose_call_breakdown_from_situation(
+            artifacts=artifacts,
+            situation_day_evidence_packet=packet,
+            situation_day_coaching_view=view,
+            score_by_stage=score_by_stage,
+        )
+        if result is None or not result.get("rows"):
+            continue
+        result["status"] = "verified"
+        result["source_note"] = "report_evidence.evidence_registry.call_breakdown_route.v1"
+        result["call_breakdown_source"] = "report_evidence.evidence_registry.call_breakdown_route.v1"
+        result.setdefault("selection_diagnostics", {}).update(
+            {
+                "selection_mode": "evidence_registry_router_call_breakdown",
+                "selected_evidence_id": item.get("evidence_id") or item.get("item_id"),
+                "router_reason": (item.get("router") or {}).get("reason")
+                if isinstance(item.get("router"), dict)
+                else None,
+                "source": item.get("source"),
+            }
+        )
+        return result
+    return None
+
+
+def _build_report_evidence_registry_diagnostics(
+    *,
+    evidence_items: Any,
+    report_block_routes: dict[str, Any],
+) -> dict[str, Any]:
+    items = _registry_item_dicts(evidence_items)
+    source_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    strength_counts: dict[str, int] = {}
+    for item in items:
+        source = str(item.get("source") or "unknown")
+        evidence_type = str(item.get("evidence_type") or "unknown")
+        strength = str(item.get("proof_strength") or "unknown")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        type_counts[evidence_type] = type_counts.get(evidence_type, 0) + 1
+        strength_counts[strength] = strength_counts.get(strength, 0) + 1
+    return {
+        "registry_version": "report_evidence_registry_v1",
+        "items_count": len(items),
+        "source_counts": source_counts,
+        "evidence_type_counts": type_counts,
+        "proof_strength_counts": strength_counts,
+        "router_version": report_block_routes.get("routing_version"),
+        "router_summary": (report_block_routes.get("diagnostics") or {}).get("summary"),
+        "selected_call_breakdown": (report_block_routes.get("call_breakdown") or [{}])[0],
+        "selected_situation_day": (report_block_routes.get("situation_day") or [{}])[0],
+    }
 
 
 def _no_verified_situation_day_result(
@@ -11272,12 +11636,16 @@ def _apply_call_breakdown_quality_gate(
     ) or (
         source == "report_evidence.call_breakdown_composer.v1"
         and selection_mode == "same_call_as_verified_situation_day"
+    ) or (
+        source == "report_evidence.evidence_registry.call_breakdown_route.v1"
+        and selection_mode == "evidence_registry_router_call_breakdown"
     )
     source_allows_optional_quote = source in {
         "report_evidence.block_candidates.call_breakdown",
         "report_evidence.semantic_case",
         "report_evidence.manager_coaching_moments",
         "report_evidence.call_breakdown_composer.v1",
+        "report_evidence.evidence_registry.call_breakdown_route.v1",
     }
     optional_quote_evidence_type = str(call_breakdown.get("evidence_type") or "").strip().lower()
     quote_optional = bool(

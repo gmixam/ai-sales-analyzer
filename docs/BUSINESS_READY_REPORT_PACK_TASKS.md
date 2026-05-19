@@ -40,6 +40,149 @@
 
 Future report polish tasks must target mechanisms, not individual PDFs. A problem found in a generated `manager_daily` artifact must first be mapped to the upstream prompt, contract, validator, renderer/template, normalizer, selection logic, deterministic reporting logic, or regression check that produced it. Generated PDFs/DOCX/HTML/text previews are verification artifacts and must not be manually edited as the fix. Reports are rebuilt only after a system-level fix or an explicit no-code decision is recorded.
 
+## Roadmap update — 2026-05-19
+
+The original 2026-04-16 boundary treated "new reporting architecture" and "coaching / pattern engine" as out of scope for the initial presentation-layer pack. That boundary is still true for pure layout polish tasks, but the 2026-05-18 UI run exposed a deeper report-quality blocker that cannot be fixed safely as presentation polish.
+
+### Root Cause
+
+`manager_daily` now has multiple partially overlapping evidence sources:
+
+- `report_evidence.block_candidates`;
+- `report_evidence.semantic_case`;
+- `report_evidence.manager_coaching_moments`;
+- `report_evidence.situation_candidates`;
+- `report_evidence.voice_of_customer`;
+- `report_evidence.call_report_summary`;
+- `score_by_stage`;
+- transcript-derived patterns;
+- legacy fallbacks.
+
+Each report block currently decides independently which source to trust. As a result:
+
+- a useful manager gap can exist in `manager_coaching_moments` but never reach `SituationDayComposer`;
+- `CallBreakdownComposer` may not run because it depends on verified `Situation Day`;
+- customer signals can be confused with manager gaps unless every block repeats its own guardrails;
+- weak legacy fallback can still render as if it were a real block;
+- diagnostics explain each block locally, but not how evidence was routed across the report.
+
+### New Systemic Roadmap Step: Evidence Registry + Block Router
+
+Add a report-level evidence normalization and routing layer before block composers.
+
+Target pipeline:
+
+```text
+LLM2 per-call extraction
+  -> Evidence Registry
+  -> Block Router
+  -> LLM3 block composers
+  -> Shared Quality Gates
+  -> manager_daily PDF / Telegram
+```
+
+### ER Tasks
+
+#### ER-1 — Evidence Registry Contract
+
+Create a normalized evidence item model with source lineage:
+
+- `evidence_type`: `manager_gap`, `customer_signal`, `service_issue`, `positive_case`, `follow_up_opportunity`, `neutral_summary`;
+- `proof_type`: `direct_gap`, `sequence_inference`, `absence_in_context`, `customer_signal`, `service_issue`, `positive_case`;
+- `proof_strength`: `strong`, `medium`, `weak`, `insufficient`;
+- `stage_code`, `call_id`, `manager_gap`, `customer_context`, `dialogue_scene`, `counter_evidence`;
+- `block_suitability` per report block.
+
+Candidate files:
+
+- `core/app/agents/calls/report_evidence_registry.py`;
+- `core/tests/test_report_evidence_registry.py`;
+- `docs/REPORT_EVIDENCE_CONTRACT.md`.
+
+#### ER-2 — Promote Manager Coaching Moments
+
+Treat `manager_coaching_moments` as first-class report evidence, not as a legacy fallback.
+
+Required behavior:
+
+- extract `what_happened`, `what_better`, `dialogue_fragment`, `stage_code`, `evidence_quality`;
+- repair/expand short `dialogue_fragment` from transcript when possible;
+- support `absence_in_context` with counter-evidence checks;
+- reject moments that cannot be grounded in transcript or enough scene context.
+
+#### ER-3 — Block Router
+
+Centralize block eligibility:
+
+- `Situation Day`: manager gaps / repeated patterns only;
+- `Call Breakdown`: selected Situation Day call, or best verified manager gap when Situation Day is absent;
+- `Voice Of Customer`: customer signals only;
+- `Follow Up`: real next steps / open opportunities only;
+- `Challenge`: repeated coaching pattern / stage gap;
+- `Additional Situations`: secondary manager gaps / positive cases;
+- `Call List`: neutral, customer, service, and operational summaries without coaching claims.
+
+Candidate files:
+
+- `core/app/agents/calls/report_block_router.py`;
+- `core/tests/test_report_block_router.py`.
+
+#### ER-4 — Pattern-Level Situation Day
+
+When no single call is strong enough, allow `Situation Day` to be built from a repeated, evidence-backed day pattern:
+
+- 2-3 short scenes from different calls;
+- one shared manager behavior;
+- one concrete coaching action;
+- explicit diagnostics that this is a pattern-level situation, not a single-call proof.
+
+#### ER-5 — Decouple Call Breakdown
+
+`CallBreakdownComposer` must no longer require verified `Situation Day`.
+
+Selection rule:
+
+1. Same call as verified `Situation Day` when available.
+2. Otherwise best verified manager gap / manager coaching moment from Evidence Registry.
+3. Otherwise honest insufficient, with no weak legacy rows.
+
+#### ER-6 — Shared Quality Gate
+
+Build one common gate used by block composers:
+
+- valid `call_id`;
+- valid scene or valid pattern-level scenes;
+- proof type allowed for the destination block;
+- customer signal not used as manager gap;
+- service issue not used as sales coaching;
+- recommendation follows evidence type;
+- no unresolved counter-evidence;
+- Russian manager-facing output;
+- no duplicate block content;
+- weak legacy fallback does not render as proof.
+
+#### ER-7 — Apply Routing to Remaining Blocks
+
+After `Situation Day`, `Call Breakdown`, and `Voice Of Customer`, extend routing to:
+
+- `FollowUpComposer`;
+- `ChallengeComposer`;
+- `AdditionalSituationsComposer`;
+- call-list context generation.
+
+### Acceptance Check For This Roadmap Step
+
+Use the 2026-05-18 UI run as the regression set:
+
+- Tolеген keeps verified `Situation Day` and `Call Breakdown`;
+- Aлишер can still get a useful `Call Breakdown` from a verified `manager_coaching_moment` even if `Situation Day` is insufficient;
+- Тимур's weak candidate with counter-evidence remains rejected;
+- repeated day patterns can produce a pattern-level `Situation Day`;
+- customer signals do not become manager gaps;
+- service issues do not become sales coaching;
+- every candidate has a routing diagnostic: selected, routed elsewhere, weak, forbidden, or insufficient;
+- weak legacy fallback rows are not rendered as real report evidence.
+
 ## Source of truth — current report layer
 
 | Роль | Файл |
@@ -2047,3 +2190,26 @@ Checks passed: all three call-breakdown render rows have `bare_fragment_dash_cou
 3. «Делать в последнюю очередь» — после пилота
 
 Начинать со второй корзины нельзя, пока первая не закрыта.
+
+## Step 8AH-10 — Evidence Registry / Block Router for report blocks
+
+**Status:** DONE 2026-05-19.
+
+**Scope:** report-layer evidence normalization and routing for `manager_daily`. No STT, transcript rebuild, LLM2 re-analysis, PDF layout, delivery semantics, scheduler, or CRM changes.
+
+**Mechanism:**
+- `report_evidence_registry.py` normalizes persisted evidence into `ReportEvidenceItem`;
+- `report_block_router.py` routes items to `situation_day`, `call_breakdown`, `voice_of_customer`, `follow_up`, `challenge`, `additional_situations`, `call_list`;
+- router is fail-closed for service issues, customer signals, counter-evidence, weak/no-scene candidates, and explicit `block_suitability.fit=false`;
+- `CallBreakdownComposer` can now be reached from Evidence Registry fallback, not only from verified Situation Day;
+- `Situation Day` has a conservative registry fallback for manager-gap evidence with context or repeated weak pattern.
+
+**Diagnostics:** payload now exposes `report_evidence_registry_diagnostics` and `report_block_router_diagnostics`.
+
+**Verification:**
+- `docker compose exec -T api pytest -q tests/test_report_evidence_registry.py tests/test_report_block_router.py tests/test_situation_day_composer.py tests/test_call_breakdown_composer.py tests/test_voice_of_customer_composer.py` → `28 passed`;
+- ready-data-only preview for 2026-05-18 completed;
+- Алишер / Тимур / Толеген have non-empty `Ситуация дня` and `Разбор звонка` where manager reports are ready/review-required;
+- Тимур no longer routes a customer-signal-like semantic case with `fit=false` into coaching problem blocks.
+
+**Next:** UI rerun for 2026-05-18 can be repeated on this branch; then human-review fallback wording quality before expanding the same registry/router policy deeper into remaining blocks.

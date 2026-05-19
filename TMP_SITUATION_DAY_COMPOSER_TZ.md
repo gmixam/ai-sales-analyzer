@@ -2,7 +2,7 @@
 
 ## Актуальный план: перенос report-writing из LLM2 в Report Layer + LLM3
 
-Дата актуализации: 2026-05-18.
+Дата актуализации: 2026-05-19.
 
 ### Целевая архитектура
 
@@ -110,6 +110,273 @@ Report Layer остается валидатором и safety gate:
 - `Разбор звонка`: `llm3_used=true`;
 - `call_breakdown_quality=passed`;
 - counter-evidence repair работает.
+
+### Вывод после UI-прогона 2026-05-18
+
+Прогон за 2026-05-18 показал, что проблема не сводится к одному блоку или одному менеджеру.
+
+Фактическая картина:
+
+- Толеген: новый механизм нашел verified `Ситуация дня` и `Разбор звонка`;
+- Алишер: `Ситуация дня` не собрана, хотя были готовые анализы;
+- Тимур: `Ситуация дня` не собрана, хотя были готовые анализы;
+- `Разбор звонка` у Алишера и Тимура ушел в legacy fallback, потому что новый `CallBreakdownComposer` сейчас запускается только после verified `Ситуации дня`.
+
+Root cause:
+
+```text
+Нет единого evidence layer для отчетных блоков.
+
+LLM2 складывает полезные факты в разные места:
+- block_candidates;
+- semantic_case;
+- manager_coaching_moments;
+- call_report_summary;
+- score_by_stage;
+- situation_candidates;
+- voice_of_customer;
+- transcript-derived patterns.
+
+Но каждый блок отчета сам решает, куда смотреть и чему верить.
+Из-за этого факт может существовать, но не попасть в нужный composer.
+```
+
+Симптом:
+
+- механизм пишет: "не найдена достаточно сильная мини-сцена";
+- но на самом деле иногда мини-сцена или manager gap есть в другом источнике, например `manager_coaching_moments`;
+- либо есть повторяющийся pattern по нескольким звонкам, но нет одного идеального звонка.
+
+Пример по 2026-05-18:
+
+- Алишер: в `manager_coaching_moments` был момент про слабую фиксацию следующего шага, но `SituationDayComposer` его не использовал как источник;
+- Тимур: один `fit=true` block candidate был слишком слабым и с counter-evidence в транскрипте, поэтому gate правильно не принял его;
+- у Тимура было много customer signals, но они не должны превращаться в `Ситуацию дня`, потому что это не manager gap.
+
+Вывод:
+
+Нужно не точечно чинить `SituationDayComposer`, а ввести общий слой evidence normalization/routing для всех блоков отчета.
+
+## Roadmap v2: Evidence Registry + Block Router
+
+### Цель этапа
+
+Создать единый механизм, который до запуска block composers собирает, нормализует и маршрутизирует доказательства по отчетным блокам.
+
+Новая целевая схема:
+
+```text
+Transcript / STT
+  -> LLM2 Call Analyzer
+      -> raw per-call facts
+      -> report_evidence fragments
+      -> coaching moments
+      -> customer signals
+      -> next-step facts
+
+Daily Report
+  -> Evidence Registry
+      -> normalized evidence items
+      -> proof type
+      -> proof strength
+      -> block suitability
+      -> counter-evidence
+      -> transcript scenes
+  -> Block Router
+      -> Situation Day candidates
+      -> Call Breakdown candidates
+      -> Voice Of Customer candidates
+      -> Follow-up candidates
+      -> Challenge candidates
+      -> Additional Situations candidates
+  -> LLM3 Block Composers
+  -> Shared Quality Gates
+  -> PDF / Telegram
+```
+
+### Новые сущности
+
+#### Evidence Registry
+
+Единый normalized item:
+
+```json
+{
+  "evidence_id": "string",
+  "call_id": "uuid",
+  "manager_id": "uuid",
+  "source": "block_candidates | semantic_case | manager_coaching_moments | transcript_pattern | call_report_summary | voice_of_customer | score_by_stage",
+  "evidence_type": "manager_gap | customer_signal | service_issue | positive_case | follow_up_opportunity | neutral_summary",
+  "proof_type": "direct_gap | sequence_inference | absence_in_context | customer_signal | service_issue | positive_case",
+  "proof_strength": "strong | medium | weak | insufficient",
+  "stage_code": "string|null",
+  "problem_title": "string|null",
+  "manager_gap": "string|null",
+  "customer_context": "string|null",
+  "dialogue_scene": "string|null",
+  "supporting_quote": "string|null",
+  "counter_evidence": [],
+  "block_suitability": {
+    "situation_day": "eligible | weak | forbidden",
+    "call_breakdown": "eligible | weak | forbidden",
+    "voice_of_customer": "eligible | weak | forbidden",
+    "follow_up": "eligible | weak | forbidden",
+    "challenge": "eligible | weak | forbidden",
+    "additional_situations": "eligible | weak | forbidden"
+  },
+  "rejection_reasons": []
+}
+```
+
+#### Block Router
+
+Единая маршрутизация:
+
+- `Ситуация дня`: только `manager_gap`, strong/medium proof, не service/refusal-only;
+- `Разбор звонка`: verified `manager_gap` или лучший `manager_coaching_moment`, даже если `Ситуация дня` отсутствует;
+- `Голос клиента`: только `customer_signal` с контекстом;
+- `Позвони завтра`: `follow_up_opportunity`, открытый потенциал, согласованный next step;
+- `Челлендж`: повторяющийся coaching pattern или stage gap;
+- `Дополнительные ситуации`: вторичные manager gaps или positive cases;
+- `Список звонков`: neutral/customer/service summaries без попытки делать из них coaching problem.
+
+### Proof type policy
+
+Нужно перестать требовать, чтобы каждая проблема доказывалась одной цитатой.
+
+Поддерживаемые типы:
+
+- `direct_gap`: фраза менеджера прямо показывает ошибку;
+- `sequence_inference`: ошибка видна из последовательности диалога;
+- `absence_in_context`: проблема в том, что нужное действие отсутствует в достаточно полной сцене;
+- `customer_signal`: клиентский сигнал, не manager gap;
+- `service_issue`: сервис/поддержка, не sales coaching;
+- `positive_case`: удачный пример;
+- `follow_up_opportunity`: есть следующий контакт или открытая возможность.
+
+Для `absence_in_context` обязателен counter-evidence gate:
+
+- проверить, не сделал ли менеджер нужное действие в другом месте транскрипта;
+- если сделал частично, не формулировать как полный провал;
+- если сцена слишком короткая, не показывать как доказанную проблему.
+
+### Задачи следующего системного этапа
+
+#### ER-1. Evidence Registry contract
+
+Цель: описать и реализовать единый normalized evidence item.
+
+Файлы:
+
+- новый `core/app/agents/calls/report_evidence_registry.py`;
+- тесты `core/tests/test_report_evidence_registry.py`;
+- документация `docs/REPORT_EVIDENCE_CONTRACT.md`.
+
+Задачи:
+
+- собрать evidence items из `block_candidates`, `semantic_case`, `manager_coaching_moments`, `situation_candidates`, `voice_of_customer`, `call_report_summary`, transcript patterns;
+- сохранить source lineage;
+- нормализовать `evidence_type`, `proof_type`, `proof_strength`, `stage_code`;
+- не терять rejected/weak candidates, а отдавать diagnostics.
+
+#### ER-2. Manager coaching moments as first-class evidence
+
+Цель: сделать `manager_coaching_moments` полноценным источником для `Ситуации дня` и `Разбора звонка`.
+
+Задачи:
+
+- извлекать `what_happened`, `what_better`, `dialogue_fragment`, `stage_code`, `evidence_quality`;
+- строить mini-scene из `dialogue_fragment` или transcript repair;
+- поддержать `absence_in_context`;
+- отбрасывать moments без сцены и без возможности восстановить сцену из transcript.
+
+#### ER-3. Block Router
+
+Цель: централизованно решать, какой evidence item может питать какой блок.
+
+Файлы:
+
+- новый `core/app/agents/calls/report_block_router.py`;
+- тесты `core/tests/test_report_block_router.py`.
+
+Задачи:
+
+- запретить customer signals как `Ситуация дня`;
+- направлять customer signals в `Голос клиента` / `Позвони завтра`;
+- направлять service issues в service/follow-up context, но не в sales coaching;
+- выбирать fallback candidate для `Разбор звонка`, если нет verified `Ситуации дня`;
+- отдавать diagnostics: почему каждый candidate принят/отклонен.
+
+#### ER-4. Situation Day pattern-level mode
+
+Цель: если нет одного идеального звонка, но есть повторяющийся доказуемый паттерн, строить `Ситуацию дня` по паттерну.
+
+Формат:
+
+- "В нескольких звонках повторилось...";
+- 2-3 короткие сцены;
+- общий manager gap;
+- что делать иначе;
+- критерий приемки: менеджер понимает не абстрактный вывод, а конкретное повторяющееся поведение.
+
+Примеры паттернов:
+
+- не фиксирует следующий шаг;
+- не проверяет уместность разговора;
+- не уточняет роль/ЛПР;
+- рано предлагает продукт;
+- не резюмирует потребность;
+- оставляет клиента в режиме "я сам перезвоню".
+
+#### ER-5. Decouple CallBreakdownComposer from SituationDayComposer
+
+Цель: `Разбор звонка` не должен зависеть только от verified `Ситуации дня`.
+
+Правило:
+
+1. Если есть verified `Ситуация дня`, разбирать тот же звонок.
+2. Если ее нет, брать лучший verified `manager_gap` / `manager_coaching_moment` из Evidence Registry.
+3. Если нет доказанного manager gap, не показывать legacy-мусор; вернуть honest insufficient.
+
+#### ER-6. Shared Quality Gate
+
+Цель: единый gate для всех report blocks.
+
+Проверки:
+
+- есть `call_id`;
+- есть usable scene или pattern-level scenes;
+- proof type разрешен для блока;
+- customer signal не используется как manager gap;
+- service issue не используется как sales coaching;
+- recommendation соответствует evidence type;
+- нет counter-evidence;
+- язык отчета русский;
+- блок не дублирует другой блок;
+- fallback не протаскивает слабые legacy rows.
+
+#### ER-7. Apply to remaining composers
+
+Экстраполировать проблему на остальные блоки:
+
+- `VoiceOfCustomerComposer`: брать только routed `customer_signal`;
+- `FollowUpComposer`: брать только routed `follow_up_opportunity`;
+- `ChallengeComposer`: брать routed repeated pattern / stage gap;
+- `AdditionalSituationsComposer`: брать secondary manager gaps / positive cases;
+- `CallListContext`: брать neutral/service/customer summaries без coaching claims.
+
+### Критерии приемки ER-этапа
+
+На прогоне 2026-05-18:
+
+- Толеген сохраняет verified `Ситуация дня` и `Разбор звонка`;
+- Алишер: если есть доказанный `manager_coaching_moment`, `Разбор звонка` строится без зависимости от `Ситуации дня`;
+- Тимур: слабый candidate с counter-evidence не проходит в `Ситуацию дня`;
+- если нет одного сильного звонка, но есть повторяющийся паттерн, `Ситуация дня` строится в pattern-level mode;
+- customer signals не становятся manager gaps;
+- service issues не становятся sales coaching;
+- diagnostics показывают, куда ушел каждый candidate и почему;
+- legacy fallback не показывает строки вроде "Недостаточно данных..." как полноценный разбор.
 
 ### Что еще нужно перенести из LLM2
 
@@ -1101,3 +1368,31 @@ Preview:
 - в `Голос клиента` нет коротких orphan quotes без сцены;
 - рекомендации соответствуют реальному customer signal;
 - PDF и Telegram формируются штатно.
+
+## Обновление 2026-05-19: Evidence Registry + Block Router
+
+### Что реализовано
+
+- добавлен общий `ReportEvidenceRegistry`, который собирает доказательства из `block_candidates`, `semantic_case`, `manager_coaching_moments`, `situation_candidates`, `voice_of_customer`, `call_report_summary`;
+- добавлен `ReportBlockRouter`, который распределяет evidence items по блокам и объясняет отказы;
+- `Report Layer` теперь уважает `block_suitability.fit=false`, чтобы customer-signal не попадал в `Ситуацию дня` или `Разбор звонка` как проблема менеджера;
+- `Разбор звонка` больше не зависит только от verified `Ситуации дня`: если Situation Day не прошла, router может выбрать лучший manager-gap fallback;
+- добавлен осторожный fallback для `Ситуации дня` из Evidence Registry, если есть manager-gap с контекстом или повторяющийся паттерн;
+- в payload добавлены `report_evidence_registry_diagnostics` и `report_block_router_diagnostics`.
+
+### Проверка 2026-05-18 ready-data-only
+
+Команда:
+
+`docker compose exec -T api python -m app.agents.calls.manual_reporting_runner --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 --preset manager_daily --mode report_from_ready_data_only --date-from 2026-05-18 --date-to 2026-05-18 --delivery-mode preview_only`
+
+Результат:
+
+- Алишер: `Ситуация дня` и `Разбор звонка` заполнены через Evidence Registry / CallBreakdownComposer;
+- Тимур: слабый customer-signal больше не выбран как проблема менеджера; выбран manager coaching moment;
+- Толеген: основной SituationDayComposer и CallBreakdownComposer продолжают работать;
+- все заполненные `call_breakdown_quality.status=passed`.
+
+### Остаточный риск
+
+Качество текста fallback-блоков еще нужно human-review: механизм теперь не оставляет блоки пустыми и не смешивает типы доказательств, но формулировки `what_happened/what_was_missing` для registry fallback местами повторяются. Следующий шаг — улучшить writer-слой fallback, а не снова менять отбор доказательств.
