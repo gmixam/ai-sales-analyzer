@@ -2270,3 +2270,118 @@ Checks passed: all three call-breakdown render rows have `bare_fragment_dash_cou
 - Алишер / Тимур / Толеген all have `situation_day_writer_applied=true`, at least 2 scripts, no separate context-label mini-card, and no rendered `coachable`.
 
 **Residual:** speaker roles remain `role_confidence=low` on these historical calls because persisted STT metadata does not reliably map raw `A/B` speakers to `client/manager`. Full role resolver remains a separate next step.
+
+## Step 8AH-12 — Simplify Situation Day through Daily LLM3 Composer
+
+**Status:** IMPLEMENTED 2026-05-19, pilot verification in progress.
+
+**Reason:** Step 8AH-10/11 improved guardrails and rendering, but the mechanism is still too layered. The root issue is that LLM2/legacy evidence still tries to pre-write report blocks. The next step changes responsibility boundaries: LLM2 provides call facts, LLM3 composes the daily coaching situation, Report Layer validates and renders.
+
+**Target architecture:**
+
+`LLM2 call facts + transcript scenes -> SituationDayDailyComposer / LLM3 -> Report Layer verification -> unified template`
+
+**Task DDC-1 — Daily Situation input package**
+
+Build a compact day-level input for each manager:
+- call id/reference/client/date;
+- outcome, stage, score;
+- LLM2 summary and call facts;
+- manager gaps, strengths, customer signals;
+- candidate evidence fragments and transcript mini-scenes;
+- quality flags and source diagnostics.
+
+Requirements:
+- do not send full transcripts by default;
+- keep only top useful scenes/fragments;
+- service-only/noise calls must not become primary coaching candidates;
+- expose diagnostics for input call count, fragment count, and sources.
+
+**Task DDC-2 — `SituationDayDailyComposer`**
+
+Create:
+- `core/app/agents/calls/situation_day_daily_composer.py`;
+- `core/app/agents/calls/prompts/situation_day_daily_composer_v1.md`;
+- focused tests.
+
+LLM3 output contract:
+- `status`;
+- `selected_call_id`;
+- `situation_title`;
+- `moment_summary`;
+- `what_happened`;
+- `manager_error`;
+- `evidence_scene`;
+- `supporting_quote`;
+- `why_it_matters`;
+- `next_time_action`;
+- `scripts`;
+- `rejected_candidates`;
+- `selection_reason`;
+- `source_fact_ids`.
+
+LLM3 must not:
+- recalculate score;
+- perform a full call analysis;
+- change stage/outcome unless explicit contradiction is found;
+- use customer signal or service issue as manager gap;
+- invent quote, call id, or scene.
+
+**Task DDC-3 — Report Layer verification**
+
+Verify composer output:
+- selected call exists in input package;
+- quote/scene is grounded in transcript or persisted evidence;
+- required fields are present and manager-facing;
+- selected issue is a manager gap, not customer signal/service issue;
+- if verification fails, return explicit insufficient result instead of legacy/registry authored fallback.
+
+**Task DDC-4 — Simplify Situation Day path**
+
+Make `SituationDayDailyComposer` the primary path.
+
+Keep:
+- Evidence Registry as input/source builder and diagnostics;
+- `SituationDayWriter` as optional normalizer/compat writer;
+- old paths behind fallback/feature flag only for rollback.
+
+Remove from final authoring path:
+- registry-authored Situation Day fallback;
+- legacy deterministic final Situation Day fallback;
+- semantic/block candidate final writing.
+
+Target chain:
+
+`build_daily_situation_input -> SituationDayDailyComposer -> verify -> SituationDayWriter/template`
+
+**Task DDC-5 — LLM2 prompt simplification plan**
+
+Document and prepare prompt/contract changes so LLM2 becomes call fact analyzer only:
+- keep summary, score, stage, outcome, gaps, strengths, customer signals, evidence fragments;
+- mark final `report_block_candidates` as deprecated/compatibility only;
+- do not require LLM2 to choose/write `Ситуация дня`.
+
+**Acceptance:**
+
+Run ready-data-only for `2026-05-18` and compare with Step 8AH-11 output for Толеген, Тимур, Алишер.
+
+Score each report 0-2:
+- best coaching moment of the day selected;
+- understandable without remembering the call;
+- evidence is embedded in explanation;
+- manager error is behavior-specific;
+- scripts match the scene;
+- no customer_signal/service_issue is used as manager_gap.
+
+**Implementation note 2026-05-19:**
+
+- Added `situation_day_daily_input_v1` and `SituationDayDailyComposer v1`.
+- `manager_daily` now uses `SituationDayDailyComposer -> Report Layer verification -> SituationDayWriter/template` as the primary `Ситуация дня` path.
+- Legacy/registry/block/semantic authored fallbacks are no longer used as final `Ситуация дня` writers in this path.
+- Ready-data-only preview for `2026-05-18` confirmed LLM3 execution through `llm3_main` and verified output for Алишер, Тимур, Толеген.
+- The first pilot run exposed a root issue: some candidates carried only one quote without enough client context. The daily candidate builder now embeds `Контекст звонка -> подтверждающий фрагмент -> проблема для разбора` into `what_happened`.
+- Remaining limitation: role confidence can stay `low` when persisted evidence contains only one speaker turn. Full STT role resolution remains out of this step.
+
+Target: at least `10/12` per manager. `insufficient` is acceptable only with clear diagnostics and no strong manager-gap available.
+
+**Out of scope:** full report rewrite, score changes, PDF redesign, STT role resolver, historical DB migration, `Голос клиента`/`Разбор звонка` redesign before Situation Day quality is accepted.

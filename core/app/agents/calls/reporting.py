@@ -39,6 +39,12 @@ from app.agents.calls.situation_day_composer import (
     SITUATION_DAY_COMPOSER_VERSION,
     compose_situation_day,
 )
+from app.agents.calls.situation_day_daily_composer import (
+    SITUATION_DAY_DAILY_COMPOSER_VERSION,
+    SITUATION_DAY_DAILY_SOURCE,
+    compose_daily_situation_day,
+)
+from app.agents.calls.situation_day_daily_input import build_situation_day_daily_input
 from app.agents.calls.situation_day_writer import compose_situation_day_view
 from app.agents.calls.voice_of_customer_composer import compose_voice_of_customer
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
@@ -4537,6 +4543,9 @@ SITUATION_FOCUS_OVERRIDE_SELECTION_MODES = {
     "best_block_candidate_after_focus_mismatch",
     "evidence_registry_single_manager_gap",
     "evidence_registry_repeated_weak_manager_gap",
+    "daily_situation_composer_v1",
+    "best_manager_gap_scene_by_score",
+    "llm3_daily_situation_selection",
 }
 
 
@@ -4574,6 +4583,7 @@ def _maybe_override_daily_focus_from_situation(
         or situation_source.startswith("report_evidence.block_candidates")
         or situation_source == "report_evidence.semantic_case"
         or situation_source.startswith("report_evidence.evidence_registry")
+        or situation_source.startswith(SITUATION_DAY_DAILY_SOURCE)
     )
     if not focus_stage or not situation_stage:
         return daily_focus
@@ -5029,28 +5039,16 @@ def build_manager_daily_payload(
         key_problem=key_problem,
         data_scope=coaching_data_scope,
     )
-    legacy_report_evidence_situation = _build_report_evidence_situation(
+    (
+        report_evidence_situation,
+        situation_day_daily_composer_result,
+        situation_day_daily_input,
+    ) = _build_verified_situation_day_from_daily_composer(
         artifacts=coaching_content_artifacts,
         report_evidence_index=report_evidence_index,
-        call_list_by_interaction_id=call_list_by_interaction_id,
-        score_by_stage=score_by_stage,
-        daily_focus=daily_coaching_focus,
+        evidence_registry_items=report_evidence_registry_items,
     )
-    report_evidence_situation = legacy_report_evidence_situation
-    composer_situation, situation_day_composer_result = _build_verified_situation_day_from_composer(
-        artifacts=coaching_content_artifacts,
-        report_evidence_index=report_evidence_index,
-    )
-    if composer_situation is not None:
-        report_evidence_situation = composer_situation
-    else:
-        registry_situation = _build_situation_day_from_evidence_registry(
-            artifacts=coaching_content_artifacts,
-            evidence_items=report_evidence_registry_items,
-            score_by_stage=score_by_stage,
-        )
-        if registry_situation is not None:
-            report_evidence_situation = registry_situation
+    situation_day_composer_result = None
     situation_evidence_quote = (report_evidence_situation or {}).get("evidence_quote")
     situation_day_coaching_view = (report_evidence_situation or {}).get("coaching_view")
     no_verified_situation_day = bool((report_evidence_situation or {}).get("no_verified_situation_day"))
@@ -5417,6 +5415,10 @@ def build_manager_daily_payload(
         "focus_stage_recommendation": focus_stage_recommendation,
         "situation_day_coaching_view": situation_day_coaching_view,
         "situation_day_composer_result": situation_day_composer_result,
+        "situation_day_daily_composer_result": situation_day_daily_composer_result,
+        "situation_day_daily_input_diagnostics": dict(
+            (situation_day_daily_input or {}).get("diagnostics") or {}
+        ),
         "daily_coaching_focus": daily_coaching_focus,
         "daily_coaching_focus_validation": dict(daily_coaching_focus.get("validation") or {}),
         "problem_wording_diagnostics": problem_wording_diagnostics,
@@ -6640,7 +6642,10 @@ def _build_situation_day_evidence_packet(
             "insufficiency_reason": "situation_day_quote_not_grounded_in_transcript",
         }
 
-    turns = _transcript_context_turns_around_quote(
+    turns = _verified_role_dialogue_turns(
+        raw_turns=situation_day_coaching_view.get("dialogue_turns"),
+        quote=quote,
+    ) or _transcript_context_turns_around_quote(
         transcript=transcript,
         quote=quote,
         before=3,
@@ -6704,6 +6709,36 @@ def _build_situation_day_evidence_packet(
             "turns": turns,
         },
     }
+
+
+def _verified_role_dialogue_turns(
+    *,
+    raw_turns: Any,
+    quote: str,
+) -> list[dict[str, str]]:
+    """Use prepared role-aware turns when they contain the verified quote."""
+    turns: list[dict[str, str]] = []
+    for raw_turn in raw_turns or []:
+        if not isinstance(raw_turn, dict):
+            continue
+        speaker = str(raw_turn.get("speaker") or raw_turn.get("role") or "unknown").strip().lower()
+        if speaker not in {"client", "manager"}:
+            continue
+        text = _dialogue_turn_text(str(raw_turn.get("text") or raw_turn.get("quote") or ""), limit=360)
+        if text:
+            turns.append({"speaker": speaker, "text": text})
+        if len(turns) >= 6:
+            break
+    if len(turns) < 2:
+        return []
+    speakers = {turn["speaker"] for turn in turns}
+    if not {"client", "manager"}.issubset(speakers):
+        return []
+    joined = _summary_norm(" ".join(turn["text"] for turn in turns))
+    quote_norm = _summary_norm(quote)
+    if quote_norm and quote_norm not in joined:
+        return []
+    return turns
 
 
 def _attach_situation_day_evidence_packet(
@@ -6858,6 +6893,168 @@ def _build_verified_situation_day_from_composer(
     verified["selection_diagnostics"] = selection_diagnostics
     verified.setdefault("coaching_view", {})["selection_diagnostics"] = selection_diagnostics
     return verified, prepared
+
+
+def _build_verified_situation_day_from_daily_composer(
+    *,
+    artifacts: list[ReportArtifact],
+    report_evidence_index: dict[str, dict[str, Any]],
+    evidence_registry_items: Any,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    """Build Situation Day through the day-level LLM3 composer and fail closed."""
+    daily_input = build_situation_day_daily_input(
+        artifacts,
+        report_evidence_index=report_evidence_index,
+        evidence_registry_items=evidence_registry_items,
+    )
+    raw_result = compose_daily_situation_day(daily_input)
+    prepared = _prepare_daily_situation_day_result(
+        artifacts=artifacts,
+        result=raw_result,
+    )
+    rejected = list((raw_result or {}).get("rejected_candidates") or []) if isinstance(raw_result, dict) else []
+    selection_mode = str((raw_result or {}).get("selection_reason") or "daily_situation_composer_v1").strip()
+    if not prepared or prepared.get("status") != "verified":
+        return (
+            _no_verified_situation_day_result(
+                reason=selection_mode or "daily_situation_composer_insufficient",
+                rejected=rejected,
+                selection_mode="daily_situation_composer_v1",
+            ),
+            prepared,
+            daily_input,
+        )
+
+    verified, rejection_reason = _verified_situation_day_result(
+        artifacts=artifacts,
+        result=prepared,
+    )
+    if verified is None:
+        prepared = dict(prepared)
+        quality = dict(prepared.get("quality_diagnostics") or {})
+        quality["report_layer_verification_status"] = "failed"
+        quality["report_layer_rejection_reason"] = rejection_reason
+        prepared["quality_diagnostics"] = quality
+        return (
+            _no_verified_situation_day_result(
+                reason=rejection_reason or "daily_situation_composer_not_verified",
+                rejected=rejected,
+                selection_mode="daily_situation_composer_v1",
+            ),
+            prepared,
+            daily_input,
+        )
+
+    selection_diagnostics = dict(verified.get("selection_diagnostics") or {})
+    selection_diagnostics["composer_version"] = SITUATION_DAY_DAILY_COMPOSER_VERSION
+    selection_diagnostics["report_layer_verification_status"] = "passed"
+    selection_diagnostics.setdefault("selection_mode", selection_mode or "daily_situation_composer_v1")
+    selection_diagnostics.setdefault("block", "situation_day")
+    verified["selection_diagnostics"] = selection_diagnostics
+    verified.setdefault("coaching_view", {})["selection_diagnostics"] = selection_diagnostics
+    return verified, prepared, daily_input
+
+
+def _prepare_daily_situation_day_result(
+    *,
+    artifacts: list[ReportArtifact],
+    result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize Daily Situation Composer output before transcript verification."""
+    if not isinstance(result, dict):
+        return None
+    if str(result.get("status") or "").strip() != "verified":
+        return dict(result)
+
+    selected_call_id = str(result.get("selected_call_id") or "").strip()
+    artifact = next((item for item in artifacts if str(item.interaction.id) == selected_call_id), None)
+    if artifact is None:
+        updated = dict(result)
+        updated["status"] = "insufficient"
+        updated["selection_reason"] = "selected_call_id_not_in_report_artifacts"
+        return updated
+
+    ref = _artifact_call_reference(artifact)
+    quote = _dialogue_turn_text(str(result.get("supporting_quote") or ""), limit=260)
+    dialogue_turns = _daily_situation_dialogue_turns(result.get("dialogue_turns"))
+    stage_code = str(result.get("stage_code") or "").strip()
+    proof_type = str(result.get("proof_type") or "").strip() or "sequence_inference"
+    selection_diagnostics = _semantic_case_selection_diagnostics(
+        block_name="situation_day",
+        selected={
+            "call_id": selected_call_id,
+            "source": SITUATION_DAY_DAILY_SOURCE,
+            "stage_code": stage_code or None,
+            "selection_reason": result.get("selection_reason"),
+            "source_fact_ids": list(result.get("source_fact_ids") or []),
+        },
+        rejected=list(result.get("rejected_candidates") or []),
+        selection_mode=str(result.get("selection_reason") or "daily_situation_composer_v1").strip()
+        or "daily_situation_composer_v1",
+    )
+    diagnostics = dict(result.get("diagnostics") or {})
+    if diagnostics:
+        selection_diagnostics["composer_diagnostics"] = diagnostics
+    coaching_view = {
+        "source": SITUATION_DAY_DAILY_SOURCE,
+        "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
+        "pattern_title": str(result.get("situation_title") or "Ситуация дня").strip(),
+        "moment_summary": str(result.get("moment_summary") or "").strip() or None,
+        "what_happened": str(result.get("what_happened") or "").strip() or None,
+        "what_was_missing": str(result.get("manager_error") or "").strip() or None,
+        "manager_error": str(result.get("manager_error") or "").strip() or None,
+        "meaning": str(result.get("why_it_matters") or "").strip() or None,
+        "proof_explanation": str(result.get("why_it_matters") or "").strip() or None,
+        "next_time_action": str(result.get("next_time_action") or "").strip() or None,
+        "scripts": [str(item).strip() for item in result.get("scripts") or [] if str(item).strip()],
+        "supporting_quote": quote or None,
+        "dialogue_turns": dialogue_turns,
+        "proof_type": proof_type,
+        "proof_strength": "medium",
+        "quote_role": "supports_context",
+        "stage_code": stage_code or None,
+        "stage_label": _stage_name_for_code(stage_code, []) if stage_code else None,
+        "selection_diagnostics": selection_diagnostics,
+    }
+    return {
+        "status": "verified",
+        "selected_call_id": selected_call_id,
+        "situation_title": coaching_view["pattern_title"],
+        "evidence_quote": {
+            **ref,
+            "source": SITUATION_DAY_DAILY_SOURCE,
+            "stage_code": stage_code or None,
+            "client_text": quote,
+            "manager_text": quote,
+        },
+        "dialogue_excerpt": {
+            **ref,
+            "source": SITUATION_DAY_DAILY_SOURCE,
+            "is_partial": True,
+            "partial_reason": "daily_composer_selected_quote",
+            "turns": dialogue_turns or ([{"speaker": "evidence", "text": quote}] if quote else []),
+        },
+        "coaching_view": coaching_view,
+        "selection_diagnostics": selection_diagnostics,
+        "raw_daily_composer_result": result,
+    }
+
+
+def _daily_situation_dialogue_turns(value: Any) -> list[dict[str, str]]:
+    turns: list[dict[str, str]] = []
+    for raw_turn in value or []:
+        if not isinstance(raw_turn, dict):
+            continue
+        text = _dialogue_turn_text(str(raw_turn.get("text") or raw_turn.get("quote") or ""), limit=360)
+        if not text:
+            continue
+        speaker = str(raw_turn.get("speaker") or raw_turn.get("role") or "unknown").strip().lower()
+        if speaker not in {"client", "manager", "unknown", "context", "evidence"}:
+            speaker = "unknown"
+        turns.append({"speaker": speaker, "text": text})
+        if len(turns) >= 6:
+            break
+    return turns
 
 
 def _registry_item_dicts(evidence_items: Any) -> list[dict[str, Any]]:

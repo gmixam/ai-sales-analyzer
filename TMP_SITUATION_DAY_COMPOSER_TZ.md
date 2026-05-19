@@ -1401,6 +1401,8 @@ Preview:
 
 Дата: 2026-05-19.
 
+Статус на 2026-05-19: пилот реализован и проверен на ready-data-only прогоне за 2026-05-18.
+
 ### Цель
 
 Убрать разный стиль и разную структуру `Ситуации дня` между менеджерами. Отбор evidence может оставаться многослойным, но финальный блок должен собираться одним writer/schema/template путем.
@@ -1589,3 +1591,280 @@ Preview-only ready-data-only:
 ### Остаток
 
 `role_confidence` сейчас в основном `low`, потому что persisted STT содержит сырые speakers `A/B` или unknown, а не надежный mapping `client/manager`. Полный role resolver нужно делать отдельным следующим этапом на уровне STT/extractor/report-layer metadata.
+
+## Новый целевой план: упростить `Ситуацию дня` через Daily LLM3 Composer
+
+Дата: 2026-05-19.
+
+### Почему меняем направление
+
+SDW v1 улучшил форму, но не решает главный источник нестабильности: текущий механизм пытается собрать смысловой блок из множества report-facing фрагментов LLM2 и fallback-путей.
+
+Текущая проблема:
+
+`LLM2 report candidates -> registry/router -> writer -> template`
+
+Это все еще зависит от того, насколько хорошо LLM2 заранее угадал финальный блок отчета.
+
+Целевой механизм:
+
+`LLM2 facts + transcript scenes for the day -> LLM3 Daily Situation Composer -> Report Layer verification -> Template`
+
+### Новое разделение ответственности
+
+#### LLM2
+
+Роль: анализатор отдельного звонка.
+
+LLM2 должен давать:
+
+- summary звонка;
+- stage/outcome;
+- scores;
+- manager gaps;
+- strengths;
+- customer signals;
+- evidence fragments;
+- transcript quality flags;
+- call worthiness flags.
+
+LLM2 не должен отвечать за финальный текст `Ситуации дня` и не должен решать, какой блок отчета использовать.
+
+#### LLM3
+
+Роль: daily report composer.
+
+LLM3 должен:
+
+- смотреть все звонки менеджера за день;
+- использовать LLM2 facts как карту;
+- использовать transcript scenes как подтверждение;
+- выбрать одну лучшую обучающую ситуацию;
+- объяснить ее менеджеру понятным языком;
+- дать доказательство/мини-сцену;
+- дать конкретную ошибку и речёвки;
+- отклонить ситуацию, если доказательство слабое или противоречит transcript.
+
+#### Report Layer
+
+Роль: validator + renderer.
+
+Report Layer должен:
+
+- собрать input package для LLM3;
+- проверить, что LLM3 не выдумал `call_id`;
+- проверить, что quote/scene есть в transcript или persisted evidence;
+- проверить обязательные поля;
+- отрендерить;
+- если verified блока нет, показать честное `Нет надежно подтвержденной ситуации дня`, а не собирать слабый fallback.
+
+### Задачи для следующего этапа
+
+#### DDC-1. Daily Situation input package
+
+Зона:
+
+- `core/app/agents/calls/reporting.py`;
+- новый helper/module, если потребуется.
+
+Сделать:
+
+- собрать для каждого менеджера за день компактный пакет звонков:
+  - `call_id`;
+  - client label / reference;
+  - outcome;
+  - stage;
+  - score;
+  - LLM2 summary;
+  - manager gaps;
+  - strengths;
+  - customer signals;
+  - candidate evidence fragments;
+  - transcript mini-scenes;
+  - quality flags.
+- ограничить размер пакета:
+  - не весь transcript целиком;
+  - только релевантные сцены/фрагменты;
+  - top N calls по usefulness.
+- добавить diagnostics:
+  - `daily_situation_input_calls_count`;
+  - `daily_situation_input_fragments_count`;
+  - `daily_situation_input_sources`.
+
+Критерий приемки:
+
+- пакет можно сохранить в payload diagnostics;
+- по нему понятно, какие звонки и фрагменты были доступны LLM3;
+- в пакет не попадают service-only/noise calls как основные candidates.
+
+#### DDC-2. `SituationDayDailyComposer` на LLM3
+
+Зона:
+
+- новый файл `core/app/agents/calls/situation_day_daily_composer.py`;
+- prompt `core/app/agents/calls/prompts/situation_day_daily_composer_v1.md`;
+- tests.
+
+Сделать:
+
+- LLM3 получает daily input package;
+- выбирает одну ситуацию дня или возвращает `insufficient`;
+- output contract:
+  - `status`;
+  - `selected_call_id`;
+  - `situation_title`;
+  - `moment_summary`;
+  - `what_happened`;
+  - `manager_error`;
+  - `evidence_scene`;
+  - `supporting_quote`;
+  - `why_it_matters`;
+  - `next_time_action`;
+  - `scripts`;
+  - `rejected_candidates`;
+  - `selection_reason`;
+  - `source_fact_ids`.
+- запретить:
+  - пересчитывать score;
+  - менять stage/outcome без явного contradiction;
+  - делать полный анализ звонка заново;
+  - выбирать customer_signal как manager_gap;
+  - выдумывать quote/call_id.
+
+Критерий приемки:
+
+- LLM3 выбирает ситуацию на уровне дня, а не только из заранее выбранного single candidate;
+- transcript используется для контекста и доказательства;
+- output уже похож на понятный report block, а не на набор полей.
+
+#### DDC-3. Report Layer verification для Daily Composer
+
+Зона:
+
+- `core/app/agents/calls/reporting.py`;
+- tests.
+
+Сделать:
+
+- проверить `selected_call_id` существует в дневном пакете;
+- проверить `supporting_quote` или `evidence_scene` grounded в transcript/evidence;
+- проверить обязательные поля;
+- проверить, что выбранная ситуация является `manager_gap`, а не `customer_signal/service_issue`;
+- если verification failed:
+  - не запускать registry fallback для финального написания;
+  - вернуть explicit insufficient result.
+
+Критерий приемки:
+
+- слабые/неподтвержденные ситуации не попадают в отчет;
+- diagnostics объясняют отказ;
+- нет скрытого возврата к старому fallback, который пишет слабую `Ситуацию дня`.
+
+#### DDC-4. Упростить текущую цепочку `Ситуации дня`
+
+Зона:
+
+- `core/app/agents/calls/reporting.py`.
+
+Сделать:
+
+- сделать `SituationDayDailyComposer` primary path;
+- оставить `SituationDayWriter` только как normalizer/compat layer, если нужен;
+- отключить registry/legacy deterministic fallback как финального автора `Ситуации дня`;
+- Evidence Registry оставить только как input source для daily package и diagnostics;
+- старые пути сохранить за feature flag, если нужен rollback.
+
+Критерий приемки:
+
+Цепочка для `Ситуации дня` должна быть:
+
+`build_daily_situation_input -> SituationDayDailyComposer -> verify -> SituationDayWriter/template`
+
+А не:
+
+`composer -> registry fallback -> legacy fallback -> deterministic fallback`.
+
+#### DDC-5. Prompt simplification для LLM2
+
+Зона:
+
+- LLM2 prompt / contract docs;
+- пока можно начать с документации и feature flag, без немедленной ломки текущего анализа.
+
+Сделать:
+
+- убрать из будущего LLM2 prompt ответственность за финальные report blocks;
+- оставить structured call facts;
+- явно разделить:
+  - `call_analysis_facts`;
+  - `report_block_candidates` deprecated / compatibility only.
+
+Критерий приемки:
+
+- LLM2 не обязан угадывать `Ситуацию дня`;
+- новые отчеты используют LLM2 как fact map, а не как report writer.
+
+### Что не делаем в этом этапе
+
+- не переписываем весь отчет;
+- не меняем scoring;
+- не трогаем PDF-дизайн;
+- не делаем полный STT role resolver;
+- не удаляем старые поля LLM2 из БД;
+- не переделываем `Голос клиента` и `Разбор звонка`, пока не подтвердим качество `Ситуации дня`.
+
+### Проверка качества
+
+Контрольный прогон:
+
+- ready-data-only за 2026-05-18;
+- менеджеры: Толеген, Тимур, Алишер;
+- сравнение с текущим SDW v1 результатом.
+
+Оценка 0-2:
+
+- выбран действительно лучший обучающий момент дня;
+- менеджер понимает ситуацию без памяти о звонке;
+- доказательство встроено в объяснение;
+- ошибка менеджера сформулирована как поведение, а не общий вывод;
+- речёвки применимы к сцене;
+- нет customer_signal/service_issue под видом manager_gap.
+
+Цель:
+
+- минимум 10/12 по каждому менеджеру;
+- если composer возвращает insufficient, это считается допустимым только при понятной диагностике и отсутствии сильного manager-gap.
+
+### Результат реализации пилота
+
+Сделано:
+
+- создан `core/app/agents/calls/situation_day_daily_input.py`;
+- создан `core/app/agents/calls/situation_day_daily_composer.py`;
+- создан prompt `core/app/agents/calls/prompts/situation_day_daily_composer_v1.md`;
+- добавлены тесты для daily input и daily composer;
+- `manager_daily` подключен к новой цепочке:
+
+`daily input -> SituationDayDailyComposer / LLM3 -> Report Layer verification -> SituationDayWriter/template`
+
+Что изменилось в механизме:
+
+- `Ситуация дня` больше не пишется финально через старые legacy/registry/block/semantic fallback-пути;
+- Evidence Registry используется как источник фактов и diagnostics, а не как автор финального блока;
+- LLM3 выбирает manager-gap candidate на уровне дня и не должен пересчитывать score или делать полный анализ звонка;
+- Report Layer проверяет выбранный call/quote и fail-closed возвращает explicit insufficient, если доказательство не проходит;
+- если в evidence есть клиентский контекст, он теперь встраивается в `what_happened` как связка:
+
+`Контекст звонка -> подтверждающий фрагмент -> проблема для разбора`
+
+Проверка:
+
+- `python3 -m unittest core.tests.test_situation_day_daily_input core.tests.test_situation_day_daily_composer core.tests.test_situation_day_writer core.tests.test_report_templates_situation_day core.tests.test_call_breakdown_composer` — passed;
+- `docker compose exec -T api python -m pytest -q tests/test_situation_day_daily_input.py tests/test_situation_day_daily_composer.py tests/test_situation_day_writer.py tests/test_report_templates_situation_day.py tests/test_call_breakdown_composer.py` — passed, 25 tests;
+- ready-data-only preview за `2026-05-18` сформировал verified `Ситуацию дня` через `report_evidence.situation_day_daily_composer.v1` для Алишера, Тимура и Толегена.
+
+Наблюдение по качеству:
+
+- после первого pilot preview блок все еще был слабым, потому что candidate мог содержать только одну реплику;
+- механизм усилен на уровне input/candidate builder: теперь `Что произошло` строится не как одиночная цитата, а как понятное описание ситуации с контекстом и доказательством;
+- оставшееся ограничение: `role_confidence` остается `low`, если persisted evidence содержит только одну роль. Это не решается текущим шагом без отдельного STT/diarization role resolver.
