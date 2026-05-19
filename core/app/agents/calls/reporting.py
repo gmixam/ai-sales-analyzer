@@ -5005,6 +5005,7 @@ def build_manager_daily_payload(
         report_evidence_index=report_evidence_index,
     )
     call_list_context_quality = _build_call_list_context_quality_diagnostics(call_list)
+    call_list_status_quality = _build_call_list_status_quality_diagnostics(call_list)
     call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
     coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
         artifacts=artifacts,
@@ -5381,6 +5382,7 @@ def build_manager_daily_payload(
         "call_outcomes_summary": call_outcomes_summary,
         "unclassified_breakdown": unclassified_breakdown,
         "call_list_context_quality": call_list_context_quality,
+        "call_list_status_quality": call_list_status_quality,
         "manager_facing_completeness": manager_facing_completeness,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
@@ -8761,6 +8763,40 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
     }
 
 
+def _build_call_list_status_quality_diagnostics(call_list: list[dict[str, Any]]) -> dict[str, Any]:
+    source_counts: dict[str, int] = {}
+    fallback_reasons: dict[str, int] = {}
+    conflicts: list[dict[str, Any]] = []
+    for row in call_list:
+        source = str(row.get("call_list_status_source") or "unknown")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        fallback_reason = str(row.get("call_list_status_fallback_reason") or "").strip()
+        if fallback_reason:
+            fallback_reasons[fallback_reason] = fallback_reasons.get(fallback_reason, 0) + 1
+        if row.get("call_list_status_conflict_with_resolver"):
+            conflicts.append(
+                {
+                    "interaction_id": row.get("interaction_id"),
+                    "client_call_reference": row.get("client_call_reference"),
+                    "llm2_business_outcome_status": row.get("llm2_business_outcome_status"),
+                    "call_list_status": row.get("call_list_status"),
+                    "resolver_status": row.get("resolver_status"),
+                    "resolver_reason_code": row.get("resolver_reason_code"),
+                }
+            )
+    return {
+        "status": "warning" if fallback_reasons else "passed",
+        "calls_count": len(call_list),
+        "llm2_status_used_count": source_counts.get("report_evidence.business_outcome", 0),
+        "resolver_fallback_count": source_counts.get("business_outcome_resolver", 0),
+        "source_counts": source_counts,
+        "fallback_reasons": fallback_reasons,
+        "conflict_count": len(conflicts),
+        "conflicts": conflicts[:20],
+        "source_policy": "call_list_display_status_uses_valid_llm2_business_outcome_else_resolver_fallback",
+    }
+
+
 def _reason_label(reason_code: str | None) -> str | None:
     """Return diagnostic Russian label for an unclassified reason code."""
     if not reason_code:
@@ -9032,6 +9068,24 @@ def _build_daily_call_row(
         interaction_id=str(artifact.interaction.id),
         report_evidence_index=report_evidence_index,
     )
+    llm2_business_outcome = _valid_business_outcome_for_interaction(
+        interaction_id=str(artifact.interaction.id),
+        report_evidence_index=report_evidence_index,
+    )
+    call_list_status_selection = _call_list_status_from_llm2_business_outcome(llm2_business_outcome)
+    call_list_status = (
+        call_list_status_selection["status"]
+        if call_list_status_selection["source"] == "report_evidence.business_outcome"
+        else status
+    )
+    call_list_unclassified_reason_code = (
+        call_list_status_selection["unclassified_reason_code"]
+        if call_list_status_selection["source"] == "report_evidence.business_outcome"
+        else unclassified_reason_code
+    )
+    call_list_unclassified_reason_label = _reason_label(call_list_unclassified_reason_code)
+    call_list_unclassified_status_label = _manager_unclassified_status(call_list_unclassified_reason_code)
+    call_list_unclassified_context_label = _manager_unclassified_context(call_list_unclassified_reason_code)
     summary_topic_raw = _summary_text((summary or {}).get("short_topic"), limit=120) if summary else None
     summary_topic = summary_topic_raw.rstrip(".") if summary_topic_raw else None
     summary_context = _summary_text((summary or {}).get("short_context"), limit=280) if summary else None
@@ -9041,7 +9095,7 @@ def _build_daily_call_row(
     signal_text = _summary_text(getattr(artifact.interaction, "text", None), limit=500)
     scenario_type = classification.get("scenario_type")
     context_selection = _select_call_list_context(
-        status=status,
+        status=call_list_status,
         call_type=str(call_type or "").strip() or None,
         scenario_type=str(scenario_type or "").strip() or None,
         deadline=deadline,
@@ -9050,8 +9104,12 @@ def _build_daily_call_row(
         signal_text=signal_text,
         summary_topic=summary_topic,
         summary_context=summary_context,
-        unclassified_status_label=unclassified_status_label,
-        unclassified_context_label=unclassified_context_label,
+        unclassified_status_label=call_list_unclassified_status_label,
+        unclassified_context_label=call_list_unclassified_context_label,
+    )
+    call_list_status_conflict = (
+        call_list_status_selection["source"] == "report_evidence.business_outcome"
+        and call_list_status != status
     )
     return {
         "interaction_id": str(artifact.interaction.id),
@@ -9067,6 +9125,16 @@ def _build_daily_call_row(
         "call_type": call_type,
         "scenario_type": scenario_type,
         "status": status,
+        "resolver_status": status,
+        "resolver_reason_code": outcome.reason_code,
+        "resolver_confidence": outcome.confidence,
+        "call_list_status": call_list_status,
+        "call_list_status_source": call_list_status_selection["source"],
+        "call_list_status_fallback_reason": call_list_status_selection["fallback_reason"],
+        "call_list_status_conflict_with_resolver": call_list_status_conflict,
+        "llm2_business_outcome_status": call_list_status_selection["raw_status"],
+        "llm2_business_outcome_reason": (llm2_business_outcome or {}).get("reason"),
+        "llm2_business_outcome_confidence": (llm2_business_outcome or {}).get("confidence"),
         "next_step": next_step,
         "deadline": deadline,
         "reason": reason,
@@ -9075,6 +9143,10 @@ def _build_daily_call_row(
         "unclassified_reason_label": unclassified_reason_label,
         "unclassified_status_label": unclassified_status_label,
         "unclassified_context_label": unclassified_context_label,
+        "call_list_unclassified_reason_code": call_list_unclassified_reason_code,
+        "call_list_unclassified_reason_label": call_list_unclassified_reason_label,
+        "call_list_unclassified_status_label": call_list_unclassified_status_label,
+        "call_list_unclassified_context_label": call_list_unclassified_context_label,
         "business_outcome_reason_code": outcome.reason_code,
         "business_outcome_evidence": outcome.evidence,
         "business_outcome_confidence": outcome.confidence,
@@ -10741,6 +10813,73 @@ def _valid_call_report_summary_for_interaction(
     summary = _valid_call_report_summary_from_entry(entry)
     evidence = entry.get("report_evidence") if summary is not None else None
     return summary, dict(evidence) if isinstance(evidence, dict) else None
+
+
+CALL_LIST_LLM2_STATUS_MAP = {
+    "agreement": "agreed",
+    "rescheduled": "rescheduled",
+    "refusal": "refusal",
+    "open": "open",
+    "tech_service": "tech_service",
+}
+
+
+def _valid_business_outcome_from_entry(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not entry or not entry.get("report_evidence_valid"):
+        return None
+    evidence = entry.get("report_evidence")
+    if not isinstance(evidence, dict):
+        return None
+    outcome = evidence.get("business_outcome")
+    return dict(outcome) if isinstance(outcome, dict) and outcome else None
+
+
+def _valid_business_outcome_for_interaction(
+    *,
+    interaction_id: str | None,
+    report_evidence_index: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not interaction_id or not report_evidence_index:
+        return None
+    return _valid_business_outcome_from_entry(report_evidence_index.get(str(interaction_id)) or {})
+
+
+def _call_list_status_from_llm2_business_outcome(
+    outcome: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw_status = str((outcome or {}).get("status") or "").strip()
+    if not raw_status:
+        return {
+            "status": None,
+            "unclassified_reason_code": None,
+            "source": "business_outcome_resolver",
+            "raw_status": None,
+            "fallback_reason": "missing_llm2_business_outcome",
+        }
+    if raw_status == "not_suitable":
+        return {
+            "status": None,
+            "unclassified_reason_code": "semantic_empty",
+            "source": "report_evidence.business_outcome",
+            "raw_status": raw_status,
+            "fallback_reason": None,
+        }
+    mapped = CALL_LIST_LLM2_STATUS_MAP.get(raw_status)
+    if mapped:
+        return {
+            "status": mapped,
+            "unclassified_reason_code": None,
+            "source": "report_evidence.business_outcome",
+            "raw_status": raw_status,
+            "fallback_reason": None,
+        }
+    return {
+        "status": None,
+        "unclassified_reason_code": None,
+        "source": "business_outcome_resolver",
+        "raw_status": raw_status,
+        "fallback_reason": "invalid_llm2_business_outcome_status",
+    }
 
 
 def _known_client_quotes_from_evidence(evidence: dict[str, Any] | None) -> set[str]:

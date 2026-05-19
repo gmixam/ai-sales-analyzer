@@ -2482,15 +2482,16 @@ Some transcript scenes still label speaker context as `Контекст` instead
 
 ## Step DDC-9 — LLM2-Owned Call List Status And Context
 
-**Status:** planned.
+**Status:** DONE 2026-05-19.
 
-**Decision:** keep this step deliberately simple. Do not add LLM3, a new composer, or a heavy router for `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. For this block, LLM2 is the source of truth for the manager-facing row meaning: status, `short_topic`, and `short_context`. Report Layer only validates display safety and records diagnostics.
+**Decision:** keep this step deliberately simple. Do not add LLM3, a new composer, or a heavy router for `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. For this block, LLM2 is the source of truth for the manager-facing row meaning: status column, `short_topic`, and `short_context`. Report Layer only validates display safety and records diagnostics.
 
 **Goal:** the call list should become a compact daily log: who called, what the call was about, and how it ended.
 
-**Mechanism requirements:**
+**Implemented mechanism:**
 
-- Use LLM2-derived outcome from `report_evidence.business_outcome` or a compatible persisted LLM2 outcome source for `payload.call_list[].status`.
+- Use LLM2-derived outcome from `report_evidence.business_outcome` for the call-list status column via `payload.call_list[].call_list_status`.
+- Keep `payload.call_list[].status` as resolver status for internal dependencies; this avoids changing money blocks, warm pipeline, tomorrow follow-up, readiness, and coaching filters.
 - Keep `call_report_summary.short_topic` as `Тип / суть`.
 - Keep `call_report_summary.short_context` as `Контекст`.
 - Preserve simple display guardrails:
@@ -2502,6 +2503,7 @@ Some transcript scenes still label speaker context as `Контекст` instead
   - rows using LLM2 outcome;
   - rows falling back to deterministic status;
   - invalid topic/context values rejected by guardrails.
+- Renderers now prefer `call_list_status` / `call_list_unclassified_*` for the call-list status column while leaving existing row status available for diagnostics and downstream logic.
 
 **Out of scope:**
 
@@ -2531,3 +2533,19 @@ Some transcript scenes still label speaker context as `Контекст` instead
 - Rows whose LLM2 meaning is refusal/not-now/no-budget/no-interest do not render as `Договорённость`.
 - `Тип / суть` and `Контекст` continue to come from LLM2 `short_topic` / `short_context` when valid.
 - Fallback remains deterministic and diagnostic when LLM2 row fields are invalid or missing.
+
+**Verification 2026-05-19:**
+
+- Focused DDC-9/call-list tests: `8 passed, 189 deselected`.
+- Follow-up regression: `5 passed, 192 deselected, 5 subtests passed`.
+- `python3 -m py_compile core/app/agents/calls/reporting.py core/app/agents/calls/report_templates.py` passed.
+- `node --check scripts/generate_docx_report.js` passed.
+- Ready-data-only preview for `2026-05-18`:
+  - Алишер: `llm2_status_used=6/6`, resolver fallback `0`, display conflicts fixed `5`;
+  - Тимур: `llm2_status_used=22/25`, resolver fallback `3`, display conflicts fixed `15`;
+  - Толеген: `llm2_status_used=19/23`, resolver fallback `4`, display conflicts fixed `9`.
+- Checked examples:
+  - Тимур `не продлевать договор` now renders as `Отказ`, not `Договорённость`;
+  - Тимур `не заинтересован` now renders as `Отказ`, not `Договорённость`;
+  - Толеген `не рассматривает ЭДО` now renders as `Отказ`, not `Перенос`;
+  - Толеген service issue with saving a document now renders as `Тех/сервис`, not `Перенос`.

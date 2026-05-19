@@ -614,7 +614,14 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                     _manager_reader_value(
                         row.get("call_list_context")
                         or _call_context_label(
-                            str(row.get("status") or ""),
+                            str(
+                                (
+                                    row.get("call_list_status")
+                                    if "call_list_status" in row
+                                    else row.get("status")
+                                )
+                                or ""
+                            ),
                             row.get("deadline"),
                             row.get("reason"),
                             row=row,
@@ -3887,9 +3894,14 @@ def _call_status_label(value: Any) -> str:
 
 def _call_list_status_label(row: dict[str, Any]) -> str:
     """Return manager-facing status for one call-list row."""
-    if row.get("status") is None:
-        return str(row.get("unclassified_status_label") or "Без разбора")
-    return _call_status_label(row.get("status"))
+    status = row.get("call_list_status") if "call_list_status" in row else row.get("status")
+    if status is None:
+        return str(
+            row.get("call_list_unclassified_status_label")
+            or row.get("unclassified_status_label")
+            or "Без разбора"
+        )
+    return _call_status_label(status)
 
 
 def _call_level_label(value: Any) -> str:

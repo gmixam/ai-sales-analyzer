@@ -674,19 +674,32 @@ function dataFromBundle(bundle) {
     let status;
     if (payloadCall) {
       const ct = (payloadCall.call_type || "").toLowerCase();
-      const st = (payloadCall.status || "").toLowerCase();
-      if (ct === "support" || ct === "internal") {
+      const st = ((payloadCall.call_list_status ?? payloadCall.status) || "").toLowerCase();
+      if (statusLabelMap[st]) {
+        status = statusLabelMap[st];
+      } else if (ct === "support" || ct === "internal") {
         status = "Тех/сервис";
       } else {
-        status = statusLabelMap[st] || payloadCall.unclassified_status_label || unclassifiedStatusMap[payloadCall.unclassified_reason_code] || "Без разбора";
+        status = payloadCall.call_list_unclassified_status_label
+          || payloadCall.unclassified_status_label
+          || unclassifiedStatusMap[payloadCall.call_list_unclassified_reason_code]
+          || unclassifiedStatusMap[payloadCall.unclassified_reason_code]
+          || "Без разбора";
       }
     } else {
       // Fallback to pre-rendered section row for forward/backward compatibility
       status = (oldShape ? row[5] : row[4]) || "Без разбора";
     }
     const rawContext = (oldShape ? row[4] : row[3]) || "—";
-    const context = (payloadCall && !payloadCall.status)
-      ? (payloadCall.unclassified_context_label || unclassifiedContextMap[payloadCall.unclassified_reason_code] || "Нет готового разбора")
+    const payloadStatus = payloadCall ? (payloadCall.call_list_status ?? payloadCall.status) : null;
+    const context = (payloadCall && !payloadStatus)
+      ? (
+          payloadCall.call_list_unclassified_context_label
+          || payloadCall.unclassified_context_label
+          || unclassifiedContextMap[payloadCall.call_list_unclassified_reason_code]
+          || unclassifiedContextMap[payloadCall.unclassified_reason_code]
+          || "Нет готового разбора"
+        )
       : ((status === "Без разбора" && rawContext === "—") ? "Нет готового разбора" : rawContext);
     return {
       n: row[0] || "—",

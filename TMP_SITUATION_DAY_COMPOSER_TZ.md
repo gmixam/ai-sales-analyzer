@@ -1987,14 +1987,14 @@ Report Layer должен:
 
 ## Следующий шаг: `Список всех звонков` как LLM2-owned дневной журнал
 
-Статус: запланировано, перед реализацией.
+Статус: выполнено 2026-05-19.
 
 Ключевое решение:
 
 - для этого блока не добавляем LLM3/composer;
 - не строим новый тяжелый router поверх уже существующего;
 - LLM2 должен быть главным источником manager-facing смысла строки:
-  - `Статус`;
+  - статус в колонке отчета;
   - `Тип / суть`;
   - `Контекст`;
   - при наличии — короткий следующий шаг.
@@ -2008,8 +2008,9 @@ Report Layer должен:
 
 Требования к механизму:
 
-- взять статус строки из LLM2-derived outcome в `report_evidence.business_outcome` / совместимом LLM2 outcome source;
-- `BusinessOutcomeResolver` для этого блока не должен переопределять смысл, если LLM2 дал валидный outcome;
+- взять статус колонки из LLM2-derived outcome в `report_evidence.business_outcome`;
+- сохранить `payload.call_list[].status` как resolver-status для внутренних зависимостей, а manager-facing статус списка хранить в `payload.call_list[].call_list_status`;
+- `BusinessOutcomeResolver` для отображения списка не должен переопределять смысл, если LLM2 дал валидный outcome;
 - `short_topic` и `short_context` брать из `report_evidence.call_report_summary`;
 - сохранить простые guardrails:
   - не показывать generic topic: `Обсуждение`, `Разговор`, `Звонок`, `Продажи`, `Холодный звонок`;
@@ -2020,7 +2021,7 @@ Report Layer должен:
   - STT;
   - LLM2 prompt;
   - LLM3;
-  - PDF layout;
+- PDF layout;
   - Telegram delivery;
   - `Кого взять завтра`, деньги, pipeline и readiness.
 
@@ -2042,9 +2043,9 @@ Report Layer должен:
 
 - сейчас `payload.call_list[].status` берется из `BusinessOutcomeResolver`, а не из LLM2 `report_evidence.business_outcome`;
 - LLM2 уже сохраняет подходящий outcome contract: `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, `not_suitable`;
-- минимальный путь: добавить reader валидного `business_outcome` рядом с reader-ом `call_report_summary` и переключить только статус строки списка звонков;
+- минимальный путь: добавить reader валидного `business_outcome` рядом с reader-ом `call_report_summary` и переключить только manager-facing статус строки списка звонков;
 - `BusinessOutcomeResolver` глобально не менять;
-- renderer не менять, потому что он уже отображает готовый payload status;
+- renderer должен предпочитать `call_list_status` для колонки статуса, но не менять layout;
 - в тестах добавить targeted cases для LLM2-owned status и fallback; старые красные тесты вокруг unclassified buckets не смешивать с этой задачей.
 
 Acceptance для реализации:
@@ -2054,3 +2055,34 @@ Acceptance для реализации:
 - `Тип / суть` и `Контекст` продолжают использовать LLM2 `short_topic` / `short_context`;
 - если LLM2 summary невалидный, fallback остается аккуратным и диагностируемым;
 - diagnostics должны показывать, сколько строк использовали LLM2 outcome и сколько ушли в fallback.
+
+Реализация:
+
+- добавлен reader валидного `report_evidence.business_outcome`;
+- добавлен status adapter:
+  - `agreement -> agreed`;
+  - `rescheduled -> rescheduled`;
+  - `refusal -> refusal`;
+  - `open -> open`;
+  - `tech_service -> tech_service`;
+  - `not_suitable -> Не подходит для разбора`;
+- `call_list_status` используется для отображения статуса в Python render model и DOCX-first renderer;
+- `status` / `resolver_status` сохранены для внутренних зависимых блоков;
+- добавлена диагностика `call_list_status_quality`.
+
+Проверка:
+
+- focused DDC-9/call-list tests: `8 passed, 189 deselected`;
+- follow-up regression: `5 passed, 192 deselected, 5 subtests passed`;
+- `py_compile` и `node --check` прошли;
+- preview `2026-05-18`:
+  - Алишер: LLM2 status `6/6`, fallback `0`, conflicts `5`;
+  - Тимур: LLM2 status `22/25`, fallback `3`, conflicts `15`;
+  - Толеген: LLM2 status `19/23`, fallback `4`, conflicts `9`.
+
+Примеры, которые исправились:
+
+- Тимур: `Клиент уведомил о не продлении договора` теперь `Отказ`, а не `Договорённость`;
+- Тимур: `Клиент не заинтересован` теперь `Отказ`, а не `Договорённость`;
+- Толеген: `Клиент не рассматривает ЭДО` теперь `Отказ`, а не `Перенос`;
+- Толеген: сервисная проблема с сохранением документа теперь `Тех/сервис`, а не `Перенос`.
