@@ -5063,27 +5063,7 @@ def build_manager_daily_payload(
         selected_situation_call_id=situation_selected_call_id,
     )
     situation_rejected_call_ids = _situation_day_rejected_call_ids(report_evidence_situation)
-    call_breakdown = _build_call_breakdown_from_evidence_registry_route(
-        artifacts=coaching_content_artifacts,
-        routed_items=report_block_routes.get("call_breakdown") or [],
-        score_by_stage=score_by_stage,
-    )
-    if call_breakdown is None:
-        call_breakdown = _build_call_breakdown_from_report_evidence(
-            artifacts=coaching_content_artifacts,
-            report_evidence_index=report_evidence_index,
-            call_list_by_interaction_id=call_list_by_interaction_id,
-            score_by_stage=score_by_stage,
-            daily_focus=daily_coaching_focus,
-            excluded_call_ids=situation_rejected_call_ids,
-            preferred_call_id=situation_selected_call_id,
-        )
-    if call_breakdown is None:
-        call_breakdown = _build_call_breakdown(
-            improve_items=improve_items,
-            artifacts=coaching_content_artifacts,
-            daily_focus=daily_coaching_focus,
-        )
+    call_breakdown = None
     legacy_voice_of_customer = _build_voice_of_customer_from_report_evidence(
         artifacts=coaching_content_artifacts,
         report_evidence_index=report_evidence_index,
@@ -5230,7 +5210,6 @@ def build_manager_daily_payload(
         or (situation_evidence_quote or {}).get("call_id")
         or ""
     ).strip()
-    call_breakdown_call_id = str((call_breakdown or {}).get("call_id") or "").strip()
     if (
         situation_day_evidence_packet is not None
         and situation_day_evidence_packet.get("status") == "verified"
@@ -5248,11 +5227,7 @@ def build_manager_daily_payload(
             and composer_breakdown.get("rows")
         ):
             call_breakdown = composer_breakdown
-        elif (
-            not call_breakdown
-            or call_breakdown_call_id != situation_call_id_for_breakdown
-            or call_breakdown_call_id in situation_rejected_call_ids
-        ):
+        elif situation_call_id_for_breakdown not in situation_rejected_call_ids:
             situation_packet_breakdown = _build_call_breakdown_from_situation_day_packet(
                 situation_day_evidence_packet=situation_day_evidence_packet,
                 situation_day_coaching_view=situation_day_coaching_view,

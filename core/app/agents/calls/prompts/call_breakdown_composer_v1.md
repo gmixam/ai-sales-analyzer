@@ -75,7 +75,8 @@ The model receives a bounded JSON payload:
   },
   "composition_rules": {
     "complex_b2b_detected": true,
-    "verified_min_moments": 3,
+    "verified_min_moments": 2,
+    "verified_target_moments": 3,
     "verified_max_moments": 4,
     "rows_required": true,
     "fragment_context_min_chars": 90,
@@ -163,10 +164,11 @@ Report Layer `call_breakdown` block:
   products, integrations, legal risks, meetings, demo agreements, or next steps.
 - Keep `call_id` equal to `selected_call.call_id` everywhere. Do not switch to
   another call.
-- Return 2 to 4 moments for `status="verified"`. For complex B2B calls with
+- Return 1 to 4 moments for `status="verified"`. For simple calls, one strong
+  grounded moment is better than two weak artificial moments. For complex B2B calls with
   several entities, roles, access rights, legal constraints, or implementation
-  workflow, return at least 3 grounded moments unless the input truly contains
-  fewer than 3 coachable steps.
+  workflow, prefer 3 grounded moments, but do not invent weak extra moments:
+  return at least 2 grounded moments if the input supports only two.
 - Follow `composition_rules` exactly. If
   `composition_rules.complex_b2b_detected=true`, `status="verified"` must have
   at least `composition_rules.verified_min_moments` moments and the same number
@@ -203,7 +205,8 @@ Report Layer `call_breakdown` block:
 For `status="verified"` the answer must pass all checks:
 
 1. `call_id` is present and matches `selected_call.call_id`.
-2. There are 2 to 4 moments; complex B2B calls normally require 3 moments.
+2. There are 1 to 4 moments; complex B2B calls normally target 3 moments and
+   require at least `composition_rules.verified_min_moments`.
 3. Every moment has `what`, `moment_summary`, `better`, `proof_type`,
    `proof_explanation`, and `evidence_refs`.
 4. Every row has four cells: moment, what happened, fragment/context,

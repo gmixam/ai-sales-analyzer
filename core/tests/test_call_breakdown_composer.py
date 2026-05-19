@@ -180,16 +180,88 @@ def _eldar_b2b_inputs(call_id: str) -> dict:
     }
 
 
+def _simple_followup_inputs(call_id: str) -> dict:
+    selected_call = {
+        "call_id": call_id,
+        "client_label": "Айгуль",
+        "client_phone": "+77071112233",
+        "date_label": "14.05.2026",
+        "time_label": "11:20",
+        "client_call_reference": "Айгуль • 14.05.2026 • 11:20",
+        "stage_code": "completion_next_step",
+        "stage_name": "Завершение и следующий шаг",
+    }
+    turns = [
+        {
+            "speaker": "client",
+            "text": "Мне нужно понять стоимость и когда можно начать работу.",
+        },
+        {
+            "speaker": "manager",
+            "text": "Я уточню расчет и завтра вам перезвоню.",
+        },
+        {
+            "speaker": "client",
+            "text": "Хорошо, буду ждать вашего звонка.",
+        },
+    ]
+    transcript_scenes = [
+        {
+            "scene_id": "closing",
+            "call_id": call_id,
+            "stage_code": "completion_next_step",
+            "purpose": "next_step",
+            "summary": "Клиент попросил стоимость и срок старта, менеджер ответил общим обещанием перезвонить завтра.",
+            "turns": turns,
+            "evidence_refs": [
+                {
+                    "ref_id": "closing:vague-callback",
+                    "call_id": call_id,
+                    "scene_id": "closing",
+                    "turn_indexes": [0, 1, 2],
+                    "quote": "Я уточню расчет и завтра вам перезвоню.",
+                }
+            ],
+        }
+    ]
+    situation_evidence_packet = {
+        "status": "verified",
+        "call_id": call_id,
+        "problem_title": "Следующий шаг остался общим",
+        "client_context": "Клиент спросил стоимость и срок начала работы.",
+        "observed_manager_behavior": "Менеджер ответил общим обещанием уточнить расчет и перезвонить завтра.",
+        "missing_action": "Не был назван точный срок возврата, формат продолжения и что именно клиент получит.",
+        "causal_link": "Без конкретного следующего шага клиент не понимает, когда и с чем менеджер вернется.",
+        "manager_lesson": "Закрывать разговор конкретным временем, результатом и форматом продолжения.",
+        "dialogue_excerpt": {"call_id": call_id, "turns": turns},
+        "proof_type": "sequence_inference",
+        "proof_strength": "medium",
+    }
+    llm2_facts = {
+        "business_outcome": "Клиент ждет расчет стоимости и срок старта.",
+        "call_report_summary": "Менеджер пообещал уточнить и перезвонить, но не закрепил конкретику.",
+        "score_by_stage": [
+            {"stage_code": "completion_next_step", "stage_name": "Завершение и следующий шаг", "score": 52}
+        ],
+    }
+    return {
+        "selected_call": selected_call,
+        "transcript_scenes": transcript_scenes,
+        "situation_evidence_packet": situation_evidence_packet,
+        "llm2_facts": llm2_facts,
+    }
+
+
 class CallBreakdownComposerPromptTests(unittest.TestCase):
     def test_prompt_contract_requires_grounding_and_non_duplication(self) -> None:
         text = PROMPT_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("2 to 4 moments", text)
+        self.assertIn("1 to 4 moments", text)
         self.assertIn("evidence_refs", text)
         self.assertIn("Do not invent", text)
         self.assertIn("Do not duplicate Situation Day", text)
         self.assertIn("mini-scene", text)
-        self.assertIn("complex B2B calls normally require 3 moments", text)
+        self.assertIn("complex B2B calls normally target 3 moments", text)
         self.assertIn('`rows` is mandatory', text)
         self.assertIn("Follow `composition_rules` exactly", text)
         self.assertIn("Treat `transcript_scenes` as the main evidence source", text)
@@ -291,7 +363,8 @@ class CallBreakdownComposerTests(unittest.TestCase):
 
         rendered_rows = " ".join(" ".join(map(str, row)) for row in result.get("rows") or []).lower()
         self.assertNotIn("coachable-момент", rendered_rows)
-        self.assertIn("менеджер услышал важный сигнал клиента", rendered_rows)
+        self.assertIn("срок", rendered_rows)
+        self.assertIn("сегодня до 17:00", rendered_rows)
 
     def test_llm3_payload_preserves_selected_verified_call_scope(self) -> None:
         module = _load_call_breakdown_composer_module()
@@ -313,8 +386,71 @@ class CallBreakdownComposerTests(unittest.TestCase):
             all(scene.get("call_id") == call_id for scene in payload["transcript_scenes"])
         )
         self.assertTrue(payload["composition_rules"]["complex_b2b_detected"])
-        self.assertEqual(payload["composition_rules"]["verified_min_moments"], 3)
+        self.assertEqual(payload["composition_rules"]["verified_min_moments"], 2)
+        self.assertEqual(payload["composition_rules"]["verified_target_moments"], 3)
         self.assertIn("required_output_keys", payload)
+
+    def test_llm3_payload_allows_one_grounded_moment_for_simple_call(self) -> None:
+        module = _load_call_breakdown_composer_module()
+        call_id = str(uuid4())
+        inputs = _simple_followup_inputs(call_id)
+
+        payload = module.build_call_breakdown_llm3_payload(
+            selected_call=inputs["selected_call"],
+            transcript_scenes=inputs["transcript_scenes"],
+            situation_evidence_packet=inputs["situation_evidence_packet"],
+            llm2_facts=inputs["llm2_facts"],
+        )
+
+        self.assertFalse(payload["composition_rules"]["complex_b2b_detected"])
+        self.assertEqual(payload["composition_rules"]["verified_min_moments"], 1)
+
+    def test_llm3_single_simple_moment_is_accepted(self) -> None:
+        module = _load_call_breakdown_composer_module()
+        call_id = str(uuid4())
+        inputs = _simple_followup_inputs(call_id)
+
+        def fake_request(_payload):
+            fragment = module._join_turns(inputs["transcript_scenes"][0]["turns"])
+            return {
+                "status": "verified",
+                "call_id": call_id,
+                "rows": [
+                    [
+                        "Момент 1 - Общий следующий шаг",
+                        "Что было не так: Менеджер не закрепил точное время возврата и результат для клиента.",
+                        f"Фрагмент: {fragment}",
+                        "Сказать: завтра до 12:00 вернусь с расчетом стоимости и предложу время короткого созвона.",
+                    ],
+                ],
+                "moments": [
+                    {
+                        "moment": "Момент 1 - Общий следующий шаг",
+                        "call_id": call_id,
+                        "what": "Менеджер не закрепил точное время возврата и результат для клиента.",
+                        "moment_summary": "Следующий шаг остался общим обещанием.",
+                        "supporting_quote": fragment,
+                        "better": "Сказать: завтра до 12:00 вернусь с расчетом стоимости и предложу время короткого созвона.",
+                        "proof_type": "sequence_inference",
+                        "proof_explanation": "В мини-сцене клиент ждет расчет, а менеджер обещает перезвонить без времени и результата.",
+                        "evidence_refs": inputs["transcript_scenes"][0]["evidence_refs"],
+                    },
+                ],
+            }
+
+        module._request_llm3_call_breakdown = fake_request
+        result = module.compose_call_breakdown(
+            selected_call=inputs["selected_call"],
+            transcript_scenes=inputs["transcript_scenes"],
+            situation_evidence_packet=inputs["situation_evidence_packet"],
+            llm2_facts=inputs["llm2_facts"],
+            llm3_enabled=True,
+        )
+
+        self.assertTrue(result["selection_diagnostics"]["llm3_used"])
+        self.assertFalse(result["selection_diagnostics"]["deterministic_fallback_used"])
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertIn("завтра до 12:00", result["rows"][0][3])
 
     def test_weak_llm3_b2b_breakdown_falls_back_to_deterministic_result(self) -> None:
         module = _load_call_breakdown_composer_module()
@@ -332,12 +468,6 @@ class CallBreakdownComposerTests(unittest.TestCase):
                         "Фрагмент: А, 16 школ нужно?",
                         "Сказать: резюмировать требования.",
                     ],
-                    [
-                        "Момент 2 - Следующий шаг",
-                        "Менеджер не закрепил следующий шаг.",
-                        "Фрагмент: Давайте сейчас уточню.",
-                        "Сказать: назначить демо-созвон.",
-                    ],
                 ],
                 "moments": [
                     {
@@ -350,17 +480,6 @@ class CallBreakdownComposerTests(unittest.TestCase):
                         "proof_type": "sequence_inference",
                         "proof_explanation": "Фраза показывает незакрепленный контекст.",
                         "evidence_refs": [{"quote": "А, 16 школ нужно?"}],
-                    },
-                    {
-                        "moment": "Момент 2 - Следующий шаг",
-                        "call_id": call_id,
-                        "what": "Менеджер не закрепил следующий шаг.",
-                        "moment_summary": "Пробел в управлении продолжением.",
-                        "supporting_quote": "Давайте сейчас уточню.",
-                        "better": "Сказать: назначить демо-созвон.",
-                        "proof_type": "sequence_inference",
-                        "proof_explanation": "Фраза показывает общий возврат без плана.",
-                        "evidence_refs": [{"quote": "Давайте сейчас уточню."}],
                     },
                 ],
             }
@@ -379,7 +498,7 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertFalse(diagnostics["llm3_used"])
         self.assertEqual(
             diagnostics["llm3"]["llm3_rejection_reason"],
-            "complex_b2b_requires_three_moments",
+            "complex_b2b_requires_two_moments",
         )
         self.assertGreaterEqual(len(result["rows"]), 3)
 

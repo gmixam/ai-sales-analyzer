@@ -391,7 +391,8 @@ def build_call_breakdown_llm3_payload(
         "llm2_facts": facts,
         "composition_rules": {
             "complex_b2b_detected": complex_b2b_detected,
-            "verified_min_moments": 3 if complex_b2b_detected else 2,
+            "verified_min_moments": 2 if complex_b2b_detected else 1,
+            "verified_target_moments": 3 if complex_b2b_detected else 1,
             "verified_max_moments": 4,
             "rows_required": True,
             "fragment_context_min_chars": 90,
@@ -589,16 +590,18 @@ def _normalize_llm3_call_breakdown(
 
     moments = [_as_dict(item) for item in raw.get("moments") or [] if isinstance(item, dict)]
     rows = [row for row in raw.get("rows") or [] if isinstance(row, list)]
-    if not (2 <= len(moments) <= 4):
+    complex_b2b = _payload_is_complex_b2b(payload)
+    min_moments = 2 if complex_b2b else 1
+    if complex_b2b and len(moments) < 2:
+        return None, "complex_b2b_requires_two_moments"
+    if not (min_moments <= len(moments) <= 4):
         return None, "moments_count_out_of_range"
-    if not (2 <= len(rows) <= 4):
+    if not (min_moments <= len(rows) <= 4):
         rows = _rows_from_llm3_moments(moments)
-    if not (2 <= len(rows) <= 4):
+    if not (min_moments <= len(rows) <= 4):
         return None, "rows_count_out_of_range"
     if any(len(row) != 4 for row in rows):
         return None, "row_shape_invalid"
-    if _payload_is_complex_b2b(payload) and len(moments) < 3:
-        return None, "complex_b2b_requires_three_moments"
     rows = _repair_weak_rows_with_payload_context(rows, moments, payload)
     rows, moments, counter_evidence_diagnostics = _repair_counter_evidence_claims(
         rows=rows,
@@ -745,7 +748,11 @@ def _repair_weak_rows_with_payload_context(
     for index, row in enumerate(rows):
         next_row = list(row)
         fragment = _strip_fragment_prefix(next_row[2] if len(next_row) > 2 else "")
-        if len(fragment) < 90 or ("уточню" in _norm(fragment) and len(fragment) < 160):
+        if (
+            len(fragment) < 90
+            or ("уточню" in _norm(fragment) and len(fragment) < 160)
+            or not _looks_like_connected_dialogue(fragment)
+        ):
             moment = moments[index] if index < len(moments) else {}
             quote = _first_text(
                 fragment,
@@ -968,9 +975,17 @@ def _first_weak_context_row_index(rows: list[list[Any]]) -> int | None:
         fragment = _strip_fragment_prefix(row[2] if len(row) > 2 else "")
         if len(fragment) < 90:
             return index
-        if "уточню" in _norm(fragment) and len(fragment) < 160:
+        if "уточню" in _norm(fragment) and len(fragment) < 160 and not _looks_like_connected_dialogue(fragment):
             return index
     return None
+
+
+def _looks_like_connected_dialogue(value: Any) -> bool:
+    text = _text(value)
+    if not text:
+        return False
+    speaker_hits = len(re.findall(r"\b(?:клиент|менеджер|оператор|customer|manager)\s*:", text, flags=re.IGNORECASE))
+    return speaker_hits >= 2
 
 
 def _strip_fragment_prefix(value: Any) -> str:

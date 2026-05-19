@@ -2384,4 +2384,36 @@ Score each report 0-2:
 
 Target: at least `10/12` per manager. `insufficient` is acceptable only with clear diagnostics and no strong manager-gap available.
 
-**Out of scope:** full report rewrite, score changes, PDF redesign, STT role resolver, historical DB migration, `Голос клиента`/`Разбор звонка` redesign before Situation Day quality is accepted.
+**Out of scope:** full report rewrite, score changes, PDF redesign, STT role resolver, historical DB migration, `Голос клиента` redesign before Situation Day quality is accepted.
+
+## Step DDC-6 — Make Call Breakdown Follow Verified Situation Day
+
+**Status:** implemented as the next bounded step after Situation Day quality was accepted for UI review.
+
+**Goal:** `Разбор звонка` must explain the same verified call selected by `Ситуация дня`, instead of being authored earlier from registry/report-evidence/legacy fallbacks.
+
+**Mechanism:**
+
+- Final `call_breakdown` is no longer prebuilt from evidence-registry/report-evidence/legacy routes.
+- Primary route is now `verified Situation Day -> CallBreakdownComposer payload -> LLM3 -> Report Layer normalization/quality gate -> render`.
+- LLM3 is allowed to return the natural number of grounded moments:
+  - simple call: minimum 1 strong moment;
+  - complex B2B call: minimum 2 moments, target 3;
+  - max 4 moments.
+- Long isolated fragments are repaired from `transcript_scenes` into mini-scenes when possible.
+- Weak LLM3 output still falls back, but a good LLM3 response is no longer rejected only because it has fewer artificial rows.
+
+**Verification 2026-05-19:**
+
+- Local focused unittest: `18 passed`.
+- Container focused pytest: `18 passed`.
+- Ready-data-only preview for `2026-05-18`:
+  - Алишер: same Situation Day call, `llm3_used=true`, fallback disabled;
+  - Тимур: same Situation Day call, `llm3_used=true`, fallback disabled;
+  - Толеген: same Situation Day call, `llm3_used=true`, fallback disabled.
+
+**Residual risk:**
+
+Some transcript scenes still label speaker context as `Контекст` instead of confidently separating `Клиент` and `Менеджер`. This belongs to a separate STT/diarization role-labeling task, not to Call Breakdown composition.
+
+**Next candidate:** `Голос клиента`, because it can suffer from the same class of problem: isolated customer phrases without enough surrounding context and recommendations that are not proven by the scene.

@@ -1868,3 +1868,40 @@ Report Layer должен:
 - после первого pilot preview блок все еще был слабым, потому что candidate мог содержать только одну реплику;
 - механизм усилен на уровне input/candidate builder: теперь `Что произошло` строится не как одиночная цитата, а как понятное описание ситуации с контекстом и доказательством;
 - оставшееся ограничение: `role_confidence` остается `low`, если persisted evidence содержит только одну роль. Это не решается текущим шагом без отдельного STT/diarization role resolver.
+
+## Следующий шаг после принятия `Ситуации дня`: `Разбор звонка`
+
+Статус: выполнено как bounded system change, проверяем на следующем UI-прогоне.
+
+Цель:
+
+- `Разбор звонка` должен разбирать тот же звонок, который выбран и verified в `Ситуации дня`;
+- блок должен раскладывать ошибку менеджера на конкретные моменты: что было не так, какой контекст это доказывает, что сказать/сделать иначе;
+- LLM3 не должен дублировать `Ситуацию дня`, а должен превращать выбранную ситуацию в практический разбор по шагам.
+
+Изменения в механизме:
+
+- final `call_breakdown` больше не строится заранее из registry/report_evidence/legacy fallback;
+- primary route: `verified Situation Day -> CallBreakdownComposer payload -> LLM3 -> Report Layer normalization/quality gate -> render`;
+- fallback остается только если LLM3 не дал пригодный результат, но теперь не перебивает хороший LLM3 из-за искусственного требования по количеству строк;
+- простой звонок может иметь 1 сильный доказанный момент;
+- complex B2B звонок имеет минимум 2 доказанных момента и целевой ориентир 3, без выдумывания слабого третьего момента;
+- одиночные фрагменты, даже если они длинные, расширяются до мини-сцены из `transcript_scenes`, когда это возможно.
+
+Проверка:
+
+- локально: `python3 -m unittest core.tests.test_call_breakdown_composer core.tests.test_situation_day_daily_composer core.tests.test_report_templates_situation_day` -> 18 tests passed;
+- в контейнере: `docker compose exec -T api python -m pytest -q tests/test_call_breakdown_composer.py tests/test_situation_day_daily_composer.py tests/test_report_templates_situation_day.py` -> 18 tests passed;
+- ready-data-only preview за `2026-05-18`:
+  - Алишер: `same_call=true`, `llm3_used=true`, `fallback=false`, 1 row;
+  - Тимур: `same_call=true`, `llm3_used=true`, `fallback=false`, 1 row;
+  - Толеген: `same_call=true`, `llm3_used=true`, `fallback=false`, 2 rows.
+
+Оставшееся наблюдение:
+
+- в части transcript scenes роль собеседника всё еще может приходить как `Контекст`, а не `Клиент/Менеджер`;
+- это уже не проблема `Разбора звонка` как composer-а, а отдельная задача STT/diarization role resolver или post-STT role labeling.
+
+Следующий кандидат на перенос:
+
+- `Голос клиента`: сейчас в нем возможна та же системная проблема — одиночные реплики без контекста и рекомендации, которые не доказываются сценой.
