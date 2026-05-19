@@ -1984,3 +1984,73 @@ Report Layer должен:
 
 - пройти оставшиеся report blocks по той же логике evidence/action consistency: `Деньги на столе`, `Pipeline теплых лидов`, `Челлендж на завтра`, `Список всех звонков дня`;
 - цель: блок должен либо показывать доказанный actionable signal, либо скрываться/понижаться с диагностикой, а не генерировать слабую рекомендацию из формального статуса.
+
+## Следующий шаг: `Список всех звонков` как LLM2-owned дневной журнал
+
+Статус: запланировано, перед реализацией.
+
+Ключевое решение:
+
+- для этого блока не добавляем LLM3/composer;
+- не строим новый тяжелый router поверх уже существующего;
+- LLM2 должен быть главным источником manager-facing смысла строки:
+  - `Статус`;
+  - `Тип / суть`;
+  - `Контекст`;
+  - при наличии — короткий следующий шаг.
+- Report Layer не должен спорить с LLM2 по смыслу, а только защищать отображение от пустых, generic, обрезанных или технических значений.
+
+Цель:
+
+- `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` должен быть простой картой дня: кто звонил, о чем говорили, чем закончился звонок;
+- менеджер должен быстро вспомнить звонок без чтения больших блоков;
+- блок должен показать качество понимания LLM2 по каждому звонку.
+
+Требования к механизму:
+
+- взять статус строки из LLM2-derived outcome в `report_evidence.business_outcome` / совместимом LLM2 outcome source;
+- `BusinessOutcomeResolver` для этого блока не должен переопределять смысл, если LLM2 дал валидный outcome;
+- `short_topic` и `short_context` брать из `report_evidence.call_report_summary`;
+- сохранить простые guardrails:
+  - не показывать generic topic: `Обсуждение`, `Разговор`, `Звонок`, `Продажи`, `Холодный звонок`;
+  - не показывать обрезанный context с `...` / `…`;
+  - не показывать технические фрагменты и пустые значения;
+  - если LLM2 не дал валидную строку, использовать безопасный deterministic fallback и diagnostics.
+- не менять пока:
+  - STT;
+  - LLM2 prompt;
+  - LLM3;
+  - PDF layout;
+  - Telegram delivery;
+  - `Кого взять завтра`, деньги, pipeline и readiness.
+
+Задания агентам:
+
+1. Agent A — source path audit:
+   - проверить, откуда сейчас берется `payload.call_list[].status`;
+   - найти все LLM2 fields, где уже есть outcome/status: `report_evidence.business_outcome`, `follow_up`, `call_report_summary`, legacy fields;
+   - предложить минимальную замену только для `call_list` status source;
+   - указать функции и файлы для правки.
+
+2. Agent B — tests/acceptance audit:
+   - найти существующие тесты по `call_list` status/topic/context;
+   - предложить минимальные тесты, которые доказывают, что LLM2 outcome используется в `Списке всех звонков`;
+   - проверить, какие старые тесты нельзя ломать: call list dates, unclassified buckets, context guardrails, render columns;
+   - сформулировать acceptance criteria.
+
+Итог аудита агентов:
+
+- сейчас `payload.call_list[].status` берется из `BusinessOutcomeResolver`, а не из LLM2 `report_evidence.business_outcome`;
+- LLM2 уже сохраняет подходящий outcome contract: `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, `not_suitable`;
+- минимальный путь: добавить reader валидного `business_outcome` рядом с reader-ом `call_report_summary` и переключить только статус строки списка звонков;
+- `BusinessOutcomeResolver` глобально не менять;
+- renderer не менять, потому что он уже отображает готовый payload status;
+- в тестах добавить targeted cases для LLM2-owned status и fallback; старые красные тесты вокруг unclassified buckets не смешивать с этой задачей.
+
+Acceptance для реализации:
+
+- на preview `2026-05-18` статус в списке должен соответствовать LLM2 смыслу строки;
+- строки вида `клиент не заинтересован / не продлевает / нет бюджета` не должны отображаться как `Договорённость`, если LLM2 outcome говорит отказ/not-now;
+- `Тип / суть` и `Контекст` продолжают использовать LLM2 `short_topic` / `short_context`;
+- если LLM2 summary невалидный, fallback остается аккуратным и диагностируемым;
+- diagnostics должны показывать, сколько строк использовали LLM2 outcome и сколько ушли в fallback.

@@ -2479,3 +2479,55 @@ Some transcript scenes still label speaker context as `Контекст` instead
 - Regression case: `Клиент не проявил интереса к продукту. Срок возврата: 18 июн.` is rejected as `rescheduled_without_customer_reopen_signal`.
 
 **Next:** apply the same evidence/action consistency pattern to the remaining report blocks (`Деньги на столе`, warm pipeline, challenge, call list context) so each block either renders grounded actionable content or hides/degrades with diagnostics.
+
+## Step DDC-9 — LLM2-Owned Call List Status And Context
+
+**Status:** planned.
+
+**Decision:** keep this step deliberately simple. Do not add LLM3, a new composer, or a heavy router for `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`. For this block, LLM2 is the source of truth for the manager-facing row meaning: status, `short_topic`, and `short_context`. Report Layer only validates display safety and records diagnostics.
+
+**Goal:** the call list should become a compact daily log: who called, what the call was about, and how it ended.
+
+**Mechanism requirements:**
+
+- Use LLM2-derived outcome from `report_evidence.business_outcome` or a compatible persisted LLM2 outcome source for `payload.call_list[].status`.
+- Keep `call_report_summary.short_topic` as `Тип / суть`.
+- Keep `call_report_summary.short_context` as `Контекст`.
+- Preserve simple display guardrails:
+  - reject generic topics such as `Обсуждение`, `Разговор`, `Звонок`, `Продажи`, `Холодный звонок`;
+  - reject truncated contexts with `...` / `…`;
+  - reject empty, technical, or low-information display values;
+  - use deterministic fallback only when LLM2 did not provide a valid row value.
+- Add diagnostics for:
+  - rows using LLM2 outcome;
+  - rows falling back to deterministic status;
+  - invalid topic/context values rejected by guardrails.
+
+**Out of scope:**
+
+- no STT changes;
+- no LLM2 prompt changes in this step;
+- no LLM3/composer;
+- no PDF layout redesign;
+- no Telegram/delivery changes;
+- no changes to `Кого взять завтра`, money blocks, warm pipeline, readiness, or scheduler.
+
+**Agent tasks:**
+
+- Agent A: audit current `payload.call_list[].status` source path and identify the minimal code path to use LLM2 outcome only for call-list status.
+- Agent B: audit existing call-list tests and define the smallest regression set for LLM2-owned status/topic/context without breaking call-list dates, unclassified buckets, context guardrails, or render columns.
+
+**Agent findings 2026-05-19:**
+
+- Current `payload.call_list[].status` comes from `_build_daily_call_row()` -> `BusinessOutcomeResolver().resolve(artifact)`, not from `report_evidence.business_outcome`.
+- LLM2 already persists suitable status/evidence fields in `report_evidence.business_outcome` with enum values `agreement`, `rescheduled`, `refusal`, `open`, `tech_service`, `not_suitable`.
+- Minimal implementation path: add a small valid-business-outcome reader next to `_valid_call_report_summary_for_interaction()` and switch only call-list row status selection, leaving `BusinessOutcomeResolver` unchanged globally.
+- Existing call-list tests already cover topic/context guardrails; add focused tests for LLM2 outcome overriding resolver only in the call list and for invalid/missing LLM2 outcome fallback.
+- Existing broad `call_list` unittest run has unrelated historical red tests around unclassified buckets; do not mix those failures into this step.
+
+**Acceptance target:**
+
+- On ready-data-only preview for `2026-05-18`, call-list statuses match LLM2 row meaning.
+- Rows whose LLM2 meaning is refusal/not-now/no-budget/no-interest do not render as `Договорённость`.
+- `Тип / суть` and `Контекст` continue to come from LLM2 `short_topic` / `short_context` when valid.
+- Fallback remains deterministic and diagnostic when LLM2 row fields are invalid or missing.
