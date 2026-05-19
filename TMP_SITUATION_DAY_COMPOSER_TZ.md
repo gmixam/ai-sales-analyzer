@@ -1905,3 +1905,45 @@ Report Layer должен:
 Следующий кандидат на перенос:
 
 - `Голос клиента`: сейчас в нем возможна та же системная проблема — одиночные реплики без контекста и рекомендации, которые не доказываются сценой.
+
+## Следующий шаг: усиление `Голоса клиента`
+
+Статус: выполнено как bounded system change, проверяем на следующем UI-прогоне.
+
+Цель:
+
+- `Голос клиента` должен показывать не обрывок фразы, а клиентский сигнал в понятном контексте;
+- рекомендация должна вытекать из сцены, а не из общей догадки;
+- блок не должен превращать отказ, паузу или сервисную проблему в продажную рекомендацию.
+
+Изменения в механизме:
+
+- LLM3 output дополнительно repair-ится из source payload: если LLM3 дал слабый/короткий context, Report Layer возвращает source mini-scene;
+- quality gate теперь отклоняет рекомендации, которые не доказаны контекстом:
+  - material/WhatsApp action без material/WhatsApp context;
+  - proposal action без proposal context;
+  - contract action без contract context;
+  - `не проявил интерес` + `перевести интерес` как противоречие;
+- добавлены приоритетные категории:
+  - `refusal_or_not_now` для "пока нет", "не будем подписывать", "не хотят заключать договор";
+  - `service_or_usage_issue` для "не получилось", "не смогла сохранить", "ошибка";
+- `сценарий подписания договора` больше не классифицируется как price/proposal из-за подстроки `цена` внутри слова `сценарий`;
+- role inference стал осторожнее: общие слова `давайте/перезвоню` больше не превращают фразу в речь менеджера без дополнительных признаков.
+
+Проверка:
+
+- локально: `python3 -m unittest core.tests.test_voice_of_customer_composer core.tests.test_call_breakdown_composer core.tests.test_situation_day_daily_composer core.tests.test_report_templates_situation_day` -> 28 tests passed;
+- в контейнере: `docker compose exec -T api python -m pytest -q tests/test_voice_of_customer_composer.py tests/test_call_breakdown_composer.py tests/test_situation_day_daily_composer.py tests/test_report_templates_situation_day.py` -> 28 tests passed;
+- ready-data-only preview за `2026-05-18`:
+  - Алишер: 2 сигнала, LLM3 used, context expanded;
+  - Тимур: слабый/противоречивый второй сигнал отфильтрован, остался сильный current-process signal;
+  - Толеген: сервисная проблема классифицирована как `service_or_usage_issue`, рекомендация сначала закрывает сервисный вопрос.
+
+Оставшееся наблюдение:
+
+- STT/diarization все еще не всегда дает надежные роли, поэтому часть фрагментов остается с `Контекст`;
+- это отдельная задача role resolver, а не задача текущего composer-а.
+
+Следующий кандидат:
+
+- `Кого взять в работу завтра` / follow-up block: в нем может быть тот же риск, когда следующий шаг не следует из доказанного клиентского сигнала.

@@ -2417,3 +2417,36 @@ Target: at least `10/12` per manager. `insufficient` is acceptable only with cle
 Some transcript scenes still label speaker context as `Контекст` instead of confidently separating `Клиент` and `Менеджер`. This belongs to a separate STT/diarization role-labeling task, not to Call Breakdown composition.
 
 **Next candidate:** `Голос клиента`, because it can suffer from the same class of problem: isolated customer phrases without enough surrounding context and recommendations that are not proven by the scene.
+
+## Step DDC-7 — Strengthen Voice Of Customer Context And Action Fit
+
+**Status:** implemented as the next bounded step after Call Breakdown.
+
+**Goal:** `Голос клиента` must show a real customer signal with enough surrounding context, and the recommended manager action must follow from that scene.
+
+**Mechanism:**
+
+- LLM3 `VoiceOfCustomerComposer` output is repaired from source payload when quote context is weak or not a mini-scene.
+- Quality gate rejects manager actions not supported by evidence context:
+  - materials/WhatsApp action without materials/channel context;
+  - proposal action without proposal/price context;
+  - contract action without contract/signature context;
+  - contradiction such as "client showed no active interest" plus "convert interest into next step".
+- Signal classification now prioritizes:
+  - `refusal_or_not_now` for not-now/refusal phrases even when contract words are present;
+  - `service_or_usage_issue` for support/usage issues before any sales interpretation.
+- `сценарий подписания договора` no longer triggers price/proposal classification through the substring `цена`.
+- Role inference is more conservative: generic `давайте/перезвоню` no longer marks a speaker as manager by itself.
+
+**Verification 2026-05-19:**
+
+- Local focused unittest: `28 passed`.
+- Container focused pytest: `28 passed`.
+- Ready-data-only preview for `2026-05-18`:
+  - Алишер: 2 customer timing/internal-discussion signals with expanded context;
+  - Тимур: weak contradictory second signal filtered, strong current-process signal remains;
+  - Толеген: usage/service issue is classified as `service_or_usage_issue`, with support-first action.
+
+**Residual risk:** some transcript scenes still use `Контекст` where STT/diarization does not provide reliable speaker roles. This remains a separate role-resolver task.
+
+**Next candidate:** `Кого взять в работу завтра` / follow-up block, because follow-up recommendations can also drift away from grounded customer signals.

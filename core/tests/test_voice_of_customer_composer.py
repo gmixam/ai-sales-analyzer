@@ -197,6 +197,152 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         self.assertTrue(result["selection_diagnostics"]["llm3"]["llm3_used"])
         self.assertEqual(result["source_note"], "report_evidence.voice_of_customer_composer.v1")
 
+    def test_llm3_material_action_without_material_context_falls_back(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Клиент: Я могу сама перезвонить в пятницу после обеда. "
+            "Менеджер: Хорошо, тогда жду вашего звонка."
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "client",
+                    "business_signal": "medium",
+                    "quote": "Я могу сама перезвонить в пятницу после обеда.",
+                    "meaning": "Клиент переносит контакт на пятницу после обеда.",
+                    "topic": "timing",
+                }
+            ]
+        }
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "situations": [
+                    {
+                        "call_id": call_id,
+                        "quote": "Я могу сама перезвонить в пятницу после обеда.",
+                        "quote_context": (
+                            "Клиент: Я могу сама перезвонить в пятницу после обеда. "
+                            "Менеджер: Хорошо, тогда жду вашего звонка."
+                        ),
+                        "interpretation": "Клиент переносит контакт на пятницу.",
+                        "manager_action": "Что сделать: отправить материалы в WhatsApp и назначить follow-up.",
+                        "customer_signal": "timing_or_internal_discussion",
+                    }
+                ],
+                "rows": [
+                    [
+                        "Клиент • 2026-05-15 • 06:07",
+                        (
+                            "Клиент: Я могу сама перезвонить в пятницу после обеда. "
+                            "Менеджер: Хорошо, тогда жду вашего звонка."
+                        ),
+                        "Клиент переносит контакт. Что сделать: отправить материалы в WhatsApp.",
+                    ]
+                ],
+            }
+
+        module._request_llm3_voice_of_customer = fake_request
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=True,
+        )
+
+        self.assertEqual(result["status"], "verified")
+        self.assertFalse(result["selection_diagnostics"]["llm3"]["llm3_used"])
+        self.assertEqual(
+            result["selection_diagnostics"]["llm3"]["llm3_rejection_reason"],
+            "quality_gate_failed_after_llm3",
+        )
+        rendered = " ".join(" ".join(map(str, row)) for row in result["rows"]).lower()
+        self.assertNotIn("отправить материалы", rendered)
+        self.assertIn("когда вернуться", rendered)
+
+    def test_document_show_scenario_is_not_misclassified_as_price_request(self) -> None:
+        module = _load_module()
+
+        category = module._signal_category(
+            quote="Тогда покажите, как это работает для договора.",
+            context="Клиент просит показать сценарий подписания договора.",
+        )
+
+        self.assertEqual(category, "document_or_signature_need")
+
+    def test_refusal_and_service_issue_take_priority_over_document_words(self) -> None:
+        module = _load_module()
+
+        refusal = module._signal_category(
+            quote="Пока не будем подписывать",
+            context="Клиент говорит, что такого количества кассиров нет.",
+        )
+        service = module._signal_category(
+            quote="Я договор купли-продажи заполнила и не смогла сохранить.",
+            context="Клиент пришел с проблемой сохранения документа.",
+        )
+
+        self.assertEqual(refusal, "refusal_or_not_now")
+        self.assertEqual(service, "service_or_usage_issue")
+
+    def test_process_objection_does_not_become_interest_signal(self) -> None:
+        module = _load_module()
+
+        category = module._signal_category(
+            quote="Нет, пока, наверное, мы больше получаем через услуг, чем предоставляем.",
+            context="Клиент объясняет, что текущий объем не подходит для активного внедрения.",
+        )
+
+        self.assertEqual(category, "current_process_objection")
+
+    def test_interest_recommendation_contradiction_is_rejected(self) -> None:
+        module = _load_module()
+        signal = module.VoiceCustomerSignal(
+            signal_id="s1",
+            call_id="c1",
+            source="llm3",
+            quote="Нет, пока, наверное, мы больше получаем через услуг, чем предоставляем.",
+            quote_context=(
+                "Клиент: Нет, пока, наверное, мы больше получаем через услуг, чем предоставляем. "
+                "Менеджер: Понял."
+            ),
+            interpretation="Клиент не проявил активного интереса.",
+            manager_action="Что сделать: перевести интерес в следующий шаг с целью, участниками и сроком.",
+            customer_signal="interest_signal",
+            score=10,
+        )
+
+        self.assertEqual(
+            module.VoiceOfCustomerQualityGate()._rejection_reason(signal),
+            "recommendation_interest_contradicts_context",
+        )
+
+    def test_unknown_segment_speakers_are_inferred_for_mini_scene(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        artifact = SimpleNamespace(
+            interaction=SimpleNamespace(
+                id=call_id,
+                text="",
+                metadata_={
+                    "segments": [
+                        {"speaker": "A", "text": "Я могу сама перезвонить в пятницу после обеда."},
+                        {"speaker": "A", "text": "Хорошо, тогда жду вашего звонка."},
+                    ],
+                    "call_date": "2026-05-15 06:07:00",
+                },
+            ),
+            analysis=SimpleNamespace(scores_detail={"report_evidence": {}, "evidence_fragments": [], "product_signals": []}),
+            original_analysis=None,
+            call_started_at=datetime(2026, 5, 15, 6, 7, tzinfo=UTC),
+        )
+        call = module.VoiceOfCustomerInputAdapter().normalize_calls([artifact])[0]
+        joined = module._join_turns(module._call_turns(call))
+
+        self.assertIn("Клиент: Я могу сама перезвонить", joined)
+        self.assertIn("Менеджер: Хорошо, тогда жду", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

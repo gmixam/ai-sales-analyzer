@@ -79,6 +79,16 @@ Return exactly one JSON object compatible with Report Layer:
   customer asks about documents/signature, recommend document-process next step.
   If the customer asks for a proposal, recommend micro-qualification before the
   proposal.
+- Do not recommend sending materials, WhatsApp follow-up, a proposal, a
+  contract, or a demo unless that exact need is present in the mini-scene.
+- Treat phrases about "сценарий подписания договора" as a document/signature
+  need, not as a price/proposal request.
+- Treat refusal/not-now phrases ("пока не будем подписывать", "сейчас нет",
+  "не хотят заключать договор") as refusal or pause signals even if they contain
+  contract words. Do not answer them with a document-signing scenario.
+- Treat usage/support phrases ("не получилось", "не смогла сохранить",
+  "ошибка") as service or usage issues first. Do not turn them into a sales
+  recommendation until the support issue is closed.
 - Do not invent customer names, volumes, roles, deadlines, products, meetings,
   legal risks, or next steps.
 - If no signal has enough context or the action does not match the signal,
