@@ -10594,6 +10594,8 @@ def _build_semantic_case_block_sources(
             index=index,
             source_paths=[item.get("source") for item in tomorrow_rows],
             call_ids=[item.get("interaction_id") for item in tomorrow_rows],
+            quality_status=str(((call_tomorrow or {}).get("call_tomorrow_quality") or {}).get("status") or "").strip() or None,
+            selection_diagnostics=(call_tomorrow or {}).get("selection_diagnostics"),
         ),
     }
 
@@ -14288,6 +14290,17 @@ CALL_TOMORROW_INTERNAL_DISCUSSION_MARKERS = (
     "коллег",
     "руковод",
 )
+CALL_TOMORROW_LATER_TIMING_MARKERS = (
+    "попозже",
+    "позже",
+    "ближе к",
+    "через месяц",
+    "в июле",
+    "в октябре",
+    "в следующем году",
+    "в конце года",
+    "при изменении ситуации",
+)
 CALL_TOMORROW_TRUST_MARKERS = (
     "мошен",
     "незнаком",
@@ -14296,6 +14309,52 @@ CALL_TOMORROW_TRUST_MARKERS = (
     "довер",
     "проверить контакт",
     "безопасн",
+)
+CALL_TOMORROW_REFUSAL_OR_NOT_NOW_MARKERS = (
+    "не заинтерес",
+    "не проявил интерес",
+    "не интерес",
+    "не продлев",
+    "не будем",
+    "не хотят",
+    "не рассматри",
+    "не готов",
+    "нет потребности",
+    "нет необходимости",
+    "бюджет не залож",
+    "отложили этот вопрос",
+    "не актуал",
+    "сейчас нет",
+    "пока нет",
+    "острой нужды",
+    "другие решения",
+)
+CALL_TOMORROW_EXPLICIT_REOPEN_MARKERS = (
+    "попросил перезвон",
+    "попросила перезвон",
+    "попросил связаться",
+    "попросила связаться",
+    "договорились вернуться",
+    "договорились перезвон",
+    "договорились связаться",
+    "согласился на перезвон",
+    "согласилась на перезвон",
+    "согласился перезвонить",
+    "согласилась перезвонить",
+    "согласился на обратный звонок",
+    "согласилась на обратный звонок",
+    "вернуться к обсуждению",
+)
+CALL_TOMORROW_SERVICE_OR_USAGE_MARKERS = (
+    "не смог",
+    "не смогла",
+    "не получилось",
+    "ошиб",
+    "не сохраня",
+    "не открыва",
+    "техподдерж",
+    "сервис",
+    "не можем подписать",
 )
 CALL_TOMORROW_GENERIC_ACTION_MARKERS = (
     "понять текущий интерес",
@@ -14414,18 +14473,24 @@ def _follow_up_hotness(
 
 def _call_tomorrow_signal_category(*, final_status: str, text: str) -> str:
     """Classify tomorrow action context without changing inclusion or hotness."""
+    if _contains_hotness_signal(text, CALL_TOMORROW_SERVICE_OR_USAGE_MARKERS):
+        return "service_or_usage_issue"
     if final_status == "rescheduled":
         return "rescheduled"
+    if _contains_hotness_signal(text, CALL_TOMORROW_REFUSAL_OR_NOT_NOW_MARKERS):
+        return "refusal_or_not_now"
     if _contains_hotness_signal(text, CALL_TOMORROW_INVOICE_MARKERS):
         return "invoice_payment"
-    if _contains_hotness_signal(text, CALL_TOMORROW_MEETING_MARKERS):
-        return "meeting_demo"
     if _contains_hotness_signal(text, CALL_TOMORROW_TRUST_MARKERS):
         return "trust_barrier"
     if _contains_hotness_signal(text, CALL_TOMORROW_MATERIALS_MARKERS):
         return "materials_request"
+    if _contains_hotness_signal(text, CALL_TOMORROW_LATER_TIMING_MARKERS):
+        return "rescheduled"
     if _contains_hotness_signal(text, CALL_TOMORROW_INTERNAL_DISCUSSION_MARKERS):
         return "internal_discussion"
+    if _contains_hotness_signal(text, CALL_TOMORROW_MEETING_MARKERS):
+        return "meeting_demo"
     if final_status == "agreed":
         return "agreement"
     return "weak_open"
@@ -14459,6 +14524,17 @@ def _call_tomorrow_summary_action_specific(action: str | None, *, category: str)
     return any(marker in normalized for marker in alignment)
 
 
+def _call_tomorrow_context_specific(context: str | None, *, category: str) -> bool:
+    if not _call_summary_context_usable(context):
+        return False
+    if category == "rescheduled":
+        return _contains_hotness_signal(_normalize_hotness_text(context), CALL_TOMORROW_LATER_TIMING_MARKERS + CALL_TOMORROW_INTERNAL_DISCUSSION_MARKERS)
+    alignment = CALL_TOMORROW_ACTION_ALIGNMENT_MARKERS.get(category)
+    if not alignment:
+        return False
+    return _contains_hotness_signal(_normalize_hotness_text(context), alignment)
+
+
 def _call_tomorrow_profile(
     *,
     final_status: str,
@@ -14473,23 +14549,28 @@ def _call_tomorrow_profile(
 ) -> dict[str, str | bool]:
     """Return one signal profile for tomorrow context, recommendation and phrase."""
     evidence = dict(evidence_follow_up or {})
-    signal_text = _normalize_hotness_text(
-        next_step,
+    evidence_signal_text = _normalize_hotness_text(
         raw_reason,
-        summary_next_action,
         summary_context,
         summary_hotness_reason,
-        evidence.get("next_step"),
         evidence.get("why_follow_up"),
         evidence.get("first_phrase"),
         row.get("business_outcome_evidence"),
-        row.get("next_step"),
         row.get("reason"),
         row.get("call_list_topic"),
         row.get("call_list_context"),
         row.get("call_signal_text"),
     )
-    category = _call_tomorrow_signal_category(final_status=final_status, text=signal_text)
+    action_signal_text = _normalize_hotness_text(
+        next_step,
+        summary_next_action,
+        evidence.get("next_step"),
+        row.get("next_step"),
+    )
+    category = _call_tomorrow_signal_category(final_status=final_status, text=evidence_signal_text)
+    if category == "weak_open" and not evidence_signal_text:
+        category = _call_tomorrow_signal_category(final_status=final_status, text=action_signal_text)
+    signal_text = _normalize_hotness_text(evidence_signal_text, action_signal_text)
     profile = dict(CALL_TOMORROW_SIGNAL_PROFILES.get(category) or CALL_TOMORROW_SIGNAL_PROFILES["weak_open"])
     action_source = "deterministic_call_tomorrow_signal"
     action = profile["recommendation"]
@@ -14499,7 +14580,7 @@ def _call_tomorrow_profile(
 
     context = profile["context"]
     context_source = "deterministic_call_tomorrow_signal"
-    if category != "weak_open" and _call_summary_context_usable(summary_context):
+    if category != "weak_open" and _call_tomorrow_context_specific(summary_context, category=category):
         context = _summary_text(summary_context, limit=280) or context
         context_source = "call_report_summary.short_context"
     elif category != "weak_open" and _call_summary_action_usable(summary_hotness_reason):
@@ -14511,6 +14592,8 @@ def _call_tomorrow_profile(
 
     return {
         "category": category,
+        "signal_text": signal_text,
+        "evidence_signal_text": evidence_signal_text,
         "context": context,
         "recommendation": action if action.endswith((".", "!", "?")) else f"{action}.",
         "opening_script": profile["phrase"],
@@ -14525,6 +14608,51 @@ def _follow_up_deadline_sort_value(value: str | None) -> str:
     """Return a stable value where empty deadlines sort after explicit deadlines."""
     raw = str(value or "").strip()
     return raw or "9999-12-31"
+
+
+def _call_tomorrow_rejection_reason(item: dict[str, Any]) -> str | None:
+    """Reject follow-up contacts whose action is not grounded enough for manager-facing output."""
+    status = str(item.get("status") or "")
+    category = str(item.get("action_profile") or "")
+    text = _normalize_hotness_text(
+        item.get("reason"),
+        item.get("next_step"),
+        item.get("opening_script"),
+        item.get("signal_text"),
+    )
+    evidence_text = _normalize_hotness_text(item.get("evidence_signal_text"))
+    combined_text = _normalize_hotness_text(evidence_text, text)
+    if category == "service_or_usage_issue":
+        return "service_issue_not_sales_follow_up"
+    if category == "refusal_or_not_now" and status != "rescheduled":
+        return "refusal_or_not_now_without_explicit_reschedule"
+    if (
+        category == "rescheduled"
+        and _contains_hotness_signal(combined_text, CALL_TOMORROW_REFUSAL_OR_NOT_NOW_MARKERS)
+        and not _contains_hotness_signal(evidence_text, CALL_TOMORROW_EXPLICIT_REOPEN_MARKERS)
+    ):
+        return "rescheduled_without_customer_reopen_signal"
+    if category == "weak_open":
+        return "weak_open_without_grounded_follow_up_signal"
+    if category == "meeting_demo" and _contains_hotness_signal(combined_text, CALL_TOMORROW_REFUSAL_OR_NOT_NOW_MARKERS):
+        return "meeting_action_contradicts_negative_context"
+    if category == "materials_request" and not _contains_hotness_signal(evidence_text, CALL_TOMORROW_MATERIALS_MARKERS):
+        return "materials_action_without_materials_context"
+    if category == "invoice_payment" and not _contains_hotness_signal(evidence_text, CALL_TOMORROW_INVOICE_MARKERS):
+        return "invoice_action_without_invoice_context"
+    if category == "meeting_demo" and not _contains_hotness_signal(evidence_text, CALL_TOMORROW_MEETING_MARKERS):
+        return "meeting_action_without_meeting_context"
+    return None
+
+
+def _count_reasons(values: Any) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for value in values or []:
+        key = str(value or "").strip()
+        if not key:
+            continue
+        result[key] = result.get(key, 0) + 1
+    return result
 
 
 def _build_call_tomorrow(
@@ -14543,6 +14671,7 @@ def _build_call_tomorrow(
     - Cap at 5 contacts total
     """
     grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in CALL_TOMORROW_HOTNESS_ORDER}
+    rejected: list[dict[str, Any]] = []
 
     for row in call_list:
         status = str(row.get("status") or "")
@@ -14639,7 +14768,7 @@ def _build_call_tomorrow(
             )
         )
 
-        grouped[hotness["code"]].append({
+        candidate_item = {
             "interaction_id": interaction_id,
             "client_label": client_label,
             "client_call_reference": str(row.get("client_call_reference") or "").strip() or client_label,
@@ -14660,6 +14789,8 @@ def _build_call_tomorrow(
             "action_source": str(profile["action_source"]),
             "context_source": str(profile["context_source"]),
             "call_report_summary_used": call_report_summary_used,
+            "signal_text": str(profile.get("signal_text") or ""),
+            "evidence_signal_text": str(profile.get("evidence_signal_text") or ""),
             "source": (
                 "report_evidence.call_report_summary"
                 if call_report_summary_used
@@ -14672,7 +14803,24 @@ def _build_call_tomorrow(
                 _follow_up_deadline_sort_value(deadline),
                 time_label,
             ),
-        })
+        }
+        rejection_reason = _call_tomorrow_rejection_reason(candidate_item)
+        if rejection_reason:
+            rejected.append(
+                {
+                    "interaction_id": interaction_id,
+                    "client_call_reference": candidate_item["client_call_reference"],
+                    "status": status,
+                    "priority_code": hotness["code"],
+                    "action_profile": str(profile["category"]),
+                    "source": candidate_item["source"],
+                    "rejection_reason": rejection_reason,
+                    "reason": reason,
+                    "next_step": next_step,
+                }
+            )
+            continue
+        grouped[hotness["code"]].append(candidate_item)
 
     seen: set[str] = set()
     contacts: list[dict[str, Any]] = []
@@ -14713,6 +14861,18 @@ def _build_call_tomorrow(
         "contacts": contacts,
         "empty_state": "Нет коммерческих звонков для работы завтра по итогам отчётного дня.",
         "source_note": "derived_from_final_business_outcome_call_list_prefers_valid_report_evidence",
+        "selection_diagnostics": {
+            "selection_mode": "final_business_outcome_with_follow_up_quality_gate",
+            "accepted_count": len(contacts),
+            "rejected_count": len(rejected),
+            "rejected": rejected[:20],
+        },
+        "call_tomorrow_quality": {
+            "status": "passed" if contacts else "insufficient",
+            "accepted_count": len(contacts),
+            "rejected_count": len(rejected),
+            "filtered_reasons": _count_reasons(item.get("rejection_reason") for item in rejected),
+        },
     }
 
 

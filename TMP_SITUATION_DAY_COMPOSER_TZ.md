@@ -1947,3 +1947,40 @@ Report Layer должен:
 Следующий кандидат:
 
 - `Кого взять в работу завтра` / follow-up block: в нем может быть тот же риск, когда следующий шаг не следует из доказанного клиентского сигнала.
+
+## Следующий шаг: `Кого взять в работу завтра` / follow-up
+
+Статус: выполнено 2026-05-19.
+
+Цель:
+
+- блок должен выбирать клиента на завтра только если есть доказанный follow-up signal;
+- причина, следующий шаг и opening phrase должны идти из одного контекста;
+- отказ, пауза, сервисная проблема или слабый интерес не должны превращаться в агрессивное коммерческое действие;
+- если доказательства недостаточно, контакт лучше скрыть или понизить, чем дать менеджеру сомнительную задачу.
+
+Требования к механизму:
+
+- source path проверен: `call_list` final status, `report_evidence.follow_up_candidates`, `call_report_summary.manager_next_action`, legacy `follow_up`;
+- quality gate добавлен перед рендером `call_tomorrow.contacts`;
+- механизм валидирует связку:
+  - `reason` объясняет, почему звонить;
+  - `next_step` следует из `reason`/transcript/evidence;
+  - `opening_phrase` не обещает того, чего не было в звонке;
+  - service/refusal/not-now не получают sales follow-up без явного reopen signal;
+- diagnostics rejected/accepted добавлены в `selection_diagnostics` и `call_tomorrow_quality`.
+
+Проверка:
+
+- focused tests по call_tomorrow/follow-up: `5 passed, 190 deselected, 5 subtests passed`;
+- ready-data-only preview за `2026-05-18` для Алишера, Тимура, Толегена выполнен;
+- результат preview:
+  - Алишер: accepted `3`, rejected `2`; отказы без reopen signal отфильтрованы;
+  - Тимур: accepted `5`, rejected `8`; отказы/not-now и weak-open без grounded signal отфильтрованы;
+  - Толеген: accepted `5`, rejected `5`; сервисные кейсы, weak-open и перенос без явного customer reopen signal отфильтрованы;
+- спорный кейс `Клиент не проявил интереса к продукту. Срок возврата: 18 июн.` больше не попадает в follow-up, причина фильтрации `rescheduled_without_customer_reopen_signal`.
+
+Следующий кандидат:
+
+- пройти оставшиеся report blocks по той же логике evidence/action consistency: `Деньги на столе`, `Pipeline теплых лидов`, `Челлендж на завтра`, `Список всех звонков дня`;
+- цель: блок должен либо показывать доказанный actionable signal, либо скрываться/понижаться с диагностикой, а не генерировать слабую рекомендацию из формального статуса.

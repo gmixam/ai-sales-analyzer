@@ -43,6 +43,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     _build_report_evidence_situation,
     _build_selection_model_counters,
     _semantic_case_block_rejection_reason,
+    _call_tomorrow_rejection_reason,
     _classify_meaningful_call,
     _select_stable_analysis_for_reporting,
     _validated_report_block_candidates,
@@ -2463,13 +2464,17 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         contacts = payload["call_tomorrow"]["contacts"]
-        self.assertEqual([item["priority_code"] for item in contacts], ["hot", "rescheduled", "warm", "low"])
-        self.assertEqual([item["priority_label"] for item in contacts], ["Горячий", "Перенос", "Тёплый", "Низкий"])
-        self.assertEqual([item["status"] for item in contacts], ["agreed", "rescheduled", "open", "open"])
+        self.assertEqual([item["priority_code"] for item in contacts], ["hot", "rescheduled", "warm"])
+        self.assertEqual([item["priority_label"] for item in contacts], ["Горячий", "Перенос", "Тёплый"])
+        self.assertEqual([item["status"] for item in contacts], ["agreed", "rescheduled", "open"])
+        self.assertEqual(
+            payload["call_tomorrow"]["selection_diagnostics"]["rejected"][0]["rejection_reason"],
+            "weak_open_without_grounded_follow_up_signal",
+        )
 
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
         priority_labels = [row[0] for row in sections["call_tomorrow"]["rows"]]
-        self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый", "⚪ Низкий"])
+        self.assertEqual(priority_labels, ["🔴 Горячий", "🟡 Перенос", "🟠 Тёплый"])
         self.assertNotIn("Открытый", " ".join(priority_labels))
 
     def test_step8ah8e_call_tomorrow_recommendations_are_signal_specific(self) -> None:
@@ -2528,14 +2533,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
                 "безопасный канал",
                 "проверить контакт",
             ),
-            (
-                "Слабый клиент",
-                "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил.",
-                {"next_step_fixed": True, "next_step_text": "Поддерживать связь на случай будущих потребностей."},
-                "явный коммерческий следующий шаг",
-                "снять контакт с активного follow-up",
-                "актуален ли ещё вопрос",
-            ),
         ]
         for name, text, follow_up, expected_context, expected_action, expected_phrase in cases:
             with self.subTest(name=name):
@@ -2556,6 +2553,83 @@ class ManualReportingPayloadTests(unittest.TestCase):
                 self.assertIn(expected_action, rendered_recommendation)
                 self.assertIn(expected_phrase, rendered_recommendation)
                 self.assertNotIn("Понять текущий интерес клиента", rendered_recommendation)
+
+    def test_call_tomorrow_filters_weak_open_without_grounded_signal(self) -> None:
+        artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")
+        artifact.interaction.text = "Менеджер рассказал про продукт, клиент конкретный следующий шаг не подтвердил."
+        artifact.interaction.metadata_["contact_name"] = "Слабый клиент"
+        detail = artifact.analysis.scores_detail
+        detail["call"] = {"contact_name": "Слабый клиент", "contact_phone": "+77070000000"}
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_text": "Поддерживать связь на случай будущих потребностей.",
+        }
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(payload["call_tomorrow"]["contacts"], [])
+        self.assertEqual(sections["call_tomorrow"]["rows"], [])
+        self.assertEqual(
+            payload["call_tomorrow"]["selection_diagnostics"]["rejected"][0]["rejection_reason"],
+            "weak_open_without_grounded_follow_up_signal",
+        )
+
+    def test_call_tomorrow_rejects_rescheduled_without_customer_reopen_signal(self) -> None:
+        self.assertEqual(
+            _call_tomorrow_rejection_reason(
+                {
+                    "status": "rescheduled",
+                    "priority_code": "rescheduled",
+                    "action_profile": "rescheduled",
+                    "reason": "Клиент не проявил интереса к продукту.",
+                    "next_step": "Вернуться в согласованный срок.",
+                    "opening_script": "Добрый день. Договаривались вернуться к вопросу.",
+                    "evidence_signal_text": "клиент не проявил интереса к продукту",
+                }
+            ),
+            "rescheduled_without_customer_reopen_signal",
+        )
+        self.assertEqual(
+            _call_tomorrow_rejection_reason(
+                {
+                    "status": "rescheduled",
+                    "priority_code": "rescheduled",
+                    "action_profile": "rescheduled",
+                    "reason": "Клиент не проявил интереса к продукту.",
+                    "next_step": "Вернуться в согласованный срок.",
+                    "opening_script": "Добрый день. Договаривались вернуться к вопросу.",
+                    "evidence_signal_text": "статус возврата: 18 июн, связаться позже.",
+                }
+            ),
+            "rescheduled_without_customer_reopen_signal",
+        )
+        self.assertIsNone(
+            _call_tomorrow_rejection_reason(
+                {
+                    "status": "rescheduled",
+                    "priority_code": "rescheduled",
+                    "action_profile": "rescheduled",
+                    "reason": "Клиент не был готов к разговору и попросил перезвонить позже.",
+                    "next_step": "Перезвонить клиенту позже.",
+                    "opening_script": "Добрый день. Договаривались вернуться к вопросу.",
+                    "evidence_signal_text": "клиент попросил перезвонить позже",
+                }
+            )
+        )
 
     def test_step8ah8e_call_tomorrow_uses_specific_summary_action_when_aligned(self) -> None:
         artifact = _artifact(70.0, "basic", call_date="2026-05-04 10:00:00")

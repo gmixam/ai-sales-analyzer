@@ -2450,3 +2450,32 @@ Some transcript scenes still label speaker context as `Контекст` instead
 **Residual risk:** some transcript scenes still use `Контекст` where STT/diarization does not provide reliable speaker roles. This remains a separate role-resolver task.
 
 **Next candidate:** `Кого взять в работу завтра` / follow-up block, because follow-up recommendations can also drift away from grounded customer signals.
+
+## Step DDC-8 — Ground Call Tomorrow Follow-Up Actions
+
+**Status:** DONE 2026-05-19.
+
+**Goal:** `Кого взять в работу завтра` should include only grounded follow-up opportunities where the reason, next step, and opening phrase come from the same customer signal.
+
+**Implemented behavior:**
+
+- Source path verified across final `call_list` status, `report_evidence.follow_up_candidates`, `call_report_summary.manager_next_action`, and legacy `follow_up`.
+- Quality gate added before rendering `call_tomorrow.contacts`.
+- The gate validates:
+  - `reason` explains why the manager should contact this client;
+  - `next_step` follows from the reason/evidence;
+  - `opening_phrase` does not invent promises, dates, materials, invoices, demos, or decisions;
+  - refusal/not-now/service cases are not converted into sales follow-up unless there is an explicit reopen signal.
+- Accepted/rejected diagnostics are exposed through `selection_diagnostics` and `call_tomorrow_quality`.
+- Broad timing words such as `позже` no longer count as explicit reopen by themselves; explicit reopen requires a customer signal such as asked/agreed/determined callback/contact.
+
+**Verification 2026-05-19:**
+
+- Container focused pytest: `5 passed, 190 deselected, 5 subtests passed`.
+- Ready-data-only preview for `2026-05-18`:
+  - Алишер: accepted `3`, rejected `2`; refusal/not-now without reopen filtered.
+  - Тимур: accepted `5`, rejected `8`; refusal/not-now and weak-open without grounded signal filtered.
+  - Толеген: accepted `5`, rejected `5`; service issues, weak-open, and rescheduled/no-interest without explicit reopen filtered.
+- Regression case: `Клиент не проявил интереса к продукту. Срок возврата: 18 июн.` is rejected as `rescheduled_without_customer_reopen_signal`.
+
+**Next:** apply the same evidence/action consistency pattern to the remaining report blocks (`Деньги на столе`, warm pipeline, challenge, call list context) so each block either renders grounded actionable content or hides/degrades with diagnostics.
