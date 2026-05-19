@@ -294,6 +294,7 @@
 - На 2026-05-19 после оценки сложности механизма следующим плановым этапом зафиксирован `SituationDayDailyComposer`: упрощенная цепочка `LLM2 call facts + transcript scenes -> LLM3 daily composer -> Report Layer verification -> template`. Цель — убрать registry/legacy/deterministic authored fallbacks из финального написания `Ситуации дня`; LLM2 должен быть fact analyzer, LLM3 — daily report composer, Report Layer — validator/renderer.
 - На 2026-05-19 пилот `SituationDayDailyComposer` реализован: добавлены daily input package, LLM3 composer/prompt, Report Layer integration и fail-closed verification. Ready-data-only прогон за 2026-05-18 подтвердил verified output через `report_evidence.situation_day_daily_composer.v1`; candidate builder дополнительно усилен, чтобы `Что произошло` включало контекст звонка, подтверждающий фрагмент и проблему для разбора.
 - На 2026-05-19 поведение `Ситуации дня` при insufficient переведено в компактный empty-state: в отчете под заголовком показывается одно сообщение о недостатке данных, а внутренние поля блока (`Суть момента`, `Что произошло`, ошибка, речёвки, техническая причина) скрываются.
+- На 2026-05-19 тот же insufficient empty-state распространен на manager_daily PDF-first renderer: PDF больше не печатает fallback-поля `Фокусный этап`, `Что произошло`, `Что хотел клиент/Наша задача` или технический заголовок при отсутствии подтвержденной `Ситуации дня`.
 
 ## Стек решений
 | Компонент | Решение | Статус |

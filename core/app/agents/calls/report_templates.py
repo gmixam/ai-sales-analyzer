@@ -166,6 +166,10 @@ def _situation_day_is_insufficient(coaching_view: dict[str, Any]) -> bool:
     return str(coaching_view.get("situation_day_evidence_status") or "").strip() == "insufficient"
 
 
+def _situation_section_is_insufficient(section: dict[str, Any]) -> bool:
+    return _situation_day_is_insufficient(dict(section.get("coaching_view") or {}))
+
+
 def _situation_day_insufficient_message(_coaching_view: dict[str, Any]) -> str:
     return (
         "Данных для этого блока недостаточно: не найден надежно подтвержденный "
@@ -1979,26 +1983,39 @@ def _render_manager_daily_pdf_report(
     )
     focus_top = review_bottom + 10
     draw_section_bar(page2, top=focus_top, title=focus["label"], color=amber)
-    draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=230, fill=light_blue)
-    draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=230, fill=accent)
-    draw_text(page2, left=margin + 12, top=focus_top + 42, text=str(focus.get("situation_title") or focus["label"]), size=10.2, color=accent, max_width=width - (margin * 2) - 24)
-    focus_note = str(focus.get("scope_note") or "")
-    body_top = focus_top + 80 if focus_note else focus_top + 62
-    if focus_note:
-        draw_text(page2, left=margin + 12, top=focus_top + 62, text=focus_note, size=8.2, color=muted, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=body_top, text=str(focus.get("body") or ""), size=9.0, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=body_top + 32, text=f"Что хотел клиент: {focus.get('client_need') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=body_top + 58, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
-    example = dict(focus.get("call_example") or {})
-    example_line = ""
-    if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
-        example_line = f"{focus.get('example_label') or 'Пример'}: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
-    if example_line:
-        draw_text(page2, left=margin + 12, top=focus_top + 150, text=example_line, size=8.3, color=accent, max_width=width - (margin * 2) - 24)
-    script_top = focus_top + 170
-    for idx, script in enumerate((focus.get("scripts") or [])[:3], start=1):
-        draw_text(page2, left=margin + 12, top=script_top + ((idx - 1) * 16), text=f"{idx}. {script}", size=8.2, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page2, left=margin + 12, top=focus_top + 220, text=f"Почему работает: {focus.get('why_it_works') or ''}", size=8.0, color=muted, max_width=width - (margin * 2) - 24)
+    if _situation_section_is_insufficient(focus):
+        draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=86, fill=light_blue)
+        draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=86, fill=accent)
+        draw_text(
+            page2,
+            left=margin + 12,
+            top=focus_top + 48,
+            text=_situation_day_insufficient_message(dict(focus.get("coaching_view") or {})),
+            size=9.2,
+            color=black,
+            max_width=width - (margin * 2) - 24,
+        )
+    else:
+        draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=230, fill=light_blue)
+        draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=230, fill=accent)
+        draw_text(page2, left=margin + 12, top=focus_top + 42, text=str(focus.get("situation_title") or focus["label"]), size=10.2, color=accent, max_width=width - (margin * 2) - 24)
+        focus_note = str(focus.get("scope_note") or "")
+        body_top = focus_top + 80 if focus_note else focus_top + 62
+        if focus_note:
+            draw_text(page2, left=margin + 12, top=focus_top + 62, text=focus_note, size=8.2, color=muted, max_width=width - (margin * 2) - 24)
+        draw_text(page2, left=margin + 12, top=body_top, text=str(focus.get("body") or ""), size=9.0, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page2, left=margin + 12, top=body_top + 32, text=f"Что хотел клиент: {focus.get('client_need') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page2, left=margin + 12, top=body_top + 58, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+        example = dict(focus.get("call_example") or {})
+        example_line = ""
+        if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
+            example_line = f"{focus.get('example_label') or 'Пример'}: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
+        if example_line:
+            draw_text(page2, left=margin + 12, top=focus_top + 150, text=example_line, size=8.3, color=accent, max_width=width - (margin * 2) - 24)
+        script_top = focus_top + 170
+        for idx, script in enumerate((focus.get("scripts") or [])[:3], start=1):
+            draw_text(page2, left=margin + 12, top=script_top + ((idx - 1) * 16), text=f"{idx}. {script}", size=8.2, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page2, left=margin + 12, top=focus_top + 220, text=f"Почему работает: {focus.get('why_it_works') or ''}", size=8.0, color=muted, max_width=width - (margin * 2) - 24)
     footer(page2, 2)
 
     page3 = add_page()
