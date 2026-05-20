@@ -19,6 +19,7 @@ from app.agents.calls.analyzer import (
     SEMANTIC_EMPTY_ANALYSIS_REASON,
 )
 from app.agents.calls.call_breakdown_composer import compose_call_breakdown_from_situation
+from app.agents.calls.call_tomorrow_wording_composer import compose_call_tomorrow_wording
 from app.agents.calls.bitrix_readonly import Bitrix24ReadOnlyClient, BitrixReadOnlyError
 from app.agents.calls.config import calls_config
 from app.agents.calls.delivery import CallsDelivery
@@ -4928,6 +4929,14 @@ def _apply_additional_situations_quality_gate(
                 "why_it_matters": why_it_matters,
                 "next_action": next_action,
                 "why_this_works": why_this_works,
+                "narrative": _additional_situation_narrative(
+                    title=title,
+                    what_happened=what_happened,
+                    why_it_matters=why_it_matters,
+                    next_action=next_action,
+                    kind=kind,
+                ),
+                "evidence_dialogue": _additional_evidence_dialogue(evidence_quote),
                 "confidence": confidence,
                 # Render-model compatibility aliases.
                 "client_said": what_happened,
@@ -4963,6 +4972,52 @@ def _apply_additional_situations_quality_gate(
         ],
     }
     return result, diagnostics
+
+
+def _additional_situation_narrative(
+    *,
+    title: str,
+    what_happened: str,
+    why_it_matters: str,
+    next_action: str,
+    kind: str,
+) -> str:
+    """Build a compact manager-facing narrative for a secondary situation."""
+    parts: list[str] = []
+    if what_happened:
+        parts.append(what_happened.rstrip(".") + ".")
+    if why_it_matters and why_it_matters not in " ".join(parts):
+        parts.append(why_it_matters.rstrip(".") + ".")
+    if next_action:
+        prefix = "Это стоит сохранить" if kind == "strength" else "В следующий раз"
+        parts.append(f"{prefix}: {next_action.rstrip('.')}.")
+    return " ".join(parts).strip() or title
+
+
+def _additional_evidence_dialogue(value: Any) -> list[dict[str, str]]:
+    """Convert a quote/context string into speaker-labelled evidence lines."""
+    text = str(value or "").strip()
+    if not text:
+        return []
+    matches = list(re.finditer(r"(Клиент|Менеджер|Контекст|Customer|Manager)\s*:\s*", text, flags=re.IGNORECASE))
+    if not matches:
+        return [{"speaker": "unknown", "text": text}]
+    result: list[dict[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        quote = text[start:end].strip()
+        if not quote:
+            continue
+        speaker = match.group(1).strip().lower()
+        if speaker in {"клиент", "customer"}:
+            normalized = "client"
+        elif speaker in {"менеджер", "manager"}:
+            normalized = "manager"
+        else:
+            normalized = "unknown"
+        result.append({"speaker": normalized, "text": quote})
+    return result
 
 
 def build_manager_daily_payload(
@@ -5105,6 +5160,7 @@ def build_manager_daily_payload(
         call_list=call_list,
         report_evidence_index=report_evidence_index,
     )
+    call_tomorrow = compose_call_tomorrow_wording(call_tomorrow)
     call_report_summary_diagnostics = _build_call_report_summary_diagnostics(
         call_list=call_list,
         call_tomorrow=call_tomorrow,
@@ -6953,8 +7009,9 @@ def _prepare_daily_situation_day_result(
         return updated
 
     ref = _artifact_call_reference(artifact)
-    quote = _dialogue_turn_text(str(result.get("supporting_quote") or ""), limit=260)
+    quote = _dialogue_turn_text(str(result.get("supporting_quote") or ""), limit=700)
     dialogue_turns = _daily_situation_dialogue_turns(result.get("dialogue_turns"))
+    evidence_quotes = _daily_situation_evidence_quotes(result.get("evidence_quotes"), fallback=quote)
     stage_code = str(result.get("stage_code") or "").strip()
     proof_type = str(result.get("proof_type") or "").strip() or "sequence_inference"
     selection_diagnostics = _semantic_case_selection_diagnostics(
@@ -6979,13 +7036,15 @@ def _prepare_daily_situation_day_result(
         "pattern_title": str(result.get("situation_title") or "Ситуация дня").strip(),
         "moment_summary": str(result.get("moment_summary") or "").strip() or None,
         "what_happened": str(result.get("what_happened") or "").strip() or None,
+        "call_context_summary": str(result.get("call_context_summary") or "").strip() or None,
         "what_was_missing": str(result.get("manager_error") or "").strip() or None,
         "manager_error": str(result.get("manager_error") or "").strip() or None,
         "meaning": str(result.get("why_it_matters") or "").strip() or None,
-        "proof_explanation": str(result.get("why_it_matters") or "").strip() or None,
+        "proof_explanation": str(result.get("call_context_summary") or result.get("why_it_matters") or "").strip() or None,
         "next_time_action": str(result.get("next_time_action") or "").strip() or None,
         "scripts": [str(item).strip() for item in result.get("scripts") or [] if str(item).strip()],
         "supporting_quote": quote or None,
+        "evidence_quotes": evidence_quotes,
         "dialogue_turns": dialogue_turns,
         "proof_type": proof_type,
         "proof_strength": "medium",
@@ -7010,7 +7069,9 @@ def _prepare_daily_situation_day_result(
             "source": SITUATION_DAY_DAILY_SOURCE,
             "is_partial": True,
             "partial_reason": "daily_composer_selected_quote",
-            "turns": dialogue_turns or ([{"speaker": "evidence", "text": quote}] if quote else []),
+            "turns": dialogue_turns
+            or ([{"speaker": "evidence", "text": item} for item in evidence_quotes] if evidence_quotes else [])
+            or ([{"speaker": "evidence", "text": quote}] if quote else []),
         },
         "coaching_view": coaching_view,
         "selection_diagnostics": selection_diagnostics,
@@ -7023,16 +7084,31 @@ def _daily_situation_dialogue_turns(value: Any) -> list[dict[str, str]]:
     for raw_turn in value or []:
         if not isinstance(raw_turn, dict):
             continue
-        text = _dialogue_turn_text(str(raw_turn.get("text") or raw_turn.get("quote") or ""), limit=360)
+        text = _dialogue_turn_text(str(raw_turn.get("text") or raw_turn.get("quote") or ""), limit=700)
         if not text:
             continue
         speaker = str(raw_turn.get("speaker") or raw_turn.get("role") or "unknown").strip().lower()
         if speaker not in {"client", "manager", "unknown", "context", "evidence"}:
             speaker = "unknown"
         turns.append({"speaker": speaker, "text": text})
-        if len(turns) >= 6:
+        if len(turns) >= 10:
             break
     return turns
+
+
+def _daily_situation_evidence_quotes(value: Any, *, fallback: str | None = None) -> list[str]:
+    quotes: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            text = _dialogue_turn_text(str(item or ""), limit=700)
+            if text and text not in quotes:
+                quotes.append(text)
+            if len(quotes) >= 8:
+                break
+    fallback_text = _dialogue_turn_text(str(fallback or ""), limit=700)
+    if fallback_text and fallback_text not in quotes:
+        quotes.append(fallback_text)
+    return quotes
 
 
 def _registry_item_dicts(evidence_items: Any) -> list[dict[str, Any]]:
@@ -7379,6 +7455,15 @@ def _apply_situation_day_writer(
         return situation_day_coaching_view
     if str(situation_day_coaching_view.get("situation_day_evidence_status") or "").strip() == "insufficient":
         return situation_day_coaching_view
+    source = str(situation_day_coaching_view.get("source") or "").strip()
+    if source == SITUATION_DAY_DAILY_SOURCE:
+        merged = dict(situation_day_coaching_view)
+        merged.setdefault("meaning", merged.get("proof_explanation"))
+        merged.setdefault("why_it_matters", merged.get("proof_explanation"))
+        merged.setdefault("how_to_improve", merged.get("next_time_action"))
+        merged["situation_day_writer_applied"] = False
+        merged["situation_day_writer_skipped_reason"] = "v2_narrative_contract_preserved"
+        return merged
 
     dialogue_excerpt = (
         dict(situation_dialogue_excerpt or {})
@@ -8588,6 +8673,54 @@ def _call_list_context_text(value: Any, *, limit: int = 220) -> str | None:
     return None if _call_list_context_reject_reason(text) else text
 
 
+def _call_list_context_paragraph(value: Any, *, limit: int = 420) -> str | None:
+    text = _summary_paragraph_text(value, limit=limit)
+    if not text:
+        return None
+    return None if _call_list_context_reject_reason(text) else text
+
+
+def _call_list_context_from_block_candidate(report_evidence: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(report_evidence, dict):
+        return None
+    candidates = report_evidence.get("block_candidates")
+    if not isinstance(candidates, dict):
+        return None
+    item = candidates.get("call_list_context")
+    if not isinstance(item, dict) or item.get("fit") is False:
+        return None
+    for field in ("manager_visible_summary", "call_list_context_rich", "short_context"):
+        text = _call_list_context_paragraph(item.get(field), limit=420 if field != "short_context" else 280)
+        if text:
+            return {"context": text, "source": f"report_evidence.block_candidates.call_list_context.{field}"}
+    return None
+
+
+def _call_list_context_from_semantic_case(report_evidence: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(report_evidence, dict):
+        return None
+    semantic_case = report_evidence.get("semantic_case")
+    if not isinstance(semantic_case, dict) or semantic_case.get("usable_in_report") is False:
+        return None
+    parts: list[str] = []
+    for field, limit in (
+        ("core_meaning", 260),
+        ("customer_signal", 220),
+        ("recommended_next_action", 220),
+    ):
+        text = _summary_text(semantic_case.get(field), limit=limit)
+        if text and not _call_list_context_reject_reason(text):
+            normalized = _summary_norm(text)
+            if normalized not in {_summary_norm(part) for part in parts}:
+                parts.append(text)
+    if len(parts) < 2:
+        return None
+    context = _call_list_context_paragraph(" ".join(parts), limit=420)
+    if not context:
+        return None
+    return {"context": context, "source": "report_evidence.semantic_case.manager_visible_context"}
+
+
 def _call_list_status_fallback_context(
     *,
     status: str | None,
@@ -8653,6 +8786,8 @@ def _select_call_list_context(
     signal_text: str | None,
     summary_topic: str | None,
     summary_context: str | None,
+    summary_manager_visible: str | None,
+    report_evidence: dict[str, Any] | None,
     unclassified_status_label: str | None,
     unclassified_context_label: str | None,
 ) -> dict[str, Any]:
@@ -8663,6 +8798,31 @@ def _select_call_list_context(
         if reason_code:
             rejected.append({"source": source, "reason": reason_code, "value": str(value or "")[:140]})
         return reason_code
+
+    if summary_manager_visible and not reject(
+        "report_evidence.call_report_summary.manager_visible_summary",
+        summary_manager_visible,
+    ):
+        return {
+            "context": summary_manager_visible,
+            "source": "report_evidence.call_report_summary.manager_visible_summary",
+            "rejected": rejected,
+            "fallback_generated": False,
+            "bare_context_retained": False,
+        }
+
+    for rich_candidate in (
+        _call_list_context_from_block_candidate(report_evidence),
+        _call_list_context_from_semantic_case(report_evidence),
+    ):
+        if rich_candidate and not reject(rich_candidate["source"], rich_candidate["context"]):
+            return {
+                "context": rich_candidate["context"],
+                "source": rich_candidate["source"],
+                "rejected": rejected,
+                "fallback_generated": False,
+                "bare_context_retained": False,
+            }
 
     if summary_context and _call_summary_context_usable(summary_context) and not reject(
         "report_evidence.call_report_summary.short_context",
@@ -8751,6 +8911,12 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
     return {
         "status": "warning" if final_failures or bare_retained else "passed",
         "calls_count": len(call_list),
+        "manager_visible_summary_count": source_counts.get("report_evidence.call_report_summary.manager_visible_summary", 0),
+        "block_candidate_rich_context_count": sum(
+            count for source, count in source_counts.items()
+            if source.startswith("report_evidence.block_candidates.call_list_context.")
+        ),
+        "semantic_case_context_count": source_counts.get("report_evidence.semantic_case.manager_visible_context", 0),
         "call_report_summary_context_count": source_counts.get("report_evidence.call_report_summary.short_context", 0),
         "call_report_summary_topic_count": source_counts.get("report_evidence.call_report_summary.short_topic", 0),
         "fallback_generated_count": fallback_generated_count,
@@ -9065,7 +9231,7 @@ def _build_daily_call_row(
     unclassified_status_label = _manager_unclassified_status(unclassified_reason_code)
     unclassified_context_label = _manager_unclassified_context(unclassified_reason_code)
     ref = _artifact_call_reference(artifact)
-    summary, _summary_evidence = _valid_call_report_summary_for_interaction(
+    summary, summary_evidence = _valid_call_report_summary_for_interaction(
         interaction_id=str(artifact.interaction.id),
         report_evidence_index=report_evidence_index,
     )
@@ -9090,6 +9256,11 @@ def _build_daily_call_row(
     summary_topic_raw = _summary_text((summary or {}).get("short_topic"), limit=120) if summary else None
     summary_topic = summary_topic_raw.rstrip(".") if summary_topic_raw else None
     summary_context = _summary_text((summary or {}).get("short_context"), limit=280) if summary else None
+    summary_manager_visible = (
+        _call_list_context_paragraph((summary or {}).get("manager_visible_summary"), limit=640)
+        if summary
+        else None
+    )
     topic_used = bool(summary_topic and _call_summary_topic_usable(summary_topic))
     next_step = follow_up.get("next_step_text")
     reason = str(follow_up.get("reason_not_fixed") or "").strip() or None
@@ -9105,6 +9276,8 @@ def _build_daily_call_row(
         signal_text=signal_text,
         summary_topic=summary_topic,
         summary_context=summary_context,
+        summary_manager_visible=summary_manager_visible,
+        report_evidence=summary_evidence,
         unclassified_status_label=call_list_unclassified_status_label,
         unclassified_context_label=call_list_unclassified_context_label,
     )
@@ -9154,8 +9327,11 @@ def _build_daily_call_row(
         "call_report_summary_available": bool(summary),
         "call_report_summary_short_topic": summary_topic,
         "call_report_summary_short_context": summary_context,
+        "call_report_summary_manager_visible_summary": summary_manager_visible,
         "call_list_topic": summary_topic if topic_used else None,
         "call_list_context": context_selection["context"],
+        "call_list_context_rich": context_selection["context"],
+        "manager_visible_summary": context_selection["context"],
         "call_list_topic_source": "report_evidence.call_report_summary.short_topic" if topic_used else "deterministic_fallback",
         "call_list_context_source": context_selection["source"],
         "call_list_context_quality": {
@@ -10698,6 +10874,10 @@ def _build_call_report_summary_diagnostics(
         1 for row in call_list
         if row.get("call_list_context_source") == "report_evidence.call_report_summary.short_context"
     )
+    call_list_manager_visible_used = sum(
+        1 for row in call_list
+        if row.get("call_list_context_source") == "report_evidence.call_report_summary.manager_visible_summary"
+    )
     tomorrow_used = sum(
         1 for item in call_tomorrow.get("contacts") or []
         if item.get("call_report_summary_used")
@@ -10711,8 +10891,9 @@ def _build_call_report_summary_diagnostics(
         1 for row in call_list
         if row.get("call_list_topic_source") == "report_evidence.call_report_summary.short_topic"
         or row.get("call_list_context_source") == "report_evidence.call_report_summary.short_context"
+        or row.get("call_list_context_source") == "report_evidence.call_report_summary.manager_visible_summary"
     )
-    used_total = call_list_topic_used + call_list_context_used + tomorrow_used + voice_used
+    used_total = call_list_topic_used + call_list_context_used + call_list_manager_visible_used + tomorrow_used + voice_used
     return {
         "summary": {
             "call_report_summary_available_count": available_rows,
@@ -10723,6 +10904,7 @@ def _build_call_report_summary_diagnostics(
         "blocks": {
             "call_list_topic_used_count": call_list_topic_used,
             "call_list_context_used_count": call_list_context_used,
+            "call_list_manager_visible_summary_used_count": call_list_manager_visible_used,
             "call_tomorrow_used_count": tomorrow_used,
             "voice_of_customer_used_count": voice_used,
         },
@@ -10758,6 +10940,20 @@ def _summary_norm(value: Any) -> str:
 
 def _summary_text(value: Any, *, limit: int) -> str | None:
     text = _first_sentence(str(value or ""), limit=limit).strip()
+    return text or None
+
+
+def _summary_paragraph_text(value: Any, *, limit: int) -> str | None:
+    """Return compact multi-sentence manager-facing text without first-sentence clipping."""
+    text = re.sub(r"`[^`]+`", "", str(value or ""))
+    text = re.sub(r"\b[a-z]{2,}_[a-z0-9_]+\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" -–—:;")
+    if not text:
+        return None
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].strip()
+    if text and text[-1] not in ".!?":
+        text += "."
     return text or None
 
 
@@ -12040,7 +12236,10 @@ def _apply_call_breakdown_quality_gate(
         source == "report_evidence.semantic_case"
         and selection_mode == "best_semantic_case_after_focus_mismatch"
     ) or (
-        source == "report_evidence.call_breakdown_composer.v1"
+        source in {
+            "report_evidence.call_breakdown_composer.v1",
+            "report_evidence.call_breakdown_composer.v2",
+        }
         and selection_mode == "same_call_as_verified_situation_day"
     ) or (
         source == "report_evidence.evidence_registry.call_breakdown_route.v1"
@@ -12051,6 +12250,7 @@ def _apply_call_breakdown_quality_gate(
         "report_evidence.semantic_case",
         "report_evidence.manager_coaching_moments",
         "report_evidence.call_breakdown_composer.v1",
+        "report_evidence.call_breakdown_composer.v2",
         "report_evidence.evidence_registry.call_breakdown_route.v1",
     }
     optional_quote_evidence_type = str(call_breakdown.get("evidence_type") or "").strip().lower()
@@ -14528,7 +14728,7 @@ CALL_TOMORROW_SIGNAL_PROFILES: dict[str, dict[str, str]] = {
     "materials_request": {
         "context": "Клиент попросил материалы или предложение, но следующий контакт нужно закрепить отдельно.",
         "recommendation": "Отправить материал в согласованный канал и сразу зафиксировать дату возврата к обсуждению.",
-        "phrase": "Добрый день. Отправил материалы, как договорились. Когда удобно вернуться к обсуждению и ответить на вопросы?",
+        "phrase": "Добрый день. Продолжаю по нашему разговору: отправлю информацию в согласованный канал. Когда удобно вернуться к обсуждению?",
     },
     "internal_discussion": {
         "context": "Клиенту нужно обсудить решение внутри, поэтому без активного follow-up контакт легко зависнет.",
@@ -14989,6 +15189,8 @@ def _build_call_tomorrow(
                 "action_source": item["action_source"],
                 "context_source": item["context_source"],
                 "call_report_summary_used": item["call_report_summary_used"],
+                "signal_text": item["signal_text"],
+                "evidence_signal_text": item["evidence_signal_text"],
                 "source": item["source"],
             })
             if len(contacts) >= 5:

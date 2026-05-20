@@ -283,6 +283,7 @@ class QuoteBankItem(_ReportEvidenceModel):
 class CallReportSummary(_ReportEvidenceModel):
     short_topic: str | None = Field(default=None, max_length=120)
     short_context: str | None = Field(default=None, max_length=280)
+    manager_visible_summary: str | None = Field(default=None, max_length=640)
     client_display_name: str | None = Field(default=None, max_length=120)
     client_name_confidence: ClientNameConfidence | None = None
     hotness: SummaryHotness | None = None
@@ -425,6 +426,8 @@ class TomorrowChallengeBlockCandidate(BlockCandidateBase):
 class CallListContextBlockCandidate(BlockCandidateBase):
     short_topic: str | None = Field(default=None, max_length=120)
     short_context: str | None = Field(default=None, max_length=280)
+    manager_visible_summary: str | None = Field(default=None, max_length=640)
+    call_list_context_rich: str | None = Field(default=None, max_length=640)
     action_hint: str | None = Field(default=None, max_length=280)
     final_action_hint: str | None = Field(default=None, max_length=280)
 
@@ -793,7 +796,13 @@ BLOCK_CANDIDATE_TEXT_FIELDS = {
         "risk_if_not_followed_up",
     ),
     "tomorrow_challenge": ("practice_action", "behavior_standard", "example_phrase"),
-    "call_list_context": ("short_topic", "short_context", "action_hint"),
+    "call_list_context": (
+        "short_topic",
+        "short_context",
+        "manager_visible_summary",
+        "call_list_context_rich",
+        "action_hint",
+    ),
 }
 
 BLOCK_CANDIDATE_FIELD_ALIASES = {

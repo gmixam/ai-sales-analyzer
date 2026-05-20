@@ -182,7 +182,13 @@ function dialogueSpeakerLabel(speaker) {
   const value = cleanText(speaker).toLowerCase();
   if (value === "manager") return "Менеджер";
   if (value === "client") return "Клиент";
-  return "Реплика";
+  if (value === "side_1" || value === "сторона 1") return "Сторона 1";
+  if (value === "side_2" || value === "сторона 2") return "Сторона 2";
+  return "Сторона 1";
+}
+
+function speakerForQuoteIndex(index) {
+  return index % 2 === 0 ? "Сторона 1" : "Сторона 2";
 }
 
 function primaryStageForSituation(s) {
@@ -244,7 +250,7 @@ function sameMeaningText(left, right) {
 
 function buildDialogueParagraphs(excerpt, quote, opts = {}) {
   const source = excerpt || null;
-  const turns = (source?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 4);
+  const turns = (source?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 10);
   const quoteFallback = quoteText(quote);
   if (turns.length === 0 && quoteFallback) {
     turns.push({ speaker: "client", text: quoteFallback });
@@ -264,10 +270,49 @@ function buildDialogueParagraphs(excerpt, quote, opts = {}) {
   const paras = partial
     ? [bodyPara(partialText, { color: COLORS.gray, size: SZ.cell, italic: true })]
     : [];
-  for (const turn of turns) {
-    paras.push(bodyPara(`${dialogueSpeakerLabel(turn.speaker)}: ${shortQuote(turn.text, 320)}`, { size: SZ.cell }));
-  }
+  turns.forEach((turn, index) => {
+    paras.push(dialoguePara(dialogueSpeakerLabel(turn.speaker) || speakerForQuoteIndex(index), turn.text, { size: SZ.cell }));
+  });
   return paras;
+}
+
+function dialoguePara(speaker, text, opts = {}) {
+  const quote = shortQuote(text, opts.limit || 700);
+  if (!quote) return bodyPara("", { size: opts.size || SZ.cell });
+  return new Paragraph({
+    children: [
+      new TextRun({ text: `${speaker || "Сторона 1"}: `, bold: true, italics: true, size: opts.size || SZ.cell, color: COLORS.heading, font: "Arial" }),
+      new TextRun({ text: quote, italics: true, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial" }),
+    ],
+    spacing: { before: opts.before || 0, after: opts.after === undefined ? 40 : opts.after },
+  });
+}
+
+function dialogueCellParagraphsFromText(text, opts = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const parsed = parseDialogueLines(raw);
+  if (parsed.length > 0) {
+    return parsed.map((turn, index) => dialoguePara(turn.speaker || speakerForQuoteIndex(index), turn.text, { size: opts.size || SZ.cell, limit: opts.limit || 420 }));
+  }
+  return [dialoguePara(opts.speaker || "Сторона 1", raw.replace(/^«|»$/g, ""), { size: opts.size || SZ.cell, limit: opts.limit || 420 })];
+}
+
+function parseDialogueLines(value) {
+  const text = String(value || "").replace(/\r/g, "").replace(/\s*\/\s*/g, "\n");
+  const chunks = text.split(/\n+/).map((item) => cleanText(item)).filter(Boolean);
+  const turns = [];
+  for (const chunk of chunks) {
+    const match = chunk.match(/^(клиент|менеджер|оператор|продавец|собеседник|сторона\s*[12]|side\s*[12]|реплика)\s*:\s*(.+)$/i);
+    if (!match) continue;
+    let speaker = match[1].toLowerCase();
+    if (speaker === "клиент") speaker = "Клиент";
+    else if (speaker === "менеджер" || speaker === "оператор" || speaker === "продавец") speaker = "Менеджер";
+    else if (speaker.includes("2")) speaker = "Сторона 2";
+    else speaker = "Сторона 1";
+    turns.push({ speaker, text: match[2] });
+  }
+  return turns;
 }
 
 function quoteText(value) {
@@ -284,7 +329,7 @@ function quoteText(value) {
 }
 
 function dialogueExcerptText(excerpt, limit = 360) {
-  const turns = (excerpt?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 3);
+  const turns = (excerpt?.turns || []).filter((turn) => cleanText(turn.text)).slice(0, 8);
   if (turns.length === 0) return "";
   return turns
     .map((turn) => `${dialogueSpeakerLabel(turn.speaker)}: ${shortQuote(turn.text, Math.floor(limit / turns.length))}`)
@@ -304,7 +349,9 @@ function situationMomentSummary(s) {
 }
 
 function situationSupportingQuote(s) {
+  const evidenceQuotes = (s.coaching_view?.evidence_quotes || []).filter((item) => cleanText(item));
   return firstNonEmpty(
+    evidenceQuotes.join(" / "),
     quoteText(s.coaching_moment?.supporting_quote),
     quoteText(s.supporting_quote),
     dialogueExcerptText(s.dialogue_excerpt),
@@ -339,7 +386,7 @@ function buildSupportingQuoteParagraph(text, opts = {}) {
   return new Paragraph({
     children: [
       new TextRun({ text: `${label}: `, bold: true, size: opts.size || SZ.cell, color: COLORS.heading, font: "Arial" }),
-      new TextRun({ text: `«${shortQuote(quote, opts.limit || 420)}»`, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial", italics: true }),
+      new TextRun({ text: `Сторона 1: ${shortQuote(quote.replace(/^«|»$/g, ""), opts.limit || 420)}`, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial", italics: true }),
     ],
     spacing: { before: opts.before || 40, after: opts.after || 0 },
   });
@@ -352,14 +399,13 @@ function buildSituationReviewRows(s) {
     .map((item) => cleanText(item))
     .filter((item) => looksLikeManagerSpeechScript(item))
     .slice(0, 3);
+  const nextAction = firstNonEmpty(view.next_time_action, dive.what_to_fix);
+  const nextActionWithExample = buildNextActionWithExample(nextAction, scripts);
   const rowSpecs = [
     ["Что это значит", firstNonEmpty(view.meaning, dive.why_it_matters)],
     ["Что не хватило в разговоре", firstNonEmpty(view.what_was_missing, dive.what_went_wrong)],
-    ["Что делать в следующий раз", firstNonEmpty(view.next_time_action, dive.what_to_fix)],
+    ["Что делать в следующий раз", nextActionWithExample],
   ].filter(([, value]) => cleanText(value));
-  if (scripts.length > 0) {
-    rowSpecs.push(["Варианты речёвок", scripts.map((item, index) => `${index + 1}. ${item}`).join("\n")]);
-  }
   return rowSpecs.map(([label, value]) => {
     const lines = String(value).split("\n").map((line) => cleanText(line)).filter(Boolean);
     const contentCell = lines.length > 1
@@ -370,6 +416,19 @@ function buildSituationReviewRows(s) {
       : cell(value, { size: SZ.cell, width: { size: 70, type: WidthType.PERCENTAGE } });
     return new TableRow({ children: [labelCell(label), contentCell] });
   });
+}
+
+function buildNextActionWithExample(nextAction, scripts) {
+  const action = cleanText(nextAction);
+  const examples = scripts
+    .filter((item) => !sameMeaningText(item, action))
+    .slice(0, 2);
+  const lines = [];
+  if (action) lines.push(action);
+  examples.forEach((item, index) => {
+    lines.push(`${index === 0 ? "Пример" : "Ещё пример"}: ${item}`);
+  });
+  return lines.join("\n");
 }
 
 function tomorrowSituation(contact, row) {
@@ -617,6 +676,7 @@ function emptyStateData(payload) {
       why_it_works: "",
     },
     call_breakdown: { client: "—", time: "—", stages: [] },
+    voice_of_customer_scenes: [],
     voice_of_customer: [],
     additional_situations: [],
     key_problem: { title: "", description: "" },
@@ -878,8 +938,22 @@ function dataFromBundle(bundle) {
       time: payload.call_breakdown?.time_label || "—",
       reference: payload.call_breakdown?.client_call_reference || "",
       summary: payload.call_breakdown?.summary_line || "",
+      call_story: payload.call_breakdown?.call_story || "",
+      what_manager_missed: payload.call_breakdown?.what_manager_missed || "",
+      better_path: payload.call_breakdown?.better_path || "",
+      dialogue_evidence: payload.call_breakdown?.dialogue_evidence || [],
+      key_turning_points: payload.call_breakdown?.key_turning_points || [],
       stages: breakdownRows.map((row, index) => normalizeBreakdownRow(row, index + 1, breakdownMomentContext)),
     },
+    voice_of_customer_scenes: ((voice.customer_scenes || payload.voice_of_customer?.customer_scenes || [])).map((scene, index) => ({
+      client: scene.client_call_reference || scene.client_label || `Клиент ${index + 1}`,
+      scene_summary: scene.scene_summary || scene.quote_context || scene.quote || "",
+      customer_meaning: scene.customer_meaning || scene.interpretation || scene.context || "",
+      manager_response: scene.manager_response || scene.manager_action || "",
+      why_action_follows: scene.why_action_follows || "",
+      dialogue_evidence: scene.dialogue_evidence || [],
+      quote: scene.quote || "",
+    })),
     voice_of_customer: (voice.rows || []).map((row) => ({
       client: row[0] || "Клиент",
       quote: `«${String(row[1] || "").replace(/^«|»$/g, "")}»`,
@@ -904,11 +978,14 @@ function dataFromBundle(bundle) {
         data_scope: item.data_scope || "",
         evidence_call_id: item.evidence_call_id || "",
         evidence_quote: item.evidence_quote || "",
+        evidence_dialogue: item.evidence_dialogue || [],
+        client_call_reference: item.client_call_reference || "",
         confidence: item.confidence || "",
         client_said: item.client_said || item.what_happened || item.evidence_quote || "",
         meant: item.meant || item.why_it_matters || "",
         how_to: item.how_to || item.next_action || "",
         why: item.why || item.why_this_works || "",
+        narrative: item.narrative || "",
         type: item.kind || (item.badge === "Сильная сторона" ? "strength" : "gap"),
         signal: safeNumber(item.signal) || 0,
       }))
@@ -1070,13 +1147,13 @@ function blockHeading(emoji, title) {
 }
 
 function bodyPara(text, opts = {}) {
-  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0, italic = false } = opts;
+  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0, italic = false, before = 0, after = 60 } = opts;
   return new Paragraph({
     indent: indent ? { left: indent } : undefined,
     children: [
       new TextRun({ text, bold, color, size, font: "Arial", italics: italic }),
     ],
-    spacing: { before: 0, after: 60 },
+    spacing: { before, after },
   });
 }
 
@@ -1489,13 +1566,17 @@ function buildSituatsiya() {
   const momentSummary = situationMomentSummary(s);
   const supportingQuote = situationSupportingQuote(s);
   const reviewRows = buildSituationReviewRows(s);
+  const narrativeText = buildSituationNarrativeText({
+    whatHappenedText,
+    callContext: cleanText(s.coaching_view?.call_context_summary),
+    evidenceQuotes: (s.coaching_view?.evidence_quotes || []).filter((item) => cleanText(item)),
+    supportingQuote,
+  });
   const hasMoment = Boolean(momentSummary || supportingQuote);
   const patternTitle = buildSituationPatternTitle(s);
   const stageMeta = buildSituationStageMeta(s);
-  const rawProofLabel = proofTypeLabel(situationProofType(s));
-  const proofLabel = rawProofLabel === "Суть момента" && momentSummary ? "Контекст из звонка" : rawProofLabel;
 
-  if (!whatHappenedText && reviewRows.length === 0 && !hasMoment) {
+  if (!narrativeText && reviewRows.length === 0 && !hasMoment) {
     return [
       blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
       bodyPara("Данных за этот день недостаточно.", { color: COLORS.gray }),
@@ -1519,17 +1600,9 @@ function buildSituatsiya() {
     result.push(subHeading(s.example_label || "Пример из сегодня"));
     result.push(bodyPara(callRef, { size: SZ.cell }));
   }
-  if (whatHappenedText) {
+  if (narrativeText) {
     result.push(subHeading("Что произошло"));
-    result.push(bodyPara(whatHappenedText, { size: SZ.cell }));
-  }
-  if (momentSummary && !sameMeaningText(momentSummary, whatHappenedText)) {
-    result.push(subHeading("Суть момента"));
-    result.push(bodyPara(momentSummary, { size: SZ.cell }));
-  }
-  if (supportingQuote && !sameMeaningText(supportingQuote, momentSummary)) {
-    result.push(subHeading(proofLabel));
-    result.push(...buildDialogueParagraphs(s.dialogue_excerpt, s.supporting_quote || s.evidence_quote, { label: proofLabel }));
+    result.push(...buildSituationNarrativeParagraphs(narrativeText));
   }
   if (reviewRows.length > 0) {
     result.push(new Table({
@@ -1539,6 +1612,60 @@ function buildSituatsiya() {
     }));
   }
   return result;
+}
+
+function buildSituationNarrativeParagraphs(narrativeText) {
+  const rawText = String(narrativeText || "").trim();
+  if (!cleanText(rawText)) return [];
+  const proofMarker = "Это видно по репликам:";
+  const markerIndex = rawText.indexOf(proofMarker);
+  const mainText = markerIndex >= 0 ? cleanText(rawText.slice(0, markerIndex)) : cleanText(rawText);
+  const proofText = markerIndex >= 0 ? rawText.slice(markerIndex).trim() : "";
+  const sentences = mainText
+    .split(/(?<=[.!?])\s+/)
+    .map((item) => cleanText(item))
+    .filter(Boolean);
+  const paragraphs = [];
+  for (let index = 0; index < sentences.length; index += 2) {
+    paragraphs.push(sentences.slice(index, index + 2).join(" "));
+  }
+  const result = paragraphs.map((item, index) => bodyPara(item, {
+    size: SZ.cell,
+    before: index === 0 ? 0 : 60,
+  }));
+  if (proofText) {
+    const proofLines = String(proofText).split(/\n+/).map((item) => cleanText(item)).filter(Boolean);
+    const markerLine = proofLines[0] || proofMarker;
+    result.push(bodyPara(markerLine, { size: SZ.cell, italic: true, before: result.length === 0 ? 0 : 60, after: 30 }));
+    for (const line of proofLines.slice(1)) {
+      result.push(...dialogueCellParagraphsFromText(line, { size: SZ.cell, limit: 700 }));
+    }
+  }
+  return result;
+}
+
+function buildSituationNarrativeText({ whatHappenedText, callContext, evidenceQuotes, supportingQuote }) {
+  const parts = [];
+  if (whatHappenedText) {
+    parts.push(whatHappenedText);
+  }
+  if (callContext && !sameMeaningText(callContext, whatHappenedText)) {
+    parts.push(callContext);
+  }
+  const quotes = evidenceQuotes.length > 0
+    ? evidenceQuotes
+    : supportingQuote
+      ? [supportingQuote]
+      : [];
+  if (quotes.length > 0) {
+    const quoteLines = quotes
+      .map((item, index) => `${speakerForQuoteIndex(index)}: ${cleanText(item).replace(/^«|»$/g, "")}`)
+      .filter((item) => cleanText(item));
+    if (quoteLines.length > 0) {
+      parts.push(`Это видно по репликам:\n${quoteLines.join("\n")}`);
+    }
+  }
+  return parts.join("\n\n");
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1554,7 +1681,10 @@ function buildBreakdownMomentCell(s, i) {
   const quoteLabel = rawQuoteLabel === "Суть момента" ? "Подтверждение из звонка" : rawQuoteLabel;
   const proof = firstNonEmpty(quote, "");
   const paras = proof
-    ? [buildSupportingQuoteParagraph(proof, { size: SZ.cell, limit: 300, before: 0, label: quoteLabel })]
+    ? [
+        bodyPara(quoteLabel, { size: SZ.cell, bold: true, color: COLORS.heading, after: 30 }),
+        ...dialogueCellParagraphsFromText(proof, { size: SZ.cell, limit: 300, speaker: "Сторона 1" }),
+      ]
     : [new Paragraph({
         children: [new TextRun({ text: "—", size: SZ.cell, color: COLORS.gray, font: "Arial" })],
         spacing: { before: 0, after: 0 },
@@ -1563,6 +1693,49 @@ function buildBreakdownMomentCell(s, i) {
     width: { size: 28, type: WidthType.PERCENTAGE },
     shading: altShading(i),
   });
+}
+
+function breakdownEvidenceParagraphs(evidence, fallbackText = "", opts = {}) {
+  const size = opts.size || SZ.cell;
+  const items = Array.isArray(evidence) ? evidence : [];
+  const paras = [];
+  items.forEach((item, index) => {
+    const raw = item || {};
+    const speaker = dialogueSpeakerLabel(raw.speaker || speakerForQuoteIndex(index));
+    const text = cleanText(raw.text || raw.quote || "");
+    if (text) paras.push(dialoguePara(speaker, text, { size, limit: opts.limit || 700 }));
+  });
+  if (paras.length > 0) return paras;
+  return dialogueCellParagraphsFromText(fallbackText, { size, limit: opts.limit || 700, speaker: "Сторона 1" });
+}
+
+function buildBreakdownNarrativeParagraphs(data) {
+  const blocks = [];
+  const story = cleanText(data.call_story);
+  if (story) {
+    blocks.push(...buildSituationNarrativeParagraphs(story));
+  }
+  const points = (data.key_turning_points || []).filter((item) => cleanText(item.title || item.what_happened));
+  if (points.length > 0) {
+    blocks.push(subHeading("Ход звонка"));
+    points.slice(0, 4).forEach((point, index) => {
+      const title = cleanText(point.title) || `Момент ${index + 1}`;
+      const what = cleanText(point.what_happened);
+      const action = cleanText(point.better_action);
+      blocks.push(bodyPara(`${index + 1}. ${title}`, { size: SZ.cell, bold: true, color: COLORS.heading, before: index === 0 ? 0 : 60, after: 30 }));
+      [what].filter(Boolean).forEach((line) => {
+        blocks.push(bodyPara(line, { size: SZ.cell, after: 35 }));
+      });
+      const evidenceParas = breakdownEvidenceParagraphs(point.dialogue_evidence, "", { size: SZ.cell, limit: 520 });
+      if (evidenceParas.length > 0) {
+        blocks.push(...evidenceParas);
+      }
+      if (action) {
+        blocks.push(bodyPara(`В этом месте лучше: ${action.replace(/^Сказать:\s*/i, "")}`, { size: SZ.cell, color: COLORS.heading, italic: true, before: 20 }));
+      }
+    });
+  }
+  return blocks;
 }
 
 function breakdownWhatText(s) {
@@ -1589,6 +1762,15 @@ function buildRazbor() {
   const introLine = summaryLine.includes("подтверждающий фрагмент ограничен")
     ? displaySummaryLine
     : `${displaySummaryLine} · Звонок выбран как наиболее показательный для основного паттерна дня.`;
+  const narrativeBlocks = buildBreakdownNarrativeParagraphs(DATA.call_breakdown);
+  if (narrativeBlocks.length > 0) {
+    return [
+      blockHeading("🔍", block_label || "РАЗБОР ЗВОНКА"),
+      ...(scope_note ? [bodyPara(scope_note, { color: COLORS.gray, size: SZ.meta })] : []),
+      bodyPara(introLine, { color: COLORS.gray, size: SZ.meta }),
+      ...narrativeBlocks,
+    ];
+  }
   const headerRows = [
     new TableRow({
       children: [
@@ -1629,6 +1811,63 @@ function buildRazbor() {
 // ──────────────────────────────────────────────────────────────
 
 function buildGolos() {
+  const scenes = (DATA.voice_of_customer_scenes || []).filter((scene) =>
+    cleanText(scene.scene_summary || scene.customer_meaning || scene.manager_response || scene.quote)
+  );
+  if (scenes.length > 0) {
+    const blocks = [
+      blockHeading("👤", "ГОЛОС КЛИЕНТА"),
+      bodyPara(
+        "Клиентские сигналы разобраны как сцены: что клиент сказал, что это значит и как менеджеру отвечать.",
+        { color: COLORS.gray, size: SZ.meta },
+      ),
+      spacer(4),
+    ];
+    scenes.slice(0, 4).forEach((scene, index) => {
+      const title = cleanText(scene.client) || `Клиент ${index + 1}`;
+      const summary = cleanText(scene.scene_summary);
+      const meaning = cleanText(scene.customer_meaning);
+      const why = cleanText(scene.why_action_follows);
+      const action = cleanText(scene.manager_response);
+      const seenLines = new Set();
+      const pushUniqueText = (text, opts = {}) => {
+        const normalized = cleanText(text).toLowerCase();
+        if (!normalized || seenLines.has(normalized)) return;
+        seenLines.add(normalized);
+        blocks.push(bodyPara(text, opts));
+      };
+      blocks.push(bodyPara(`${index + 1}. ${title}`, { size: SZ.cell, bold: true, color: COLORS.heading, before: index === 0 ? 0 : 80, after: 30 }));
+      if (summary) {
+        const sentences = summary.split(/(?<=[.!?])\s+/).map((item) => cleanText(item)).filter(Boolean);
+        for (let sentenceIndex = 0; sentenceIndex < sentences.length; sentenceIndex += 2) {
+          pushUniqueText(sentences.slice(sentenceIndex, sentenceIndex + 2).join(" "), { size: SZ.cell, after: 55 });
+        }
+      }
+      if (meaning) {
+        const before = blocks.length;
+        pushUniqueText(meaning, { size: SZ.cell });
+        if (blocks.length > before) {
+          blocks.splice(before, 0, subHeading("Что клиент имеет в виду"));
+        }
+      }
+      const evidenceParas = breakdownEvidenceParagraphs(scene.dialogue_evidence, scene.quote || scene.scene_summary, { size: SZ.cell, limit: 620 });
+      if (evidenceParas.length > 0) {
+        blocks.push(subHeading("Реплики"));
+        blocks.push(...evidenceParas);
+      }
+      if (why) {
+        const before = blocks.length;
+        pushUniqueText(why, { size: SZ.cell });
+        if (blocks.length > before) {
+          blocks.splice(before, 0, subHeading("Что это значит"));
+        }
+      }
+      if (action) {
+        blocks.push(bodyPara(`Как с этим работать: ${action.replace(/^(Что сделать|Как с этим работать):\s*/i, "")}`, { size: SZ.cell, color: COLORS.heading, italic: true }));
+      }
+    });
+    return blocks;
+  }
   if (!DATA.voice_of_customer || DATA.voice_of_customer.length === 0) {
     return [
       blockHeading("👤", "ГОЛОС КЛИЕНТА"),
@@ -1639,7 +1878,7 @@ function buildGolos() {
     children: [
       headCell("Клиент / звонок", { width: { size: 20, type: WidthType.PERCENTAGE } }),
       headCell("Что сказал клиент", { width: { size: 36, type: WidthType.PERCENTAGE } }),
-      headCell("Что это значит / Что делать", { width: { size: 44, type: WidthType.PERCENTAGE } }),
+      headCell("Что клиент имеет в виду / Как с этим работать", { width: { size: 44, type: WidthType.PERCENTAGE } }),
     ],
   });
 
@@ -1708,30 +1947,20 @@ function buildDopSituatsii() {
       spacing: { before: 100, after: 40 },
     }));
 
-    const sitRows = [
-      s.client_said ? new TableRow({ children: [
-        headCell("Что произошло", { width: { size: 28, type: WidthType.PERCENTAGE } }),
-        cell(s.client_said),
-      ]}) : null,
-      s.meant ? new TableRow({ children: [
-        headCell("Что это значит"),
-        cell(s.meant, { color: COLORS.heading }),
-      ]}) : null,
-      s.how_to ? new TableRow({ children: [
-        headCell("Что делать в следующий раз"),
-        cell(s.how_to, { color: s.type === "strength" ? COLORS.heading : COLORS.green, italic: true }),
-      ]}) : null,
-      s.why ? new TableRow({ children: [
-        headCell("Почему это сработает"),
-        cell(s.why, { color: COLORS.gray }),
-      ]}) : null,
-    ].filter(Boolean);
-
-    if (sitRows.length > 0) {
-      blocks.push(new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: sitRows,
-      }));
+    if (s.client_call_reference) {
+      blocks.push(bodyPara(s.client_call_reference, { color: COLORS.gray, size: SZ.meta, after: 30 }));
+    }
+    const narrative = cleanText(s.narrative) || [s.client_said, s.meant, s.why].filter(Boolean).join(" ");
+    if (narrative) {
+      blocks.push(...buildSituationNarrativeParagraphs(narrative));
+    }
+    const evidenceParas = breakdownEvidenceParagraphs(s.evidence_dialogue, s.evidence_quote, { size: SZ.cell, limit: 620 });
+    if (evidenceParas.length > 0) {
+      blocks.push(subHeading("Подтверждение"));
+      blocks.push(...evidenceParas);
+    }
+    if (s.how_to) {
+      blocks.push(bodyPara(`Что сделать: ${s.how_to}`, { color: s.type === "strength" ? COLORS.heading : COLORS.green, italic: true }));
     }
     blocks.push(spacer(8));
   }

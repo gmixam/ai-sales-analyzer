@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
+import re
 from typing import Any, Iterable
 
 try:
@@ -25,12 +26,14 @@ def build_situation_day_daily_input(
     report_evidence_index: dict[str, dict[str, Any]] | None = None,
     evidence_registry_items: Iterable[Any] | None = None,
     max_calls: int = 12,
-    max_scenes_per_call: int = 3,
+    max_scenes_per_call: int = 5,
 ) -> dict[str, Any]:
     """Return compact day-level LLM input grouped by call.
 
     The builder intentionally keeps only normalized report evidence scenes,
-    supporting quotes and call metadata. It never copies full transcripts.
+    supporting quotes and call metadata. It never copies full transcripts, but
+    keeps enough surrounding scene text for the report composer to explain the
+    business meaning instead of filling a rigid template.
     """
 
     artifact_list = _as_list(artifacts)
@@ -226,6 +229,7 @@ def _build_call_shell(
             "evidence_scenes": [],
             "quality_flags": [],
             "source_fact_ids": [],
+            "_transcript_text": _first_text(_path_get(artifact, "interaction.text"), artifact_map.get("text")),
         }
     )
 
@@ -272,7 +276,7 @@ def _merge_call_evidence(
         if fact_id:
             _append_unique(source_fact_ids, fact_id)
 
-        scene = _scene_from_item(item)
+        scene = _scene_from_item(item, transcript=call.get("_transcript_text"))
         if scene:
             scenes.append(scene)
 
@@ -282,13 +286,23 @@ def _merge_call_evidence(
     call["evidence_scenes"] = scenes[: max(0, max_scenes_per_call)]
     call["quality_flags"] = quality_flags
     call["source_fact_ids"] = source_fact_ids
-    return call
+    result = dict(call)
+    result.pop("_transcript_text", None)
+    return result
 
 
-def _scene_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
+def _scene_from_item(item: dict[str, Any], *, transcript: str | None = None) -> dict[str, Any] | None:
     turns = [_compact_turn(turn) for turn in _as_list(item.get("dialogue_scene"))]
     turns = [turn for turn in turns if turn]
-    quote = _bounded_text(_text(item.get("supporting_quote")), 360)
+    quote = _bounded_text(_text(item.get("supporting_quote")), 700)
+    transcript_turns = _transcript_context_turns_around_quote(
+        transcript=transcript,
+        quote=quote,
+        before=3,
+        after=6,
+    )
+    if transcript_turns:
+        turns = transcript_turns
     if not turns and not quote:
         return None
     summary = _first_text(item.get("manager_gap"), item.get("customer_context"), item.get("problem_title"))
@@ -307,14 +321,14 @@ def _scene_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
             ),
             "quote": quote,
             "turns": turns,
-            "summary": _bounded_text(summary, 360),
+            "summary": _bounded_text(summary, 700),
             "next_time_action": _bounded_text(
                 _first_text(
                     _path_get(item, "diagnostics.what_better"),
                     item.get("better_next_action"),
                     item.get("recommended_next_action"),
                 ),
-                360,
+                500,
             ),
         }
     )
@@ -322,7 +336,7 @@ def _scene_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
 def _compact_turn(raw_turn: Any) -> dict[str, Any]:
     turn = _as_dict(raw_turn)
-    text = _bounded_text(_first_text(turn.get("text"), turn.get("quote")), 360)
+    text = _bounded_text(_first_text(turn.get("text"), turn.get("quote")), 700)
     if not text:
         return {}
     result: dict[str, Any] = {
@@ -333,6 +347,48 @@ def _compact_turn(raw_turn: Any) -> dict[str, Any]:
         if key in turn:
             result[key] = turn[key]
     return result
+
+
+def _transcript_context_turns_around_quote(
+    *,
+    transcript: str | None,
+    quote: str | None,
+    before: int,
+    after: int,
+) -> list[dict[str, Any]]:
+    quote_text = _bounded_text(quote, 300)
+    transcript_text = _text(transcript)
+    if not quote_text or not transcript_text:
+        return []
+    quote_norm = _norm_dialogue(quote_text)
+    chunks = [
+        _bounded_text(chunk, 700)
+        for chunk in re.split(r"(?<=[.!?])\s+", transcript_text)
+        if _bounded_text(chunk, 700)
+    ]
+    matched_index = None
+    for index, chunk in enumerate(chunks):
+        chunk_norm = _norm_dialogue(chunk)
+        if quote_norm and (quote_norm in chunk_norm or chunk_norm in quote_norm):
+            matched_index = index
+            break
+    if matched_index is None:
+        return []
+    result: list[dict[str, Any]] = []
+    start = max(0, matched_index - before)
+    end = min(len(chunks), matched_index + after + 1)
+    for index in range(start, end):
+        result.append(
+            {
+                "speaker": "evidence" if index == matched_index else "context",
+                "text": chunks[index],
+            }
+        )
+    return result
+
+
+def _norm_dialogue(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
 def _call_rank(call: dict[str, Any]) -> tuple[int, int, int, str]:

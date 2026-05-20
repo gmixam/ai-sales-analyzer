@@ -13,7 +13,7 @@ if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
 MODULE_PATH = CORE_ROOT / "app" / "agents" / "calls" / "voice_of_customer_composer.py"
-PROMPT_PATH = CORE_ROOT / "app" / "agents" / "calls" / "prompts" / "voice_of_customer_composer_v1.md"
+PROMPT_PATH = CORE_ROOT / "app" / "agents" / "calls" / "prompts" / "voice_of_customer_composer_v2.md"
 
 
 def _load_module():
@@ -56,6 +56,8 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         self.assertIn("Ладно, хорошо, я перезвоню", text)
         self.assertIn("recommendation must follow", text)
         self.assertIn("mini-scene", text)
+        self.assertIn("What does the client actually mean", text)
+        self.assertIn("How should the manager work with that meaning", text)
 
     def test_problematic_short_callback_quote_with_contract_action_is_rejected(self) -> None:
         module = _load_module()
@@ -195,7 +197,73 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "verified")
         self.assertTrue(result["selection_diagnostics"]["llm3"]["llm3_used"])
-        self.assertEqual(result["source_note"], "report_evidence.voice_of_customer_composer.v1")
+        self.assertEqual(result["source_note"], "report_evidence.voice_of_customer_composer.v2")
+        self.assertEqual(result["selection_diagnostics"]["composer_version"], "voice_of_customer_composer_v2")
+
+    def test_llm3_v2_customer_scenes_are_normalized(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Клиент: Нам нужно подписывать договоры через ЭЦП. "
+            "Менеджер: Да, можем показать сценарий. "
+            "Клиент: Тогда покажите, как это работает для договора."
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "client",
+                    "business_signal": "high",
+                    "quote": "Тогда покажите, как это работает для договора.",
+                    "meaning": "Клиент просит показать сценарий подписания договора.",
+                    "topic": "договор ЭЦП",
+                }
+            ]
+        }
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "customer_scenes": [
+                    {
+                        "signal_id": _payload["signals"][0]["signal_id"],
+                        "call_id": call_id,
+                        "client_call_reference": "Клиент • 2026-05-15 • 06:07",
+                        "scene_summary": "Клиент обсуждает электронное подписание и просит показать сценарий работы с договором.",
+                        "quote": "Тогда покажите, как это работает для договора.",
+                        "quote_context": (
+                            "Клиент: Нам нужно подписывать договоры через ЭЦП. "
+                            "Менеджер: Да, можем показать сценарий. "
+                            "Клиент: Тогда покажите, как это работает для договора."
+                        ),
+                        "dialogue_evidence": [
+                            {"speaker": "client", "text": "Нам нужно подписывать договоры через ЭЦП."},
+                            {"speaker": "manager", "text": "Да, можем показать сценарий."},
+                            {"speaker": "client", "text": "Тогда покажите, как это работает для договора."},
+                        ],
+                        "customer_meaning": "Это не общий интерес, а запрос на понятный документный сценарий.",
+                        "manager_response": "Предложить короткое демо по подписанию договора и зафиксировать участников.",
+                        "why_action_follows": "Клиент просит показать работу именно для договора, поэтому следующий шаг должен быть демонстрацией процесса.",
+                        "customer_signal": "document_or_signature_need",
+                        "source": "voice_of_customer_composer",
+                    }
+                ],
+                "situations": [],
+                "rows": [],
+            }
+
+        module._request_llm3_voice_of_customer = fake_request
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=True,
+        )
+
+        self.assertEqual(result["status"], "verified")
+        self.assertTrue(result["selection_diagnostics"]["llm3"]["llm3_used"])
+        self.assertEqual(len(result["customer_scenes"]), 1)
+        self.assertIn("документный сценарий", result["customer_scenes"][0]["customer_meaning"])
+        self.assertEqual(len(result["customer_scenes"][0]["dialogue_evidence"]), 3)
+        self.assertEqual(len(result["rows"][0]), 3)
 
     def test_llm3_material_action_without_material_context_falls_back(self) -> None:
         module = _load_module()
@@ -259,7 +327,100 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         )
         rendered = " ".join(" ".join(map(str, row)) for row in result["rows"]).lower()
         self.assertNotIn("отправить материалы", rendered)
-        self.assertIn("когда вернуться", rendered)
+        self.assertTrue("вернуться" in rendered or "возврат" in rendered)
+
+    def test_callback_signal_does_not_invent_internal_discussion(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Сторона 1: Так, всё принято. Это ваш номер, я через некоторое время смогу?\n"
+            "Сторона 2: Рабочий, да. Ну, можете, да, звонить.\n"
+            "Клиент: Да, всё принято, хорошо. Я вам перезвоню. Спасибо.\n"
+            "Сторона 1: Всё, хорошо тогда."
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "client",
+                    "business_signal": "medium",
+                    "quote": "Да, всё принято, хорошо. Я вам перезвоню. Спасибо.",
+                    "meaning": "Клиент забирает следующий контакт на себя.",
+                    "topic": "timing",
+                }
+            ]
+        }
+
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=False,
+        )
+
+        rendered = " ".join(" ".join(map(str, row)) for row in result["rows"]).lower()
+        self.assertEqual(result["status"], "verified")
+        self.assertNotIn("с кем клиент будет обсуждать", rendered)
+        self.assertNotIn("обсуждать решение", rendered)
+        self.assertIn("я перезвоню", rendered)
+        self.assertTrue("точку возврата" in rendered or "вернуться" in rendered)
+
+    def test_llm3_callback_scene_internal_discussion_is_repaired_and_speakers_are_consistent(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Сторона 1: Так, всё принято. Это ваш номер, я через некоторое время смогу?\n"
+            "Сторона 2: Рабочий, да. Ну, можете, да, звонить.\n"
+            "Клиент: Да, всё принято, хорошо. Я вам перезвоню. Спасибо.\n"
+            "Сторона 1: Всё, хорошо тогда."
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "client",
+                    "business_signal": "medium",
+                    "quote": "Да, всё принято, хорошо. Я вам перезвоню. Спасибо.",
+                    "meaning": "Клиент забирает следующий контакт на себя.",
+                    "topic": "timing",
+                }
+            ]
+        }
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "customer_scenes": [
+                    {
+                        "signal_id": _payload["signals"][0]["signal_id"],
+                        "call_id": call_id,
+                        "client_call_reference": "Клиент • 2026-05-15 • 06:07",
+                        "scene_summary": "Клиент говорит, что перезвонит через некоторое время.",
+                        "quote": "Да, всё принято, хорошо. Я вам перезвоню. Спасибо.",
+                        "quote_context": _payload["signals"][0]["quote_context"],
+                        "dialogue_evidence": [
+                            {"speaker": "unknown", "text": "Так, всё принято. Это ваш номер, я через некоторое время смогу?"},
+                            {"speaker": "unknown", "text": "Рабочий, да. Ну, можете, да, звонить."},
+                            {"speaker": "client", "text": "Да, всё принято, хорошо. Я вам перезвоню. Спасибо."},
+                        ],
+                        "customer_meaning": "Клиент не готов принять решение в моменте и переносит следующий контакт.",
+                        "manager_response": "Уточнить, с кем клиент будет обсуждать решение, когда вернуться к разговору и какой следующий шаг зафиксировать.",
+                        "why_action_follows": "Клиент выразил намерение перезвонить.",
+                        "customer_signal": "timing_or_internal_discussion",
+                    }
+                ],
+                "situations": [],
+                "rows": [],
+            }
+
+        module._request_llm3_voice_of_customer = fake_request
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=True,
+        )
+
+        scene = result["customer_scenes"][0]
+        self.assertTrue(result["selection_diagnostics"]["llm3"]["llm3_used"])
+        self.assertNotIn("обсуждать решение", scene["manager_response"].lower())
+        self.assertTrue(all(turn["speaker"].startswith("side_") for turn in scene["dialogue_evidence"]))
 
     def test_document_show_scenario_is_not_misclassified_as_price_request(self) -> None:
         module = _load_module()
@@ -316,6 +477,29 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         self.assertEqual(
             module.VoiceOfCustomerQualityGate()._rejection_reason(signal),
             "recommendation_interest_contradicts_context",
+        )
+
+    def test_refusal_signal_rejects_sales_push_recommendation(self) -> None:
+        module = _load_module()
+        signal = module.VoiceCustomerSignal(
+            signal_id="s1",
+            call_id="c1",
+            source="llm3",
+            quote="Ну, вообще, да, слышала, но не знаю, нет, наверное, не рассматриваю.",
+            quote_context=(
+                "Клиент: Ну, вообще, да, слышала, но не знаю, нет, наверное, не рассматриваю. "
+                "Менеджер: Понял. У вас не такие большие объемы? "
+                "Клиент: Да, да, не такие большие объемы."
+            ),
+            interpretation="Клиент не рассматривает ЭДО из-за небольших объемов.",
+            manager_action="Что сделать: предложить показать сценарий подписания договора.",
+            customer_signal="refusal_or_not_now",
+            score=10,
+        )
+
+        self.assertEqual(
+            module.VoiceOfCustomerQualityGate()._rejection_reason(signal),
+            "recommendation_sales_push_after_refusal",
         )
 
     def test_unknown_segment_speakers_are_inferred_for_mini_scene(self) -> None:

@@ -12,7 +12,7 @@ if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
 MODULE_PATH = CORE_ROOT / "app" / "agents" / "calls" / "call_breakdown_composer.py"
-PROMPT_PATH = CORE_ROOT / "app" / "agents" / "calls" / "prompts" / "call_breakdown_composer_v1.md"
+PROMPT_PATH = CORE_ROOT / "app" / "agents" / "calls" / "prompts" / "call_breakdown_composer_v2.md"
 
 
 def _load_call_breakdown_composer_module():
@@ -256,16 +256,19 @@ class CallBreakdownComposerPromptTests(unittest.TestCase):
     def test_prompt_contract_requires_grounding_and_non_duplication(self) -> None:
         text = PROMPT_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("1 to 4 moments", text)
+        self.assertIn("1 to 4", text)
         self.assertIn("evidence_refs", text)
         self.assertIn("Do not invent", text)
         self.assertIn("Do not duplicate Situation Day", text)
         self.assertIn("mini-scene", text)
-        self.assertIn("complex B2B calls normally target 3 moments", text)
-        self.assertIn('`rows` is mandatory', text)
-        self.assertIn("Follow `composition_rules` exactly", text)
+        self.assertIn("Narrative Rules", text)
+        self.assertIn("Compatibility Rows", text)
+        self.assertIn("call_story", text)
+        self.assertIn("key_turning_points", text)
+        self.assertIn("must not become a second", text)
+        self.assertIn("call\nwalkthrough", text)
         self.assertIn("Treat `transcript_scenes` as the main evidence source", text)
-        self.assertIn("report_evidence.call_breakdown_composer.v1", text)
+        self.assertIn("report_evidence.call_breakdown_composer.v2", text)
 
 
 class CallBreakdownComposerTests(unittest.TestCase):
@@ -284,8 +287,8 @@ class CallBreakdownComposerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "verified")
         self.assertEqual(result["call_id"], call_id)
-        self.assertEqual(result["call_breakdown_source"], "report_evidence.call_breakdown_composer.v1")
-        self.assertEqual(result["source_note"], "report_evidence.call_breakdown_composer.v1")
+        self.assertEqual(result["call_breakdown_source"], "report_evidence.call_breakdown_composer.v2")
+        self.assertEqual(result["source_note"], "report_evidence.call_breakdown_composer.v2")
 
         moments = result.get("moments") or []
         rows = result.get("rows") or []
@@ -378,7 +381,7 @@ class CallBreakdownComposerTests(unittest.TestCase):
             llm2_facts=inputs["llm2_facts"],
         )
 
-        self.assertEqual(payload["contract_version"], "call_breakdown_composer_v1")
+        self.assertEqual(payload["contract_version"], "call_breakdown_composer_v2")
         self.assertEqual(payload["selected_call"]["call_id"], call_id)
         self.assertEqual(payload["situation_evidence_packet"]["call_id"], call_id)
         self.assertTrue(payload["transcript_scenes"])
@@ -389,6 +392,7 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertEqual(payload["composition_rules"]["verified_min_moments"], 2)
         self.assertEqual(payload["composition_rules"]["verified_target_moments"], 3)
         self.assertIn("required_output_keys", payload)
+        self.assertTrue(payload["composition_rules"]["narrative_preferred"])
 
     def test_llm3_payload_allows_one_grounded_moment_for_simple_call(self) -> None:
         module = _load_call_breakdown_composer_module()
@@ -450,6 +454,8 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertTrue(result["selection_diagnostics"]["llm3_used"])
         self.assertFalse(result["selection_diagnostics"]["deterministic_fallback_used"])
         self.assertEqual(len(result["rows"]), 1)
+        self.assertTrue(result.get("call_story"))
+        self.assertTrue(result.get("key_turning_points"))
         self.assertIn("завтра до 12:00", result["rows"][0][3])
 
     def test_weak_llm3_b2b_breakdown_falls_back_to_deterministic_result(self) -> None:

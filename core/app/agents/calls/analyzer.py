@@ -1032,7 +1032,7 @@ class CallsAnalyzer:
                 "`eligibility_reason`.\n\n"
                 "Preserve the additive `report_evidence_version=\"v1\"` and `report_evidence` package. "
                 "When enough transcript or metadata exists, include `report_evidence.call_report_summary` "
-                "with `short_topic`, `short_context`, semantic `hotness` limited to `hot|warm|low`, "
+                "with `short_topic`, `short_context`, `manager_visible_summary`, semantic `hotness` limited to `hot|warm|low`, "
                 "`manager_next_action`, and a manager-voiced `suggested_manager_phrase` that does not copy "
                 "client quotes. For business-meaningful calls with enough transcript content, include "
                 "`report_evidence.semantic_case` with `case_title`, `case_type`, `core_meaning`, "

@@ -180,37 +180,109 @@ def _situation_day_insufficient_message(_coaching_view: dict[str, Any]) -> str:
 def _render_situation_day_text_lines(coaching_view: dict[str, Any]) -> list[str]:
     if _situation_day_is_insufficient(coaching_view):
         return [_situation_day_insufficient_message(coaching_view)]
-    lines = [
-        f"Суть момента: {_situation_day_value(coaching_view, 'moment_summary', 'meaning', 'why_it_matters')}",
-        f"Что произошло: {_situation_day_value(coaching_view, 'what_happened')}",
-        f"В чем ошибка менеджера: {_situation_day_value(coaching_view, 'manager_error', 'manager_gap', 'what_was_missing')}",
-        f"Как сделать лучше: {_situation_day_value(coaching_view, 'how_to_improve', 'better_next_action', 'next_time_action')}",
-    ]
-    scripts = _situation_day_scripts(coaching_view)
-    if scripts:
-        lines.append("Варианты речёвок:")
-        lines.extend([f"- {item}" for item in scripts])
-    return lines
+    parts = _situation_day_narrative_parts(coaching_view)
+    if not parts:
+        return ["Что произошло: Нет данных"]
+    return [f"Что произошло: {parts[0]}", *parts[1:]]
 
 
 def _render_situation_day_html_body(coaching_view: dict[str, Any]) -> str:
     if _situation_day_is_insufficient(coaching_view):
         return f"<p class=\"muted\">{html.escape(_situation_day_insufficient_message(coaching_view))}</p>"
-    scripts = _situation_day_scripts(coaching_view)
-    scripts_html = ""
-    if scripts:
-        scripts_html = (
-            "<div class=\"mini-card\"><strong>Варианты речёвок</strong><ol>"
-            + "".join(f"<li>{html.escape(item)}</li>" for item in scripts)
-            + "</ol></div>"
-        )
-    return (
-        f"<p><strong>Суть момента:</strong> {html.escape(_situation_day_value(coaching_view, 'moment_summary', 'meaning', 'why_it_matters'))}</p>"
-        f"<p><strong>Что произошло:</strong> {html.escape(_situation_day_value(coaching_view, 'what_happened'))}</p>"
-        f"<p><strong>В чем ошибка менеджера:</strong> {html.escape(_situation_day_value(coaching_view, 'manager_error', 'manager_gap', 'what_was_missing'))}</p>"
-        f"<p><strong>Как сделать лучше:</strong> {html.escape(_situation_day_value(coaching_view, 'how_to_improve', 'better_next_action', 'next_time_action'))}</p>"
-        f"{scripts_html}"
-    )
+    parts = _situation_day_narrative_parts(coaching_view)
+    if not parts:
+        return "<p><strong>Что произошло:</strong> Нет данных</p>"
+    body = [f"<p><strong>Что произошло:</strong> {html.escape(parts[0])}</p>"]
+    for part in parts[1:]:
+        if part.startswith("Сторона "):
+            speaker, _, quote = part.partition(":")
+            body.append(f"<p><em><strong>{html.escape(speaker)}:</strong> {html.escape(quote.strip())}</em></p>")
+        elif part == "Это видно по репликам:":
+            body.append(f"<p><em>{html.escape(part)}</em></p>")
+        else:
+            body.append(f"<p>{html.escape(part)}</p>")
+    return "".join(body)
+
+
+def _situation_day_narrative_parts(coaching_view: dict[str, Any]) -> list[str]:
+    text = _situation_day_narrative_text(coaching_view)
+    if not text or text == "Нет данных":
+        return []
+    marker = "Это видно по репликам:"
+    marker_index = text.find(marker)
+    main_text = text[:marker_index].strip() if marker_index >= 0 else text
+    proof_text = text[marker_index:].strip() if marker_index >= 0 else ""
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", main_text)
+        if item.strip()
+    ]
+    parts = [" ".join(sentences[index : index + 2]) for index in range(0, len(sentences), 2)]
+    if proof_text:
+        parts.extend([item.strip() for item in proof_text.splitlines() if item.strip()])
+    return [part for part in parts if part]
+
+
+def _situation_day_narrative_text(coaching_view: dict[str, Any]) -> str:
+    what_happened = _situation_day_value(coaching_view, "what_happened", fallback="")
+    context = _situation_day_value(coaching_view, "call_context_summary", fallback="")
+    evidence_quotes = [
+        str(item).strip()
+        for item in (coaching_view.get("evidence_quotes") or [])
+        if str(item).strip()
+    ]
+    parts = [part for part in (what_happened, context) if part]
+    if evidence_quotes:
+        quote_lines = [
+            f"Сторона {1 if index % 2 == 0 else 2}: {item.strip('«»')}"
+            for index, item in enumerate(evidence_quotes)
+            if item.strip("«»").strip()
+        ]
+        if quote_lines:
+            parts.append("Это видно по репликам:\n" + "\n".join(quote_lines))
+    return "\n\n".join(parts).strip() or "Нет данных"
+
+
+def _split_readable_text(value: str) -> list[str]:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return []
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", text) if item.strip()]
+    if len(sentences) <= 2:
+        return [text]
+    return [" ".join(sentences[index : index + 2]) for index in range(0, len(sentences), 2)]
+
+
+def _dialogue_speaker_label(value: Any, *, index: int = 0) -> str:
+    speaker = str(value or "").strip().lower()
+    if speaker in {"manager", "seller", "agent", "оператор", "менеджер"}:
+        return "Менеджер"
+    if speaker in {"client", "customer", "клиент"}:
+        return "Клиент"
+    if speaker in {"side_2", "сторона 2"}:
+        return "Сторона 2"
+    if speaker in {"side_1", "сторона 1"}:
+        return "Сторона 1"
+    return "Сторона 1" if index % 2 == 0 else "Сторона 2"
+
+
+def _dialogue_text_lines(items: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for index, raw in enumerate(items or []):
+        item = raw if isinstance(raw, dict) else {"text": raw}
+        text = str(item.get("text") or item.get("quote") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{_dialogue_speaker_label(item.get('speaker'), index=index)}: {text}")
+    return lines
+
+
+def _dialogue_html_lines(items: list[Any]) -> list[str]:
+    lines = []
+    for line in _dialogue_text_lines(items):
+        speaker, _, quote = line.partition(":")
+        lines.append(f"<p><em><strong>{html.escape(speaker)}:</strong> {html.escape(quote.strip())}</em></p>")
+    return lines
 
 
 def _render_docx_first_pdf_report(
@@ -1015,6 +1087,25 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             str(section.get("summary_line") or "Разбор звонка"),
         ]
         lines = [line for line in lines if line]
+        if section.get("call_story") or section.get("key_turning_points"):
+            if section.get("call_story"):
+                lines.extend(_split_readable_text(str(section.get("call_story") or "")))
+            points = section.get("key_turning_points") or []
+            if points:
+                lines.append("Ход звонка:")
+                for index, point in enumerate(points, start=1):
+                    if not isinstance(point, dict):
+                        continue
+                    title_text = str(point.get("title") or f"Момент {index}").strip()
+                    lines.append(f"{index}. {title_text}")
+                    for key in ("what_happened",):
+                        value = str(point.get(key) or "").strip()
+                        if value:
+                            lines.append(value)
+                    lines.extend(_dialogue_text_lines(point.get("dialogue_evidence") or []))
+                    if point.get("better_action"):
+                        lines.append(f"В этом месте лучше: {point.get('better_action')}")
+            return lines
         rows = section.get("rows") or []
         if rows:
             lines.append("Момент / время | Что было | Подтверждение из звонка | Рекомендация")
@@ -1027,9 +1118,34 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         lines = []
         if section.get("intro"):
             lines.append(str(section["intro"]))
+        scenes = [item for item in section.get("customer_scenes") or [] if isinstance(item, dict)]
+        if scenes:
+            for index, scene in enumerate(scenes, start=1):
+                reference = str(scene.get("client_call_reference") or f"Клиент {index}").strip()
+                lines.append(reference)
+                seen_scene_lines: set[str] = set()
+                for key, label in (
+                    ("scene_summary", ""),
+                    ("customer_meaning", "Что клиент имеет в виду"),
+                    ("why_action_follows", "Что это значит"),
+                ):
+                    value = str(scene.get(key) or "").strip()
+                    if value:
+                        for part in _split_readable_text(value):
+                            norm = re.sub(r"\s+", " ", part.lower()).strip()
+                            if norm and norm not in seen_scene_lines:
+                                seen_scene_lines.add(norm)
+                                lines.append(f"{label}: {part}" if label else part)
+                dialogue = scene.get("dialogue_evidence") or []
+                if dialogue:
+                    lines.append("Реплики:")
+                    lines.extend(_dialogue_text_lines(dialogue))
+                if scene.get("manager_response"):
+                    lines.append(f"Как с этим работать: {scene.get('manager_response')}")
+            return lines
         rows = section.get("rows") or []
         if rows:
-            lines.append("Клиент / звонок | Что сказал клиент | Что это значит / Что делать")
+            lines.append("Клиент / звонок | Что сказал клиент | Что клиент имеет в виду / Как с этим работать")
             lines.extend([" | ".join(_value(cell) for cell in row) for row in rows])
         else:
             lines.append("—")
@@ -1041,16 +1157,26 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         if section.get("scope_note"):
             lines.append(str(section["scope_note"]))
         for item in section.get("situations") or []:
-            lines.extend(
-                [
-                    f"{item.get('badge') or 'Ситуация'}: {item.get('title') or '—'}",
-                    f"Что сказал клиент: {item.get('client_said') or '—'}",
-                    f"Что имел в виду: {item.get('meant') or '—'}",
-                    f"Как надо было: {item.get('how_to') or '—'}",
-                    f"Почему так: {item.get('why') or '—'}",
-                    "",
-                ]
-            )
+            lines.append(f"{item.get('badge') or 'Ситуация'}: {item.get('title') or '—'}")
+            reference = str(item.get("client_call_reference") or "").strip()
+            if reference:
+                lines.append(reference)
+            narrative = str(item.get("narrative") or "").strip()
+            if narrative:
+                lines.extend(_split_readable_text(narrative))
+            else:
+                for key in ("client_said", "meant", "why"):
+                    value = str(item.get(key) or "").strip()
+                    if value:
+                        lines.extend(_split_readable_text(value))
+            evidence = item.get("evidence_dialogue") or _dialogue_from_context_text(str(item.get("evidence_quote") or ""))
+            if evidence:
+                lines.append("Подтверждение:")
+                lines.extend(_dialogue_text_lines(evidence))
+            action = str(item.get("next_action") or item.get("how_to") or "").strip()
+            if action:
+                lines.append(f"Что сделать: {action}")
+            lines.append("")
         return lines[:-1] if lines and lines[-1] == "" else lines or ["—"]
     if kind == "challenge_card":
         lines = [
@@ -1411,6 +1537,36 @@ def _render_html_section(section: dict[str, Any]) -> str:
             "</article></div></section>"
         )
     if kind == "call_breakdown":
+        if section.get("call_story") or section.get("key_turning_points"):
+            scope_note = (
+                f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
+                if section.get("scope_note") else ""
+            )
+            intro = (
+                f"<p class=\"muted\">{html.escape(str(section.get('summary_line') or ''))}</p>"
+                if section.get("summary_line") else ""
+            )
+            body_parts: list[str] = []
+            if section.get("call_story"):
+                body_parts.extend(f"<p>{html.escape(part)}</p>" for part in _split_readable_text(str(section.get("call_story") or "")))
+            points = section.get("key_turning_points") or []
+            if points:
+                body_parts.append("<p><strong>Ход звонка:</strong></p>")
+                for index, point in enumerate(points, start=1):
+                    if not isinstance(point, dict):
+                        continue
+                    body_parts.append(f"<p><strong>{index}. {html.escape(str(point.get('title') or f'Момент {index}'))}</strong></p>")
+                    for key in ("what_happened",):
+                        value = str(point.get(key) or "").strip()
+                        if value:
+                            body_parts.append(f"<p>{html.escape(value)}</p>")
+                    body_parts.extend(_dialogue_html_lines(point.get("dialogue_evidence") or []))
+                    if point.get("better_action"):
+                        body_parts.append(f"<p><em>В этом месте лучше: {html.escape(str(point.get('better_action') or ''))}</em></p>")
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+                f"{scope_note}{intro}{''.join(body_parts)}</div></section>"
+            )
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
@@ -1441,6 +1597,37 @@ def _render_html_section(section: dict[str, Any]) -> str:
             f"<p class=\"muted\">{html.escape(str(section.get('intro') or ''))}</p>"
             if section.get("intro") else ""
         )
+        scenes = [item for item in section.get("customer_scenes") or [] if isinstance(item, dict)]
+        if scenes:
+            cards = []
+            for index, scene in enumerate(scenes, start=1):
+                reference = html.escape(str(scene.get("client_call_reference") or f"Клиент {index}"))
+                body_parts = [f"<h3>{reference}</h3>"]
+                seen_scene_lines: set[str] = set()
+                for key, label in (
+                    ("scene_summary", ""),
+                    ("customer_meaning", "Что клиент имеет в виду"),
+                    ("why_action_follows", "Что это значит"),
+                ):
+                    value = str(scene.get(key) or "").strip()
+                    if not value:
+                        continue
+                    prefix = f"<strong>{label}:</strong> " if label else ""
+                    for part in _split_readable_text(value):
+                        norm = re.sub(r"\s+", " ", part.lower()).strip()
+                        if norm and norm not in seen_scene_lines:
+                            seen_scene_lines.add(norm)
+                            body_parts.append(f"<p>{prefix}{html.escape(part)}</p>")
+                if scene.get("dialogue_evidence"):
+                    body_parts.append("<p><strong>Реплики:</strong></p>")
+                    body_parts.extend(_dialogue_html_lines(scene.get("dialogue_evidence") or []))
+                if scene.get("manager_response"):
+                    body_parts.append(f"<p><strong>Как с этим работать:</strong> {html.escape(str(scene.get('manager_response') or ''))}</p>")
+                cards.append(f"<article class=\"card\">{''.join(body_parts)}</article>")
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+                f"<div class=\"cards-grid\">{''.join(cards)}</div></div></section>"
+            )
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
@@ -1453,7 +1640,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Клиент / звонок</th><th>Что сказал клиент</th><th>Что это значит / Что делать</th></tr></thead>"
+            "<table><thead><tr><th>Клиент / звонок</th><th>Что сказал клиент</th><th>Что клиент имеет в виду / Как с этим работать</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
@@ -1463,16 +1650,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
             f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
             if section.get("scope_note") else ""
         )
-        cards = "".join(
-            "<article class=\"card\">"
-            f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
-            f"<p><strong>Что сказал клиент:</strong> {html.escape(str(item.get('client_said') or '—'))}</p>"
-            f"<p><strong>Что имел в виду:</strong> {html.escape(str(item.get('meant') or '—'))}</p>"
-            f"<p><strong>Как надо было:</strong> {html.escape(str(item.get('how_to') or '—'))}</p>"
-            f"<p><strong>Почему так:</strong> {html.escape(str(item.get('why') or '—'))}</p>"
-            "</article>"
-            for item in section.get("situations") or []
-        )
+        cards = "".join(_additional_situation_card_html(item) for item in section.get("situations") or [])
         return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}<div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
         scope_note = (
@@ -2061,11 +2239,40 @@ def _render_manager_daily_pdf_report(
         voice_table_top = voice_top + 48
     else:
         voice_table_top = voice_top + 30
-    if voice.get("rows"):
+    if voice.get("customer_scenes"):
+        cursor = voice_table_top
+        for index, scene in enumerate((voice.get("customer_scenes") or [])[:3], start=1):
+            if cursor > height - 78:
+                break
+            draw_text(
+                page3,
+                left=margin,
+                top=cursor,
+                text=f"{index}. {scene.get('client_call_reference') or 'Клиент'}",
+                size=8.2,
+                color=(70, 90, 140),
+                max_width=width - (margin * 2),
+            )
+            cursor += 13
+            scene_lines = []
+            if str(scene.get("scene_summary") or "").strip():
+                scene_lines.append(str(scene.get("scene_summary") or "").strip())
+            if str(scene.get("customer_meaning") or "").strip():
+                scene_lines.append(f"Что клиент имеет в виду: {str(scene.get('customer_meaning') or '').strip()}")
+            if str(scene.get("manager_response") or "").strip():
+                scene_lines.append(f"Как с этим работать: {str(scene.get('manager_response') or '').strip()}")
+            for line in _split_readable_text(" ".join(scene_lines))[:2]:
+                draw_text(page3, left=margin + 8, top=cursor, text=line, size=7.2, color=black, max_width=width - (margin * 2) - 8)
+                cursor += 16
+            for line in _dialogue_text_lines((scene.get("dialogue_evidence") or [])[:2]):
+                draw_text(page3, left=margin + 8, top=cursor, text=line, size=7.0, color=muted, max_width=width - (margin * 2) - 8)
+                cursor += 14
+            cursor += 5
+    elif voice.get("rows"):
         draw_table(
             page3,
             top=voice_table_top,
-            columns=["Клиент / звонок", "Что сказал клиент", "Что это значит / Что делать"],
+            columns=["Клиент / звонок", "Что сказал клиент", "Что клиент имеет в виду / Как с этим работать"],
             rows=[list(map(str, row)) for row in (voice.get("rows") or [])],
             col_widths=[116, 170, 225],
             body_size=7.2,
@@ -2082,14 +2289,24 @@ def _render_manager_daily_pdf_report(
         for item in (additional.get("situations") or [])[:3]:
             card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
             card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
-            card_h = 92
+            card_h = 112
             draw_rect(page4, left=margin, top=additional_top, box_width=width - (margin * 2), box_height=card_h, fill=card_fill)
             draw_rect(page4, left=margin, top=additional_top, box_width=4, box_height=card_h, fill=card_color)
             draw_text(page4, left=margin + 12, top=additional_top + 8, text=f"{item.get('badge') or 'Ситуация'} · {item.get('title') or ''}", size=9.2, color=card_color, max_width=width - (margin * 2) - 24)
-            draw_text(page4, left=margin + 12, top=additional_top + 26, text=f"Что сказал клиент: {item.get('client_said') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
-            draw_text(page4, left=margin + 12, top=additional_top + 42, text=f"Что имел в виду: {item.get('meant') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
-            draw_text(page4, left=margin + 12, top=additional_top + 58, text=f"Как надо было: {item.get('how_to') or '—'}", size=7.9, color=black, max_width=width - (margin * 2) - 24)
-            draw_text(page4, left=margin + 12, top=additional_top + 74, text=f"Почему так: {item.get('why') or '—'}", size=7.6, color=muted, max_width=width - (margin * 2) - 24)
+            cursor = additional_top + 26
+            if item.get("client_call_reference"):
+                draw_text(page4, left=margin + 12, top=cursor, text=str(item.get("client_call_reference") or ""), size=7.5, color=muted, max_width=width - (margin * 2) - 24)
+                cursor += 12
+            narrative_lines = _split_readable_text(str(item.get("narrative") or item.get("client_said") or ""))[:2]
+            for line in narrative_lines:
+                draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.7, color=black, max_width=width - (margin * 2) - 24)
+                cursor += 16
+            evidence_lines = _dialogue_text_lines((item.get("evidence_dialogue") or [])[:1])
+            for line in evidence_lines:
+                draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.3, color=muted, max_width=width - (margin * 2) - 24)
+                cursor += 14
+            if item.get("next_action"):
+                draw_text(page4, left=margin + 12, top=cursor, text=f"Что сделать: {item.get('next_action')}", size=7.7, color=card_color, max_width=width - (margin * 2) - 24)
             additional_top += card_h + 10
         challenge_top = additional_top + 2
     else:
@@ -2846,6 +3063,34 @@ def _render_additional_situations_html(section: dict[str, Any]) -> str:
     )
 
 
+def _additional_situation_card_html(item: dict[str, Any]) -> str:
+    """Render one additional situation as a narrative card."""
+    heading = (
+        f"{html.escape(str(item.get('badge') or 'Ситуация'))} · "
+        f"{html.escape(str(item.get('title') or '—'))}"
+    )
+    body_parts = [f"<h3>{heading}</h3>"]
+    reference = str(item.get("client_call_reference") or "").strip()
+    if reference:
+        body_parts.append(f"<p class=\"muted\">{html.escape(reference)}</p>")
+    narrative = str(item.get("narrative") or "").strip()
+    if narrative:
+        body_parts.extend(f"<p>{html.escape(part)}</p>" for part in _split_readable_text(narrative))
+    else:
+        for value in (item.get("client_said"), item.get("meant"), item.get("why")):
+            text = str(value or "").strip()
+            if text:
+                body_parts.extend(f"<p>{html.escape(part)}</p>" for part in _split_readable_text(text))
+    evidence = item.get("evidence_dialogue") or _dialogue_from_context_text(str(item.get("evidence_quote") or ""))
+    if evidence:
+        body_parts.append("<p><strong>Подтверждение:</strong></p>")
+        body_parts.extend(_dialogue_html_lines(evidence))
+    action = str(item.get("next_action") or item.get("how_to") or "").strip()
+    if action:
+        body_parts.append(f"<p><strong>Что сделать:</strong> {html.escape(action)}</p>")
+    return f"<article class=\"card\">{''.join(body_parts)}</article>"
+
+
 _CALL_TOMORROW_STATUS_LABEL: dict[str, str] = {
     "rescheduled": "Перенос",
     "agreed": "Договорённость",
@@ -3245,6 +3490,11 @@ def _build_v5_call_breakdown_section(
                     else "Звонок выбран как наиболее показательный для основного паттерна дня."
                 )
             ),
+            "call_story": str(section.get("call_story") or ""),
+            "what_manager_missed": str(section.get("what_manager_missed") or ""),
+            "better_path": str(section.get("better_path") or ""),
+            "dialogue_evidence": list(section.get("dialogue_evidence") or []),
+            "key_turning_points": list(section.get("key_turning_points") or []),
             "rows": explicit_rows[:5],
         }
     fallback_line = str(
@@ -3257,6 +3507,11 @@ def _build_v5_call_breakdown_section(
         "data_scope_details": scope,
         "scope_note": scope_note,
         "summary_line": fallback_line,
+        "call_story": str(section.get("call_story") or ""),
+        "what_manager_missed": str(section.get("what_manager_missed") or ""),
+        "better_path": str(section.get("better_path") or ""),
+        "dialogue_evidence": list(section.get("dialogue_evidence") or []),
+        "key_turning_points": list(section.get("key_turning_points") or []),
         "rows": [],
     }
 
@@ -3424,24 +3679,93 @@ def _group_voice_rows_by_intent(rows: list[list[str]]) -> list[list[str]]:
     return result
 
 
+def _normalize_voice_customer_scene(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize v2 Голос клиента narrative item for renderers."""
+    return {
+        "signal_id": item.get("signal_id"),
+        "call_id": item.get("call_id"),
+        "client_call_reference": _clean_reader_text(
+            str(item.get("client_call_reference") or item.get("client_label") or "Клиент")
+        ),
+        "scene_summary": _clean_reader_text(
+            str(item.get("scene_summary") or item.get("quote_context") or item.get("quote") or "")
+        ),
+        "quote": _clean_reader_text(str(item.get("quote") or "")),
+        "quote_context": _clean_reader_text(str(item.get("quote_context") or item.get("scene_summary") or "")),
+        "customer_meaning": _clean_reader_text(
+            str(item.get("customer_meaning") or item.get("interpretation") or item.get("context") or "")
+        ),
+        "manager_response": _clean_reader_text(
+            str(item.get("manager_response") or item.get("manager_action") or "")
+        ),
+        "why_action_follows": _clean_reader_text(str(item.get("why_action_follows") or "")),
+        "dialogue_evidence": list(item.get("dialogue_evidence") or []),
+        "customer_signal": item.get("customer_signal"),
+        "source": item.get("source"),
+    }
+
+
+def _voice_scene_from_situation(item: dict[str, Any], *, reply_seed: str = "") -> dict[str, Any]:
+    """Build a narrative scene from the legacy Voice Of Customer situation."""
+    context = _clean_reader_text(str(item.get("context") or item.get("interpretation") or ""))
+    action = _clean_reader_text(str(item.get("manager_action") or ""))
+    if not action and reply_seed:
+        action = f"Использовать базу ответа: {reply_seed}"
+    quote_context = _clean_reader_text(str(item.get("quote_context") or item.get("quote") or ""))
+    return _normalize_voice_customer_scene(
+        {
+            **item,
+            "scene_summary": quote_context,
+            "customer_meaning": context,
+            "manager_response": action,
+            "dialogue_evidence": item.get("dialogue_evidence") or _dialogue_from_context_text(quote_context),
+        }
+    )
+
+
+def _dialogue_from_context_text(value: str) -> list[dict[str, str]]:
+    """Parse speaker-labelled quote context into renderer dialogue items."""
+    text = str(value or "").strip()
+    if not text:
+        return []
+    matches = list(re.finditer(r"(Клиент|Менеджер|Контекст|Customer|Manager)\s*:\s*", text, flags=re.IGNORECASE))
+    if not matches:
+        return [{"speaker": "unknown", "text": text}]
+    items: list[dict[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        quote = text[start:end].strip()
+        if quote:
+            items.append({"speaker": match.group(1), "text": quote})
+    return items
+
+
 def _build_v5_voice_of_customer_section(
     *,
     section: dict[str, Any],
     recommendations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Map legacy voice payload to the approved v5 3-column structure."""
+    """Map voice payload to narrative scenes plus the compatible 3-column structure."""
     explicit_rows = [list(map(str, row)) for row in (section.get("rows") or []) if isinstance(row, (list, tuple))]
+    explicit_scenes = [_normalize_voice_customer_scene(item) for item in section.get("customer_scenes") or [] if isinstance(item, dict)]
     if explicit_rows:
         return {
             "intro": str(
                 section.get("intro")
-                or "Сгруппированы повторяющиеся клиентские сигналы: один смысл и один способ ответа на несколько похожих цитат."
+                or "Клиентские сигналы разобраны как сцены: что клиент сказал, что это значит и как менеджеру отвечать."
             ),
+            "customer_scenes": explicit_scenes[:3],
             "rows": _group_voice_rows_by_intent(explicit_rows)[:3],
         }
     reply_seed = _clean_reader_text(
         str(recommendations[0].get("better_phrasing") or "")
     ) if recommendations else ""
+    situation_scenes = [
+        _voice_scene_from_situation(item, reply_seed=reply_seed)
+        for item in section.get("situations") or []
+        if isinstance(item, dict)
+    ]
     rows = [
         [
             f"{item.get('client_call_reference') or item.get('client_label') or 'Клиент'}",
@@ -3455,7 +3779,8 @@ def _build_v5_voice_of_customer_section(
         for item in section.get("situations") or []
     ]
     return {
-        "intro": "Сгруппированы повторяющиеся клиентские сигналы: один смысл и один способ ответа на несколько похожих цитат.",
+        "intro": "Клиентские сигналы разобраны как сцены: что клиент сказал, что это значит и как менеджеру отвечать.",
+        "customer_scenes": (explicit_scenes or situation_scenes)[:3],
         "rows": _group_voice_rows_by_intent(rows)[:3],
     }
 
@@ -3479,6 +3804,20 @@ def _build_v5_additional_situations_section(
         why = _clean_reader_text(str(item.get("why") or item.get("why_this_works") or ""))
         if not title or not client_said or not meant or not how_to:
             continue
+        narrative = _clean_reader_text(
+            str(
+                item.get("narrative")
+                or " ".join(
+                    part
+                    for part in (
+                        client_said,
+                        meant,
+                        f"В следующий раз: {how_to}" if kind != "strength" else f"Это стоит сохранить: {how_to}",
+                    )
+                    if part
+                )
+            )
+        )
         situations.append(
             {
                 "badge": "Сильная сторона" if kind == "strength" else "Зона роста",
@@ -3490,8 +3829,12 @@ def _build_v5_additional_situations_section(
                 "data_scope": item.get("data_scope"),
                 "evidence_call_id": item.get("evidence_call_id"),
                 "evidence_quote": item.get("evidence_quote"),
+                "evidence_dialogue": list(item.get("evidence_dialogue") or []),
+                "client_call_reference": item.get("client_call_reference"),
                 "confidence": item.get("confidence"),
                 "signal": int(item.get("signal") or 0),
+                "narrative": narrative,
+                "next_action": how_to,
                 "client_said": client_said,
                 "meant": meant,
                 "how_to": how_to,
@@ -4182,13 +4525,44 @@ def _manager_status_text_color(
             f"<p class=\"muted\">{html.escape(str(section.get('intro') or ''))}</p>"
             if section.get("intro") else ""
         )
+        scenes = [item for item in section.get("customer_scenes") or [] if isinstance(item, dict)]
+        if scenes:
+            cards = []
+            for index, scene in enumerate(scenes, start=1):
+                reference = html.escape(str(scene.get("client_call_reference") or f"Клиент {index}"))
+                body_parts = [f"<h3>{reference}</h3>"]
+                seen_scene_lines: set[str] = set()
+                for key, label in (
+                    ("scene_summary", ""),
+                    ("customer_meaning", "Что клиент имеет в виду"),
+                    ("why_action_follows", "Что это значит"),
+                ):
+                    value = str(scene.get(key) or "").strip()
+                    if not value:
+                        continue
+                    prefix = f"<strong>{label}:</strong> " if label else ""
+                    for part in _split_readable_text(value):
+                        norm = re.sub(r"\s+", " ", part.lower()).strip()
+                        if norm and norm not in seen_scene_lines:
+                            seen_scene_lines.add(norm)
+                            body_parts.append(f"<p>{prefix}{html.escape(part)}</p>")
+                if scene.get("dialogue_evidence"):
+                    body_parts.append("<p><strong>Реплики:</strong></p>")
+                    body_parts.extend(_dialogue_html_lines(scene.get("dialogue_evidence") or []))
+                if scene.get("manager_response"):
+                    body_parts.append(f"<p><strong>Как с этим работать:</strong> {html.escape(str(scene.get('manager_response') or ''))}</p>")
+                cards.append(f"<article class=\"card\">{''.join(body_parts)}</article>")
+            return (
+                f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
+                f"<div class=\"cards-grid\">{''.join(cards)}</div></div></section>"
+            )
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
             for row in section.get("rows") or []
         ) or "<tr><td colspan=\"3\">Ситуации появятся после накопления материала по звонкам.</td></tr>"
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
-            "<table><thead><tr><th>Клиент / звонок</th><th>Что сказал клиент</th><th>Что это значит / Что делать</th></tr></thead>"
+            "<table><thead><tr><th>Клиент / звонок</th><th>Что сказал клиент</th><th>Что клиент имеет в виду / Как с этим работать</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></section>"
         )
     if kind == "expanded_situations":
@@ -4198,16 +4572,7 @@ def _manager_status_text_color(
             f"<p class=\"muted\">{html.escape(str(section.get('scope_note') or ''))}</p>"
             if section.get("scope_note") else ""
         )
-        cards = "".join(
-            "<article class=\"card\">"
-            f"<h3>{html.escape(str(item.get('badge') or 'Ситуация'))} · {html.escape(str(item.get('title') or '—'))}</h3>"
-            f"<p><strong>Что сказал клиент:</strong> {html.escape(str(item.get('client_said') or '—'))}</p>"
-            f"<p><strong>Что имел в виду:</strong> {html.escape(str(item.get('meant') or '—'))}</p>"
-            f"<p><strong>Как надо было:</strong> {html.escape(str(item.get('how_to') or '—'))}</p>"
-            f"<p><strong>Почему так:</strong> {html.escape(str(item.get('why') or '—'))}</p>"
-            "</article>"
-            for item in section.get("situations") or []
-        )
+        cards = "".join(_additional_situation_card_html(item) for item in section.get("situations") or [])
         return f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{scope_note}<div class=\"cards-grid\">{cards}</div></div></section>"
     if kind == "challenge_card":
         scope_note = (

@@ -2113,3 +2113,63 @@ Acceptance для реализации:
 - `node --check scripts/generate_docx_report.js`;
 - focused render tests для скрытого `Челленджа` и общего daily report render;
 - preview на ready-data-only данных после перезапуска сервисов.
+
+## Step DDC-11 — `Ситуация дня` v2: смысловой narrative вместо жесткой формы
+
+Статус: в реализации 2026-05-20.
+
+Причина: после прогона звонков за 2026-05-19 `Ситуация дня` и `Разбор звонка`
+стали лучше по смыслу, но всё ещё выглядят неполными. Root cause теперь
+формулируется не как слабый selection, а как слишком жесткий report contract:
+модель получает короткий scene-pack и заполняет поля `what_happened`,
+`evidence_scene`, `dialogue_turns`, вместо того чтобы сначала передать суть
+эпизода.
+
+Гипотеза:
+
+- жесткая структура смысловых полей вредит качеству;
+- guardrails должны ограничивать факты и доказательства, а не стиль мышления;
+- `Что произошло` должно быть связным manager-facing mini-brief на 5-8
+  предложений;
+- `Контекст звонка` должен передавать суть сцены и подкрепляться репликами
+  в количестве, которое нужно для доказательства, без фиксированного лимита
+  в 3-4 реплики.
+
+Bounded scope:
+
+- меняем только `SituationDayDailyComposer` / scene-pack / rendering support для
+  `Ситуации дня`;
+- не меняем LLM2 prompt, STT, source discovery, selection model, delivery,
+  `BusinessOutcomeResolver`, `Разбор звонка`, `Голос клиента`, follow-up и
+  остальные блоки;
+- прогоняем одного менеджера за 2026-05-19 в `report_from_ready_data_only`,
+  без доставки.
+
+Acceptance для первого прогона:
+
+- `Ситуация дня` содержит связное `Что произошло`, а не набор коротких ячеек;
+- `Контекст звонка` объясняет бизнес-сцену, а не только 3-4 реплики;
+- доказательства остаются grounded: цитаты берутся только из переданного
+  scene-pack;
+- результат можно сравнить с предыдущим v1 output по одному менеджеру.
+
+Первый прогон:
+
+- менеджер: Толеген Жангазиев (`manager_id=d42e8246-772e-4a04-bbe7-2b88f45db695`, extension `325`);
+- период: `2026-05-19`;
+- режим: `manager_daily/report_from_ready_data_only`, `preview_only`, без доставки;
+- результат: top-level `partial` из-за ready-coverage, report-level `ready`, PDF `7` страниц;
+- `SituationDayDailyComposer` использовал `situation_day_daily_composer_v2`;
+- deterministic writer не перезаписал narrative (`v2_narrative_contract_preserved`);
+- `Что произошло` стало связным narrative и использовало расширенный transcript-window;
+- `Подтверждения из звонка` выросли с 1 цитаты до 6 grounded цитат.
+
+Текущий quality read:
+
+- стало заметно лучше по полноте картины: в тексте появились бумажный процесс,
+  отсутствие уверенности в ЭДО и малый объем документооборота;
+- всё ещё слабое место: `Как сделать лучше` и речёвки остаются слишком
+  generic, их нужно следующим шагом переводить в scene-specific coaching action;
+- отдельный regression debt: часть старых situation-day tests ожидает прежний
+  source/selection contract и требует обновления под v2 или отключения реального
+  LLM3 в unit-path.

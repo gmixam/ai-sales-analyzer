@@ -183,6 +183,165 @@ Use the 2026-05-18 UI run as the regression set:
 - every candidate has a routing diagnostic: selected, routed elsewhere, weak, forbidden, or insufficient;
 - weak legacy fallback rows are not rendered as real report evidence.
 
+## Roadmap update — 2026-05-20: Semantic Freedom / Narrative Blocks
+
+The 2026-05-19 manager-day review showed that several report blocks now have
+enough grounded semantic material, but the final report still loses meaning
+when that material is forced into short table cells and fixed micro-fields.
+
+### Boundary
+
+This step does not loosen fact validation, call selection, status resolution,
+money logic, or delivery scope. It only changes how already verified semantic
+material is composed and rendered inside manager-facing blocks.
+
+Keep strict:
+
+- call identity, report-day scope, deterministic outcome/status selection;
+- quote grounding and counter-evidence checks;
+- block eligibility and weak-evidence rejection;
+- no invented client facts, deadlines, meetings, products, or commercial value.
+
+Loosen:
+
+- internal structure of narrative coaching/customer blocks;
+- fixed `what / proof / recommendation` table rows when they flatten meaning;
+- first-sentence/short-field truncation for manager-facing explanations.
+
+### SFB Tasks
+
+#### SFB-1 — Call Breakdown Narrative v2
+
+Replace the final manager-facing `Разбор звонка` composition from rigid rows to
+a narrative contract:
+
+- `call_story`: what happened in the call and why this call was selected;
+- `key_turning_points[]`: 1-4 grounded turning points, each with meaning,
+  manager behavior, evidence dialogue, and better path;
+- `what_manager_missed`: synthesized gap, not just a table label;
+- `better_path`: how the manager should lead the same situation next time;
+- `dialogue_evidence[]`: rendered as separate italic speaker lines.
+
+Rows may remain as a compatibility fallback and quality-gate substrate, but the
+PDF/DOCX renderer should prefer the narrative fields when present.
+
+Status 2026-05-20: implemented for the Толеген 2026-05-19 preview. The first
+LLM3 attempt produced English manager-facing narrative and was rejected by the
+new language gate; the rerun produced Russian narrative output, PDF `7` pages,
+report-level `ready`, top-level `partial` only because of ready-data coverage.
+Generated review artifacts:
+
+- `/tmp/sfb1_tolegen_2026-05-19_call_breakdown_v2.pdf`
+- `/tmp/sfb1_tolegen_2026-05-19_call_breakdown_v2.txt`
+- `/tmp/sfb1_tolegen_2026-05-19_rerun.clean.json`
+
+#### SFB-2 — Voice Of Customer Narrative v2
+
+Keep signal selection strict, but render each customer signal as a mini-scene:
+
+- what the customer was reacting to;
+- what the signal means;
+- what manager action follows;
+- supporting dialogue in the shared quote format.
+
+Status 2026-05-20: implemented for the Толеген 2026-05-19 preview.
+`VoiceOfCustomerComposer` now uses a v2 narrative contract with
+`customer_scenes[]`, while `situations` and `rows` remain compatibility fields.
+The renderer prefers mini-scenes with dialogue evidence and deduplicates repeated
+scene/meaning/why lines. Added gates against two observed risks: refusal/small
+volume signals cannot become a sales-push recommendation, and unsupported
+manager-facing claims such as payment/demo/testing are replaced when they are
+not present in the scene evidence.
+
+Generated review artifacts:
+
+- `/tmp/sfb2_tolegen_2026-05-19_voice_v2.pdf`
+- `/tmp/sfb2_tolegen_2026-05-19_voice_v2.txt`
+- `/tmp/sfb2_tolegen_2026-05-19_final3.clean.json`
+
+#### SFB-3 — Tomorrow Follow-Up Wording Composer
+
+Keep deterministic contact inclusion, priority, status, and deadlines. Add a
+bounded wording composer only for accepted contacts so `reason`,
+`recommendation`, and opening phrase are tied to the actual call context.
+
+Status 2026-05-20: implemented for the Толеген 2026-05-19 preview.
+Added `CallTomorrowWordingComposer` as an LLM3-only wording layer after the
+deterministic `_build_call_tomorrow` selection. The composer receives only
+accepted contacts and is forbidden to add, remove, reorder, reprioritize, or
+change status/deadline. It may update only manager-facing `reason`,
+`next_step`, and `opening_script`; on contract violation it falls back to the
+deterministic wording. The contact payload now carries `signal_text` and
+`evidence_signal_text` into the final contacts so the wording layer sees the
+same bounded evidence used by the quality gate.
+
+Additional guard: material-request opening phrases no longer imply that
+materials have already been sent (`Отправил материалы`) when the report is
+asking the manager what to do tomorrow. The baseline phrase now uses future /
+continuation wording.
+
+Generated review artifacts:
+
+- `/tmp/sfb3_tolegen_2026-05-19_tomorrow_v1.pdf`
+- `/tmp/sfb3_tolegen_2026-05-19_tomorrow_v1.txt`
+- `/tmp/sfb3_tolegen_2026-05-19_final2.clean.json`
+
+#### SFB-4 — Additional Situations Narrative Cards
+
+Stop rendering secondary situations as a repeated four-row micro-table. Prefer
+short narrative cards with evidence, meaning, and action; hide weak situations
+instead of filling the block with generic rows.
+
+Status 2026-05-20: implemented. The downstream quality gate still decides
+whether a card can be rendered; SFB-4 changes the manager-facing shape of cards
+that pass the gate. Each rendered situation now carries a compact `narrative`,
+speaker-labelled `evidence_dialogue`, `client_call_reference` when available,
+and `next_action`, while legacy fields remain for compatibility. Runtime
+text/HTML/PDF and DOCX-first rendering now prefer narrative cards instead of the
+old repeated `Что произошло / Что это значит / Что делать / Почему` table.
+
+Real-data result for Толеген and the full department on 2026-05-19: no
+additional situation passed the evidence gate (`low_confidence` /
+`missing_evidence`), so the block is hidden rather than filled with weak cards.
+
+Generated review artifacts:
+
+- `/tmp/sfb4_tolegen_2026-05-19_additional_v1.pdf`
+- `/tmp/sfb4_tolegen_2026-05-19_additional_v1.txt`
+- `/tmp/sfb4_tolegen_2026-05-19.clean.json`
+
+#### SFB-5 — Call List Rich Context
+
+Keep the table compact, but allow a richer validated context source upstream
+(`call_list_context_rich` / `manager_visible_summary`) so the table is not
+forced to depend only on a 280-character `short_context`.
+
+Status 2026-05-20: implemented at contract/report-layer level. LLM2
+`call_report_summary` now allows `manager_visible_summary` up to 640 chars, and
+`block_candidates.call_list_context` allows `manager_visible_summary` /
+`call_list_context_rich`. The report layer selects richer validated context
+before falling back to `short_context`, then to topic and deterministic
+fallbacks. Diagnostics now count `manager_visible_summary`,
+block-candidate-rich, and semantic-case context sources. The rendered table
+still uses the same compact `Контекст` cell, but it is no longer limited to the
+first 280-character `short_context`.
+
+### Current Implementation Target
+
+SFB-1..SFB-5 are implemented. Next verification target: refresh LLM2-ready data
+for one 2026-05-19 manager after the new `manager_visible_summary` prompt/schema
+is active, then rebuild `manager_daily` and compare whether `СПИСОК ВСЕХ
+ЗВОНКОВ ДНЯ` keeps richer context without bloating the table.
+
+Follow-up adjustment 2026-05-20: after the fresh report review, keep the same
+semantic freedom but tighten block roles:
+
+- `Разбор звонка` should not render a second `Ситуация дня`. Visible output is
+  limited to the call story and concrete call turns (`Ход звонка`), while
+  compatibility fields remain internal.
+- `Голос клиента` is explicitly the customer-signal interpretation block:
+  `Что клиент имеет в виду` and `Как с этим работать`.
+
 ## Source of truth — current report layer
 
 | Роль | Файл |
@@ -2574,3 +2733,47 @@ Some transcript scenes still label speaker context as `Контекст` instead
 - manager-facing report does not show `ЧЕЛЛЕНДЖ НА ЗАВТРА`;
 - `РАЗБОР ЗВОНКА` no longer labels the proof column as `Суть момента`;
 - `БАЛЛЫ ПО ЭТАПАМ` displays the stage call count in PDF/HTML/text/DOCX paths.
+
+## Step DDC-11 — Situation Day v2 Narrative Experiment
+
+**Status:** IN PROGRESS 2026-05-20.
+
+**Goal:** test whether `СИТУАЦИЯ ДНЯ` improves when semantic fields are
+constrained by meaning and evidence, not by a rigid report-cell structure.
+
+**Scope:**
+
+- widen the day-level scene pack for `SituationDayDailyComposer`;
+- add a v2 prompt where `what_happened` is a coherent manager-facing narrative;
+- add `call_context_summary` and `evidence_quotes` as transport fields;
+- keep quote grounding and forbidden evidence-type guardrails;
+- run one `manager_daily` preview for 2026-05-19 without delivery.
+
+**Out of scope:**
+
+- LLM2 prompt changes;
+- STT/source discovery changes;
+- report-wide renderer redesign;
+- `Разбор звонка`, `Голос клиента`, follow-up, delivery, scheduler, or
+  business email changes.
+
+**Acceptance:**
+
+- `Что произошло` reads as a complete business episode, not as a short cell;
+- `Контекст звонка` explains the scene and is supported by as many grounded
+  quotes as needed;
+- no quote is invented outside the selected scene pack;
+- the result can be reviewed against the previous 2026-05-19 output.
+
+**First run result — 2026-05-20:**
+
+- Manager: Толеген Жангазиев, report date `2026-05-19`.
+- Mode: `manager_daily/report_from_ready_data_only`, `preview_only`, no delivery.
+- Result: top-level `partial` due to ready coverage, report-level `ready`, PDF `7` pages.
+- `SituationDayDailyComposer` used v2 and preserved narrative output instead of
+  deterministic writer rewrite.
+- `Что произошло` now includes the paper-process context, the customer's
+  not-considering-EDI answer, and low document volume.
+- Evidence support expanded from one quote to six grounded scene quotes.
+- Remaining issue: `Как сделать лучше` / scripts are still too generic and
+  should become scene-specific in the next bounded prompt pass.

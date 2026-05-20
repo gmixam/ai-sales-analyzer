@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any
 
 
-SITUATION_DAY_DAILY_COMPOSER_VERSION = "situation_day_daily_composer_v1"
-SITUATION_DAY_DAILY_PROMPT_VERSION = "situation_day_daily_composer_v1"
-SITUATION_DAY_DAILY_SOURCE = "report_evidence.situation_day_daily_composer.v1"
-PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "situation_day_daily_composer_v1.md"
+SITUATION_DAY_DAILY_COMPOSER_VERSION = "situation_day_daily_composer_v2"
+SITUATION_DAY_DAILY_PROMPT_VERSION = "situation_day_daily_composer_v2"
+SITUATION_DAY_DAILY_SOURCE = "report_evidence.situation_day_daily_composer.v2"
+PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "situation_day_daily_composer_v2.md"
 
 MANAGER_GAP_TYPES = {"manager_gap", "manager_coaching_moment", "stage_gap"}
 FORBIDDEN_MANAGER_ERROR_TYPES = {"customer_signal", "service_issue", "tech_service", "support_issue"}
@@ -42,6 +42,8 @@ class DailySituationCandidate:
     supporting_quote: str | None
     why_it_matters: str
     next_time_action: str
+    call_context_summary: str | None = None
+    evidence_quotes: list[str] = field(default_factory=list)
     dialogue_turns: list[dict[str, str]] = field(default_factory=list)
     scripts: list[str] = field(default_factory=list)
     source_fact_ids: list[str] = field(default_factory=list)
@@ -64,6 +66,8 @@ class DailySituationCandidate:
             "evidence_scene": self.evidence_scene,
             "dialogue_turns": list(self.dialogue_turns),
             "supporting_quote": self.supporting_quote,
+            "call_context_summary": self.call_context_summary,
+            "evidence_quotes": list(self.evidence_quotes),
             "why_it_matters": self.why_it_matters,
             "next_time_action": self.next_time_action,
             "scripts": list(self.scripts),
@@ -179,6 +183,7 @@ def build_daily_situation_llm3_payload(daily_input: dict[str, Any]) -> dict[str,
         "contract_version": SITUATION_DAY_DAILY_PROMPT_VERSION,
         "instruction": (
             "Choose one manager_gap candidate for Ситуация дня or return insufficient. "
+            "Explain the selected episode as a coherent manager-facing mini-brief. "
             "Use only provided candidate fields; never use or request raw call text."
         ),
         "forbidden": [
@@ -194,11 +199,13 @@ def build_daily_situation_llm3_payload(daily_input: dict[str, Any]) -> dict[str,
             "situation_title",
             "moment_summary",
             "what_happened",
+            "call_context_summary",
             "manager_error",
             "stage_code",
             "proof_type",
             "evidence_scene",
             "dialogue_turns",
+            "evidence_quotes",
             "supporting_quote",
             "why_it_matters",
             "next_time_action",
@@ -389,6 +396,7 @@ def _candidate_from_item(item: dict[str, Any], *, fallback_index: int) -> DailyS
         or item.get("turns")
         or []
     )
+    evidence_quotes = _evidence_quotes(item, supporting_quote=supporting_quote, dialogue_turns=dialogue_turns)
     what_happened = _first_text(item.get("what_happened"), item.get("moment_summary"), evidence_scene)
     manager_error = _first_text(
         item.get("manager_error"),
@@ -436,6 +444,14 @@ def _candidate_from_item(item: dict[str, Any], *, fallback_index: int) -> DailyS
         evidence_scene=evidence_scene,
         dialogue_turns=dialogue_turns,
         supporting_quote=supporting_quote,
+        call_context_summary=_first_text(
+            item.get("call_context_summary"),
+            item.get("customer_context"),
+            item.get("moment_summary"),
+            item.get("summary"),
+        )
+        or None,
+        evidence_quotes=evidence_quotes,
         why_it_matters=_first_text(item.get("why_it_matters"), item.get("business_impact"))
         or "Иначе следующий шаг остается на стороне клиента и сделка теряет управляемость.",
         next_time_action=next_time_action
@@ -479,11 +495,13 @@ def _result_from_candidate(
         "situation_title": candidate.situation_title,
         "moment_summary": candidate.moment_summary,
         "what_happened": candidate.what_happened,
+        "call_context_summary": candidate.call_context_summary,
         "manager_error": candidate.manager_error,
         "stage_code": candidate.stage_code,
         "proof_type": candidate.proof_type,
         "evidence_scene": candidate.evidence_scene,
         "dialogue_turns": list(candidate.dialogue_turns),
+        "evidence_quotes": list(candidate.evidence_quotes),
         "supporting_quote": candidate.supporting_quote,
         "why_it_matters": candidate.why_it_matters,
         "next_time_action": candidate.next_time_action,
@@ -509,6 +527,8 @@ def _insufficient(
         "what_happened": None,
         "manager_error": None,
         "evidence_scene": None,
+        "call_context_summary": None,
+        "evidence_quotes": [],
         "supporting_quote": None,
         "why_it_matters": None,
         "next_time_action": None,
@@ -613,17 +633,29 @@ def _normalize_llm3_daily_situation(
     quote = _first_text(raw.get("supporting_quote"))
     if quote and not _is_grounded(quote, selected.evidence_scene, selected.supporting_quote):
         quote = selected.supporting_quote
+    evidence_quotes = _merged_evidence_quotes(
+        _grounded_evidence_quotes(raw.get("evidence_quotes"), selected),
+        selected.evidence_quotes,
+    )
+    raw_dialogue_turns = _grounded_dialogue_turns(raw.get("dialogue_turns"), selected)
 
     rewritten = replace(
         selected,
         situation_title=_bounded(_first_text(raw.get("situation_title"), selected.situation_title), 220),
-        moment_summary=_bounded(_first_text(raw.get("moment_summary"), selected.moment_summary), 500),
-        what_happened=_bounded(_first_text(raw.get("what_happened"), selected.what_happened), 700),
-        manager_error=_bounded(_first_text(raw.get("manager_error"), selected.manager_error), 650),
-        evidence_scene=_bounded(scene or selected.evidence_scene, 900),
-        supporting_quote=_bounded(quote or selected.supporting_quote or "", 280) or None,
-        why_it_matters=_bounded(_first_text(raw.get("why_it_matters"), selected.why_it_matters), 650),
-        next_time_action=_bounded(_first_text(raw.get("next_time_action"), selected.next_time_action), 650),
+        moment_summary=_bounded(_first_text(raw.get("moment_summary"), selected.moment_summary), 900),
+        what_happened=_bounded(_first_text(raw.get("what_happened"), selected.what_happened), 1800),
+        call_context_summary=_bounded(
+            _first_text(raw.get("call_context_summary"), selected.call_context_summary, selected.moment_summary),
+            1100,
+        )
+        or None,
+        manager_error=_bounded(_first_text(raw.get("manager_error"), selected.manager_error), 900),
+        evidence_scene=_bounded(scene or selected.evidence_scene, 2600),
+        dialogue_turns=raw_dialogue_turns or selected.dialogue_turns,
+        evidence_quotes=evidence_quotes or selected.evidence_quotes,
+        supporting_quote=_bounded(quote or selected.supporting_quote or "", 700) or None,
+        why_it_matters=_bounded(_first_text(raw.get("why_it_matters"), selected.why_it_matters), 900),
+        next_time_action=_bounded(_first_text(raw.get("next_time_action"), selected.next_time_action), 900),
         scripts=_ensure_scripts(_scripts(raw) or selected.scripts, selected.next_time_action),
         source_fact_ids=selected.source_fact_ids,
     )
@@ -668,7 +700,7 @@ def _scene_text(item: dict[str, Any]) -> str:
 
 def _render_dialogue(value: list[Any]) -> str:
     parts: list[str] = []
-    for raw in value[:6]:
+    for raw in value[:10]:
         item = _as_dict(raw)
         text = _first_text(item.get("text"), item.get("quote"), raw)
         if not text:
@@ -684,9 +716,9 @@ def _render_dialogue(value: list[Any]) -> str:
 
 def _compact_dialogue_turns(value: list[Any]) -> list[dict[str, str]]:
     turns: list[dict[str, str]] = []
-    for raw in value[:6]:
+    for raw in value[:10]:
         item = _as_dict(raw)
-        text = _bounded(_first_text(item.get("text"), item.get("quote"), raw), 360)
+        text = _bounded(_first_text(item.get("text"), item.get("quote"), raw), 700)
         if not text:
             continue
         speaker = _norm(_first_text(item.get("speaker"), item.get("role"), "unknown"))
@@ -698,6 +730,63 @@ def _compact_dialogue_turns(value: list[Any]) -> list[dict[str, str]]:
             speaker = "unknown"
         turns.append({"speaker": speaker, "text": text})
     return turns
+
+
+def _evidence_quotes(
+    item: dict[str, Any],
+    *,
+    supporting_quote: str | None,
+    dialogue_turns: list[dict[str, str]],
+) -> list[str]:
+    quotes: list[str] = []
+    value = item.get("evidence_quotes")
+    if isinstance(value, list):
+        for raw in value:
+            text = _bounded(_first_text(raw), 700)
+            if text and text not in quotes:
+                quotes.append(text)
+    if supporting_quote:
+        quote = _bounded(supporting_quote, 700)
+        if quote and quote not in quotes:
+            quotes.append(quote)
+    for turn in dialogue_turns:
+        text = _bounded(turn.get("text"), 700)
+        if text and text not in quotes and len(quotes) < 6:
+            quotes.append(text)
+    return quotes[:8]
+
+
+def _grounded_evidence_quotes(value: Any, selected: DailySituationCandidate) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for raw in value:
+        quote = _bounded(_first_text(raw), 700)
+        if quote and _is_grounded(quote, selected.evidence_scene, selected.supporting_quote):
+            result.append(quote)
+    return result[:8]
+
+
+def _grounded_dialogue_turns(value: Any, selected: DailySituationCandidate) -> list[dict[str, str]]:
+    turns = _compact_dialogue_turns(value if isinstance(value, list) else [])
+    result: list[dict[str, str]] = []
+    for turn in turns:
+        text = turn.get("text") or ""
+        if _is_grounded(text, selected.evidence_scene, selected.supporting_quote):
+            result.append(turn)
+    return result[:10]
+
+
+def _merged_evidence_quotes(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    for group in groups:
+        for quote in group:
+            text = _bounded(quote, 700)
+            if text and text not in result:
+                result.append(text)
+            if len(result) >= 8:
+                return result
+    return result
 
 
 def _scripts(item: dict[str, Any]) -> list[str]:
@@ -720,7 +809,7 @@ def _ensure_scripts(scripts: list[str], next_time_action: str | None) -> list[st
             result.append(clean)
         if len(result) >= 2:
             break
-    return result[:4]
+    return result[:5]
 
 
 def _source_fact_ids(item: dict[str, Any]) -> list[str]:

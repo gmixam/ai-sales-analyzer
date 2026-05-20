@@ -15,10 +15,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-VOICE_OF_CUSTOMER_COMPOSER_VERSION = "voice_of_customer_composer_v1"
-VOICE_OF_CUSTOMER_PROMPT_VERSION = "voice_of_customer_composer_v1"
-VOICE_OF_CUSTOMER_SOURCE = "report_evidence.voice_of_customer_composer.v1"
-PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "voice_of_customer_composer_v1.md"
+VOICE_OF_CUSTOMER_COMPOSER_VERSION = "voice_of_customer_composer_v2"
+VOICE_OF_CUSTOMER_PROMPT_VERSION = "voice_of_customer_composer_v2"
+VOICE_OF_CUSTOMER_SOURCE = "report_evidence.voice_of_customer_composer.v2"
+PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "voice_of_customer_composer_v2.md"
 
 _VAGUE_CALLBACK_QUOTES = (
     "ладно хорошо я перезвоню",
@@ -64,6 +64,26 @@ _PROPOSAL_ACTION_TERMS = ("кп", "коммерческое", "предложе�
 _DEMO_ACTION_TERMS = ("демо", "показ", "встреч", "созвон", "кабинет", "доступ", "роль")
 _MATERIAL_ACTION_TERMS = ("whatsapp", "ватсап", "почт", "материал", "отправ", "скин")
 _TIMING_ACTION_TERMS = ("перезвон", "позвон", "позже", "посовет", "обсуд")
+_INTERNAL_DISCUSSION_TERMS = (
+    "коллег",
+    "руковод",
+    "лпр",
+    "директор",
+    "бухгалтер",
+    "юрист",
+    "решение внутри",
+    "обсудить внутри",
+    "посоветоваться",
+    "согласовать внутри",
+)
+_UNSUPPORTED_INTERNAL_ACTION_TERMS = (
+    "с кем клиент будет обсуждать",
+    "обсуждать решение",
+    "обсудить решение",
+    "покажет коллег",
+    "показать коллег",
+    "согласует с коллег",
+)
 _PROCESS_OBJECTION_TERMS = (
     "достаточно",
     "текущ",
@@ -80,10 +100,17 @@ _REFUSAL_OR_NOT_NOW_TERMS = (
     "не будем подписывать",
     "не хотят заключать",
     "не будем заключать",
+    "не рассматриваю",
+    "не рассматриваем",
+    "не рассматривает",
     "пока нет",
     "сейчас нет",
     "не рассматриваем",
     "не продлевать",
+    "не такие большие объем",
+    "не такие большие объём",
+    "небольшие объем",
+    "небольшие объём",
 )
 _SERVICE_ISSUE_TERMS = (
     "не смог",
@@ -484,7 +511,7 @@ class VoiceOfCustomerQualityGate:
             return "not_customer_signal"
         if not _has_enough_context(signal.quote_context):
             return "quote_context_too_short"
-        if quote_norm and quote_norm not in quote_context_norm:
+        if quote_norm and not _quote_supported_by_context(signal.quote, signal.quote_context):
             return "quote_missing_from_context"
         if not _has_cyrillic(" ".join([signal.interpretation, signal.manager_action])):
             return "non_russian_interpretation"
@@ -492,12 +519,22 @@ class VoiceOfCustomerQualityGate:
             return "no_customer_signal_terms"
         action_norm = _loose_norm(signal.manager_action)
         interpretation_norm = _loose_norm(signal.interpretation)
+        if _has_unsupported_internal_discussion_claim(
+            " ".join([signal.interpretation, signal.manager_action]),
+            evidence=" ".join([signal.quote, signal.quote_context]),
+        ):
+            return "recommendation_internal_discussion_without_context"
         if (
             "не проявил" in interpretation_norm
             and "интерес" in interpretation_norm
             and "перевести интерес" in action_norm
         ):
             return "recommendation_interest_contradicts_context"
+        if _has_any(evidence_context_norm, _REFUSAL_OR_NOT_NOW_TERMS) and _has_any(
+            action_norm,
+            (*_CONTRACT_ACTION_TERMS, *_PROPOSAL_ACTION_TERMS, *_DEMO_ACTION_TERMS, *_MATERIAL_ACTION_TERMS),
+        ):
+            return "recommendation_sales_push_after_refusal"
         if _has_any(action_norm, _CONTRACT_ACTION_TERMS) and not _has_any(evidence_context_norm, _CONTRACT_ACTION_TERMS):
             return "recommendation_contract_without_context"
         if _has_any(action_norm, _PROPOSAL_ACTION_TERMS) and not _has_any(evidence_context_norm, _PROPOSAL_ACTION_TERMS):
@@ -657,12 +694,14 @@ def build_voice_of_customer_llm3_payload(signals: list[VoiceCustomerSignal]) -> 
             "rows_min": 1,
             "rows_max": 4,
             "prefer_rows": "2-4 when available",
+            "narrative_preferred": True,
             "must_use_customer_or_customer_context_signal": True,
             "fragment_must_be_mini_scene": True,
             "recommendation_must_follow_signal": True,
         },
         "required_output_keys": [
             "status",
+            "customer_scenes",
             "situations",
             "rows",
             "source_note",
@@ -757,23 +796,47 @@ def _normalize_llm3_voice_of_customer(
     if _text(raw.get("status")) != "verified":
         return None, "status_not_verified"
     situations = [_as_dict(item) for item in raw.get("situations") or [] if isinstance(item, dict)]
+    customer_scenes = _normalize_customer_scenes(raw.get("customer_scenes"), payload)
+    if not situations and customer_scenes:
+        situations = [_situation_from_customer_scene(scene) for scene in customer_scenes]
     rows = [list(row) for row in raw.get("rows") or [] if isinstance(row, list)]
     if not situations and rows:
         situations = _situations_from_rows(rows, payload)
     situations = _repair_llm3_situations_with_payload(situations, payload)
     if not (1 <= len(situations) <= 4):
         return None, "situations_count_out_of_range"
+    if not customer_scenes:
+        customer_scenes = _normalize_customer_scenes(situations, payload)
     if not rows:
         rows = [
             [
                 _first_text(item.get("client_call_reference"), item.get("client_label"), item.get("call_id")) or "Клиент",
-                _first_text(item.get("quote_context"), item.get("quote")) or "",
-                _first_text(item.get("interpretation"), item.get("context"), item.get("manager_action")) or "",
+                _first_text(item.get("scene_summary"), item.get("quote_context"), item.get("quote")) or "",
+                _first_text(item.get("customer_meaning"), item.get("interpretation"), item.get("context"), item.get("manager_action")) or "",
             ]
-            for item in situations
+            for item in (customer_scenes or situations)
         ]
     if not (1 <= len(rows) <= 4) or any(len(row) != 3 for row in rows):
         return None, "rows_shape_invalid"
+    language_probe = " ".join(
+        [
+            " ".join(str(cell) for row in rows for cell in row),
+            " ".join(
+                " ".join(
+                    _first_text(
+                        scene.get("scene_summary"),
+                        scene.get("customer_meaning"),
+                        scene.get("manager_response"),
+                        scene.get("why_action_follows"),
+                    )
+                    or ""
+                    for scene in customer_scenes
+                ).split()
+            ),
+        ]
+    )
+    if not _manager_facing_russian_enough(language_probe):
+        return None, "manager_facing_language_not_russian"
     result = dict(raw)
     result.pop("_routing", None)
     result.update(
@@ -783,6 +846,7 @@ def _normalize_llm3_voice_of_customer(
             "situations": situations[:4],
             "items": situations[:4],
             "signals": situations[:4],
+            "customer_scenes": customer_scenes[:4],
             "rows": rows[:4],
             "source_note": VOICE_OF_CUSTOMER_SOURCE,
             "selection_diagnostics": {
@@ -795,6 +859,223 @@ def _normalize_llm3_voice_of_customer(
         }
     )
     return result, None
+
+
+def _normalize_customer_scenes(value: Any, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    signals = [_as_dict(item) for item in _as_dict(payload).get("signals") or []]
+    scenes: list[dict[str, Any]] = []
+    for index, raw_scene in enumerate(value or []):
+        if not isinstance(raw_scene, dict):
+            continue
+        item = dict(raw_scene)
+        source_signal = _matching_payload_signal(item, signals, index)
+        quote = _first_text(item.get("quote"), item.get("customer_quote"), source_signal.get("quote")) or ""
+        quote_context = _first_text(item.get("quote_context"), item.get("scene"), source_signal.get("quote_context")) or ""
+        dialogue = _normalize_dialogue_evidence(
+            item.get("dialogue_evidence"),
+            fallback_text=quote_context or quote,
+        )
+        category = _first_text(source_signal.get("customer_signal"), item.get("customer_signal"))
+        manager_response = _first_text(
+            item.get("manager_response"),
+            item.get("manager_action"),
+            item.get("recommended_action"),
+            source_signal.get("manager_action"),
+        ) or ""
+        raw_scene_summary = _first_text(
+            item.get("scene_summary"),
+            item.get("what_customer_reacted_to"),
+            item.get("quote_context"),
+            source_signal.get("quote_context"),
+        ) or quote_context
+        scene_summary = _scene_text_or_source(
+            raw_scene_summary,
+            fallback=quote_context,
+            evidence=" ".join([quote, quote_context]),
+            category=category,
+            action=manager_response,
+            include_action=False,
+        )
+        raw_customer_meaning = _first_text(
+            item.get("customer_meaning"),
+            item.get("what_signal_means"),
+            item.get("interpretation"),
+            item.get("context"),
+        ) or ""
+        customer_meaning = _scene_text_or_source(
+            raw_customer_meaning,
+            fallback=_first_text(source_signal.get("interpretation")) or "",
+            evidence=" ".join([quote, quote_context]),
+            category=category,
+            action=manager_response,
+            include_action=False,
+        )
+        why_action_follows = _scene_text_or_source(
+            _first_text(
+                item.get("why_action_follows"),
+                item.get("why_this_action"),
+                item.get("proof_explanation"),
+            ) or "",
+            fallback="",
+            evidence=" ".join([quote, quote_context]),
+            category=category,
+            action="",
+            include_action=False,
+        )
+        scenes.append(
+            _repair_callback_scene_without_internal_context(
+                {
+                    "signal_id": _first_text(item.get("signal_id"), source_signal.get("signal_id")),
+                    "call_id": _first_text(item.get("call_id"), source_signal.get("call_id")),
+                    "client_call_reference": _first_text(
+                        item.get("client_call_reference"),
+                        item.get("client_label"),
+                        source_signal.get("client_call_reference"),
+                    ) or "Клиент",
+                    "quote": quote,
+                    "quote_context": quote_context,
+                    "scene_summary": scene_summary,
+                    "customer_meaning": customer_meaning,
+                    "manager_response": manager_response,
+                    "why_action_follows": why_action_follows,
+                    "dialogue_evidence": dialogue,
+                    "customer_signal": category,
+                    "source": _first_text(item.get("source"), "voice_of_customer_composer"),
+                    "evidence_refs": list(item.get("evidence_refs") or source_signal.get("evidence_refs") or []),
+                },
+                evidence=" ".join([quote, quote_context]),
+            )
+        )
+    return scenes[:4]
+
+
+def _scene_text_or_source(
+    value: str,
+    *,
+    fallback: str,
+    evidence: str,
+    category: str | None,
+    action: str,
+    include_action: bool = True,
+) -> str:
+    text = _text(value)
+    fallback_text = _text(fallback)
+    if not text:
+        return fallback_text
+    evidence_norm = _loose_norm(evidence)
+    text_norm = _loose_norm(text)
+    unsupported_terms = (
+        "оплат",
+        "счет",
+        "счёт",
+        "тариф",
+        "цена",
+        "стоимост",
+        "договор",
+        "подпис",
+        "демо",
+        "тестирован",
+    )
+    if _has_unsupported_internal_discussion_claim(text, evidence=evidence):
+        generic = (
+            _interpretation_for_signal(category=category, context="", action=action)
+            if include_action
+            else _generic_meaning_for_category(category)
+        )
+        return generic or fallback_text
+    for term in unsupported_terms:
+        if term in text_norm and term not in evidence_norm:
+            generic = (
+                _interpretation_for_signal(category=category, context="", action=action)
+                if include_action
+                else _generic_meaning_for_category(category)
+            )
+            return generic or fallback_text
+    return text
+
+
+def _generic_meaning_for_category(category: str | None) -> str:
+    return {
+        "proposal_request": "Клиент просит коммерческое предложение; перед ответом нужен контекст.",
+        "document_or_signature_need": "Клиентский сигнал связан с документами или подписанием.",
+        "roles_access_or_demo_need": "Клиентский сигнал связан с ролями, доступами или показом решения.",
+        "materials_channel_request": "Клиент согласует канал продолжения; это нужно закрепить следующим шагом.",
+        "interest_signal": "Клиент проявляет интерес; его нужно перевести в конкретный следующий шаг.",
+        "timing_or_internal_discussion": "Клиент не подтверждает готовность двигаться дальше сейчас и переводит следующий контакт в неопределённое «я перезвоню».",
+        "current_process_objection": "Клиент показывает, что текущий процесс пока закрывает задачу.",
+        "trust_or_channel_barrier": "Клиент обозначает барьер доверия или предпочитаемый канал коммуникации.",
+        "refusal_or_not_now": "Клиент отказывается или откладывает решение; сначала нужно понять причину и условие возврата.",
+        "service_or_usage_issue": "Клиент пришел с рабочей проблемой; сначала нужно закрыть сервисный вопрос.",
+    }.get(category or "", "Клиентский сигнал требует уточнения и следующего действия.")
+
+
+def _situation_from_customer_scene(scene: dict[str, Any]) -> dict[str, Any]:
+    meaning = _first_text(scene.get("customer_meaning"), scene.get("scene_summary")) or ""
+    action = _first_text(scene.get("manager_response")) or ""
+    interpretation = " ".join(part for part in (meaning, action) if part)
+    return {
+        "signal_id": scene.get("signal_id"),
+        "call_id": scene.get("call_id"),
+        "client_call_reference": scene.get("client_call_reference"),
+        "quote": scene.get("quote"),
+        "quote_context": scene.get("quote_context") or scene.get("scene_summary"),
+        "context": interpretation,
+        "interpretation": interpretation,
+        "manager_action": action,
+        "customer_signal": scene.get("customer_signal"),
+        "source": scene.get("source") or "voice_of_customer_composer",
+        "evidence_refs": list(scene.get("evidence_refs") or []),
+    }
+
+
+def _normalize_dialogue_evidence(value: Any, *, fallback_text: Any = "") -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for raw_item in value or []:
+        if isinstance(raw_item, dict):
+            text = _strip_fragment_prefix(_first_text(raw_item.get("text"), raw_item.get("quote")) or "")
+            if text:
+                items.append(
+                    {
+                        "speaker": _normalize_speaker(raw_item.get("speaker")) or "unknown",
+                        "text": text,
+                    }
+                )
+        elif isinstance(raw_item, str) and _text(raw_item):
+            items.append({"speaker": "unknown", "text": _strip_fragment_prefix(raw_item)})
+    if items:
+        return _consistent_dialogue_speakers(items[:8])
+    fallback = _strip_fragment_prefix(fallback_text)
+    if not fallback:
+        return []
+    matches = list(re.finditer(r"(Клиент|Менеджер|Контекст|Customer|Manager)\s*:\s*", fallback, flags=re.IGNORECASE))
+    if matches:
+        parsed: list[dict[str, str]] = []
+        for index, match in enumerate(matches):
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(fallback)
+            text = fallback[start:end].strip()
+            if text:
+                parsed.append({"speaker": _normalize_speaker(match.group(1)), "text": text})
+        if parsed:
+            return _consistent_dialogue_speakers(parsed[:8])
+    return [{"speaker": "unknown", "text": fallback}]
+
+
+def _consistent_dialogue_speakers(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Avoid mixed certainty such as `Сторона 1` next to `Клиент` in one scene."""
+    speakers = {_normalize_speaker(item.get("speaker")) for item in items}
+    has_unclear = bool(speakers & {"unknown", "context", "side_1", "side_2"})
+    has_named = bool(speakers & {"client", "manager"})
+    if not (has_unclear and has_named):
+        return items
+    return [
+        {**item, "speaker": "side_1" if index % 2 == 0 else "side_2"}
+        for index, item in enumerate(items)
+    ]
+
+
+def _strip_fragment_prefix(value: Any) -> str:
+    return re.sub(r"^(?:фрагмент|цитата|quote|context)\s*[:—-]\s*", "", _text(value), flags=re.IGNORECASE)
 
 
 def _repair_llm3_situations_with_payload(
@@ -869,6 +1150,9 @@ def _quality_for_llm3_result(result: dict[str, Any], fallback_quality: dict[str,
     accepted, quality = VoiceOfCustomerQualityGate().filter(signals)
     quality["source_quality"] = fallback_quality
     quality["accepted_count"] = len(accepted)
+    if len(accepted) != len(signals):
+        quality["status"] = "failed"
+        quality["rejection_reason"] = "llm3_scene_quality_mismatch"
     return quality
 
 
@@ -1065,7 +1349,9 @@ def _signal_category(*, quote: str, context: str) -> str | None:
 
 def _action_for_signal(category: str | None, context: str) -> str:
     if category == "timing_or_internal_discussion":
-        return "Что сделать: уточнить, с кем клиент будет обсуждать решение, когда вернуться к разговору и какой следующий шаг зафиксировать."
+        if _has_internal_discussion_context(context):
+            return "Что сделать: уточнить, с кем клиент будет обсуждать решение, когда вернуться к разговору и какой следующий шаг зафиксировать."
+        return "Что сделать: не оставлять контакт на «я перезвоню»; спокойно предложить конкретную точку возврата и оставить клиенту возможность вернуться раньше."
     if category == "current_process_objection":
         return "Что сделать: уточнить, что именно закрывает текущее решение, где остаются ручные операции или риски, и только затем предлагать следующий шаг."
     if category == "trust_or_channel_barrier":
@@ -1098,7 +1384,12 @@ def _interpretation_for_signal(*, category: str | None, context: str, action: st
             "roles_access_or_demo_need": "Клиентский сигнал связан с ролями, доступами или показом решения.",
             "materials_channel_request": "Клиент согласует канал продолжения, это нужно закрепить follow-up.",
             "interest_signal": "Клиент проявляет интерес, его нужно перевести в следующий шаг.",
-            "timing_or_internal_discussion": "Клиент не готов принять решение в моменте и уводит следующий шаг в обсуждение или обратный звонок.",
+            "timing_or_internal_discussion": (
+                "Клиент не подтверждает готовность двигаться дальше сейчас и переводит следующий контакт "
+                "в неопределённое «я перезвоню»."
+                if not _has_internal_discussion_context(context)
+                else "Клиент не готов принять решение в моменте и уводит следующий шаг в обсуждение или обратный звонок."
+            ),
             "current_process_objection": "Клиент показывает, что текущее решение или процесс уже закрывает задачу.",
             "trust_or_channel_barrier": "Клиент обозначает барьер доверия или предпочитаемый канал коммуникации.",
             "refusal_or_not_now": "Клиент отказывается или откладывает решение; здесь важнее понять причину и условие возврата, чем продолжать продажу.",
@@ -1144,6 +1435,50 @@ def _has_any(value: str, terms: Iterable[str]) -> bool:
     return False
 
 
+def _quote_supported_by_context(quote: Any, context: Any) -> bool:
+    quote_norm = _loose_norm(quote)
+    context_norm = _loose_norm(context)
+    if not quote_norm:
+        return True
+    if quote_norm in context_norm:
+        return True
+    quote_tokens = [token for token in quote_norm.split() if len(token) >= 3]
+    if not quote_tokens:
+        return False
+    matched = sum(1 for token in quote_tokens if token in context_norm)
+    return matched / len(quote_tokens) >= 0.6
+
+
+def _has_internal_discussion_context(value: Any) -> bool:
+    return _has_any(_loose_norm(value), _INTERNAL_DISCUSSION_TERMS)
+
+
+def _has_unsupported_internal_discussion_claim(value: Any, *, evidence: Any) -> bool:
+    text = _loose_norm(value)
+    if not _has_any(text, _UNSUPPORTED_INTERNAL_ACTION_TERMS):
+        return False
+    return not _has_internal_discussion_context(evidence)
+
+
+def _repair_callback_scene_without_internal_context(
+    scene: dict[str, Any],
+    *,
+    evidence: Any,
+) -> dict[str, Any]:
+    if not _has_unsupported_internal_discussion_claim(
+        " ".join(str(scene.get(key) or "") for key in ("customer_meaning", "manager_response", "why_action_follows")),
+        evidence=evidence,
+    ):
+        return scene
+    repaired = dict(scene)
+    repaired["customer_meaning"] = _generic_meaning_for_category("timing_or_internal_discussion")
+    repaired["manager_response"] = _action_for_signal("timing_or_internal_discussion", str(evidence or ""))
+    repaired["why_action_follows"] = (
+        "В репликах нет подтверждения внутреннего обсуждения; клиент только переносит инициативу на свой обратный звонок."
+    )
+    return repaired
+
+
 def _normalize_speaker(value: Any) -> str:
     speaker = _text(value).lower()
     if speaker in {"client", "customer", "клиент"}:
@@ -1152,6 +1487,10 @@ def _normalize_speaker(value: Any) -> str:
         return "manager"
     if speaker in {"context", "unknown", ""}:
         return speaker or "unknown"
+    if speaker in {"side_1", "side 1", "сторона 1"}:
+        return "side_1"
+    if speaker in {"side_2", "side 2", "сторона 2"}:
+        return "side_2"
     return speaker
 
 
@@ -1228,6 +1567,15 @@ def _word_count(value: Any) -> int:
 
 def _has_cyrillic(value: Any) -> bool:
     return bool(re.search(r"[а-яё]", _text(value), flags=re.IGNORECASE))
+
+
+def _manager_facing_russian_enough(value: Any) -> bool:
+    text = _text(value)
+    if not text:
+        return False
+    cyrillic = len(re.findall(r"[А-Яа-яЁё]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    return cyrillic >= 20 and cyrillic >= latin
 
 
 def _obj_get(value: Any, key: str) -> Any:

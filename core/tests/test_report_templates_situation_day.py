@@ -41,6 +41,11 @@ class SituationDayTemplateTests(unittest.TestCase):
                 "pattern_title": "Следующий шаг остался общим",
                 "moment_summary": "Клиент попросил стоимость, а менеджер не закрепил срок ответа.",
                 "what_happened": "Менеджер сказал, что уточнит и перезвонит.",
+                "call_context_summary": "Клиенту нужна была стоимость, но срок ответа не прозвучал.",
+                "evidence_quotes": [
+                    "Мне нужно понять стоимость.",
+                    "Я уточню и перезвоню.",
+                ],
                 "what_was_missing": "Не назван срок возврата и формат продолжения.",
                 "next_time_action": "Назвать срок ответа и договориться о следующем контакте.",
                 "scripts": ["Вернусь сегодня до 17:00 с расчетом и предложу следующий шаг."],
@@ -50,13 +55,19 @@ class SituationDayTemplateTests(unittest.TestCase):
         text_lines = report_templates._section_to_text_lines(section)
         html = report_templates._render_html_section(section)
 
-        self.assertLess(text_lines.index("Суть момента: Клиент попросил стоимость, а менеджер не закрепил срок ответа."), text_lines.index("Что произошло: Менеджер сказал, что уточнит и перезвонит."))
-        self.assertIn("В чем ошибка менеджера: Не назван срок возврата и формат продолжения.", text_lines)
-        self.assertIn("Как сделать лучше: Назвать срок ответа и договориться о следующем контакте.", text_lines)
-        self.assertIn("Варианты речёвок:", text_lines)
-        self.assertIn("Суть момента", html)
-        self.assertIn("В чем ошибка менеджера", html)
-        self.assertIn("Варианты речёвок", html)
+        self.assertEqual(len([line for line in text_lines if line.startswith("Что произошло:")]), 1)
+        narrative = next(line for line in text_lines if line.startswith("Что произошло:"))
+        all_text = "\n".join(text_lines)
+        self.assertIn("Менеджер сказал, что уточнит и перезвонит.", narrative)
+        self.assertIn("Клиенту нужна была стоимость", all_text)
+        self.assertIn("Мне нужно понять стоимость", all_text)
+        self.assertNotIn("Суть момента:", all_text)
+        self.assertNotIn("В чем ошибка менеджера:", all_text)
+        self.assertNotIn("Варианты речёвок:", all_text)
+        self.assertIn("Что произошло", html)
+        self.assertNotIn("Суть момента", html)
+        self.assertNotIn("В чем ошибка менеджера", html)
+        self.assertNotIn("Варианты речёвок", html)
         self.assertNotIn("<strong>Контекст</strong>", html)
 
     def test_insufficient_situation_day_hides_internal_fields(self) -> None:

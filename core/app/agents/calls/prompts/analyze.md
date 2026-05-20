@@ -220,6 +220,7 @@ Return a compact report summary for every call when enough transcript or metadat
 {
   "short_topic": "...",
   "short_context": "...",
+  "manager_visible_summary": "...",
   "client_display_name": null,
   "client_name_confidence": null,
   "hotness": "hot|warm|low",
@@ -232,6 +233,7 @@ Return a compact report summary for every call when enough transcript or metadat
 Field rules:
 - `short_topic`: short call essence, max 120 chars. Good examples: `Клиент попросил счёт`, `Клиент хочет посоветоваться`, `Помощь с подписанием`, `Клиент отказался от услуги`, `Клиент попросил отправить КП`, `Клиент попросил материалы в WhatsApp`. Do not use generic labels such as `Продажи`, `Холодный звонок`, or `Разговор с клиентом`.
 - `short_context`: short context, max 280 chars. Examples: `Клиент попросил материалы в WhatsApp и не зафиксировал срок возврата.`, `Клиент готов рассмотреть ЭДО, нужно отправить счёт и уточнить сроки оплаты.`, `Клиент сказал, что текущего решения достаточно.`, `Клиенту помогали с подписанием документа через QR.`
+- `manager_visible_summary`: natural manager-facing call context, max 640 chars. Use 2-4 short sentences when needed: what the client wanted/said, what was agreed or not agreed, and what the manager should remember. This field may carry more meaning than `short_context`; do not force it into a table-like `what/result/action` structure.
 - `client_display_name`: fill only when a name, FIO, or name fragment is explicit in transcript or metadata. Do not invent names. Do not use company/generic words as a name. If uncertain, use `null`. Do not include phone, date, or time here; those are reporting-layer responsibilities.
 - `client_name_confidence`: use `high|medium|low` only when `client_display_name` is not null; otherwise use `null`.
 - `hotness`: semantic signal only. Use only `hot`, `warm`, or `low`. Never use `rescheduled`, `open`, `agreed`, or `cold`. Reporting remains final authority for deterministic hotness priority.
@@ -599,6 +601,7 @@ Minimal shape:
     "stage_code": "qualification_primary",
     "short_topic": "Клиент попросил материалы",
     "short_context": "Менеджер предложил отправить информацию, но задача клиента в доступном фрагменте не уточнена.",
+    "manager_visible_summary": "Клиент попросил отправить материалы, но в доступном фрагменте не объяснил, какую задачу хочет решить. Менеджер согласился отправить информацию, однако не закрепил дату возврата к обсуждению. В списке звонков это стоит показывать как открытый контакт, а не как завершённую договорённость.",
     "final_action_hint": "Отправить материалы и уточнить задачу клиента.",
     "proof_type": "context_support",
     "proof_explanation": "Краткий контекст основан на содержании звонка.",
@@ -620,7 +623,7 @@ Block-candidate rules:
 - `money_on_table`: use `fit=true` only for a real commercial bridge to revenue, payment, invoice, upsell, cross-sell, or next commercial step. Do not invent money potential from generic interest or service-only calls.
 - `tomorrow_follow_up`: provide a client-specific next action, reason to follow up, manager opening phrase, and risk if no follow-up happens. Do not create follow-up for refusal/not suitable unless there is explicit allowed continuation.
 - `tomorrow_challenge`: provide the skill this call indicates, what to practice, a concrete behavior standard, and optional example phrase. One call is only a signal; the Reporting layer aggregates across calls before choosing the final challenge.
-- `call_list_context`: provide short topic, short context, and final action hint. Do not use generic `Обсуждение с клиентом`, invented client names, or technical fragments as business context.
+- `call_list_context`: provide short topic, short context, richer `manager_visible_summary` when the call needs more than one sentence, and final action hint. Do not use generic `Обсуждение с клиентом`, invented client names, or technical fragments as business context.
 
 Strict proof-type rules for block candidates:
 - `direct_gap` means one quote or short fragment directly proves the manager gap.

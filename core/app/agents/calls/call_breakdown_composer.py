@@ -14,10 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-CALL_BREAKDOWN_COMPOSER_VERSION = "call_breakdown_composer_v1"
-CALL_BREAKDOWN_PROMPT_VERSION = "call_breakdown_composer_v1"
-CALL_BREAKDOWN_SOURCE = "report_evidence.call_breakdown_composer.v1"
-PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "call_breakdown_composer_v1.md"
+CALL_BREAKDOWN_COMPOSER_VERSION = "call_breakdown_composer_v2"
+CALL_BREAKDOWN_PROMPT_VERSION = "call_breakdown_composer_v2"
+CALL_BREAKDOWN_SOURCE = "report_evidence.call_breakdown_composer.v2"
+PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "call_breakdown_composer_v2.md"
 
 _MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
 
@@ -108,6 +108,7 @@ def compose_call_breakdown_from_situation(
     situation_day_evidence_packet: dict[str, Any] | None,
     situation_day_coaching_view: dict[str, Any] | None,
     score_by_stage: list[dict[str, Any]] | None = None,
+    enable_llm3: bool = True,
 ) -> dict[str, Any] | None:
     """Build ``call_breakdown`` for the same verified call as Situation Day.
 
@@ -175,7 +176,10 @@ def compose_call_breakdown_from_situation(
         situation_evidence_packet=packet,
         llm2_facts=llm2_facts,
     )
-    llm3_result, llm3_diagnostics = _try_llm3_call_breakdown(llm3_payload)
+    llm3_result, llm3_diagnostics = _try_llm3_call_breakdown(
+        llm3_payload,
+        force_enabled=None if enable_llm3 else False,
+    )
     if llm3_result is not None:
         return llm3_result
 
@@ -345,6 +349,7 @@ def compose_call_breakdown(
         situation_day_evidence_packet=packet,
         situation_day_coaching_view=view,
         score_by_stage=_as_dict(llm2_facts).get("score_by_stage"),
+        enable_llm3=False,
     )
     if result is None:
         return {
@@ -395,6 +400,7 @@ def build_call_breakdown_llm3_payload(
             "verified_target_moments": 3 if complex_b2b_detected else 1,
             "verified_max_moments": 4,
             "rows_required": True,
+            "narrative_preferred": True,
             "fragment_context_min_chars": 90,
             "fragment_must_be_mini_scene": True,
             "same_call_only": True,
@@ -417,6 +423,10 @@ def build_call_breakdown_llm3_payload(
             "summary_line",
             "source_note",
             "call_breakdown_source",
+            "call_story",
+            "what_manager_missed",
+            "better_path",
+            "key_turning_points",
             "moments",
             "rows",
             "selection_diagnostics",
@@ -618,6 +628,43 @@ def _normalize_llm3_call_breakdown(
         if normalized is None:
             return None, "moment_required_fields_missing"
         normalized_moments.append(normalized)
+    key_turning_points = _normalize_key_turning_points(
+        raw_points=raw.get("key_turning_points"),
+        moments=normalized_moments,
+        rows=rows,
+    )
+    call_story = _first_text(
+        raw.get("call_story"),
+        raw.get("narrative"),
+        raw.get("summary_line"),
+        _narrative_from_moments(normalized_moments),
+    )
+    what_manager_missed = _first_text(
+        raw.get("what_manager_missed"),
+        raw.get("missing_action"),
+        _as_dict(payload.get("situation_evidence_packet")).get("missing_action"),
+        normalized_moments[0].get("moment_summary") if normalized_moments else "",
+    )
+    better_path = _first_text(
+        raw.get("better_path"),
+        raw.get("manager_lesson"),
+        _as_dict(payload.get("situation_evidence_packet")).get("manager_lesson"),
+        normalized_moments[0].get("better") if normalized_moments else "",
+    )
+    dialogue_evidence = _normalize_dialogue_evidence(
+        raw.get("dialogue_evidence"),
+        fallback_text=rows[0][2] if rows and len(rows[0]) > 2 else "",
+    )
+    language_probe = " ".join(
+        [
+            call_story,
+            what_manager_missed,
+            better_path,
+            " ".join(str(row_item) for row in rows for row_item in row),
+        ]
+    )
+    if not _manager_facing_russian_enough(language_probe):
+        return None, "manager_facing_language_not_russian"
 
     result = dict(raw)
     result.pop("_routing", None)
@@ -638,6 +685,11 @@ def _normalize_llm3_call_breakdown(
             "stage_name": _first_text(raw.get("stage_name"), selected_call.get("stage_name")),
             "source_note": CALL_BREAKDOWN_SOURCE,
             "call_breakdown_source": CALL_BREAKDOWN_SOURCE,
+            "call_story": call_story,
+            "what_manager_missed": what_manager_missed,
+            "better_path": better_path,
+            "dialogue_evidence": dialogue_evidence,
+            "key_turning_points": key_turning_points,
             "moments": normalized_moments,
             "rows": rows[:4],
             "call_breakdown_evidence_strength": _first_text(
@@ -682,6 +734,119 @@ def _normalize_llm3_call_breakdown(
         },
     )
     return result, None
+
+
+def _narrative_from_moments(moments: list[dict[str, Any]]) -> str:
+    parts = []
+    for moment in moments[:3]:
+        text = _first_text(moment.get("what"), moment.get("moment_summary"))
+        if text:
+            parts.append(text.rstrip(".") + ".")
+    return " ".join(parts)
+
+
+def _normalize_key_turning_points(
+    *,
+    raw_points: Any,
+    moments: list[dict[str, Any]],
+    rows: list[list[Any]],
+) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for index, raw_point in enumerate(raw_points or [], start=1):
+        if not isinstance(raw_point, dict):
+            continue
+        moment = moments[index - 1] if index - 1 < len(moments) else {}
+        row = rows[index - 1] if index - 1 < len(rows) else []
+        title = _first_text(raw_point.get("title"), moment.get("moment"), row[0] if len(row) > 0 else "")
+        what_happened = _first_text(raw_point.get("what_happened"), moment.get("what"), row[1] if len(row) > 1 else "")
+        why_it_matters = _first_text(raw_point.get("why_it_matters"), moment.get("moment_summary"))
+        better_action = _first_text(raw_point.get("better_action"), moment.get("better"), row[3] if len(row) > 3 else "")
+        evidence_text = _first_text(
+            raw_point.get("supporting_quote"),
+            moment.get("supporting_quote"),
+            row[2] if len(row) > 2 else "",
+        )
+        points.append(
+            {
+                "title": title or f"Момент {index}",
+                "what_happened": what_happened,
+                "why_it_matters": why_it_matters,
+                "manager_gap": _first_text(raw_point.get("manager_gap"), moment.get("moment_summary")),
+                "better_action": better_action,
+                "dialogue_evidence": _normalize_dialogue_evidence(
+                    raw_point.get("dialogue_evidence"),
+                    fallback_text=evidence_text,
+                ),
+                "proof_type": _first_text(raw_point.get("proof_type"), moment.get("proof_type")),
+                "quote_role": _first_text(raw_point.get("quote_role"), moment.get("quote_role")),
+                "proof_explanation": _first_text(raw_point.get("proof_explanation"), moment.get("proof_explanation")),
+                "evidence_refs": list(raw_point.get("evidence_refs") or moment.get("evidence_refs") or []),
+            }
+        )
+    if points:
+        return points[:4]
+    for index, moment in enumerate(moments[:4], start=1):
+        row = rows[index - 1] if index - 1 < len(rows) else []
+        evidence_text = _first_text(moment.get("supporting_quote"), row[2] if len(row) > 2 else "")
+        points.append(
+            {
+                "title": _first_text(moment.get("moment"), f"Момент {index}"),
+                "what_happened": _first_text(moment.get("what"), row[1] if len(row) > 1 else ""),
+                "why_it_matters": _first_text(moment.get("moment_summary"), moment.get("proof_explanation")),
+                "manager_gap": _first_text(moment.get("moment_summary"), moment.get("what")),
+                "better_action": _first_text(moment.get("better"), row[3] if len(row) > 3 else ""),
+                "dialogue_evidence": _normalize_dialogue_evidence(None, fallback_text=evidence_text),
+                "proof_type": _first_text(moment.get("proof_type")),
+                "quote_role": _first_text(moment.get("quote_role")),
+                "proof_explanation": _first_text(moment.get("proof_explanation")),
+                "evidence_refs": list(moment.get("evidence_refs") or []),
+            }
+        )
+    return points
+
+
+def _normalize_dialogue_evidence(value: Any, *, fallback_text: Any = "") -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for raw_item in value or []:
+        if isinstance(raw_item, dict):
+            text = _strip_fragment_prefix(_first_text(raw_item.get("text"), raw_item.get("quote")))
+            if text:
+                items.append(
+                    {
+                        "speaker": _normalize_speaker_label(raw_item.get("speaker")) or "unknown",
+                        "text": text,
+                    }
+                )
+        elif isinstance(raw_item, str) and _text(raw_item):
+            items.append({"speaker": "unknown", "text": _strip_fragment_prefix(raw_item)})
+    if items:
+        return items[:8]
+    fallback = _strip_fragment_prefix(fallback_text)
+    if not fallback:
+        return []
+    parts = [
+        _strip_fragment_prefix(part)
+        for part in re.split(r"\s*/\s*|\n+", fallback)
+        if _strip_fragment_prefix(part)
+    ]
+    if len(parts) <= 1:
+        return [{"speaker": "unknown", "text": fallback}]
+    return [
+        {
+            "speaker": "side_1" if index % 2 == 0 else "side_2",
+            "text": part,
+        }
+        for index, part in enumerate(parts[:8])
+    ]
+
+
+def _manager_facing_russian_enough(value: Any) -> bool:
+    text = _text(value)
+    if not text:
+        return False
+    cyrillic = len(re.findall(r"[А-Яа-яЁё]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    return cyrillic >= 20 and cyrillic >= latin
 
 
 def _normalize_llm3_moment(

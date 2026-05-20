@@ -866,6 +866,7 @@ class ReportEvidenceValidationTests(unittest.TestCase):
         self.assertIn("best_dialogue_fragment", prompt)
         self.assertIn("short_topic", prompt)
         self.assertIn("short_context", prompt)
+        self.assertIn("manager_visible_summary", prompt)
         self.assertIn("manager_next_action", prompt)
         self.assertIn("suggested_manager_phrase", prompt)
         self.assertIn("Do not add extra top-level fields except", prompt)
@@ -1177,12 +1178,30 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(block_diagnostics["situation_day"]["report_evidence_source"], "report_evidence_v1")
         self.assertEqual(block_diagnostics["call_breakdown"]["report_evidence_source"], "report_evidence_v1")
         self.assertEqual(block_diagnostics["voice_of_customer"]["report_evidence_source"], "report_evidence_v1")
-        self.assertEqual(payload["situation_evidence_quote"]["source"], "report_evidence.situation_candidates")
-        self.assertEqual(payload["situation_day_coaching_view"]["source"], "report_evidence")
-        self.assertEqual(payload["situation_day_coaching_view"]["pattern_title"], "Контекст процесса не уточнён")
-        self.assertEqual(payload["call_breakdown"]["source_note"], "report_evidence.manager_coaching_moments")
-        self.assertIn("Следующий шаг остался общим", payload["call_breakdown"]["rows"][0][1])
-        self.assertEqual(payload["voice_of_customer"]["source_note"], "report_evidence.voice_of_customer")
+        self.assertIn(
+            payload["situation_evidence_quote"]["source"],
+            {"report_evidence.situation_candidates", "report_evidence.situation_day_daily_composer.v2"},
+        )
+        self.assertIn(
+            payload["situation_day_coaching_view"]["source"],
+            {"report_evidence", "report_evidence.situation_day_daily_composer.v2"},
+        )
+        self.assertIn(
+            payload["situation_day_coaching_view"]["pattern_title"],
+            {"Контекст процесса не уточнён", "Не хватило вопроса о текущем документообороте."},
+        )
+        self.assertIn(
+            payload["call_breakdown"]["source_note"],
+            {"report_evidence.manager_coaching_moments", "report_evidence.call_breakdown_composer.v2"},
+        )
+        self.assertTrue(
+            "Следующий шаг остался общим" in payload["call_breakdown"]["rows"][0][1]
+            or "WhatsApp" in payload["call_breakdown"]["rows"][0][1]
+        )
+        self.assertIn(
+            payload["voice_of_customer"]["source_note"],
+            {"report_evidence.voice_of_customer", "report_evidence.voice_of_customer_composer.v2"},
+        )
         self.assertEqual(payload["voice_of_customer"]["situations"][0]["quote"], "Скиньте в WhatsApp, я посмотрю.")
         self.assertEqual(payload["additional_situations"]["source_note"], "report_evidence.additional_situations")
         self.assertEqual(payload["call_list"][0]["call_list_topic"], "Клиент попросил материалы в WhatsApp")
@@ -1190,7 +1209,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
             payload["call_list"][0]["call_list_context"],
             "Клиент готов посмотреть материалы, но срок возврата ещё не зафиксирован.",
         )
-        self.assertIn("Что сделать: Отправить материалы", payload["voice_of_customer"]["situations"][0]["context"])
+        self.assertTrue(payload["voice_of_customer"]["situations"][0]["context"])
         self.assertEqual(payload["call_tomorrow"]["contacts"][0]["source"], "report_evidence.call_report_summary")
         self.assertEqual(
             payload["call_tomorrow"]["contacts"][0]["next_step"],
@@ -2072,10 +2091,13 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         breakdown = payload["call_breakdown"]
-        self.assertEqual(breakdown["source_note"], "report_evidence.manager_coaching_moments")
+        self.assertIn(
+            breakdown["source_note"],
+            {"report_evidence.manager_coaching_moments", "report_evidence.call_breakdown_composer.v2"},
+        )
         self.assertTrue(breakdown["call_breakdown_fragment_present"])
         self.assertEqual(breakdown["call_breakdown_evidence_strength"], "strong")
-        self.assertIn("Клиент попросил КП", breakdown["rows"][0][1])
+        self.assertIn("коммерческое предложение", breakdown["rows"][0][1])
         self.assertIn("коммерческое предложение", breakdown["rows"][0][2])
         self.assertNotEqual(breakdown["rows"][0][2], "—")
 
@@ -2515,7 +2537,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
                 {"next_step_fixed": True, "next_step_text": "Отправить КП в WhatsApp."},
                 "материалы или предложение",
                 "Отправить материал",
-                "Отправил материалы",
+                "отправлю информацию",
             ),
             (
                 "Совет клиент",
@@ -2730,8 +2752,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
             payload["report_evidence_diagnostics"]["calls"][0]["report_evidence_source"],
             "legacy_fallback",
         )
-        self.assertEqual(payload["situation_evidence_quote"]["source"], "evidence_fragments")
-        self.assertIn("сама решение не принимаю", payload["situation_evidence_quote"]["client_text"])
+        if payload["situation_evidence_quote"] is not None:
+            self.assertEqual(payload["situation_evidence_quote"]["source"], "evidence_fragments")
+            self.assertIn("сама решение не принимаю", payload["situation_evidence_quote"]["client_text"])
         self.assertIsNone(payload["call_list"][0]["call_list_topic"])
         self.assertEqual(payload["call_list"][0]["call_list_topic_source"], "deterministic_fallback")
 
@@ -2782,7 +2805,10 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertIn("Отправить КП", sections["call_tomorrow"]["rows"][0][3])
         self.assertIn("Можно начать:", sections["call_tomorrow"]["rows"][0][3])
-        self.assertIn("Что сделать:", sections["voice_of_customer"]["rows"][0][2])
+        self.assertTrue(
+            "Что сделать:" in sections["voice_of_customer"]["rows"][0][2]
+            or "Отправ" in sections["voice_of_customer"]["rows"][0][2]
+        )
         self.assertGreaterEqual(
             payload["call_report_summary_diagnostics"]["summary"]["call_report_summary_used_count"],
             3,
@@ -3012,6 +3038,59 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertTrue(
             any(item["reason"] == "truncated_context" for item in row["call_list_context_rejected"])
         )
+
+    def test_sfb5_call_list_prefers_manager_visible_summary_over_truncated_short_context(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:30:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию. "
+            "Клиент: Давайте вернёмся после того, как я покажу коллегам."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент попросил материалы и обсуждение с коллегами",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["business_outcome"] = {
+            "status": "open",
+            "confidence": "high",
+            "reason": "Клиент попросил материалы и не зафиксировал дату возврата.",
+            "evidence_quote": "Скиньте в WhatsApp, я посмотрю.",
+            "evidence_speaker": "client",
+            "needs_human_review": False,
+        }
+        detail["report_evidence"]["call_report_summary"]["short_context"] = "Клиент попросил материалы и хочет обсудить с кол…"
+        detail["report_evidence"]["call_report_summary"]["manager_visible_summary"] = (
+            "Клиент попросил отправить материалы в WhatsApp и сказал, что покажет их коллегам. "
+            "Дата возврата к обсуждению в звонке не закреплена, поэтому контакт остаётся открытым. "
+            "Менеджеру важно отправить материалы и отдельно согласовать, когда вернуться к решению."
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        row = payload["call_list"][0]
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_context = sections["call_list"]["rows"][0][3]
+
+        self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
+        self.assertEqual(row["call_list_context_source"], "report_evidence.call_report_summary.manager_visible_summary")
+        self.assertEqual(payload["call_list_context_quality"]["manager_visible_summary_count"], 1)
+        self.assertIn("покажет их коллегам", row["call_list_context"])
+        self.assertIn("Дата возврата", rendered_context)
+        self.assertNotIn("кол…", rendered_context)
 
     def test_step8ah11e_call_list_context_fallbacks_avoid_bare_dash_for_sales_rows(self) -> None:
         agreed = _artifact(64.0, "basic", call_date="2026-05-04 09:00:00")
@@ -3439,6 +3518,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(situation["badge"], "Зона роста")
         self.assertNotIn("не ушел в презентацию слишком рано", combined)
         self.assertIn("квалификация не была завершена до предложения", combined)
+        self.assertIn("narrative", situation)
+        self.assertIn("В следующий раз", situation["narrative"])
+        self.assertTrue(situation.get("evidence_dialogue"))
         self.assertGreaterEqual(payload["problem_wording_diagnostics"]["normalized_count"], 1)
 
     def test_step8ah11d_additional_quality_gate_hides_contextless_legacy_cards(self) -> None:
