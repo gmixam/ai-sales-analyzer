@@ -3206,6 +3206,112 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(sections["main_focus_for_tomorrow"]["example_label"], "Пример из сегодня")
         self.assertTrue(sections["challenge"]["today_line"].startswith("Сегодня:"))
 
+    def test_step8ah11a_next_step_counterexample_uses_scene_only_wording(self) -> None:
+        manager = _manager()
+        bad_call = _artifact_for_manager(
+            manager,
+            score_percent=42.0,
+            level="problematic",
+            call_date="2026-05-20 10:00:00",
+        )
+        bad_call.interaction.text = (
+            "Клиент: Хорошо, скиньте материалы, я посмотрю. "
+            "Менеджер: Да, отправлю вам информацию. Клиент: Спасибо."
+        )
+        bad_detail = bad_call.analysis.scores_detail
+        bad_detail["follow_up"] = {
+            "next_step_fixed": False,
+            "next_step_text": "",
+            "reason_not_fixed": "Следующий шаг не закреплен.",
+        }
+        bad_detail["gaps"] = [
+            {
+                "title": "Фиксация следующего шага",
+                "comment": "Менеджер не договаривается о следующем шаге.",
+            }
+        ]
+        bad_detail.update(_valid_report_evidence_detail())
+        bad_evidence = bad_detail["report_evidence"]
+        bad_evidence["business_outcome"] = {
+            "status": "open",
+            "confidence": "high",
+            "reason": "Клиент попросил материалы, срок возврата не согласован.",
+            "evidence_quote": "Скиньте материалы, я посмотрю.",
+            "evidence_speaker": "client",
+            "needs_human_review": False,
+        }
+        bad_evidence["situation_candidates"][0].update(
+            {
+                "stage_code": "completion_next_step",
+                "situation_title": "Следующий шаг не закреплен",
+                "what_happened": "Менеджер согласился отправить материалы и отпустил решение клиенту.",
+                "what_it_means": "Интерес клиента может зависнуть без управляемого продолжения.",
+                "what_was_missing": "Менеджер не договаривается о следующем шаге.",
+                "next_time_action": "Согласовать срок возврата и формат следующего контакта.",
+                "dialogue_fragment": [
+                    {"speaker": "client", "text": "Скиньте материалы, я посмотрю."},
+                    {"speaker": "manager", "text": "Да, отправлю вам информацию."},
+                ],
+            }
+        )
+        bad_evidence["manager_coaching_moments"][0].update(
+            {
+                "stage_code": "completion_next_step",
+                "what_happened": "Менеджер не договаривается о следующем шаге.",
+                "what_better": "Согласовать дату и формат следующего контакта.",
+                "dialogue_fragment": [
+                    {"speaker": "client", "text": "Скиньте материалы, я посмотрю."},
+                    {"speaker": "manager", "text": "Да, отправлю вам информацию."},
+                ],
+            }
+        )
+
+        good_call = _artifact_for_manager(
+            manager,
+            score_percent=88.0,
+            level="strong",
+            call_date="2026-05-20 11:00:00",
+        )
+        good_call.interaction.text = (
+            "Менеджер: Давайте завтра в 11:00 созвонимся и пройдем по документам. "
+            "Клиент: Да, завтра в 11:00 удобно."
+        )
+        good_call.analysis.scores_detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_text": "Созвониться завтра в 11:00 и пройти по документам.",
+            "due_date_text": "завтра 11:00",
+        }
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[bad_call, good_call],
+            period={"date_from": "2026-05-20", "date_to": "2026-05-20"},
+            filters=ReportRunFilters(date_from="2026-05-20", date_to="2026-05-20"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[bad_call, good_call],
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_text = " ".join(
+            str(value)
+            for value in [
+                payload["situation_day_coaching_view"].get("pattern_title"),
+                payload["situation_day_coaching_view"].get("what_happened"),
+                payload["situation_day_coaching_view"].get("manager_error"),
+                payload["situation_day_evidence_packet"].get("missing_action"),
+                sections["main_focus_for_tomorrow"]["coaching_view"].get("what_happened"),
+                sections["call_breakdown"].get("what_manager_missed"),
+                " ".join(" ".join(map(str, row)) for row in sections["call_breakdown"].get("rows") or []),
+            ]
+        )
+
+        self.assertEqual(payload["next_step_claim_safety"]["status"], "softened")
+        self.assertEqual(payload["next_step_claim_safety"]["claim_scope"], "selected_scene_only")
+        self.assertEqual(payload["next_step_claim_safety"]["counterexamples_count"], 1)
+        self.assertIn("В выбранной сцене", rendered_text)
+        self.assertNotIn("Менеджер не договаривается о следующем шаге", rendered_text)
+
     def test_step8ah11b_daily_focus_filters_mismatched_situation_and_breakdown(self) -> None:
         artifact = _artifact(64.0, "basic")
         artifact.interaction.text = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."

@@ -391,6 +391,29 @@ Payload diagnostics:
 
 This normalizer does not change score values, final outcomes, report-day call-list semantics, `data_scope`, `daily_coaching_focus.stage_code`, `report_evidence`, or LLM2 prompts.
 
+### Claim-safety для вывода о следующем шаге
+
+С 2026-05-21 в `manager_daily` действует мягкий guard для спорных coaching-выводов
+про фиксацию следующего шага.
+
+Правило:
+- если выбранная `Ситуация дня` содержит next-step gap, но в видимом
+  `call_list` за тот же день есть другие звонки со статусом `Договорённость`
+  или `Перенос` и явным `next_step` / `deadline`, отчет не должен звучать как
+  общая оценка “менеджер не договаривается о следующем шаге”;
+- в таком случае формулировка сужается до выбранной сцены: проблема остается
+  полезной для разбора, но описывает конкретный фрагмент, а не весь стиль
+  работы менеджера;
+- guard применяется к `situation_day_coaching_view`, verified
+  `situation_day_evidence_packet` и `call_breakdown`;
+- payload раскрывает диагностику в `next_step_claim_safety`, а также в
+  `selection_diagnostics` / `call_breakdown_quality` для затронутых блоков.
+
+Это не новый hard gate и не причина скрывать блок: selection, evidence
+verification, score, outcome totals, call-list status, LLM2 prompt и LLM3
+composer не меняются. Цель guard — убрать необоснованное day/global
+обобщение, когда данные дня показывают counter-evidence.
+
 ### Additional Situations quality gate
 
 Since Step 8AH-11D, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` is filtered by a reporting-layer quality gate before rendering.

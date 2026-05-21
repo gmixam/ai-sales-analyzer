@@ -88,6 +88,38 @@ REPORTING_REQUIRED_ANALYSIS_KEYS = (
     "recommendations",
     "follow_up",
 )
+NEXT_STEP_CLAIM_CONCEPT_TERMS = (
+    "следующ",
+    "дальш",
+    "договор",
+    "дедлайн",
+    "срок",
+    "созвон",
+    "перезвон",
+    "контакт",
+    "follow-up",
+    "follow up",
+)
+NEXT_STEP_CLAIM_GAP_TERMS = (
+    "не зафикс",
+    "не закреп",
+    "не соглас",
+    "не договар",
+    "не перев",
+    "не хватает",
+    "не хватило",
+    "без срок",
+    "без конкрет",
+    "остал",
+    "общ",
+)
+NEXT_STEP_CLAIM_LOCAL_MARKERS = (
+    "в выбранной сцене",
+    "в этом звонке",
+    "в этой сцене",
+    "в этом фрагменте",
+    "в выбранном фрагменте",
+)
 UNCLASSIFIED_REASON_LABELS = {
     "no_transcript": "Нет транскрипта",
     "no_analysis": "Нет готового анализа",
@@ -4738,6 +4770,208 @@ def _build_problem_wording_diagnostics(
     }
 
 
+def _build_next_step_claim_safety(
+    *,
+    call_list: list[dict[str, Any]],
+    situation_day_coaching_view: dict[str, Any] | None,
+    situation_day_evidence_packet: dict[str, Any] | None,
+    selected_call_id: str | None,
+) -> dict[str, Any]:
+    """Detect when a next-step gap should be described as a scene-level finding."""
+    selected_call_id = str(selected_call_id or "").strip()
+    claim_text = " ".join(
+        str(value or "").strip()
+        for value in (
+            (situation_day_coaching_view or {}).get("pattern_title"),
+            (situation_day_coaching_view or {}).get("what_happened"),
+            (situation_day_coaching_view or {}).get("manager_error"),
+            (situation_day_coaching_view or {}).get("what_was_missing"),
+            (situation_day_evidence_packet or {}).get("missing_action"),
+            (situation_day_evidence_packet or {}).get("observed_manager_behavior"),
+        )
+        if str(value or "").strip()
+    )
+    if not _is_next_step_gap_claim(claim_text):
+        return {
+            "status": "not_applicable",
+            "claim_scope": "not_next_step_gap",
+            "selected_call_id": selected_call_id or None,
+            "counterexamples_count": 0,
+            "counterexamples": [],
+        }
+
+    counterexamples = _next_step_counterexample_call_rows(
+        call_list=call_list,
+        selected_call_id=selected_call_id,
+    )
+    if not counterexamples:
+        return {
+            "status": "passed",
+            "claim_scope": "day_claim_allowed",
+            "selected_call_id": selected_call_id or None,
+            "counterexamples_count": 0,
+            "counterexamples": [],
+        }
+    return {
+        "status": "softened",
+        "claim_scope": "selected_scene_only",
+        "selected_call_id": selected_call_id or None,
+        "counterexamples_count": len(counterexamples),
+        "counterexamples": counterexamples[:5],
+        "reason": "same_day_calls_have_fixed_next_step",
+    }
+
+
+def _next_step_counterexample_call_rows(
+    *,
+    call_list: list[dict[str, Any]],
+    selected_call_id: str | None,
+) -> list[dict[str, Any]]:
+    """Return report-day rows that show next-step fixation outside the selected scene."""
+    selected_call_id = str(selected_call_id or "").strip()
+    result: list[dict[str, Any]] = []
+    for row in call_list:
+        row_call_id = str(row.get("interaction_id") or row.get("call_id") or "").strip()
+        if selected_call_id and row_call_id == selected_call_id:
+            continue
+        status = str(row.get("call_list_status") or row.get("status") or "").strip().lower()
+        next_step = str(row.get("next_step") or "").strip()
+        deadline = str(row.get("deadline") or "").strip()
+        if status not in {"agreed", "rescheduled"}:
+            continue
+        if not (next_step or deadline):
+            continue
+        result.append(
+            {
+                "interaction_id": row_call_id or None,
+                "client_call_reference": row.get("client_call_reference") or row.get("client_or_phone"),
+                "status": status,
+                "next_step": _first_sentence(next_step, limit=160) if next_step else None,
+                "deadline": deadline or None,
+            }
+        )
+    return result
+
+
+def _is_next_step_gap_claim(value: Any) -> bool:
+    text = _summary_norm(value)
+    if not text:
+        return False
+    has_next_step = any(term in text for term in NEXT_STEP_CLAIM_CONCEPT_TERMS)
+    has_gap = any(term in text for term in NEXT_STEP_CLAIM_GAP_TERMS)
+    return has_next_step and has_gap
+
+
+def _apply_next_step_claim_safety_to_situation(
+    *,
+    situation_day_coaching_view: dict[str, Any] | None,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not situation_day_coaching_view:
+        return situation_day_coaching_view
+    if diagnostics.get("claim_scope") != "selected_scene_only":
+        return {
+            **situation_day_coaching_view,
+            "next_step_claim_safety": diagnostics,
+        }
+    updated = dict(situation_day_coaching_view)
+    for key in ("pattern_title", "what_happened", "manager_error", "what_was_missing", "moment_summary"):
+        updated[key] = _scene_scope_next_step_claim(updated.get(key))
+    updated["next_step_claim_safety"] = diagnostics
+    selection = dict(updated.get("selection_diagnostics") or {})
+    selection["next_step_claim_safety"] = diagnostics
+    updated["selection_diagnostics"] = selection
+    return updated
+
+
+def _apply_next_step_claim_safety_to_packet(
+    *,
+    situation_day_evidence_packet: dict[str, Any] | None,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not situation_day_evidence_packet or diagnostics.get("claim_scope") != "selected_scene_only":
+        return situation_day_evidence_packet
+    updated = dict(situation_day_evidence_packet)
+    for key in ("problem_claim", "observed_manager_behavior", "missing_action"):
+        updated[key] = _scene_scope_next_step_claim(updated.get(key))
+    updated["next_step_claim_safety"] = diagnostics
+    return updated
+
+
+def _apply_next_step_claim_safety_to_call_breakdown(
+    *,
+    call_breakdown: dict[str, Any] | None,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not call_breakdown:
+        return call_breakdown
+    updated = dict(call_breakdown)
+    if diagnostics.get("claim_scope") == "selected_scene_only":
+        for key in ("call_story", "what_manager_missed", "missing_action", "moment_summary", "why_it_matters"):
+            updated[key] = _scene_scope_next_step_claim(updated.get(key))
+        rows = []
+        for row in updated.get("rows") or []:
+            if isinstance(row, (list, tuple)):
+                next_row = list(row)
+                if len(next_row) > 1:
+                    next_row[1] = _scene_scope_next_step_claim(next_row[1])
+                if len(next_row) > 3:
+                    next_row[3] = _scene_scope_next_step_claim(next_row[3])
+                rows.append(next_row)
+            else:
+                rows.append(row)
+        updated["rows"] = rows
+        moments = []
+        for raw_moment in updated.get("moments") or []:
+            if not isinstance(raw_moment, dict):
+                moments.append(raw_moment)
+                continue
+            moment = dict(raw_moment)
+            for key in ("what", "moment_summary", "proof_explanation", "better"):
+                moment[key] = _scene_scope_next_step_claim(moment.get(key))
+            moments.append(moment)
+        if moments:
+            updated["moments"] = moments
+        points = []
+        for raw_point in updated.get("key_turning_points") or []:
+            if not isinstance(raw_point, dict):
+                points.append(raw_point)
+                continue
+            point = dict(raw_point)
+            for key in ("what_happened", "why_it_matters", "manager_gap", "better_action"):
+                point[key] = _scene_scope_next_step_claim(point.get(key))
+            points.append(point)
+        if points:
+            updated["key_turning_points"] = points
+    updated["next_step_claim_safety"] = diagnostics
+    quality = dict(updated.get("call_breakdown_quality") or {})
+    quality["next_step_claim_safety"] = diagnostics
+    updated["call_breakdown_quality"] = quality
+    selection = dict(updated.get("selection_diagnostics") or {})
+    selection["next_step_claim_safety"] = diagnostics
+    updated["selection_diagnostics"] = selection
+    return updated
+
+
+def _scene_scope_next_step_claim(value: Any) -> Any:
+    if value is None:
+        return value
+    text = str(value).strip()
+    if not _is_next_step_gap_claim(text):
+        return value
+    normalized = _summary_norm(text)
+    if any(marker in normalized for marker in NEXT_STEP_CLAIM_LOCAL_MARKERS):
+        return text
+    if "не договар" in normalized:
+        return (
+            "В выбранной сцене следующий шаг остался недостаточно конкретным: "
+            "не прозвучали срок, формат контакта или ответственный."
+        )
+    first_char = text[:1].lower()
+    rest = text[1:]
+    return f"В выбранной сцене {first_char}{rest}".strip()
+
+
 ADDITIONAL_SITUATION_GENERIC_TEXT_MARKERS = (
     "клиент не получил достаточно конкретики или фиксации следующего шага",
     "задать уточняющий вопрос, затем зафиксировать конкретный следующий шаг и дедлайн",
@@ -5247,6 +5481,25 @@ def build_manager_daily_payload(
         situation_day_evidence_packet=situation_day_evidence_packet,
         situation_day_coaching_view=situation_day_coaching_view,
     )
+    situation_selected_call_for_claim_safety = str(
+        ((situation_day_evidence_packet or {}).get("dialogue_excerpt") or {}).get("call_id")
+        or (situation_evidence_quote or {}).get("call_id")
+        or ""
+    ).strip()
+    next_step_claim_safety = _build_next_step_claim_safety(
+        call_list=call_list,
+        situation_day_coaching_view=situation_day_coaching_view,
+        situation_day_evidence_packet=situation_day_evidence_packet,
+        selected_call_id=situation_selected_call_for_claim_safety,
+    )
+    situation_day_coaching_view = _apply_next_step_claim_safety_to_situation(
+        situation_day_coaching_view=situation_day_coaching_view,
+        diagnostics=next_step_claim_safety,
+    )
+    situation_day_evidence_packet = _apply_next_step_claim_safety_to_packet(
+        situation_day_evidence_packet=situation_day_evidence_packet,
+        diagnostics=next_step_claim_safety,
+    )
     if (
         situation_day_evidence_packet is not None
         and situation_day_evidence_packet.get("status") == "verified"
@@ -5294,6 +5547,10 @@ def build_manager_daily_payload(
             )
             if situation_packet_breakdown is not None:
                 call_breakdown = situation_packet_breakdown
+    call_breakdown = _apply_next_step_claim_safety_to_call_breakdown(
+        call_breakdown=call_breakdown,
+        diagnostics=next_step_claim_safety,
+    )
     situation_data_scope = _reference_call_scope(
         refs=[
             situation_evidence_quote,
@@ -5458,6 +5715,7 @@ def build_manager_daily_payload(
         "daily_coaching_focus": daily_coaching_focus,
         "daily_coaching_focus_validation": dict(daily_coaching_focus.get("validation") or {}),
         "problem_wording_diagnostics": problem_wording_diagnostics,
+        "next_step_claim_safety": next_step_claim_safety,
         "additional_situations_quality": additional_situations_quality,
         "call_breakdown_quality": call_breakdown_quality,
         "coaching_data_scope": coaching_data_scope,
