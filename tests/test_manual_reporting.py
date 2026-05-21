@@ -6342,6 +6342,14 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "partial")
         self.assertIn("SMTP auth error 535", result["errors"][-1])
 
+    def test_run_overall_status_preserves_partial_delivery(self) -> None:
+        result = CallsManualReportingOrchestrator._derive_run_overall_status(
+            reports=[{"status": "partial"}],
+            build_errors=[],
+        )
+
+        self.assertEqual(result, "partial")
+
     def test_single_report_result_keeps_ready_preview_when_delivery_disabled(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)
         setattr(

@@ -1096,9 +1096,12 @@ class CallsManualReportingOrchestrator:
         statuses = {item.get("status") for item in reports}
         if not reports:
             return "blocked" if build_errors else "completed"
-        had_success = any(status in {"ready", "delivered", "partial"} for status in statuses)
+        had_partial = "partial" in statuses
+        had_success = any(status in {"ready", "delivered"} for status in statuses)
         had_skip = "skip_accumulate" in statuses
         had_blocking = any(status in {"missing_artifacts", "blocked", "review_required"} for status in statuses) or bool(build_errors)
+        if had_partial:
+            return "partial"
         if had_success and had_blocking:
             return "partial"
         if had_success:

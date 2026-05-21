@@ -720,13 +720,29 @@ class CallsDelivery:
                     conversion_status=(artifact_meta or {}).get("conversion_status"),
                 )
             except DeliveryError as exc:
-                telegram_state.update({"status": "failed", "error": str(exc)})
+                error = str(exc)
+                telegram_state.update({"status": "failed", "error": error})
+                self.logger.warning(
+                    "delivery.report_telegram_failed",
+                    telegram_chat_id=settings.test_delivery_telegram_chat_id,
+                    resolved_primary_email=primary_email,
+                    resolved_cc_emails=cc_emails,
+                    artifact=pdf_filename,
+                    error=error,
+                )
         else:
             telegram_state.update({"status": "skipped", "error": None})
 
         if send_business_email:
             if email_resolution_error:
                 email_state.update({"status": "blocked", "error": email_resolution_error})
+                self.logger.warning(
+                    "delivery.report_email_blocked",
+                    primary_email=primary_email,
+                    cc_emails=cc_emails,
+                    artifact=pdf_filename,
+                    error=email_resolution_error,
+                )
             elif primary_email:
                 try:
                     email_delivery = self.deliver_report_email(
@@ -741,16 +757,41 @@ class CallsDelivery:
                     targets.extend(email_delivery.get("targets", []))
                     email_state.update({"status": "delivered", "artifact": pdf_filename})
                 except DeliveryError as exc:
-                    email_state.update({"status": "failed", "error": str(exc)})
+                    error = str(exc)
+                    email_state.update({"status": "failed", "error": error})
+                    self.logger.warning(
+                        "delivery.report_email_failed",
+                        primary_email=primary_email,
+                        cc_emails=cc_emails,
+                        artifact=pdf_filename,
+                        error=error,
+                    )
             else:
+                error = "Business email delivery is enabled, but primary recipient is not resolved."
                 email_state.update(
                     {
                         "status": "blocked",
-                        "error": "Business email delivery is enabled, but primary recipient is not resolved.",
+                        "error": error,
                     }
+                )
+                self.logger.warning(
+                    "delivery.report_email_blocked",
+                    primary_email=primary_email,
+                    cc_emails=cc_emails,
+                    artifact=pdf_filename,
+                    error=error,
                 )
         else:
             email_state.update({"status": "skipped"})
+
+        self.logger.info(
+            "delivery.report_operator_delivery_result",
+            telegram_status=telegram_state.get("status"),
+            email_status=email_state.get("status"),
+            primary_email=primary_email,
+            cc_emails=cc_emails,
+            artifact=pdf_filename,
+        )
 
         return {
             "targets": targets,

@@ -1194,6 +1194,9 @@
       const reportStatus = firstReport?.status;
 
       if (status === "blocked") return { text: "Заблокировано — см. причину ниже", cls: "bad" };
+      if (reportStatus === "partial" || status === "partial") {
+        return { text: "Частичная доставка — проверьте Email/Telegram ниже", cls: "warn" };
+      }
       if (reportStatus === "delivered" || reportStatus === "completed" || status === "delivered" || status === "completed") {
         if (firstOutcome === "signal_report") return { text: "Сигнальный отчёт доставлен", cls: "warn" };
         return { text: "Отчёт доставлен", cls: "" };
@@ -1207,7 +1210,6 @@
       if (status === "missing_artifacts" || reportStatus === "missing_artifacts") {
         return { text: "Не хватает анализов — запустите build_missing_and_report", cls: "warn" };
       }
-      if (status === "partial") return { text: "Частичный результат — часть отчётов заблокирована", cls: "warn" };
       if (status === "ready") return { text: "Готов к доставке", cls: "" };
       return null;
     }
@@ -1310,7 +1312,7 @@
           wrap.appendChild(gLabel);
         }
 
-        if ((status === "delivered" || status === "completed" || status === "ready") && artifact?.kind) {
+        if ((status === "delivered" || status === "completed" || status === "ready" || status === "partial") && artifact?.kind) {
           // Artifact card
           const card = document.createElement("div");
           card.className = "artifact-card";
@@ -1334,11 +1336,14 @@
             const em = delivery.transport?.email_delivery || delivery.email_delivery;
             const dLines = [];
             if (tg) {
-              const tgTargets = (tg.targets || []).join(", ") || "нет";
+              const tgTargets = (tg.targets || []).join(", ") || tg.target || "нет";
               dLines.push(`Telegram: ${tg.status || "—"} → ${tgTargets}`);
+              if (tg.error) dLines.push(`Ошибка Telegram: ${tg.error}`);
             }
             if (em) {
-              dLines.push(`Email: ${em.status || "пропущен"}`);
+              const emailTargets = [em.primary_email, ...(em.cc_emails || [])].filter(Boolean).join(", ");
+              dLines.push(`Email: ${em.status || "пропущен"}${emailTargets ? ` → ${emailTargets}` : ""}`);
+              if (em.error) dLines.push(`Ошибка Email: ${em.error}`);
             }
             if (dLines.length) {
               const dEl = document.createElement("div");
