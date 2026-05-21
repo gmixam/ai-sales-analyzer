@@ -171,7 +171,9 @@
 
 ## Веха 6.5. Business-ready Report Pack
 ### Смысл
-Довести daily/weekly отчёты до business-ready presentation layer перед пилотом, не запуская полный mechanism upgrade rich report.
+Довести daily/weekly отчёты до business-ready presentation layer перед пилотом.
+Для `manager_daily` текущий фокус уже вышел за чистое оформление: отчет должен
+передавать смысл дня, но без полной post-pilot архитектуры rich-reporting.
 
 ### Что должно быть на выходе
 - polished business-facing report structure
@@ -179,10 +181,15 @@
 - readable wording for business users
 - consistent PDF artifact
 - consistent list-of-calls presentation
-- no full rich-report mechanism redesign
+- grounded narrative blocks for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, and follow-up actions
+- clear role boundary: LLM2 produces per-call evidence, LLM3 composes bounded narrative blocks, Report Layer validates/renders
+- no auto-send to business without operator review
+- no external CRM/revenue/money integration unless separately reopened
 
 ### Критерий готовности
-Бизнес может воспринимать отчёт как рабочий продукт, при этом scoring baseline и pilot version остаются стабильными.
+Бизнес может воспринимать `manager_daily` как рабочий продукт: отчет дает
+понятную картину дня, не выдумывает факты, подкрепляет выводы репликами и
+сохраняет стабильные scoring baseline / pilot boundaries.
 
 ---
 
@@ -249,25 +256,30 @@
 ---
 
 ## Где мы сейчас
-По текущему состоянию проект находится между:
-- Вехой 4.5. Manual Reporting Pilot
-- и Вехой 6. Pilot Ready
+По текущему состоянию проект находится в Вехе 6.5 `Business-ready Report Pack`.
 
 Что уже в основном собрано:
-- архитектурная основа;
-- source pipeline по звонкам;
-- STT;
-- approved checklist/contract в analyzer;
-- fixture-level проверка analyzer;
-- live manual pipeline;
-- Telegram delivery replay;
-- Bitrix24 read-only mapping на реальных полях.
+- архитектурная основа и source-aware manual reporting path;
+- STT / LLM pipeline и persisted analyses;
+- manual operator run для `manager_daily` / `rop_weekly`;
+- Bitrix24 read-only mapping;
+- `manager_daily_template_v2`;
+- LLM2 v15 `block-ready` evidence package;
+- LLM3 narrative composers for Situation Day, Call Breakdown, Voice of Customer, Tomorrow Follow-up wording and Additional Situations;
+- ready-only/no-delivery preview flow for report-quality review.
 
 Что является следующим главным фокусом:
-- Manual Reporting Pilot как отдельный промежуточный режим;
-- bounded `scheduled_reviewable_reporting` до пилота без auto-send бизнесу;
-- reuse уже собранных артефактов и bounded model/version selection;
-- после полного closure `Pilot Ready` порядок такой: `Pilot Ready` -> `Business-ready Report Pack` -> `Pilot Live` -> post-pilot richer report mechanism.
+- перезапустить LLM2-ready data for one manager on 2026-05-19;
+- собрать свежий `manager_daily` preview без доставки;
+- сравнить смысловое качество `Ситуации дня` и связанных narrative blocks;
+- закрыть DDC-11 residual for scene-specific `Как сделать лучше` / examples;
+- затем убрать legacy test expectations around the old `Разбор звонка` table shape.
+
+Что не является текущим фокусом:
+- broad evidence/action consistency pass for money, warm pipeline, challenge and other non-current blocks;
+- scheduler/retries/beat rollout;
+- CRM/revenue integration;
+- full post-pilot rich-report mechanism upgrade.
 
 ## Что особенно важно не потерять по пути
 - Bitrix24 read-only нужен в следующем шаге для полного управленческого отбора и маппинга, но первый live manual validation допускает временный pilot mode без него.

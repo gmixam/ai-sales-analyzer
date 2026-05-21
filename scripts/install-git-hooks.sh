@@ -11,9 +11,31 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOOKS_DIR="$REPO_ROOT/.git/hooks"
-VERSIONED_HOOK="$REPO_ROOT/scripts/hooks/pre-push"
+VERSIONED_PRE_COMMIT_HOOK="$REPO_ROOT/scripts/hooks/pre-commit"
+VERSIONED_PRE_PUSH_HOOK="$REPO_ROOT/scripts/hooks/pre-push"
 
 echo "Installing git hooks from scripts/hooks/ ..."
+
+# ── pre-commit ───────────────────────────────────────────────────────────────
+
+TARGET="$HOOKS_DIR/pre-commit"
+
+if [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; then
+    BACKUP="$TARGET.bak.$(date +%s)"
+    echo "  Existing $TARGET is not a symlink — backing up to $BACKUP"
+    mv "$TARGET" "$BACKUP"
+fi
+
+# Make versioned scripts executable
+chmod +x "$VERSIONED_PRE_COMMIT_HOOK"
+chmod +x "$REPO_ROOT/scripts/hooks/pre-commit-check.sh"
+chmod +x "$VERSIONED_PRE_PUSH_HOOK"
+chmod +x "$REPO_ROOT/scripts/hooks/pre-push-check.sh"
+
+# Install as symlink so updates to the repo script apply immediately
+ln -sf "$VERSIONED_PRE_COMMIT_HOOK" "$TARGET"
+
+echo "  Installed: .git/hooks/pre-commit -> scripts/hooks/pre-commit"
 
 # ── pre-push ─────────────────────────────────────────────────────────────────
 
@@ -25,12 +47,7 @@ if [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; then
     mv "$TARGET" "$BACKUP"
 fi
 
-# Make versioned scripts executable
-chmod +x "$VERSIONED_HOOK"
-chmod +x "$REPO_ROOT/scripts/hooks/pre-push-check.sh"
-
-# Install as symlink so updates to the repo script apply immediately
-ln -sf "$VERSIONED_HOOK" "$TARGET"
+ln -sf "$VERSIONED_PRE_PUSH_HOOK" "$TARGET"
 
 echo "  Installed: .git/hooks/pre-push -> scripts/hooks/pre-push"
 

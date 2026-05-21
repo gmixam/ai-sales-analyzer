@@ -13,6 +13,8 @@ Before starting any task:
 4. Keep scope bounded.
 5. Do not rely on memory or agent-specific hidden context as source of truth.
 6. Before сдача результата, complete the close-out checklist.
+7. After every non-doc change, run a documentation-impact check and update
+   `docs/PROGRESS.md` plus any affected source-of-truth docs.
 
 Critical defaults:
 - repo-first
@@ -20,4 +22,6 @@ Critical defaults:
 - no scope creep
 - update `docs/PROGRESS.md` when project status changed
 - update `docs/DECISIONS.md` when a stable decision changed
+- non-doc changes are not complete until documentation impact is handled
+- repo hooks block commit/push when non-doc changes omit `docs/PROGRESS.md`
 - task is not complete without close-out

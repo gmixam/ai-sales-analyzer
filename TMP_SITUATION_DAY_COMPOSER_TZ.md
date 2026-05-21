@@ -1,5 +1,13 @@
 # Временное ТЗ: новый механизм блока "Ситуация дня"
 
+> Status 2026-05-21: historical implementation note. Current source of truth is
+> `docs/BUSINESS_READY_REPORT_PACK_TASKS.md`,
+> `docs/MANAGER_DAILY_SELECTION_MODEL.md`, and
+> `docs/REPORT_EVIDENCE_CONTRACT.md`.
+> The active state is SFB-1..SFB-5 implemented in commit `73cb5cf`; remaining
+> bounded work is fresh 2026-05-19 manager rerun, report comparison, DDC-11
+> scene-specific action/examples, and legacy call-breakdown test cleanup.
+
 ## Актуальный план: перенос report-writing из LLM2 в Report Layer + LLM3
 
 Дата актуализации: 2026-05-19.

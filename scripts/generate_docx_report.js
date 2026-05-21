@@ -1561,6 +1561,12 @@ function buildBally() {
 
 function buildSituatsiya() {
   const s = DATA.situation;
+  if (s.coaching_view?.situation_day_evidence_status === "insufficient") {
+    return [
+      blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
+      bodyPara("Нет надежно подтвержденной ситуации дня.", { color: COLORS.gray }),
+    ];
+  }
   const callRef = buildCallReference(s.dialogue_excerpt || s.supporting_quote || s.evidence_quote);
   const whatHappenedText = buildWhatHappenedText(s);
   const momentSummary = situationMomentSummary(s);

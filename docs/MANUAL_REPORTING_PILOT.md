@@ -8,6 +8,12 @@
 Это ручной параметрический запуск анализа и отчётности поверх уже подтверждённого core pipeline.
 До пилота теперь допускается bounded `scheduled_reviewable_reporting`, но не full automation loop.
 
+Актуализация 2026-05-21: текущий проектный фокус находится в Вехе 6.5
+`Business-ready Report Pack`. `Manual Reporting Pilot` остается operating mode
+для ручного запуска/preview, но не является главным содержательным этапом.
+Качество `manager_daily` сейчас проверяется через ready-only/no-delivery
+previews, а business delivery выполняется только после явного решения.
+
 ## Позиция в roadmap
 
 `Manual Reporting Pilot` находится между:
@@ -23,6 +29,8 @@
 - вручную отправлять отчёты по email;
 - тестировать разные AI модели и bounded report-composer behavior до любого scheduler/retry/beat rollout;
 - допускать bounded `scheduled_reviewable_reporting`: automatic schedule -> review-required draft -> operator approve.
+- поддерживать ready-only/no-delivery preview for report-quality review before
+  any business delivery.
 
 ## Non-goals
 
@@ -130,6 +138,8 @@
 - renderer/template polish
 - consistent PDF and short delivery wrapper
 - complete and honest list-of-calls presentation
+- bounded semantic/report-block prompt and composer fixes when they use
+  existing persisted evidence and do not change final deterministic selection
 - bounded scheduled reviewable generation with manual operator approve
 - manual editing only for allowed business-facing report blocks
 
@@ -141,6 +151,18 @@
 - broad analyzer redesign
 - auto-send to business without review
 - manual editing of transcript / raw analysis / scores / computed metrics
+
+### Current report-quality run rule
+
+- If the change touches only LLM3 composer wording/rendering over existing
+  persisted evidence, a ready-only/no-delivery rebuild may be enough to inspect
+  the report.
+- If the change touches LLM2 prompt/schema fields such as
+  `manager_visible_summary`, fresh LLM2 analysis for the selected manager/date is
+  required before the report can show the full effect.
+- A top-level `partial` result caused by incomplete ready-data coverage does not
+  automatically invalidate the report-quality preview when the report-level
+  artifact is `ready`.
 
 ## Scheduled reviewable reporting boundary
 

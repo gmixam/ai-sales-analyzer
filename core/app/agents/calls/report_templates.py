@@ -171,10 +171,7 @@ def _situation_section_is_insufficient(section: dict[str, Any]) -> bool:
 
 
 def _situation_day_insufficient_message(_coaching_view: dict[str, Any]) -> str:
-    return (
-        "Данных для этого блока недостаточно: не найден надежно подтвержденный "
-        "эпизод, который можно безопасно показать менеджеру."
-    )
+    return "Нет надежно подтвержденной ситуации дня."
 
 
 def _render_situation_day_text_lines(coaching_view: dict[str, Any]) -> list[str]:

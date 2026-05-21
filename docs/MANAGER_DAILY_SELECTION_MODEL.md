@@ -8,6 +8,16 @@
 **Первичная фиксация:** 2026-04-30.
 **Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem; Step 8AH-11D добавил quality gate for Additional Situations so generic/contextless cards are hidden and valid cards use evidence/context-backed, stage-specific wording; Step 8AH-11E добавил quality gate for call-list context so weak, truncated, technical, or empty contexts are replaced by human-readable deterministic fallbacks without changing report-day semantics; Step 8AH-11H добавил quality gate for Call Breakdown so manager-facing rows require confirming evidence, aligned corrective recommendations, and clean wording; 2026-05-12 block-fit update добавил `semantic_case.report_block_fit` и block-specific gates, чтобы valid semantic case не использовался в неподходящем блоке; 2026-05-12 role/problem-fit update добавил block roles, problem-fit alignment, and problem-fragment evidence gate for problem-oriented blocks; 2026-05-14 v14 proof-layer update добавил proof metadata and counter-evidence gates for problem-oriented semantic cases so `СИТУАЦИЯ ДНЯ` / problem `РАЗБОР ЗВОНКА` cannot use a quote that proves the opposite of the claimed manager gap; 2026-05-14 v15 block-ready target зафиксировал, что LLM2 готовит `report_evidence.block_candidates` for `situation_day`, `call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, `tomorrow_challenge`, and `call_list_context`, while Reporting keeps deterministic final authority.
 
+**Current semantic-report update:** 2026-05-21 — SFB-1..SFB-5 implemented in
+`feature/llm2-block-ready-v15` (`73cb5cf`). `manager_daily` now uses LLM3
+narrative composers for selected report blocks while this selection model
+continues to own report-day scope, `meaningful_calls`, `coaching_core`, final
+outcome/status authority, evidence gates, and renderer eligibility. `Ситуация
+дня` is a single narrative block; `Разбор звонка` is a concrete call-turn
+breakdown and must not duplicate it; `Голос клиента` is customer-signal
+interpretation; call-list context may prefer richer `manager_visible_summary`
+when validated.
+
 ---
 
 ## A. Problem Statement
@@ -159,7 +169,8 @@ Service note должна отображать полную воронку от�
 - Колонки since Step 8AH-2: `#` / `Клиент` / `Тип / суть` / `Контекст` / `Статус`.
 - `Клиент` содержит unified client/call reference from Step 8AH-1, including date/time, so separate `Время` column is no longer rendered.
 - `Тип / суть` uses valid, non-generic `report_evidence.call_report_summary.short_topic` when available; otherwise it falls back to the deterministic `classification.call_type` / `scenario_type` label.
-- `Контекст` is selected through the Step 8AH-11E call-list context quality gate. The gate prefers useful `call_report_summary.short_context`, then specific `short_topic`, then deterministic outcome/next-step/signal fallbacks.
+- `Контекст` is selected through the Step 8AH-11E/SFB-5 call-list context quality gate. The gate now prefers useful richer context (`call_report_summary.manager_visible_summary`, valid `block_candidates.call_list_context.manager_visible_summary` / `call_list_context_rich`, or semantic-case manager-visible context), then useful `short_context`, then specific `short_topic`, then deterministic outcome/next-step/signal fallbacks.
+- The call-list table remains compact. Richer context is allowed to preserve meaning, not to turn the row into a full call breakdown.
 - The call-list context gate rejects empty, bare-dash, low-information, truncated-with-ellipsis, technical-code-like, and bad-deadline contexts such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026`.
 - For `Договорённость`, `Перенос`, `Открыт`, and sales-related `Отказ`, the renderer should not show bare `—`; if summary context is missing/weak, reporting generates a human-readable fallback.
 - Sort order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets. Within each status group, sort by call time.
@@ -196,18 +207,33 @@ Since Step 8AH-8B, candidate names/labels are rendered only if they pass the saf
 
 Since Step 8AH-2, that structural call-list layout step is complete: `Время` is merged into `Клиент` through the unified display reference.
 
+### Dialogue display contract
+
+For every manager-facing block that renders call replicas:
+- every line must show a speaker side;
+- use `Менеджер` / `Клиент` only when role attribution is reliable;
+- if attribution is uncertain, use neutral `Сторона 1` / `Сторона 2`;
+- each replica starts on a new line;
+- final PDF/DOCX/HTML rendering should style dialogue text in italic;
+- dialogue is evidence and must not be invented, paraphrased as a quote, or
+  merged into a single dense paragraph.
+
 Since Step 8AH-7, richer per-call topic/context may come from valid `report_evidence.call_report_summary`:
 - `short_topic` can fill `Тип / суть` only when specific and non-generic;
 - `short_context` can fill `Контекст` when useful;
 - broad `short_topic` values such as `Обсуждение...`, `Разговор...`, `Звонок...`, `Продажи...`, or `Холодный звонок...` fall back to deterministic type/scenario labels;
 - missing or invalid `report_evidence` falls back to the previous deterministic/legacy fields.
 
-Since Step 8AH-11E, `Контекст` is no longer a raw summary/follow-up passthrough. The quality gate chooses the first usable source:
-1. high-quality `call_report_summary.short_context`;
-2. specific `call_report_summary.short_topic` normalized as a sentence;
-3. final outcome + next step / deadline fallback;
-4. call type + customer signal fallback;
-5. safe deterministic fallback.
+Since Step 8AH-11E/SFB-5, `Контекст` is no longer a raw summary/follow-up
+passthrough. The quality gate chooses the first usable source:
+1. high-quality `call_report_summary.manager_visible_summary`;
+2. valid richer block-candidate context (`manager_visible_summary` /
+   `call_list_context_rich`);
+3. high-quality `call_report_summary.short_context`;
+4. specific `call_report_summary.short_topic` normalized as a sentence;
+5. final outcome + next step / deadline fallback;
+6. call type + customer signal fallback;
+7. safe deterministic fallback.
 
 Fallback examples:
 - `open` without a clear next step: `Контакт открыт, следующий шаг не зафиксирован.`;
@@ -423,6 +449,30 @@ Payload diagnostics:
 - rendered-row metadata.
 
 This gate does not change final outcomes, report-day call-list semantics, `data_scope`, `daily_coaching_focus`, problem wording normalization, Additional Situations quality, call-list context quality, LLM2 prompts, or the `report_evidence` contract.
+
+### Narrative report block roles
+
+Since SFB-1..SFB-5, the final manager-facing shape of several blocks is
+narrative-first, while selection and evidence checks remain deterministic:
+
+- `Ситуация дня` renders one readable `Что произошло` narrative that explains
+  the business episode and supports it with grounded replicas. It should not be
+  split into repeated visible subblocks; the structured table below is enough
+  for action/example separation.
+- `Разбор звонка` renders the concrete call story and `Ход звонка` turning
+  points. It must not repeat `Ситуацию дня` as separate conclusions such as
+  `Что не сработало` / `Как провести лучше`.
+- `Голос клиента` renders customer scenes as `Что клиент имеет в виду` and
+  `Как с этим работать`. Its purpose is interpreting the client's real signal,
+  not diagnosing the manager again.
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` may use LLM3 wording for reason/action/example
+  phrase only after deterministic inclusion has already accepted the contact.
+- `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` render as short narrative cards only when the
+  existing quality gate passes; otherwise the block is hidden.
+
+The role boundary is part of the report contract. A block that duplicates
+another block's job should be corrected in composer prompt/rendering, not by
+loosening evidence gates.
 
 Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `report_evidence v1` when it exists and passes `validate_report_evidence(scores_detail, transcript)`:
 - `СИТУАЦИЯ ДНЯ` prefers usable `report_evidence.situation_candidates`;

@@ -10,23 +10,27 @@ The MVP pipeline for a sales call is organized as eight sequential stages:
 5. **LLM-1** — run the first model pass for classification and structured extraction.
 6. **LLM-2** — run the second model pass for deeper analysis, scoring, agreements, and insights.
 7. **Persistence** — write normalized outputs to PostgreSQL with full metadata.
-8. **Delivery** — send reports or notifications to the manager and the head of sales.
+8. **Reporting / Composition** — select persisted artifacts, validate report evidence, optionally compose bounded narrative report blocks, and render report artifacts.
+9. **Delivery** — send reports or notifications to the manager and the head of sales after the required operator/review gate.
 
 Heavy stages such as download preparation, STT, and LLM processing must run asynchronously through Celery.
 
 ## AI Execution Layers
 - `STT` runs in `CallsExtractor`.
 - `LLM-1` and `LLM-2` belong to `CallsAnalyzer`.
+- `LLM-3` belongs to bounded report-block composers, not to the approved per-call analyzer contract.
 - Provider/account selection for these layers is centralized in a shared routing layer instead of being hardcoded per call site.
 
 Current MVP-1 runtime status:
 - `STT`: routed and executed through the provider router.
 - `LLM-1`: routed and executed through a separate first-pass request for classification / summary / follow-up context.
 - `LLM-2`: routed and executed through the provider router for the approved deep-analysis request.
+- `LLM-3`: routed through the provider router for optional report-composer calls over selected/grounded material. It currently supports Situation Day, Call Breakdown, Voice of Customer, Tomorrow wording, and Additional Situations narrative composition when enabled.
 - Current adapter scope is intentionally bounded:
   - `STT` has concrete runtime adapters for `assemblyai` and `openai/whisper`.
   - `LLM-1` currently runs through the OpenAI client using routed `model` + `api_base`, so other vendors require OpenAI-compatible API semantics or a future explicit adapter.
   - `LLM-2` currently runs through the OpenAI client using routed `model` + `api_base`, so other vendors require OpenAI-compatible API semantics or a future explicit adapter.
+  - `LLM-3` currently runs through the same OpenAI-compatible routing/executor pattern for report composers.
 - Current execution boundary is also intentionally explicit:
   - router selection and execution compatibility are not the same thing;
   - current runtime now enforces explicit executor-preflight compatibility guardrails so routing-valid config is not mistaken for execution-ready adapter support.
@@ -44,7 +48,8 @@ An agent is a deterministic Python module that owns one interaction workflow. It
 For the current MVP-1 progression, manager/department mapping may use a light Bitrix24 read-only path before fallback to manual pilot bootstrap. This path must stay read-only, deterministic, and compatible with the same `interactions` / `analyses` schema.
 
 ## Manual Reporting Pilot
-The next agreed MVP-1 operating mode is `Manual Reporting Pilot`.
+`Manual Reporting Pilot` is the current operating mode for manual report runs,
+but the active product milestone is now `6.5 Business-ready Report Pack`.
 
 This mode:
 - stays manual and parameter-driven;
@@ -52,6 +57,8 @@ This mode:
 - allows bounded `scheduled_reviewable_reporting` before pilot, but does not imply scheduler/retry/beat/full automation loop;
 - does not change the approved analyzer contract;
 - does not redesign the core calls pipeline.
+- supports ready-only/no-delivery previews for report-quality review before
+  business delivery.
 
 First launch parameters are expected to include:
 - one or more managers;
@@ -77,7 +84,9 @@ Delivery rules for this mode:
 
 Allowed bounded extension:
 - an optional report-composer LLM step may synthesize daily recommendations, focus summaries, weekly narratives, and interpretation blocks from already prepared artifacts.
-- this is not a new core AI layer and not an analyzer redesign.
+- in the current Business-ready Report Pack this bounded report-composer layer is called `LLM-3`;
+- this is not an analyzer redesign and does not override deterministic selection,
+  final outcomes, deadlines, report-day scope, or evidence gates.
 
 Implementation boundary for the first bounded slice:
 - reuse the existing manual/operator-driven entrypoint pattern instead of introducing scheduler-driven orchestration;
@@ -208,6 +217,7 @@ The system supports layer-specific provider pools for:
 - `STT`
 - `LLM-1`
 - `LLM-2`
+- `LLM-3`
 
 Each pool may contain multiple provider/account entries with model, timeout, retry, weight, and account alias metadata.
 

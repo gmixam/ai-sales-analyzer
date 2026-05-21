@@ -94,12 +94,9 @@ class SituationDayTemplateTests(unittest.TestCase):
 
         self.assertEqual(
             text_lines,
-            [
-                "Данных для этого блока недостаточно: не найден надежно подтвержденный "
-                "эпизод, который можно безопасно показать менеджеру."
-            ],
+            ["Нет надежно подтвержденной ситуации дня."],
         )
-        self.assertIn("Данных для этого блока недостаточно", html)
+        self.assertIn("Нет надежно подтвержденной ситуации дня.", html)
         self.assertNotIn("Суть момента", html)
         self.assertNotIn("Что произошло", html)
         self.assertNotIn("В чем ошибка менеджера", html)
@@ -114,8 +111,7 @@ class SituationDayTemplateTests(unittest.TestCase):
         pdf_bytes, _pages = report_templates._render_pdf_report(report=report, template=template)
         text = _decode_pdf_text(pdf_bytes)
 
-        self.assertIn("Данных для этого блока недостаточно", text)
-        self.assertNotIn("Нет надежно подтвержденной ситуации дня", text)
+        self.assertIn("Нет надежно подтвержденной ситуации дня.", text)
         self.assertNotIn("Фокусный этап", text)
         self.assertNotIn("Что хотел клиент", text)
         self.assertNotIn("Наша задача", text)

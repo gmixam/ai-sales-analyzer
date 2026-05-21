@@ -41,7 +41,13 @@ Expected output:
 - docs/DECISIONS.md
 - <other affected docs only>
 
+Documentation impact:
+- non-doc changes require docs/PROGRESS.md in the same changeset
+- behavior/contract/process changes require affected source-of-truth docs
+- if docs are intentionally not updated, state the exact reason in close-out
+
 ## Close-out (обязательно заполнить перед сдачей)
+- [ ] Documentation impact проверен — да / явно исключён (причина: ...)
 - [ ] PROGRESS.md обновлён — да / нет / явно исключён (причина: ...)
 - [ ] DECISIONS.md обновлён — да / нет / явно исключён (причина: ...)
 - [ ] Другие docs обновлены — перечислить / нет / явно исключено

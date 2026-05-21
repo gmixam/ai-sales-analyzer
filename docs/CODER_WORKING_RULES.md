@@ -104,6 +104,33 @@ Generated reports are verification artifacts, not source of truth.
 
 Документация проекта является рабочим слоем управления и должна обновляться вместе с существенными изменениями понимания проекта.
 
+### 5.0 Documentation impact gate
+
+После любых изменений кодер обязан сделать явную documentation-impact проверку.
+
+Минимальное правило:
+- если менялся runtime code, tests, prompt assets, scripts, hooks, infra, report renderer, report contract, selection logic или process layer, то `docs/PROGRESS.md` должен быть обновлён в том же changeset;
+- если изменение меняет standing behavior, boundary, architecture, operating rule или default role split, нужно также обновить `docs/DECISIONS.md`;
+- если изменение меняет конкретный source-of-truth слой, нужно обновить профильный документ, а не только `PROGRESS.md`.
+
+`PROGRESS.md` — это минимальный audit log, а не замена профильной документации.
+
+Профильные docs по типу изменения:
+- roadmap/current focus: `docs/ROADMAP.md`, `docs/CONTEXT_INDEX.md`, `docs/PROGRESS.md`;
+- report behavior / manager-facing contract: `docs/BUSINESS_READY_REPORT_PACK_TASKS.md`, `docs/MANAGER_DAILY_SELECTION_MODEL.md`, `docs/REPORT_EVIDENCE_CONTRACT.md`;
+- prompt behavior: `docs/PROMPTS_GUIDE.md`, relevant prompt asset docs, `docs/LLM2_MANAGER_DAILY_INSTRUCTIONS_MAP.md` when LLM2 behavior changes;
+- process / agent rules: `docs/CODER_WORKING_RULES.md`, `docs/TASK_PROMPT_TEMPLATE.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and `docs/DECISIONS.md`;
+- provider/routing/runtime architecture: `docs/AI_PROVIDER_ROUTING.md`, `docs/ARCHITECTURE.md`;
+- manual reporting operation: `docs/MANUAL_REPORTING_PILOT.md`, `docs/DEV_ONBOARDING.md` when onboarding/current-stage instructions change.
+
+Если кодер считает, что docs update не нужен, он обязан явно написать в close-out:
+- `docs impact: явно исключён`;
+- почему изменение не меняет status, behavior, contract, roadmap, prompt, process или user-facing output.
+
+Автоматический Git barrier является страховкой, а не заменой этого правила:
+- `pre-commit` и `pre-push` блокируют non-doc changes без `docs/PROGRESS.md`;
+- агент всё равно обязан обновить профильные docs вручную, когда это требуется по смыслу.
+
 ### 5.1 Когда обязательно обновлять `DECISIONS.md`
 
 Обновлять [docs/DECISIONS.md](docs/DECISIONS.md) обязательно, если:
@@ -157,6 +184,7 @@ Prompt-asset policies должны жить в [docs/PROMPTS_GUIDE.md](docs/PROM
 Каждая рабочая задача должна заканчиваться обязательным close-out.
 
 Минимальный обязательный close-out:
+- выполнена ли documentation-impact проверка;
 - обновлён ли `PROGRESS.md`;
 - обновлён ли `DECISIONS.md`;
 - какие ещё docs обновлены;

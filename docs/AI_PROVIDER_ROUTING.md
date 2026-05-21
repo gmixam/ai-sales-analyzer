@@ -32,12 +32,20 @@
 - current execution point: `_request_analysis_content()`
 - current role: actual approved deep-analysis generation path that returns the final approved analyzer contract
 
+### LLM-3
+- runtime owner: report block composer modules under `core/app/agents/calls/*_composer.py`
+- current execution points: bounded report-composer calls for Situation Day, Call Breakdown, Voice of Customer, Tomorrow wording, and Additional Situations where enabled
+- current role: manager-facing narrative composition from already selected/grounded material
+- current model in the active runtime is configured through the LLM3 provider pool; recent SFB work used `gpt-4o`
+- LLM3 is not final authority for report scope, call inclusion, status, deadlines, or facts
+
 ## Configuration model
 
 Каждый слой поддерживает свой provider pool:
 - `STT`
 - `LLM-1`
 - `LLM-2`
+- `LLM-3`
 
 Для каждого pool поддерживаются:
 - `routing_policy`
@@ -80,6 +88,12 @@
 - `AI_LLM2_FIXED_ACCOUNT_ALIAS`
 - `AI_LLM2_FORCE_ACCOUNT_ALIAS`
 
+### LLM-3
+- `AI_LLM3_ROUTING_POLICY`
+- `AI_LLM3_PROVIDERS_JSON`
+- `AI_LLM3_FIXED_ACCOUNT_ALIAS`
+- `AI_LLM3_FORCE_ACCOUNT_ALIAS`
+
 ## Supported routing policies
 
 ### `fixed`
@@ -112,6 +126,9 @@
   - legacy entry from `OPENAI_MODEL_CLASSIFY`
 - `LLM-2`:
   - legacy entry from `OPENAI_MODEL_ANALYZE`
+- `LLM-3`:
+  - legacy entry from the report-composer LLM3 settings / OpenAI-compatible pool
+  - used only when composer feature flags enable LLM3 for the block
 
 Если у слоя есть только один enabled entry, поведение остаётся effectively single-provider.
 

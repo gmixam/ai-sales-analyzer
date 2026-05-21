@@ -4,23 +4,48 @@
 Этот файл задаёт быстрый и стабильный порядок входа в задачу для ИИ-кодера.
 Использовать как стартовую точку в новой сессии.
 
-## Текущая рабочая рамка на 2026-05-15
+## Текущая рабочая рамка на 2026-05-21
 
-Сейчас активная задача относится к `LLM2 v15 semantic/report-block quality stabilization`.
+Сейчас активная задача относится к `Веха 6.5 — Business-ready Report Pack` и ветке
+`LLM2 v15 semantic/report-block quality stabilization`.
+
+Текущий runtime-факт: свежие LLM2 анализы используют
+`edo_sales_mvp1_call_analysis_v15_block_ready`, а финальный `manager_daily`
+собирается из persisted calls/analyses через ready-only/no-delivery preview для
+проверки качества до доставки бизнесу.
+
+Текущий product decision: смысловые блоки отчета должны быть менее зажаты
+жесткими micro-field/table структурами. Строгими остаются call identity,
+report-day scope, evidence grounding, counter-evidence gates, final status
+selection and no invented facts. Свободнее стали только manager-facing
+composition and rendering inside already verified blocks.
+
+Последний закрепленный changeset: `73cb5cf Improve manager daily semantic report
+blocks` на `feature/llm2-block-ready-v15`. Он закрыл SFB-1..SFB-5 и role-boundary
+pass for `Разбор звонка` / `Голос клиента`.
 
 Для этой задачи не считать `MANUAL_OUTPUT_VALIDATION_SPEC.md` текущим stage-specific source по умолчанию. Он остаётся историческим источником для старой single-call validation. Текущий вход для LLM2/report-quality задач:
 
 1. [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
 2. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
 3. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
-4. [TMP_LLM2_QUALITY_CHANGESET_AND_TEST_PLAN.md](../TMP_LLM2_QUALITY_CHANGESET_AND_TEST_PLAN.md)
-5. [review_packages/llm2_quality_docs_audit_2026-05-15.md](../review_packages/llm2_quality_docs_audit_2026-05-15.md)
+4. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md)
+5. [docs/PROGRESS.md](docs/PROGRESS.md)
 
-Текущий runtime-факт: свежие LLM2 анализы используют `edo_sales_mvp1_call_analysis_v15_block_ready`.
+Temporary plans such as `TMP_SITUATION_DAY_COMPOSER_TZ.md`,
+`docs/TEMP_LLM2_BLOCK_READY_V15_PLAN.md`, and
+`docs/TEMP_LLM2_SEMANTIC_ANALYSIS_PLAN.md` are historical implementation notes
+unless a current task explicitly reopens them.
 
-Текущий baseline для качества: persisted calls/analyses -> ready-only/no-delivery `manager_daily` payload/preview. Не использовать отсутствие сохранённых PDF/drafts как blocker для LLM2 quality comparison и не включать PDF persistence repair в этот changeset без отдельного решения.
+Текущий baseline для качества: persisted calls/analyses -> ready-only/no-delivery
+`manager_daily` payload/preview. Не использовать отсутствие сохранённых
+PDF/drafts как blocker для LLM2 quality comparison и не включать PDF persistence
+repair в этот changeset без отдельного решения.
 
-`docs/LLM2_MANAGER_DAILY_INSTRUCTIONS_MAP.md` пока читать только как inventory/historical map: он требует refresh под v15 `block_candidates` перед использованием как onboarding source.
+`docs/LLM2_MANAGER_DAILY_INSTRUCTIONS_MAP.md` обновлен как map текущих LLM2
+инструкций, но итоговый manager-facing текст по ряду блоков теперь делает LLM3
+composer/report layer. LLM2 остается per-call semantic evidence producer, not
+final report author.
 
 ## Обязательный порядок чтения
 

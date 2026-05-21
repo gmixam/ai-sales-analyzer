@@ -3,19 +3,19 @@
 `ai-sales-analyzer` — internal MVP-1 project for manual analysis and reporting over sales calls.
 
 Current stage:
-- `4.5 Manual Reporting Pilot`
+- `6.5 Business-ready Report Pack`
 
 Current focus:
-- stable manual operator run for `manager_daily` and `rop_weekly`
-- bounded reporting logic and reuse-first execution
-- safe repo baseline for continued developer work
+- LLM2 v15 `block-ready` per-call analysis for `manager_daily`
+- LLM3 narrative composers for grounded manager-facing report blocks
+- semantic quality of `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`
+- ready-only/no-delivery report previews before business delivery
 
 Current known gap:
-- `closed_with_known_verification_gap` is still open
-- the residual blocker is operational, not code-level:
-  - billable quota is not yet restored for `OPENAI_API_KEY_STT_MAIN`
-  - billable quota is not yet restored for `OPENAI_API_KEY_LLM1_MAIN`
-- do not try to "close it on the side" while doing unrelated work
+- current report-quality work is not a full automation rollout
+- generated previews may be `partial` when ready-data coverage is incomplete, even when the report-level artifact is `ready`
+- remaining active tasks are documented in `docs/PROGRESS.md` and `docs/BUSINESS_READY_REPORT_PACK_TASKS.md`
+- money / warm pipeline / challenge broad consistency work is intentionally not part of the current bounded next step unless explicitly reopened
 
 ## Start Here
 
@@ -35,13 +35,17 @@ In scope right now:
 - Manual Reporting Pilot work
 - bounded reporting/analyzer/runtime hardening
 - repo hygiene, documentation, and controlled infra steps
+- Business-ready `manager_daily` report-quality work on existing persisted calls/analyses
+- prompt/contract/render updates that improve grounded manager-facing report blocks
 
 Out of scope unless a task explicitly says otherwise:
 - scheduler / retries / beat rollout
 - automation expansion
-- broad prompt redesign
+- broad analyzer redesign
 - analyzer contract redesign
 - hidden "cleanup" changes outside the assigned bounded step
+- external CRM/money/revenue integrations
+- auto-send to business without operator review
 
 ## Quick Start
 

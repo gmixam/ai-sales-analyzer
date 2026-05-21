@@ -74,3 +74,32 @@
 - `Business-ready Report Pack` = first-priority report work before pilot;
 - second-stage report tasks не должны блокировать pilot perception layer;
 - full report mechanism upgrade остаётся separate post-pilot track.
+
+## Current Priority Update — 2026-05-21
+
+The 2026-05-19/20 report reviews showed that some report-quality work cannot be
+treated as pure layout polish: rigid micro-fields were flattening meaning in
+`Ситуация дня`, `Разбор звонка`, `Голос клиента`, and call-list context.
+
+Current first-priority work:
+- keep the accepted narrative direction for current semantic blocks;
+- refresh LLM2-ready data for one 2026-05-19 manager and rebuild a ready-only
+  `manager_daily` preview;
+- compare the fresh report artifact with the accepted semantic baseline;
+- close DDC-11 residual by making `Ситуация дня` action/examples
+  scene-specific;
+- clean legacy tests that still assert the old `Разбор звонка` table shape.
+
+Explicitly deferred from the immediate step:
+- broad evidence/action consistency for `ДЕНЬГИ НА СТОЛЕ`, warm pipeline,
+  `ЧЕЛЛЕНДЖ`, and other non-current blocks;
+- external CRM/revenue integrations;
+- full rich daily mechanism upgrade.
+
+Rule refinement:
+- If a block loses meaning because the final prompt/render shape is too rigid,
+  it may be handled inside `Business-ready Report Pack` as bounded
+  semantic/report-block work.
+- If a task requires new standing entities, external data, historical
+  aggregation, or a new coaching engine, it remains post-pilot unless explicitly
+  reopened.

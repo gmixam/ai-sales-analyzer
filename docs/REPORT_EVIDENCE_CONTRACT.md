@@ -1,7 +1,7 @@
 # Report Evidence Contract — LLM2 to Reporting Layer
 
-**Status:** design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC; `manager_daily` preferred-source wiring implemented in Step 8AD; semantic-case upgrade target added on 2026-05-12; v15 block-ready candidate target added on 2026-05-14.
-**Date:** 2026-05-14
+**Status:** active LLM2 v15 `block-ready` contract. Design target from Step 8Y; schema/validator implemented in Step 8Z; LLM2 prompt updated in Step 8AA and tightened/verified in Step 8AC; `manager_daily` preferred-source wiring implemented in Step 8AD; semantic-case upgrade target added on 2026-05-12; v15 block-ready candidate target added on 2026-05-14; narrative-block usage and `manager_visible_summary` added during SFB-1..SFB-5 on 2026-05-20/21.
+**Date:** 2026-05-21
 **Milestone:** 6.5 `Business-ready Report Pack`
 **Scope:** `manager_daily` first, reusable for weekly/future reports later.
 
@@ -28,7 +28,8 @@ The next upgrade changes the role boundary: LLM2 must produce a coherent semanti
 STT -> transcript + segments + speaker labels if available
 LLM1 -> light classification / routing / analyze-or-skip decision
 LLM2 -> deep call analysis + checklist + semantic case + report-ready evidence package
-Reporting layer -> deterministic selection, aggregation, rendering, delivery
+LLM3 -> bounded narrative composers for selected report blocks
+Reporting layer -> deterministic selection, validation, routing, rendering, delivery
 ```
 
 ### Responsibilities
@@ -50,7 +51,23 @@ Reporting layer -> deterministic selection, aggregation, rendering, delivery
 - Produces block-ready `report_evidence.block_candidates` material for suitable blocks: fit score, role, thesis, what happened, why it matters, proof, quote role, and next action.
 - Grounds semantic conclusions and evidence in transcript text or marks evidence as insufficient.
 - Does not choose which report a call belongs to.
-- Does not write final report blocks; it analyzes one call.
+- Does not write final report blocks; it analyzes one call and prepares bounded
+  evidence/summary material.
+
+**LLM3 block composers**
+- Compose selected, already-grounded evidence into manager-facing narrative
+  blocks for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`,
+  `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and eligible secondary situations.
+- Must not add, remove, reorder, or reprioritize deterministic selected calls,
+  contacts, statuses, deadlines, or report-day scope.
+- Must not invent client facts, deadlines, meetings, products, commercial value,
+  or quotes.
+- Must keep manager-facing output in Russian.
+- Must render dialogue as evidence, not as paraphrased proof. Every dialogue
+  line needs speaker side attribution; when speaker identity is uncertain, use
+  neutral side labels such as `Сторона 1` / `Сторона 2`.
+- Fail closed to deterministic/legacy fallback when the contract, grounding,
+  language, or role boundary is violated.
 
 **Reporting layer**
 - Is deterministic and is not an AI analysis layer.
@@ -58,6 +75,11 @@ Reporting layer -> deterministic selection, aggregation, rendering, delivery
 - Runs `BusinessOutcomeResolver` for final manager-facing outcome.
 - Validates and ranks `report_evidence.block_candidates`, `report_evidence.semantic_case`, and legacy `report_evidence` candidates.
 - Falls back to Step 8W legacy evidence logic when `report_evidence` is missing or invalid.
+- Owns final block eligibility, evidence gates, role boundaries and visible
+  renderer shape.
+- Keeps `Разбор звонка` from duplicating `Ситуацию дня`.
+- Keeps `Голос клиента` limited to customer-signal interpretation: what the
+  customer really means and how the manager should work with that signal.
 
 ## Additive Contract
 
@@ -162,6 +184,7 @@ Used later by `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, `КОГО ВЗЯТ�
   "call_report_summary": {
     "short_topic": "Клиент попросил счёт",
     "short_context": "Клиент готов рассмотреть ЭДО, нужно отправить счёт и уточнить сроки оплаты.",
+    "manager_visible_summary": "Клиент готов рассмотреть ЭДО, попросил счёт и оставил разговор открытым: менеджеру нужно отправить счёт, зафиксировать дату сверки и не оставлять следующий контакт неопределённым.",
     "client_display_name": "Алия",
     "client_name_confidence": "high",
     "hotness": "warm",
@@ -175,6 +198,10 @@ Used later by `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, `КОГО ВЗЯТ�
 Field intent:
 - `short_topic` — краткая суть звонка for `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, column `Тип / суть`; max `120` chars.
 - `short_context` — short manager-facing context for the call-list `Контекст`; max `280` chars.
+- `manager_visible_summary` — richer manager-facing call-list context when the
+  call needs more than a compressed `short_context`; max `640` chars. It must
+  remain concise, factual, Russian, and grounded in transcript/metadata. It is
+  preferred by the report layer before `short_context` when it passes validation.
 - `client_display_name` — name/FIO/name fragment only if explicitly present in transcript or metadata; do not invent; use `null` if uncertain.
 - `client_name_confidence` — `high|medium|low`; omit or set `null` when `client_display_name=null`.
 - `hotness` — semantic signal only: `hot|warm|low`. `rescheduled` is a final deterministic status/category, not LLM hotness.
@@ -409,7 +436,12 @@ Block keys:
 - `money_on_table` prepares commercial potential only when there is a real bridge to revenue, payment, invoice, upsell, cross-sell, or next commercial step. Do not invent money potential from generic interest or service-only calls.
 - `tomorrow_follow_up` prepares client-specific next action, why this client is worth follow-up, a recommended manager opening phrase, and the risk if there is no follow-up. Inclusion and final status remain deterministic Reporting layer decisions.
 - `tomorrow_challenge` prepares a possible skill challenge signal: the skill indicated by this call, what the manager should practice, a concrete behavior standard, and an optional example phrase. The Reporting layer aggregates across calls before choosing the final challenge.
-- `call_list_context` prepares short topic, short context, and final action hint for the daily call list. It must not use generic text such as `Обсуждение с клиентом`, invented client names, or technical fragments as business context.
+- `call_list_context` prepares short topic, short context, optional richer
+  `manager_visible_summary` / `call_list_context_rich`, and final action hint
+  for the daily call list. It must not use generic text such as `Обсуждение с
+  клиентом`, invented client names, or technical fragments as business context.
+  The richer context is allowed only when it improves the manager's
+  understanding without turning the compact table into a second call breakdown.
 
 Proof model:
 - `direct_gap` means one quote or short fragment directly proves the manager gap.
@@ -421,6 +453,24 @@ Proof model:
 - `quote_role=counter_evidence` means the quote weakens or disproves the claimed gap; a manager-gap block with such counter-evidence must not be `fit=true`.
 - A product-offer quote such as an offer to send product information is usually not `direct_gap` for a missing qualification claim. For the claim "manager did not qualify before offering product", the proof is normally `sequence_inference` or `absence_in_context`: the product-offer quote supports context, while the gap is the order of actions or the missing qualification questions.
 - `proof_type=context_support` is not enough for `fit=true` `situation_day` or problem `call_breakdown` manager-gap candidates.
+
+Narrative block usage:
+- `Ситуация дня` may use day-level LLM3 composition over selected grounded
+  scenes. The visible report should prefer one coherent `Что произошло`
+  narrative, then a compact table/action layer below it. Do not split the same
+  meaning into repeated visible subblocks.
+- `Разбор звонка` may use LLM3 `CallBreakdownComposer` v2 fields such as
+  `call_story` and `key_turning_points`. It should explain the concrete call
+  turns, not restate the Situation Day conclusion as another block.
+- `Голос клиента` may use LLM3 `VoiceOfCustomerComposer` v2
+  `customer_scenes[]`. Its goal is to say what the customer really means and
+  how the manager should work with that signal; it is not a second coaching
+  diagnosis block.
+- `Кого взять в работу завтра` may use LLM3 wording only for already accepted
+  deterministic contacts. LLM3 cannot add/remove contacts or change
+  priority/status/deadline.
+- Dialogue evidence rendered in any narrative block must be speaker-labelled
+  and line-separated; uncertain speakers use neutral side labels.
 
 ## 4. Situation Day Candidates
 

@@ -6,14 +6,21 @@
 на основе сравнения current repo версии `manager_daily` с новой версией отчёта
 (`Ежедневный_отчет_v4_ФИНАЛ.pdf`, загружена 2026-04-16).
 
-Документ является source of truth для следующих implementation tasks.
-Реализация не начата на момент фиксации документа.
+Документ является source of truth для текущих implementation tasks по
+`manager_daily` quality внутри Вехи 6.5.
+
+Первичная фиксация 2026-04-16 начиналась как presentation-layer pack. На
+2026-05-21 активная работа уже включает bounded semantic/report-block work:
+LLM2 v15 готовит per-call report evidence, LLM3 пишет отдельные narrative
+blocks, Report Layer валидирует, маршрутизирует и рендерит. Это не full
+post-pilot rich-report mechanism и не auto-delivery rollout.
 
 ## Веха и шаг
 
 - Веха roadmap: **6.5 Business-ready Report Pack**
-- Статус: task breakdown зафиксирован, реализация не начата
+- Статус: active semantic report-quality stabilization; SFB-1..SFB-5 implemented on branch `feature/llm2-block-ready-v15`
 - Зафиксировано: 2026-04-16
+- Актуализировано: 2026-05-21
 
 ## Boundary — что разрешено в этой вехе
 
@@ -26,15 +33,18 @@
 - renderer / template polish
 - consistent PDF and short delivery wrapper
 - complete and honest list-of-calls presentation
+- bounded prompt/contract/composer updates for already verified report blocks
+- LLM3 narrative composition when Report Layer keeps deterministic selection and evidence validation
 
 **Запрещено:**
-- новая reporting architecture
+- full new reporting architecture
 - redesign analyzer contract
 - новые external integrations / CRM data
 - revenue / pricing / amount logic
 - history / baseline storage
-- coaching / pattern engine
+- full coaching / pattern engine
 - full rich daily mechanism upgrade
+- auto-send to business without operator review
 
 ## Operating rule for report quality fixes
 
@@ -328,10 +338,17 @@ first 280-character `short_context`.
 
 ### Current Implementation Target
 
-SFB-1..SFB-5 are implemented. Next verification target: refresh LLM2-ready data
-for one 2026-05-19 manager after the new `manager_visible_summary` prompt/schema
-is active, then rebuild `manager_daily` and compare whether `СПИСОК ВСЕХ
-ЗВОНКОВ ДНЯ` keeps richer context without bloating the table.
+SFB-1..SFB-5 are implemented and pushed in commit `73cb5cf Improve manager daily
+semantic report blocks`.
+
+Next verification target:
+
+1. Refresh LLM2-ready data for one 2026-05-19 manager after the new
+   `manager_visible_summary` prompt/schema is active.
+2. Rebuild `manager_daily` in ready-only/no-delivery mode.
+3. Review the actual report artifact, not only diagnostics, with special focus
+   on whether `Ситуация дня` remains one readable narrative block and whether
+   `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` keeps richer context without bloating the table.
 
 Follow-up adjustment 2026-05-20: after the fresh report review, keep the same
 semantic freedom but tighten block roles:
@@ -341,6 +358,21 @@ semantic freedom but tighten block roles:
   compatibility fields remain internal.
 - `Голос клиента` is explicitly the customer-signal interpretation block:
   `Что клиент имеет в виду` and `Как с этим работать`.
+
+Follow-up adjustment 2026-05-21:
+
+- `Ситуация дня` should render as one narrative `Что произошло` block, not as
+  multiple repeated subblocks. The table below it is enough for structured
+  split.
+- Report dialogue lines must always include side attribution. If speaker role is
+  uncertain, render `Сторона 1` / `Сторона 2`; each dialogue replica starts on a
+  new line and is italic in the final report.
+- In the Situation Day table, combine `Что сделать в следующий раз` and speech
+  examples into one action/example column; do not render a separate
+  `Варианты речёвок` block title when the examples are only examples.
+- Broad consistency work for money, warm pipeline, challenge and other
+  non-current blocks is explicitly deferred and should not be mixed into the
+  next bounded verification pass unless reopened by a new task.
 
 ## Source of truth — current report layer
 
@@ -2711,7 +2743,7 @@ Some transcript scenes still label speaker context as `Контекст` instead
 
 ## Step DDC-10 — First Manager Report Polish
 
-**Status:** IN PROGRESS 2026-05-19.
+**Status:** DONE 2026-05-20 for the current visible report shape.
 
 **Goal:** make the first manager-facing report cleaner before sending it to a real manager.
 
@@ -2736,7 +2768,8 @@ Some transcript scenes still label speaker context as `Контекст` instead
 
 ## Step DDC-11 — Situation Day v2 Narrative Experiment
 
-**Status:** IN PROGRESS 2026-05-20.
+**Status:** implemented with one residual 2026-05-21: make `Как сделать лучше`
+and examples/scripts scene-specific.
 
 **Goal:** test whether `СИТУАЦИЯ ДНЯ` improves when semantic fields are
 constrained by meaning and evidence, not by a rigid report-cell structure.

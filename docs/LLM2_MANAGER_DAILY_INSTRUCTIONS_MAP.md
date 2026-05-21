@@ -2,18 +2,24 @@
 
 ## Executive summary
 
-Audit date: 2026-05-10
+Audit date: 2026-05-21
 Roadmap: 6.5 Business-ready Report Pack
-Scope: Step 8AH / pre-8AH-9 inventory before the next `manager_daily` run
+Scope: current LLM2 v15 `block-ready` inventory for `manager_daily`, after SFB-1..SFB-5 narrative report-block implementation
 
 This document maps the effective LLM2 instruction set and downstream report usage for
-`manager_daily`. It is an inventory only: no prompt, code, validator, renderer, delivery, STT,
-source discovery, `build_missing`, LLM run, or report rebuild behavior was changed in this step.
+`manager_daily`. LLM2 remains the per-call analyzer / evidence producer. It is
+not the final report author for narrative blocks; selected material can be
+composed by bounded LLM3 block composers and then validated/rendered by the
+Report Layer.
 
 Key findings:
 
 - There is one runtime LLM2 prompt for per-call analysis: `core/app/agents/calls/prompts/analyze.md`.
 - There are no separate LLM2 prompts for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, or the call list. Those blocks consume fields produced by the per-call LLM2 analysis plus deterministic reporting rules.
+- Since SFB-1..SFB-5, several visible blocks can also pass selected/validated
+  material to LLM3 composers. This does not change LLM2 ownership: LLM2
+  prepares facts/evidence; LLM3 writes bounded manager-facing narrative; Report
+  Layer validates, gates and renders.
 - The effective LLM2 instruction is the `analyze.md` system prompt plus a dynamic user JSON object from `CallsAnalyzer.build_prompt_context(...)`.
 - LLM2 output is persisted in `Analysis.scores_detail`; `report_evidence` is additive inside that JSON.
 - Normal `manager_daily` selection uses stable analysis selection from Step 8-STABLE: newest reusable stable/production analysis, excluding controlled sample / verification analyses by default.
@@ -25,7 +31,16 @@ Key findings:
 - Since Step 8AH-11C, positive/neutral problem wording from LLM2 or legacy fallback is normalized downstream before rendering. LLM2 may still emit criterion titles/comments such as “не ушёл в презентацию слишком рано”, but `manager_daily` rewrites manager-facing problem text into actionable missing behavior and exposes `problem_wording_diagnostics`.
 - Since Step 8AH-11D, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` candidates are gated downstream. LLM2 may provide `additional_situations`, but reporting renders only candidates with evidence or concrete call context, non-generic stage-specific wording, aligned title/body, and acceptable confidence.
 - Since Step 8AH-11E, call-list `Контекст` is gated downstream. LLM2 `call_report_summary.short_context` is a candidate source, but weak/truncated/technical/empty context is rejected and replaced by deterministic human-readable fallback without changing final outcomes or report-day call-list boundaries.
-- Since Step 8AH-11H, `РАЗБОР ЗВОНКА` rows are gated downstream. LLM2 `report_evidence.manager_coaching_moments` and legacy fallback can propose moments, but reporting renders only rows with confirming evidence, aligned corrective recommendations, and cleaned wording; otherwise it shows an explicit insufficient-evidence fallback for the focus stage.
+- Since Step 8AH-11H and SFB-1, `РАЗБОР ЗВОНКА` is gated downstream and now
+  prefers narrative v2 output when available. LLM2 `report_evidence` and legacy
+  fallback can propose moments, but visible rendering must show the concrete
+  call story/turning points and must not duplicate `Ситуацию дня`.
+- Since SFB-2, `ГОЛОС КЛИЕНТА` uses customer-signal scenes when available. Its
+  role is `Что клиент имеет в виду` and `Как с этим работать`, not a repeated
+  manager-gap diagnosis.
+- Since SFB-5, `call_report_summary.manager_visible_summary` is an allowed
+  richer LLM2 context field for the call list. It can be preferred before
+  `short_context` when validated and should stay compact.
 
 ## LLM2 prompt inventory
 
@@ -146,6 +161,7 @@ Expected shape:
 {
   "short_topic": "...",
   "short_context": "...",
+  "manager_visible_summary": "...",
   "client_display_name": null,
   "client_name_confidence": null,
   "hotness": "hot|warm|low",
@@ -159,6 +175,9 @@ Field instructions:
 
 - `short_topic`: short essence, max 120 chars; avoid generic labels such as `Продажи`, `Холодный звонок`, `Разговор с клиентом`.
 - `short_context`: short context, max 280 chars.
+- `manager_visible_summary`: richer compact context for the daily call list,
+  max 640 chars; use only when it preserves meaning better than
+  `short_context`, and keep it factual/grounded.
 - `client_display_name`: only explicit name/FIO/name fragment from transcript or metadata; do not invent; do not use company/generic words; if uncertain use `null`; do not include phone/date/time.
 - `client_name_confidence`: `high|medium|low` only when name is not null; otherwise null.
 - `hotness`: semantic signal only: `hot|warm|low`; never `rescheduled`, `open`, `agreed`, or `cold`.

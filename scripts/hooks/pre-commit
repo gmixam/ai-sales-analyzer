@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scripts/hooks/pre-commit
+#
+# Thin wrapper — delegates to the versioned repo script.
+# Installed into .git/hooks/pre-commit by scripts/install-git-hooks.sh.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VERSIONED_SCRIPT="$REPO_ROOT/scripts/hooks/pre-commit-check.sh"
+
+if [ ! -f "$VERSIONED_SCRIPT" ]; then
+    echo "pre-commit: versioned script not found at $VERSIONED_SCRIPT — skipping check" >&2
+    exit 0
+fi
+
+exec "$VERSIONED_SCRIPT" "$@"

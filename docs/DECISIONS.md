@@ -721,3 +721,29 @@
 - **Reason:** PM review after Step 8AH-11G found that Call Breakdown could still show missing-fragment text as a table fragment, pair a problem with a positive-only recommendation, or render punctuation/duplication artifacts. This made the block look evidence-backed when it was not.
 - **Scope:** Reporting payload/render quality gate, diagnostics, wording cleanup, and regression tests only. No analyzer prompt, STT/LLM, source discovery, `build_missing`, `report_evidence` contract/validator, outcome resolver, scoring semantics, report-day totals, call-list semantics, Step 8AH-11A data scope, Step 8AH-11B daily coaching focus, Step 8AH-11C problem normalizer, Step 8AH-11D Additional Situations quality gate, Step 8AH-11E call-list context gate, delivery semantics, scheduler, or `rop_weekly` changes.
 - **Date:** 2026-05-10
+
+## ADR-072: `manager_daily` semantic blocks may use bounded narrative composition
+- **Decision:** For selected report blocks, rigid micro-field/table output may be replaced by bounded narrative composition when the inputs are already selected, evidence-grounded, and validated.
+- **Decision:** LLM2 remains the per-call analyzer and report-evidence producer. LLM3 may compose manager-facing narrative for `Ситуация дня`, `Разбор звонка`, `Голос клиента`, follow-up wording, and eligible secondary situations, but it must not change report scope, selected calls/contacts, final statuses, deadlines, or facts.
+- **Decision:** Report Layer remains final authority for block eligibility, evidence gates, counter-evidence, speaker/quote safety, Russian manager-facing output, and renderer shape.
+- **Decision:** Dialogue rendered in report blocks must be speaker-labelled; uncertain speakers use neutral side labels such as `Сторона 1` / `Сторона 2`; each replica is rendered on a separate line and styled as quote/evidence.
+- **Reason:** Human review of 2026-05-19 manager reports showed that the report finally began to carry meaning when LLM3 was allowed to write semantically, while rigid cells were still flattening the actual situation.
+- **Scope:** `manager_daily` report-block composition and rendering only. No STT/source discovery, broad analyzer redesign, CRM/revenue integration, scheduler/retries/beat rollout, or auto-business-delivery change.
+- **Date:** 2026-05-21
+
+## ADR-073: `Разбор звонка` and `Голос клиента` have separate visible roles
+- **Decision:** `Разбор звонка` must show the selected call story and concrete call turns. It must not render a second `Ситуация дня` through extra visible conclusion blocks such as repeated `Что не сработало` / `Как провести лучше`.
+- **Decision:** `Голос клиента` must explain what the customer really means and how the manager should work with that signal. It must not turn customer signal interpretation into another manager-gap diagnosis unless the selected evidence explicitly supports that role.
+- **Decision:** `Ситуация дня` visible output should be one readable narrative block; structured action/example material can live below it without repeating the same meaning in multiple subheaders.
+- **Reason:** The 2026-05-19/20 report review found good semantic content but also duplication between Situation Day, Call Breakdown, and Voice of Customer. Clear block roles make the final report easier to read and reduce repeated advice.
+- **Scope:** Visible `manager_daily` block roles, prompts, renderer shape, and docs. No final status/outcome changes, no report-day selection changes, no money/warm-pipeline/challenge expansion in the current bounded step.
+- **Date:** 2026-05-21
+
+## ADR-074: Non-doc changes require documentation-impact handling
+- **Decision:** Every non-doc change must include a documentation-impact check before close-out. At minimum, non-doc changes require `docs/PROGRESS.md` in the same changeset unless explicitly bypassed with a named reason.
+- **Decision:** `docs/PROGRESS.md` is only the minimum audit log. If the change affects behavior, contract, prompt policy, architecture, operating model, roadmap, agent rules, or user-facing report output, the corresponding source-of-truth docs must also be updated.
+- **Decision:** Repo hooks enforce the minimum rule twice: `pre-commit` blocks staged non-doc changes without staged `docs/PROGRESS.md`, and `pre-push` blocks pushed non-doc commit ranges without `docs/PROGRESS.md`.
+- **Decision:** Hook bypasses (`--no-verify`) are allowed only as explicit intentional overrides and must be named in close-out.
+- **Reason:** The previous process relied mostly on agent discipline and a late `pre-push` check. It could still allow code/runtime/process changes to be made without immediately syncing docs, and it did not remind agents at commit time.
+- **Scope:** Process governance and Git hook barrier only. This does not change runtime behavior, report generation semantics, analyzer prompts, or delivery.
+- **Date:** 2026-05-21

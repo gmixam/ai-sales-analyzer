@@ -9,6 +9,9 @@
 #     the hook/install scripts themselves has changed
 #   - AND docs/PROGRESS.md has NOT been updated in the same commit range
 #
+# This is a minimum audit-log barrier. It does not replace the semantic
+# documentation-impact rule in docs/CODER_WORKING_RULES.md.
+#
 # Override: git push --no-verify
 
 set -euo pipefail
@@ -75,8 +78,8 @@ if [ -n "$CODE_CHANGED" ] && [ -z "$PROGRESS_CHANGED" ]; then
     echo "$CODE_CHANGED" | head -10 | sed 's/^/║    /'
     echo "║                                                                  ║"
     echo "║  Required action:                                                ║"
-    echo "║    Update docs/PROGRESS.md and include it in your commit,       ║"
-    echo "║    then push again.                                              ║"
+    echo "║    Update docs/PROGRESS.md and any affected source docs,        ║"
+    echo "║    include them in your commit, then push again.                ║"
     echo "║                                                                  ║"
     echo "║  To bypass (intentional override only):                         ║"
     echo "║    git push --no-verify                                          ║"

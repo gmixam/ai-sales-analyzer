@@ -13,6 +13,7 @@ Before starting any task:
 4. Keep scope bounded to the requested step.
 5. Do not rely on memory, prior chat assumptions, or agent-specific hidden context as source of truth.
 6. Before сдача результата, complete the close-out checklist from the task prompt.
+7. After every non-doc change, run a documentation-impact check and update `docs/PROGRESS.md` plus any affected source-of-truth docs.
 
 ## Default repo-first policy
 - Canonical context lives in `docs/`.
@@ -25,4 +26,6 @@ Before starting any task:
 - no scope creep
 - update `docs/PROGRESS.md` when project status or current working step changed
 - update `docs/DECISIONS.md` when a stable architectural or process rule changed
+- non-doc changes are not complete until documentation impact is handled
+- repo hooks block commit/push when non-doc changes omit `docs/PROGRESS.md`
 - task is not complete without close-out
