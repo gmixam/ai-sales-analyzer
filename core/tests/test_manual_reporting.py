@@ -2909,7 +2909,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "Клиент сообщил, что бюджет не заложен и договор продлевать не будут.",
         )
         self.assertEqual(sections["call_list"]["rows"][0][4], "Отказ")
-        self.assertEqual(payload["call_outcomes_summary"]["open_count"], 1)
+        self.assertEqual(payload["call_outcomes_summary"]["refusal_count"], 1)
+        self.assertEqual(payload["call_outcomes_summary"]["open_count"], 0)
+        self.assertEqual(payload["call_outcomes_summary"]["source_note"], "derived_from_call_list_display_status")
         self.assertEqual(payload["call_list_status_quality"]["llm2_status_used_count"], 1)
         self.assertEqual(payload["call_list_status_quality"]["conflict_count"], 1)
 
@@ -4325,7 +4327,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         self.assertFalse(payload["focus_of_week"]["is_placeholder"])
-        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 2)
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 1)
         self.assertEqual(payload["focus_criterion_dynamics"]["focus_criterion_name"], "Фиксация следующего шага")
         self.assertIsNotNone(payload["focus_criterion_dynamics"]["current_period_value"])
         self.assertIn("Повторяемость", payload["key_problem_of_day"]["description"])
@@ -5709,6 +5711,55 @@ class ManualReportingPayloadTests(unittest.TestCase):
             sorted(row["time"] for row in payload["call_list"][2:]),
             "rows inside the same status group must stay sorted by time",
         )
+
+    def test_call_list_sorting_uses_display_status_not_resolver_status(self) -> None:
+        agreement = _artifact(70.0, "basic", call_date="2026-05-20 10:00:00")
+        refusal = _artifact(70.0, "basic", call_date="2026-05-20 09:00:00")
+        open_call = _artifact(70.0, "basic", call_date="2026-05-20 08:00:00")
+
+        for artifact, status, topic in (
+            (agreement, "agreement", "Клиент согласовал коммерческий следующий шаг"),
+            (refusal, "refusal", "Клиент отказался"),
+            (open_call, "open", "Клиент думает"),
+        ):
+            artifact.interaction.text = (
+                "Клиент: Скиньте в WhatsApp, я посмотрю. "
+                "Менеджер: Хорошо, отправлю информацию. "
+                f"Клиент: {topic}."
+            )
+            detail = artifact.analysis.scores_detail
+            detail["follow_up"] = {
+                "next_step_fixed": False,
+                "next_step_text": "Отправить информацию клиенту.",
+            }
+            detail.update(_valid_report_evidence_detail())
+            detail["report_evidence"]["business_outcome"] = {
+                "status": status,
+                "confidence": "high",
+                "reason": topic,
+                "evidence_quote": topic,
+                "evidence_speaker": "client",
+                "needs_human_review": False,
+            }
+            detail["report_evidence"]["call_report_summary"]["short_topic"] = topic
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[open_call, refusal, agreement],
+            period={"date_from": "2026-05-20", "date_to": "2026-05-20"},
+            filters=ReportRunFilters(date_from="2026-05-20", date_to="2026-05-20"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        self.assertEqual(
+            [row["call_list_status"] for row in payload["call_list"]],
+            ["agreed", "refusal", "open"],
+        )
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 1)
+        self.assertEqual(payload["call_outcomes_summary"]["refusal_count"], 1)
+        self.assertEqual(payload["call_outcomes_summary"]["open_count"], 1)
 
     def test_step8ah8a_business_outcome_ignores_synthetic_recommendation_refusal_terms(self) -> None:
         """Step 8AH-8A: synthetic coaching text must not flip an open follow-up to refusal."""

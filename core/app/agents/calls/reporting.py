@@ -5056,12 +5056,12 @@ def build_manager_daily_payload(
         a for a in operational_day_artifacts if _classify_meaningful_call(a)[0]
     ]
     report_evidence_index = _build_report_evidence_index(artifacts=operational_meaningful_artifacts)
-    call_outcomes_summary = _build_call_outcomes_summary(artifacts=operational_meaningful_artifacts)
-    unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
     call_list = _build_meaningful_call_list(
         window_artifacts=operational_day_artifacts,
         report_evidence_index=report_evidence_index,
     )
+    call_outcomes_summary = _build_call_outcomes_summary_from_call_list(call_list=call_list)
+    unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
     call_list_context_quality = _build_call_list_context_quality_diagnostics(call_list)
     call_list_status_quality = _build_call_list_status_quality_diagnostics(call_list)
     call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
@@ -8561,12 +8561,12 @@ CALL_LIST_UNCLASSIFIED_SORT_ORDER = {
 
 def _call_list_sort_key(row: dict[str, Any]) -> tuple[int, datetime]:
     """Sort call list by manager-facing status group, then by call time."""
-    status = row.get("status")
+    status = row.get("call_list_status") if "call_list_status" in row else row.get("status")
     if status is not None:
         status_rank = CALL_LIST_STATUS_SORT_ORDER.get(str(status), 6)
     else:
         status_rank = CALL_LIST_UNCLASSIFIED_SORT_ORDER.get(
-            str(row.get("unclassified_status_label") or ""),
+            str(row.get("call_list_unclassified_status_label") or row.get("unclassified_status_label") or ""),
             6,
         )
     started_at = parse_call_started_at({"call_date": row.get("time")}) or datetime.max.replace(tzinfo=UTC)
@@ -15642,6 +15642,48 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
         "unclassified_count": unclassified,
         "unclassified_by_bucket": unclassified_by_bucket,
         "source_note": "derived_from_business_outcome_resolver",
+    }
+
+
+def _build_call_outcomes_summary_from_call_list(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build dashboard counters from the exact statuses rendered in the call table."""
+    agreed = 0
+    rescheduled = 0
+    refusal = 0
+    open_count = 0
+    tech_service = 0
+    unclassified = 0
+    unclassified_by_bucket: dict[str, int] = {}
+    for row in call_list:
+        status = row.get("call_list_status") if "call_list_status" in row else row.get("status")
+        if status is None:
+            unclassified += 1
+            bucket = str(
+                row.get("call_list_unclassified_status_label")
+                or row.get("unclassified_status_label")
+                or UNCLASSIFIED_MANAGER_STATUS_LABELS["unknown"]
+            )
+            unclassified_by_bucket[bucket] = unclassified_by_bucket.get(bucket, 0) + 1
+            continue
+        if status == "tech_service":
+            tech_service += 1
+        elif status == "agreed":
+            agreed += 1
+        elif status == "rescheduled":
+            rescheduled += 1
+        elif status == "refusal":
+            refusal += 1
+        else:
+            open_count += 1
+    return {
+        "agreed_count": agreed,
+        "rescheduled_count": rescheduled,
+        "refusal_count": refusal,
+        "open_count": open_count,
+        "tech_service_count": tech_service,
+        "unclassified_count": unclassified,
+        "unclassified_by_bucket": unclassified_by_bucket,
+        "source_note": "derived_from_call_list_display_status",
     }
 
 
