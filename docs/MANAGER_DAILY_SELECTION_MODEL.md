@@ -170,7 +170,11 @@ Service note должна отображать полную воронку от�
 - `Клиент` содержит unified client/call reference from Step 8AH-1, including date/time, so separate `Время` column is no longer rendered.
 - `Тип / суть` uses valid, non-generic `report_evidence.call_report_summary.short_topic` when available; otherwise it falls back to the deterministic `classification.call_type` / `scenario_type` label.
 - `Контекст` is selected through the Step 8AH-11E/SFB-5 call-list context quality gate. The gate now prefers useful richer context (`call_report_summary.manager_visible_summary`, valid `block_candidates.call_list_context.manager_visible_summary` / `call_list_context_rich`, or semantic-case manager-visible context), then useful `short_context`, then specific `short_topic`, then deterministic outcome/next-step/signal fallbacks.
-- The call-list table remains compact. Richer context is allowed to preserve meaning, not to turn the row into a full call breakdown.
+- The call-list table remains compact. Richer context is preserved in payload as
+  `call_list_context_rich` / `manager_visible_summary`, but the visible
+  `call_list_context` rendered in PDF/email is one compact phrase with a
+  `150` character limit. Rich context is allowed to preserve meaning, not to
+  turn the row into a full call breakdown.
 - The call-list context gate rejects empty, bare-dash, low-information, truncated-with-ellipsis, technical-code-like, and bad-deadline contexts such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026`.
 - For `Договорённость`, `Перенос`, `Открыт`, and sales-related `Отказ`, the renderer should not show bare `—`; if summary context is missing/weak, reporting generates a human-readable fallback.
 - Sort order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets. Within each status group, sort by call time.
@@ -225,7 +229,7 @@ Since Step 8AH-7, richer per-call topic/context may come from valid `report_evid
 - missing or invalid `report_evidence` falls back to the previous deterministic/legacy fields.
 
 Since Step 8AH-11E/SFB-5, `Контекст` is no longer a raw summary/follow-up
-passthrough. The quality gate chooses the first usable source:
+passthrough. The quality gate chooses the first usable rich source:
 1. high-quality `call_report_summary.manager_visible_summary`;
 2. valid richer block-candidate context (`manager_visible_summary` /
    `call_list_context_rich`);
@@ -234,6 +238,11 @@ passthrough. The quality gate chooses the first usable source:
 5. final outcome + next step / deadline fallback;
 6. call type + customer signal fallback;
 7. safe deterministic fallback.
+
+After source selection, the visible table context is compacted to one sentence.
+The full selected text remains available in `call_list_context_rich`; diagnostics
+expose `compacted_context_count`, `visible_context_limit`, and
+`max_visible_context_length`.
 
 Fallback examples:
 - `open` without a clear next step: `Контакт открыт, следующий шаг не зафиксирован.`;

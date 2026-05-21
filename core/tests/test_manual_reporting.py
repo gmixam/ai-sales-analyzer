@@ -3147,8 +3147,11 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
         self.assertEqual(row["call_list_context_source"], "report_evidence.call_report_summary.manager_visible_summary")
         self.assertEqual(payload["call_list_context_quality"]["manager_visible_summary_count"], 1)
+        self.assertEqual(payload["call_list_context_quality"]["compacted_context_count"], 1)
         self.assertIn("покажет их коллегам", row["call_list_context"])
-        self.assertIn("Дата возврата", rendered_context)
+        self.assertIn("Дата возврата", row["call_list_context_rich"])
+        self.assertNotIn("Дата возврата", rendered_context)
+        self.assertLessEqual(len(rendered_context), 150)
         self.assertNotIn("кол…", rendered_context)
 
     def test_step8ah11e_call_list_context_fallbacks_avoid_bare_dash_for_sales_rows(self) -> None:

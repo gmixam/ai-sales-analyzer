@@ -3072,6 +3072,62 @@ class ManualReportingPayloadTests(unittest.TestCase):
             any(item["reason"] == "truncated_context" for item in row["call_list_context_rejected"])
         )
 
+    def test_sfb5_call_list_prefers_manager_visible_summary_over_truncated_short_context(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:30:00")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию. "
+            "Клиент: Давайте вернёмся после того, как я покажу коллегам."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент попросил материалы и обсуждение с коллегами",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["business_outcome"] = {
+            "status": "open",
+            "confidence": "high",
+            "reason": "Клиент попросил материалы и не зафиксировал дату возврата.",
+            "evidence_quote": "Скиньте в WhatsApp, я посмотрю.",
+            "evidence_speaker": "client",
+            "needs_human_review": False,
+        }
+        detail["report_evidence"]["call_report_summary"]["short_context"] = "Клиент попросил материалы и хочет обсудить с кол…"
+        detail["report_evidence"]["call_report_summary"]["manager_visible_summary"] = (
+            "Клиент попросил отправить материалы в WhatsApp и сказал, что покажет их коллегам. "
+            "Дата возврата к обсуждению в звонке не закреплена, поэтому контакт остаётся открытым. "
+            "Менеджеру важно отправить материалы и отдельно согласовать, когда вернуться к решению."
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        row = payload["call_list"][0]
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        rendered_context = sections["call_list"]["rows"][0][3]
+
+        self.assertEqual(payload["call_list_context_quality"]["status"], "passed")
+        self.assertEqual(row["call_list_context_source"], "report_evidence.call_report_summary.manager_visible_summary")
+        self.assertEqual(payload["call_list_context_quality"]["manager_visible_summary_count"], 1)
+        self.assertEqual(payload["call_list_context_quality"]["compacted_context_count"], 1)
+        self.assertIn("покажет их коллегам", row["call_list_context"])
+        self.assertIn("Дата возврата", row["call_list_context_rich"])
+        self.assertNotIn("Дата возврата", rendered_context)
+        self.assertLessEqual(len(rendered_context), 150)
+        self.assertNotIn("кол…", rendered_context)
+
     def test_step8ah11e_call_list_context_fallbacks_avoid_bare_dash_for_sales_rows(self) -> None:
         agreed = _artifact(64.0, "basic", call_date="2026-05-04 09:00:00")
         agreed.interaction.text = "Клиент: Выставляйте счёт. Менеджер: Отправлю счёт."

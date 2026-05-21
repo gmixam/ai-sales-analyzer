@@ -8906,6 +8906,7 @@ CALL_LIST_CONTEXT_TECHNICAL_PATTERNS = (
     "-> до",
 )
 CALL_LIST_CONTEXT_LOW_INFO = {"—", "-", "нет", "да", "перезвон", "созвон", "дальше", "позже"}
+CALL_LIST_VISIBLE_CONTEXT_LIMIT = 150
 CALL_LIST_RELATIVE_PERIOD_PREFIXES = (
     "после ",
     "на этой ",
@@ -8981,6 +8982,17 @@ def _call_list_context_paragraph(value: Any, *, limit: int = 420) -> str | None:
     if not text:
         return None
     return None if _call_list_context_reject_reason(text) else text
+
+
+def _compact_call_list_visible_context(value: Any) -> str:
+    """Return one compact sentence for the manager-facing call-list table."""
+    text = _summary_text(value, limit=CALL_LIST_VISIBLE_CONTEXT_LIMIT)
+    if text and not _call_list_context_reject_reason(text):
+        return text
+    fallback = _summary_text(value, limit=110)
+    if fallback and not _call_list_context_reject_reason(fallback):
+        return fallback
+    return "Контекст звонка требует уточнения по сохранённым данным."
 
 
 def _call_list_context_from_block_candidate(report_evidence: dict[str, Any] | None) -> dict[str, str] | None:
@@ -9178,6 +9190,8 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
     rejected: list[dict[str, Any]] = []
     source_counts: dict[str, int] = {}
     fallback_generated_count = 0
+    compacted_count = 0
+    max_visible_context_length = 0
     bare_retained: list[dict[str, Any]] = []
     final_failures: list[dict[str, Any]] = []
     for row in call_list:
@@ -9185,6 +9199,12 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
         source_counts[source] = source_counts.get(source, 0) + 1
         if source == "deterministic_context_quality_gate":
             fallback_generated_count += 1
+        if row.get("call_list_context_compacted"):
+            compacted_count += 1
+        max_visible_context_length = max(
+            max_visible_context_length,
+            len(str(row.get("call_list_context") or "")),
+        )
         final_reason = _call_list_context_reject_reason(row.get("call_list_context"))
         if final_reason:
             final_failures.append(
@@ -9223,6 +9243,9 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
         "call_report_summary_context_count": source_counts.get("report_evidence.call_report_summary.short_context", 0),
         "call_report_summary_topic_count": source_counts.get("report_evidence.call_report_summary.short_topic", 0),
         "fallback_generated_count": fallback_generated_count,
+        "compacted_context_count": compacted_count,
+        "visible_context_limit": CALL_LIST_VISIBLE_CONTEXT_LIMIT,
+        "max_visible_context_length": max_visible_context_length,
         "bare_context_retained_count": len(bare_retained),
         "bare_context_retained": bare_retained,
         "final_failure_count": len(final_failures),
@@ -9652,6 +9675,8 @@ def _build_daily_call_row(
         unclassified_status_label=call_list_unclassified_status_label,
         unclassified_context_label=call_list_unclassified_context_label,
     )
+    rich_context = str(context_selection["context"] or "").strip()
+    visible_context = _compact_call_list_visible_context(rich_context)
     call_list_status_conflict = (
         call_list_status_selection["source"] == "report_evidence.business_outcome"
         and call_list_status != status
@@ -9700,9 +9725,12 @@ def _build_daily_call_row(
         "call_report_summary_short_context": summary_context,
         "call_report_summary_manager_visible_summary": summary_manager_visible,
         "call_list_topic": summary_topic if topic_used else None,
-        "call_list_context": context_selection["context"],
-        "call_list_context_rich": context_selection["context"],
-        "manager_visible_summary": context_selection["context"],
+        "call_list_context": visible_context,
+        "call_list_context_rich": rich_context,
+        "manager_visible_summary": rich_context,
+        "call_list_context_compacted": visible_context != rich_context,
+        "call_list_context_visible_length": len(visible_context),
+        "call_list_context_rich_length": len(rich_context),
         "call_list_topic_source": "report_evidence.call_report_summary.short_topic" if topic_used else "deterministic_fallback",
         "call_list_context_source": context_selection["source"],
         "call_list_context_quality": {
