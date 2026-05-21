@@ -117,6 +117,10 @@ previews, а business delivery выполняется только после я
 - default `preview_only` / `--no-delivery` builds the artifact/render preview without Telegram and without business email;
 - Telegram test delivery is attempted only when explicitly enabled;
 - business email delivery is attempted only when explicitly enabled and remains forced off for incomplete / `review_required` manager-facing reports;
+- business email body must contain only a short summary and delivery note; the
+  full report must be available only as the attached PDF artifact;
+- business email attachment filenames and subjects should use Russian
+  manager-facing labels, not internal template/group identifiers;
 - for `scheduled_reviewable_reporting`, automatic generation stops at `review_required` and does not auto-send business email;
 - business delivery on scheduled runs is counted only after explicit operator approve;
 - pilot preview success is counted by final PDF artifact availability; delivery-channel success is tracked separately per enabled channel;

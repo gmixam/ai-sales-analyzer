@@ -5890,7 +5890,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("rop_tasks_next_week", payload)
         self.assertIn(payload["week_over_week_dynamics"]["trend"], {"n/a", "up", "down", "flat"})
 
-    def test_render_report_email_uses_delivery_meta_subject(self) -> None:
+    def test_render_report_email_uses_short_body_and_pdf_attachment(self) -> None:
         payload = build_manager_daily_payload(
             department_id=str(uuid4()),
             department_name="Отдел продаж",
@@ -5903,14 +5903,21 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         rendered = render_report_email(payload)
 
-        self.assertIn("Ежедневный разбор звонков", rendered["subject"])
-        self.assertIn("СИТУАЦИЯ ДНЯ", rendered["text"])
+        self.assertIn("Ежедневный отчет по звонкам", rendered["subject"])
+        self.assertIn("Ежедневный отчет -", rendered["artifact"]["filename"])
+        self.assertTrue(rendered["artifact"]["filename"].endswith(".pdf"))
+        self.assertIn("Полный отчет - в PDF-файле во вложении.", rendered["text"])
+        self.assertIn("Кратко по дню", rendered["text"])
+        self.assertIn("Содержательных звонков", rendered["text"])
+        self.assertNotIn("СИТУАЦИЯ ДНЯ", rendered["text"])
+        self.assertNotIn("РАЗБОР ЗВОНКА", rendered["text"])
+        self.assertNotIn("СПИСОК ВСЕХ ЗВОНКОВ ДНЯ", rendered["text"])
         self.assertIn("<html>", rendered["html"])
-        self.assertIn("ДЕНЬГИ НА СТОЛЕ", rendered["html"])
-        self.assertIn("PIPELINE ТЁПЛЫХ ЛИДОВ", rendered["html"])
+        self.assertNotIn("ДЕНЬГИ НА СТОЛЕ", rendered["html"])
+        self.assertNotIn("PIPELINE ТЁПЛЫХ ЛИДОВ", rendered["html"])
         self.assertNotIn("ЧЕЛЛЕНДЖ НА ЗАВТРА", rendered["html"])
-        self.assertIn("СВОДНАЯ ТАБЛИЦА ЗВОНКОВ", rendered["html"])
-        self.assertIn("УТРЕННЯЯ КАРТОЧКА", rendered["html"])
+        self.assertNotIn("СВОДНАЯ ТАБЛИЦА ЗВОНКОВ", rendered["html"])
+        self.assertNotIn("УТРЕННЯЯ КАРТОЧКА", rendered["html"])
         self.assertNotIn("КЛЮЧЕВАЯ ПРОБЛЕМА ДНЯ", rendered["html"])
         self.assertNotIn("РЕКОМЕНДАЦИИ", rendered["html"])
         self.assertNotIn("ПАМЯТКА", rendered["html"])
@@ -5927,6 +5934,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["template_version"], "manager_daily_template_v2")
         self.assertEqual(rendered["artifact"]["render_variant"], "template_pdf_manager_daily_template_v2")
         self.assertEqual(rendered["artifact"]["generator_path"], "app.agents.calls.report_templates.render_report_artifact")
+        self.assertIn("СИТУАЦИЯ ДНЯ", rendered["report_text"])
+        self.assertIn("ДЕНЬГИ НА СТОЛЕ", rendered["report_html"])
         ordered_labels = [
             "ШАПКА",
             "СВОДНАЯ ТАБЛИЦА ЗВОНКОВ",
@@ -5940,7 +5949,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ",
             "УТРЕННЯЯ КАРТОЧКА",
         ]
-        positions = [rendered["html"].index(f">{label}</div>") for label in ordered_labels]
+        positions = [rendered["report_html"].index(f">{label}</div>") for label in ordered_labels]
         self.assertEqual(positions, sorted(positions))
 
     def test_canonical_verification_bundle_renders_rich_same_payload_report(self) -> None:
@@ -5961,10 +5970,11 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("insufficient data", rendered["text"].lower())
         self.assertNotIn("preview shell", rendered["text"].lower())
         self.assertGreaterEqual(rendered["artifact"]["page_count"], 6)
-        self.assertIn("0:10", rendered["text"])
-        self.assertIn("10:30", rendered["text"])
-        self.assertIn("~180 000 тенге", rendered["text"])
-        self.assertIn("Что имел в виду", rendered["text"])
+        self.assertIn("0:10", rendered["report_text"])
+        self.assertIn("10:30", rendered["report_text"])
+        self.assertIn("~180 000 тенге", rendered["report_text"])
+        self.assertIn("Что имел в виду", rendered["report_text"])
+        self.assertNotIn("Что имел в виду", rendered["text"])
 
     def test_render_report_email_prefers_docx_first_when_requested(self) -> None:
         payload = build_manager_daily_payload(

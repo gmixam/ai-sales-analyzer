@@ -747,3 +747,12 @@
 - **Reason:** The previous process relied mostly on agent discipline and a late `pre-push` check. It could still allow code/runtime/process changes to be made without immediately syncing docs, and it did not remind agents at commit time.
 - **Scope:** Process governance and Git hook barrier only. This does not change runtime behavior, report generation semantics, analyzer prompts, or delivery.
 - **Date:** 2026-05-21
+
+## ADR-075: Business email body is a short summary; full report is PDF-only
+- **Decision:** Business email delivery for report artifacts must not duplicate the full manager/ROP report in the email body. The full report is delivered only as the attached PDF.
+- **Decision:** Email `text` and `html` bodies are short delivery summaries: greeting, report/date context, compact bullet summary, and a note that the full report is in the PDF attachment.
+- **Decision:** Full rendered report text/html may remain available as internal `report_text` / `report_html` preview/debug fields, but those fields are not used as the business email body.
+- **Decision:** PDF attachment filenames and email subjects should be manager-facing Russian labels, for example `Ежедневный отчет - <manager> - <date>.pdf` and `Ежедневный отчет по звонкам - <manager> - <date>`.
+- **Reason:** Reports sent through the UI were delivered to managers by email, and the body duplicated the full report. This made the email noisy and made the PDF less clearly the canonical artifact.
+- **Scope:** Report artifact rendering and business email payload only. No change to report selection, analysis, PDF content, Telegram delivery, scheduler, or recipient resolution.
+- **Date:** 2026-05-21

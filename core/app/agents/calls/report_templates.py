@@ -100,13 +100,14 @@ def render_report_artifact(payload: dict[str, Any], *, prefer_docx_first: bool =
         )
     else:
         pdf_bytes, page_count = _render_pdf_report(report=report, template=template)
-    safe_group_key = str(payload["meta"].get("group_key") or template.template_id).replace(":", "_")
-    filename = f"{safe_group_key}_{template.version}.pdf"
-    subject = str(payload["delivery_meta"]["email_subject"])
+    email_summary = _build_report_email_summary(payload=payload, report=report, template=template)
+    filename = _build_report_pdf_filename(payload=payload, template=template)
     return {
-        "subject": subject,
-        "text": text,
-        "html": html_doc,
+        "subject": email_summary["subject"],
+        "text": email_summary["text"],
+        "html": email_summary["html"],
+        "report_text": text,
+        "report_html": html_doc,
         "template": {
             "preset": template.preset,
             "version": template.version,
@@ -148,6 +149,186 @@ def build_report_render_model(payload: dict[str, Any]) -> dict[str, Any]:
         "generator_path": REPORT_RENDER_GENERATOR_PATH,
     }
     return _build_render_model(payload=payload, template=template)
+
+
+_MONTH_FULL_RU = [
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+]
+
+
+def _format_report_date_ru(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", text)
+    if not match:
+        return text
+    year = int(match.group(1))
+    month = int(match.group(2))
+    day = int(match.group(3))
+    month_label = _MONTH_FULL_RU[month - 1] if 1 <= month <= 12 else str(month)
+    return f"{day} {month_label} {year}"
+
+
+def _format_report_period_ru(period: dict[str, Any]) -> str:
+    date_from = str(period.get("date_from") or "").strip()
+    date_to = str(period.get("date_to") or "").strip()
+    if date_from and date_from == date_to:
+        return _format_report_date_ru(date_from)
+    if date_from and date_to:
+        return f"{_format_report_date_ru(date_from)} - {_format_report_date_ru(date_to)}"
+    return _format_report_date_ru(date_from or date_to)
+
+
+def _sanitize_filename_part(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip() or fallback
+    text = re.sub(r'[\\/:*?"<>|]+', " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text[:120] or fallback
+
+
+def _build_report_pdf_filename(*, payload: dict[str, Any], template: ReportTemplate) -> str:
+    header = dict(payload.get("header") or {})
+    period = dict((payload.get("meta") or {}).get("period") or {})
+    period_label = _sanitize_filename_part(_format_report_period_ru(period), fallback="период")
+    if template.preset == "manager_daily":
+        manager_name = _sanitize_filename_part(header.get("manager_name"), fallback="менеджер")
+        return f"Ежедневный отчет - {manager_name} - {period_label}.pdf"
+    if template.preset == "rop_weekly":
+        department_name = _sanitize_filename_part(header.get("department_name"), fallback="отдел продаж")
+        return f"Еженедельный отчет РОП - {department_name} - {period_label}.pdf"
+    preset = _sanitize_filename_part(template.preset, fallback="отчет")
+    return f"Отчет - {preset} - {period_label}.pdf"
+
+
+def _build_report_email_summary(*, payload: dict[str, Any], report: dict[str, Any], template: ReportTemplate) -> dict[str, str]:
+    if template.preset == "manager_daily":
+        return _build_manager_daily_email_summary(payload=payload, report=report)
+    if template.preset == "rop_weekly":
+        return _build_rop_weekly_email_summary(payload=payload, report=report)
+    subject = str(payload.get("delivery_meta", {}).get("email_subject") or report.get("title") or "Отчет")
+    text = "\n".join(
+        [
+            "Добрый день.",
+            "",
+            "Полный отчет находится в PDF-файле во вложении.",
+        ]
+    )
+    return {"subject": subject, "text": text, "html": _simple_email_html(subject=subject, paragraphs=["Полный отчет находится в PDF-файле во вложении."], bullets=[])}
+
+
+def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[str, Any]) -> dict[str, str]:
+    header = dict(payload.get("header") or {})
+    period = dict((payload.get("meta") or {}).get("period") or {})
+    outcomes = dict(payload.get("call_outcomes_summary") or {})
+    selection = dict(payload.get("selection_model") or {})
+    manager_name = str(header.get("manager_name") or "менеджер").strip()
+    date_label = _format_report_period_ru(period) or str(header.get("report_date") or "").strip()
+    total_calls = selection.get("meaningful_calls_total") or (payload.get("kpi_overview") or {}).get("calls_count") or 0
+    contacts_count = len(((payload.get("call_tomorrow") or {}).get("contacts") or []))
+    focus = _manager_daily_focus_summary(report)
+    subject = f"Ежедневный отчет по звонкам - {manager_name} - {date_label}"
+    greeting_name = manager_name.split()[0] if manager_name else ""
+    greeting = f"Добрый день, {greeting_name}." if greeting_name else "Добрый день."
+    bullets = [
+        f"Содержательных звонков: {total_calls}",
+        f"Договоренности: {_manager_reader_value(outcomes.get('agreed_count'), '0')}",
+        f"Переносы: {_manager_reader_value(outcomes.get('rescheduled_count'), '0')}",
+        f"Отказы: {_manager_reader_value(outcomes.get('refusal_count'), '0')}",
+        f"Открытые контакты: {_manager_reader_value(outcomes.get('open_count'), '0')}",
+        f"Фокус: {focus}",
+        f"На завтра: {contacts_count} клиентов в работу",
+    ]
+    text = "\n".join(
+        [
+            greeting,
+            "",
+            f"Во вложении ежедневный отчет по звонкам за {date_label}.",
+            "",
+            "Кратко по дню:",
+            *[f"- {item}" for item in bullets],
+            "",
+            "Полный отчет - в PDF-файле во вложении.",
+        ]
+    )
+    html_body = _simple_email_html(
+        subject="Ежедневный отчет по звонкам",
+        paragraphs=[greeting, f"Во вложении ежедневный отчет по звонкам за {date_label}."],
+        bullets=bullets,
+        closing="Полный отчет - в PDF-файле во вложении.",
+    )
+    return {"subject": subject, "text": text, "html": html_body}
+
+
+def _manager_daily_focus_summary(report: dict[str, Any]) -> str:
+    section = next((item for item in report.get("sections") or [] if item.get("id") == "main_focus_for_tomorrow"), {})
+    coaching_view = dict(section.get("coaching_view") or {})
+    if _situation_day_is_insufficient(coaching_view):
+        return "нет надежно подтвержденной ситуации дня"
+    return (
+        str(coaching_view.get("pattern_title") or "").strip()
+        or str(section.get("situation_title") or "").strip()
+        or "фокус указан в приложенном отчете"
+    )
+
+
+def _build_rop_weekly_email_summary(*, payload: dict[str, Any], report: dict[str, Any]) -> dict[str, str]:
+    header = dict(payload.get("header") or {})
+    period = dict((payload.get("meta") or {}).get("period") or {})
+    department_name = str(header.get("department_name") or "отдел продаж").strip()
+    period_label = _format_report_period_ru(period) or str(header.get("week_label") or "").strip()
+    rows = list(payload.get("dashboard_rows") or [])
+    dynamics = dict(payload.get("week_over_week_dynamics") or {})
+    score = (payload.get("team_score") or {}).get("score") or (payload.get("team_score") or {}).get("value")
+    subject = f"Еженедельный отчет РОП - {department_name} - {period_label}"
+    bullets = [
+        f"Период: {period_label}",
+        f"Менеджеров в отчете: {len(rows)}",
+        f"Средний результат команды: {_manager_reader_value(score, 'нет данных')}",
+        f"Динамика: {_manager_reader_value(dynamics.get('trend'), 'нет данных')}",
+    ]
+    text = "\n".join(
+        [
+            "Добрый день.",
+            "",
+            f"Во вложении еженедельный отчет РОП по отделу {department_name}.",
+            "",
+            "Кратко:",
+            *[f"- {item}" for item in bullets],
+            "",
+            "Полный отчет - в PDF-файле во вложении.",
+        ]
+    )
+    html_body = _simple_email_html(
+        subject="Еженедельный отчет РОП",
+        paragraphs=["Добрый день.", f"Во вложении еженедельный отчет РОП по отделу {department_name}."],
+        bullets=bullets,
+        closing="Полный отчет - в PDF-файле во вложении.",
+    )
+    return {"subject": subject, "text": text, "html": html_body}
+
+
+def _simple_email_html(*, subject: str, paragraphs: list[str], bullets: list[str], closing: str | None = None) -> str:
+    paragraphs_html = "".join(f"<p>{html.escape(item)}</p>" for item in paragraphs if str(item).strip())
+    bullets_html = "".join(f"<li>{html.escape(item)}</li>" for item in bullets)
+    closing_html = f"<p>{html.escape(closing)}</p>" if closing else ""
+    return (
+        "<html><head><meta charset=\"utf-8\"></head><body>"
+        f"<h2>{html.escape(subject)}</h2>"
+        f"{paragraphs_html}"
+        + (f"<ul>{bullets_html}</ul>" if bullets_html else "")
+        + f"{closing_html}"
+        "</body></html>"
+    )
 
 
 def _situation_day_value(coaching_view: dict[str, Any], *keys: str, fallback: str = "Нет данных") -> str:

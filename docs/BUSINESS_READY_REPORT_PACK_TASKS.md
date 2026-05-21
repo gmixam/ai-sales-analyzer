@@ -374,6 +374,15 @@ Follow-up adjustment 2026-05-21:
   non-current blocks is explicitly deferred and should not be mixed into the
   next bounded verification pass unless reopened by a new task.
 
+Delivery adjustment 2026-05-21:
+
+- Business email body is no longer a full report render. It must be a short
+  summary only, while the full report remains in the attached PDF.
+- PDF filenames and email subjects use Russian manager-facing labels rather
+  than internal group/template identifiers.
+- Internal full render text/html may still exist for preview/debug as
+  `report_text` / `report_html`, but delivery uses the short summary body.
+
 ## Source of truth — current report layer
 
 | Роль | Файл |
