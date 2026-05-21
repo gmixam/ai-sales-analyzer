@@ -120,6 +120,46 @@ NEXT_STEP_CLAIM_LOCAL_MARKERS = (
     "в этом фрагменте",
     "в выбранном фрагменте",
 )
+AGREEMENT_COMMERCIAL_SIGNAL_TERMS = (
+    "выставить счет",
+    "выставить счёт",
+    "выставляйте счет",
+    "выставляйте счёт",
+    "счет на оплат",
+    "счёт на оплат",
+    "счет выстав",
+    "счёт выстав",
+    "оплат",
+    "кп",
+    "коммерческое предложение",
+    "договор",
+    "подпис",
+    "подключ",
+    "демо",
+    "презентац",
+    "встреч",
+    "zoom",
+    "зум",
+)
+AGREEMENT_NEXT_CONTACT_TERMS = (
+    "созвон",
+    "встреч",
+    "демо",
+    "обсуд",
+    "пройтись",
+    "разобрать",
+)
+AGREEMENT_WEAK_ONLY_TERMS = (
+    "скиньте",
+    "отправьте",
+    "отправить материал",
+    "на whatsapp",
+    "на ватсап",
+    "посмотрю",
+    "подумаем",
+    "посовет",
+    "напишите",
+)
 UNCLASSIFIED_REASON_LABELS = {
     "no_transcript": "Нет транскрипта",
     "no_analysis": "Нет готового анализа",
@@ -5298,6 +5338,7 @@ def build_manager_daily_payload(
     unclassified_breakdown = _build_unclassified_breakdown(artifacts=operational_meaningful_artifacts)
     call_list_context_quality = _build_call_list_context_quality_diagnostics(call_list)
     call_list_status_quality = _build_call_list_status_quality_diagnostics(call_list)
+    agreement_outcome_diagnostics = _build_agreement_outcome_diagnostics(call_list)
     call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
     coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
         artifacts=artifacts,
@@ -5699,6 +5740,7 @@ def build_manager_daily_payload(
         "unclassified_breakdown": unclassified_breakdown,
         "call_list_context_quality": call_list_context_quality,
         "call_list_status_quality": call_list_status_quality,
+        "agreement_outcome_diagnostics": agreement_outcome_diagnostics,
         "manager_facing_completeness": manager_facing_completeness,
         "score_by_stage": score_by_stage,
         "situation_evidence_quote": situation_evidence_quote,
@@ -9225,6 +9267,68 @@ def _build_call_list_status_quality_diagnostics(call_list: list[dict[str, Any]])
     }
 
 
+def _build_agreement_outcome_diagnostics(call_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare all agreement-like signals that feed manager-facing call status."""
+    rows: list[dict[str, Any]] = []
+    mismatch_count = 0
+    downgraded_llm2_agreement_count = 0
+    display_agreed_without_extraction_count = 0
+    for row in call_list:
+        resolver_status = row.get("resolver_status")
+        llm2_status = row.get("llm2_business_outcome_status")
+        display_status = row.get("call_list_status")
+        fallback_reason = str(row.get("call_list_status_fallback_reason") or "").strip() or None
+        extraction = _agreement_extraction_from_call_row(row)
+        agreement_like = (
+            resolver_status == "agreed"
+            or llm2_status == "agreement"
+            or display_status == "agreed"
+            or extraction["has_explicit_agreement"]
+        )
+        if not agreement_like:
+            continue
+        if len({str(item) for item in (resolver_status, llm2_status, display_status) if item}) > 1:
+            mismatch_count += 1
+        if fallback_reason == "llm2_agreement_without_explicit_commercial_step":
+            downgraded_llm2_agreement_count += 1
+        if display_status == "agreed" and not extraction["has_explicit_agreement"]:
+            display_agreed_without_extraction_count += 1
+        rows.append(
+            {
+                "interaction_id": row.get("interaction_id"),
+                "client_call_reference": row.get("client_call_reference"),
+                "resolver_status": resolver_status,
+                "resolver_reason_code": row.get("resolver_reason_code"),
+                "llm2_business_outcome_status": llm2_status,
+                "llm2_business_outcome_confidence": row.get("llm2_business_outcome_confidence"),
+                "call_list_status": display_status,
+                "call_list_status_source": row.get("call_list_status_source"),
+                "call_list_status_fallback_reason": fallback_reason,
+                "agreement_extraction": extraction,
+            }
+        )
+    status = (
+        "warning"
+        if mismatch_count or downgraded_llm2_agreement_count or display_agreed_without_extraction_count
+        else "passed"
+    )
+    return {
+        "status": status,
+        "agreement_like_count": len(rows),
+        "mismatch_count": mismatch_count,
+        "downgraded_llm2_agreement_count": downgraded_llm2_agreement_count,
+        "display_agreed_without_extraction_count": display_agreed_without_extraction_count,
+        "display_agreed_count": sum(1 for row in call_list if row.get("call_list_status") == "agreed"),
+        "resolver_agreed_count": sum(1 for row in call_list if row.get("resolver_status") == "agreed"),
+        "llm2_agreement_count": sum(1 for row in call_list if row.get("llm2_business_outcome_status") == "agreement"),
+        "rows": rows[:50],
+        "source_policy": (
+            "manager_facing_agreement_requires_explicit_commercial_step; "
+            "weak_llm2_agreement_falls_back_to_resolver"
+        ),
+    }
+
+
 def _reason_label(reason_code: str | None) -> str | None:
     """Return diagnostic Russian label for an unclassified reason code."""
     if not reason_code:
@@ -9500,7 +9604,14 @@ def _build_daily_call_row(
         interaction_id=str(artifact.interaction.id),
         report_evidence_index=report_evidence_index,
     )
-    call_list_status_selection = _call_list_status_from_llm2_business_outcome(llm2_business_outcome)
+    signal_text = _summary_text(getattr(artifact.interaction, "text", None), limit=500)
+    call_list_status_selection = _call_list_status_from_llm2_business_outcome(
+        llm2_business_outcome,
+        resolver_outcome=outcome,
+        follow_up=follow_up,
+        signal_text=signal_text,
+        deadline=deadline,
+    )
     call_list_status = (
         call_list_status_selection["status"]
         if call_list_status_selection["source"] == "report_evidence.business_outcome"
@@ -9525,7 +9636,6 @@ def _build_daily_call_row(
     topic_used = bool(summary_topic and _call_summary_topic_usable(summary_topic))
     next_step = follow_up.get("next_step_text")
     reason = str(follow_up.get("reason_not_fixed") or "").strip() or None
-    signal_text = _summary_text(getattr(artifact.interaction, "text", None), limit=500)
     scenario_type = classification.get("scenario_type")
     context_selection = _select_call_list_context(
         status=call_list_status,
@@ -11304,6 +11414,11 @@ def _valid_business_outcome_for_interaction(
 
 def _call_list_status_from_llm2_business_outcome(
     outcome: dict[str, Any] | None,
+    *,
+    resolver_outcome: BusinessOutcome | None = None,
+    follow_up: dict[str, Any] | None = None,
+    signal_text: str | None = None,
+    deadline: str | None = None,
 ) -> dict[str, Any]:
     raw_status = str((outcome or {}).get("status") or "").strip()
     if not raw_status:
@@ -11324,6 +11439,20 @@ def _call_list_status_from_llm2_business_outcome(
         }
     mapped = CALL_LIST_LLM2_STATUS_MAP.get(raw_status)
     if mapped:
+        if mapped == "agreed" and not _llm2_agreement_has_explicit_commercial_step(
+            outcome=outcome,
+            resolver_outcome=resolver_outcome,
+            follow_up=follow_up or {},
+            signal_text=signal_text,
+            deadline=deadline,
+        ):
+            return {
+                "status": None,
+                "unclassified_reason_code": None,
+                "source": "business_outcome_resolver",
+                "raw_status": raw_status,
+                "fallback_reason": "llm2_agreement_without_explicit_commercial_step",
+            }
         return {
             "status": mapped,
             "unclassified_reason_code": None,
@@ -11337,6 +11466,74 @@ def _call_list_status_from_llm2_business_outcome(
         "source": "business_outcome_resolver",
         "raw_status": raw_status,
         "fallback_reason": "invalid_llm2_business_outcome_status",
+    }
+
+
+def _llm2_agreement_has_explicit_commercial_step(
+    *,
+    outcome: dict[str, Any] | None,
+    resolver_outcome: BusinessOutcome | None,
+    follow_up: dict[str, Any],
+    signal_text: str | None,
+    deadline: str | None,
+) -> bool:
+    """Accept LLM2 `agreement` only when it is a concrete commercial next step."""
+    if resolver_outcome is not None and resolver_outcome.final_status == "agreed":
+        return True
+    next_step = str(follow_up.get("next_step_text") or "").strip()
+    combined = _summary_norm(
+        " ".join(
+            str(value or "")
+            for value in (
+                (outcome or {}).get("reason"),
+                (outcome or {}).get("evidence_quote"),
+                next_step,
+                follow_up.get("next_step_type"),
+                signal_text,
+            )
+        )
+    )
+    if not combined:
+        return False
+    if any(term in combined for term in AGREEMENT_COMMERCIAL_SIGNAL_TERMS):
+        return True
+    has_contact_step = any(term in combined for term in AGREEMENT_NEXT_CONTACT_TERMS)
+    if has_contact_step and (bool(deadline) or bool(next_step) or bool(follow_up.get("next_step_fixed"))):
+        return True
+    weak_only = any(term in combined for term in AGREEMENT_WEAK_ONLY_TERMS)
+    return bool(next_step and deadline and not weak_only and has_contact_step)
+
+
+def _agreement_extraction_from_call_row(row: dict[str, Any]) -> dict[str, Any]:
+    combined = _summary_norm(
+        " ".join(
+            str(row.get(key) or "")
+            for key in (
+                "next_step",
+                "deadline",
+                "reason",
+                "business_outcome_evidence",
+                "llm2_business_outcome_reason",
+                "call_signal_text",
+                "call_list_context",
+            )
+        )
+    )
+    if any(term in combined for term in AGREEMENT_COMMERCIAL_SIGNAL_TERMS):
+        status = "explicit_commercial_step"
+    elif any(term in combined for term in AGREEMENT_NEXT_CONTACT_TERMS) and (
+        row.get("deadline") or row.get("next_step")
+    ):
+        status = "explicit_next_contact"
+    elif any(term in combined for term in AGREEMENT_WEAK_ONLY_TERMS):
+        status = "weak_interest_only"
+    else:
+        status = "not_found"
+    return {
+        "status": status,
+        "has_explicit_agreement": status in {"explicit_commercial_step", "explicit_next_contact"},
+        "next_step": _first_sentence(str(row.get("next_step") or ""), limit=160) or None,
+        "deadline": row.get("deadline"),
     }
 
 

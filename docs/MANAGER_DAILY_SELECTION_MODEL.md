@@ -605,6 +605,17 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - Starting with the semantic-case diagnostics implementation on 2026-05-12, `payload.report_evidence_diagnostics` exposes per-call semantic-case availability, validity, usage, filter reason, and block-level source selection using `semantic_case`, `report_evidence_v1`, or `legacy_fallback`.
 - Block diagnostics include selected/rejected semantic candidates with rejection reasons such as `customer_signal_without_manager_gap`, `positive_diagnosis_not_problem_case`, `manager_fragment_missing`, `title_mode_not_problem`, `problem_signal_mismatch`, or `report_block_fit_score_below_threshold`.
 - Final `BusinessOutcomeResolver` status wins over `report_evidence.business_outcome` conflicts. For example, explicit refusal beats LLM-open, service/document help beats LLM-not-suitable, and technical blockers remain blockers.
+- Для manager-facing `Договорённость` действует дополнительный safety rule:
+  LLM2 `business_outcome.status=agreement` принимается в видимый
+  `call_list_status=agreed` только при явном коммерческом следующем шаге:
+  счёт/оплата/КП/договор/подписание/подключение/демо/встреча/Zoom или
+  конкретный next-contact с действием. Если LLM2 называет `agreement` только
+  слабый интерес (`скиньте материалы`, `посмотрю`, `подумаем`) без
+  коммерческого шага, Report Layer откатывается к `BusinessOutcomeResolver`, а
+  payload фиксирует `call_list_status_fallback_reason=llm2_agreement_without_explicit_commercial_step`.
+- Payload раскрывает `agreement_outcome_diagnostics`: сравнение LLM2 outcome,
+  resolver, видимого `call_list_status` и deterministic agreement extraction
+  для всех agreement-like звонков.
 - Full contract, validation requirements, backward compatibility, prompt update plan, and rollout Step 8Z..8AI live in `docs/REPORT_EVIDENCE_CONTRACT.md`.
 
 **`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.

@@ -2953,6 +2953,63 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "legacy_fallback",
         )
 
+    def test_ddc9_agreement_requires_explicit_commercial_next_step(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-18 10:30:00")
+        artifact.interaction.text = "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию."
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": True,
+            "next_step_text": "Отправить материалы клиенту.",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["business_outcome"] = {
+            "status": "agreement",
+            "confidence": "high",
+            "reason": "Клиент попросил отправить материалы.",
+            "evidence_quote": "Скиньте в WhatsApp, я посмотрю.",
+            "evidence_speaker": "client",
+            "needs_human_review": False,
+        }
+        detail["report_evidence"]["call_report_summary"]["short_topic"] = "Клиент попросил материалы"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = (
+            "Клиент попросил материалы, но коммерческий следующий шаг не зафиксирован."
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-18", "date_to": "2026-05-18"},
+            filters=ReportRunFilters(date_from="2026-05-18", date_to="2026-05-18"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+        row = payload["call_list"][0]
+
+        self.assertEqual(row["resolver_status"], "open")
+        self.assertEqual(row["llm2_business_outcome_status"], "agreement")
+        self.assertEqual(row["call_list_status"], "open")
+        self.assertEqual(row["call_list_status_source"], "business_outcome_resolver")
+        self.assertEqual(
+            row["call_list_status_fallback_reason"],
+            "llm2_agreement_without_explicit_commercial_step",
+        )
+        self.assertEqual(sections["call_list"]["rows"][0][4], "Открыт")
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 0)
+        self.assertEqual(payload["call_outcomes_summary"]["open_count"], 1)
+        diagnostics = payload["agreement_outcome_diagnostics"]
+        self.assertEqual(diagnostics["status"], "warning")
+        self.assertEqual(diagnostics["llm2_agreement_count"], 1)
+        self.assertEqual(diagnostics["display_agreed_count"], 0)
+        self.assertEqual(diagnostics["downgraded_llm2_agreement_count"], 1)
+        self.assertEqual(diagnostics["rows"][0]["agreement_extraction"]["status"], "weak_interest_only")
+
     def test_step8ah9_call_list_deadline_context_removes_technical_do_for_periods(self) -> None:
         self.assertEqual(_call_context_label("agreed", "После праздников", None), "после праздников")
         self.assertEqual(_call_context_label("agreed", "На этой неделе", None), "на этой неделе")
@@ -5824,7 +5881,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         open_call = _artifact(70.0, "basic", call_date="2026-05-20 08:00:00")
 
         for artifact, status, topic in (
-            (agreement, "agreement", "Клиент согласовал коммерческий следующий шаг"),
+            (agreement, "agreement", "Клиент попросил выставить счёт на оплату"),
             (refusal, "refusal", "Клиент отказался"),
             (open_call, "open", "Клиент думает"),
         ):
