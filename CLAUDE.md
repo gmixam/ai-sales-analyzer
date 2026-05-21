@@ -1,31 +1,35 @@
-# AI Sales Analyzer — Claude Entry Rules
+# AI Sales Analyzer — правила входа для Claude
 
-## Project
-- Project: AI Sales Analyzer
-- Primary source of truth: GitHub repo docs
-- Default branch: `main`
+## Проект
+- Проект: AI Sales Analyzer
+- Основной source of truth: документация GitHub-репозитория
+- Ветка по умолчанию: `main`
 
-## Mandatory task entry rule
-Before starting any task:
-1. Read `docs/CODER_WORKING_RULES.md`.
-2. Use repo docs as the primary source of truth.
-3. If the user request is not already structured in the project task format, first normalize it into that format using current repo docs.
-4. Keep scope bounded to the requested step.
-5. Do not rely on memory, prior chat assumptions, or agent-specific hidden context as source of truth.
-6. Before сдача результата, complete the close-out checklist from the task prompt.
-7. After every non-doc change, run a documentation-impact check and update `docs/PROGRESS.md` plus any affected source-of-truth docs.
+## Обязательное правило входа в задачу
 
-## Default repo-first policy
-- Canonical context lives in `docs/`.
-- Current chat is a management delta over repo.
-- If repo and chat conflict, follow the current explicit management decision first, then sync it back into repo docs.
-- Files in external Sources are reference-only unless explicitly promoted into repo.
+Перед началом любой задачи:
+1. Прочитай `docs/CODER_WORKING_RULES.md`.
+2. Используй документацию репозитория как основной source of truth.
+3. Если запрос пользователя не оформлен в формате проектной задачи, сначала нормализуй его по текущим документам репозитория.
+4. Держи scope ограниченным запрошенным шагом.
+5. Не опирайся на память, предположения из прошлых чатов или скрытый контекст конкретного агента как на source of truth.
+6. Перед сдачей результата заполни close-out checklist из task-промпта.
+7. После каждого non-doc изменения выполни documentation-impact проверку и обнови `docs/PROGRESS.md` плюс все затронутые source-of-truth документы.
 
-## Key defaults
-- verification first
-- no scope creep
-- update `docs/PROGRESS.md` when project status or current working step changed
-- update `docs/DECISIONS.md` when a stable architectural or process rule changed
-- non-doc changes are not complete until documentation impact is handled
-- repo hooks block commit/push when non-doc changes omit `docs/PROGRESS.md`
-- task is not complete without close-out
+## Repo-first политика по умолчанию
+
+- Канонический контекст живет в `docs/`.
+- Текущий чат — управленческая дельта поверх репозитория.
+- Если репозиторий и чат конфликтуют, сначала выполняй явное текущее управленческое решение, затем синхронизируй его обратно в документы репозитория.
+- Файлы во внешних Sources считаются reference-only, пока они явно не перенесены в репозиторий.
+
+## Ключевые правила по умолчанию
+
+- verification first;
+- без scope creep;
+- документация ведется на русском языке; технические идентификаторы можно оставлять в исходном виде;
+- обновлять `docs/PROGRESS.md`, когда изменился статус проекта или текущий рабочий шаг;
+- обновлять `docs/DECISIONS.md`, когда изменилось стабильное архитектурное или process-level правило;
+- non-doc изменения не завершены, пока не обработан documentation impact;
+- repo hooks блокируют commit/push, если non-doc изменения не включают `docs/PROGRESS.md`;
+- задача не завершена без close-out.

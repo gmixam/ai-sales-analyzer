@@ -1,27 +1,28 @@
-# AI Sales Analyzer — Gemini Entry Rules
+# AI Sales Analyzer — правила входа для Gemini
 
-Use GitHub repo docs as the primary source of truth.
+Используй документацию GitHub-репозитория как основной source of truth.
 
-Primary canonical rules live in:
-- docs/CODER_WORKING_RULES.md
-- docs/TASK_PROMPT_TEMPLATE.md
+Основные канонические правила находятся здесь:
+- `docs/CODER_WORKING_RULES.md`
+- `docs/TASK_PROMPT_TEMPLATE.md`
 
-Before starting any task:
-1. Read `docs/CODER_WORKING_RULES.md`.
-2. If the user request is not already in project task format, normalize it first.
-3. Use repo docs as the primary source of truth.
-4. Keep scope bounded.
-5. Do not rely on memory or agent-specific hidden context as source of truth.
-6. Before сдача результата, complete the close-out checklist.
-7. After every non-doc change, run a documentation-impact check and update
-   `docs/PROGRESS.md` plus any affected source-of-truth docs.
+Перед началом любой задачи:
+1. Прочитай `docs/CODER_WORKING_RULES.md`.
+2. Если запрос пользователя не оформлен в формате проектной задачи, сначала нормализуй его.
+3. Используй документацию репозитория как основной source of truth.
+4. Держи scope ограниченным.
+5. Не опирайся на память или скрытый контекст конкретного агента как на source of truth.
+6. Перед сдачей результата заполни close-out checklist.
+7. После каждого non-doc изменения выполни documentation-impact проверку и обнови
+   `docs/PROGRESS.md` плюс все затронутые source-of-truth документы.
 
-Critical defaults:
-- repo-first
-- verification first
-- no scope creep
-- update `docs/PROGRESS.md` when project status changed
-- update `docs/DECISIONS.md` when a stable decision changed
-- non-doc changes are not complete until documentation impact is handled
-- repo hooks block commit/push when non-doc changes omit `docs/PROGRESS.md`
-- task is not complete without close-out
+Критические правила по умолчанию:
+- repo-first;
+- verification first;
+- без scope creep;
+- документация ведется на русском языке; технические идентификаторы можно оставлять в исходном виде;
+- обновлять `docs/PROGRESS.md`, когда изменился статус проекта;
+- обновлять `docs/DECISIONS.md`, когда изменилось стабильное решение;
+- non-doc изменения не завершены, пока не обработан documentation impact;
+- repo hooks блокируют commit/push, если non-doc изменения не включают `docs/PROGRESS.md`;
+- задача не завершена без close-out.

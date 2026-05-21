@@ -756,3 +756,12 @@
 - **Reason:** Reports sent through the UI were delivered to managers by email, and the body duplicated the full report. This made the email noisy and made the PDF less clearly the canonical artifact.
 - **Scope:** Report artifact rendering and business email payload only. No change to report selection, analysis, PDF content, Telegram delivery, scheduler, or recipient resolution.
 - **Date:** 2026-05-21
+
+## ADR-076: Проектная документация ведется на русском языке
+- **Решение:** Весь новый и изменяемый человекочитаемый текст проектной документации должен быть написан на русском языке.
+- **Решение:** Правило распространяется на `docs/`, agent entry files, task templates, roadmap, progress, decisions, журналы обратной связи и другие документы, которые используются как source of truth для проекта.
+- **Решение:** Допустимые исключения: имена файлов, классов, функций, JSON-полей, enum/status keys, команды, route/path, branch/commit ids, названия моделей, API/provider-specific термины и прямые цитаты, если их нужно сохранить в исходном виде.
+- **Решение:** Существующие англоязычные фрагменты не требуют массового перевода в несвязанной задаче, но любой документ, который агент создает или меняет, должен получать новый/измененный человекочитаемый текст на русском языке.
+- **Причина:** Команда ведет проект и принимает продуктовые решения на русском языке. Смешение языков в документации снижает читаемость, затрудняет handoff между агентами и повышает риск неверной интерпретации бизнес-решений.
+- **Scope:** только process/documentation governance. Это не меняет runtime behavior, report generation semantics, analyzer prompts, delivery или Git hook behavior.
+- **Дата:** 2026-05-21

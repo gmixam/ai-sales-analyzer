@@ -6,48 +6,52 @@
 Работаем по проекту ai-sales-analyzer.
 
 Веха roadmap:
-- <milestone>
+- <веха>
 
 Шаг roadmap:
-- <step>
+- <шаг>
 
 Что делаем:
-- <what we are doing now>
+- <что делаем сейчас>
 
 Для чего:
-- <why this step exists>
+- <зачем нужен этот шаг>
 
 Используй как source of truth:
 - docs/CONTEXT_INDEX.md
 - docs/CODER_WORKING_RULES.md
-- <task-specific docs only>
+- <только task-specific документы>
 
 Сама задача:
-- <exact task for this run>
+- <точная задача на этот запуск>
 
-Input / case ids:
+Входные данные / case ids:
 - <interaction_id / analysis_id / external_id / file / dataset / prompt asset>
 
-Scope boundaries этой задачи:
-- in scope: <allowed scope>
-- out of scope: <explicitly excluded scope>
-- local restrictions: <local restrictions>
+Границы scope этой задачи:
+- входит в scope: <разрешенный scope>
+- не входит в scope: <явно исключенный scope>
+- локальные ограничения: <локальные ограничения>
 
-Expected output:
-- <exact expected result for this task>
+Ожидаемый результат:
+- <точный ожидаемый результат задачи>
 
 Какие документы обновить:
 - docs/PROGRESS.md
 - docs/DECISIONS.md
-- <other affected docs only>
+- <только другие затронутые документы>
 
-Documentation impact:
-- non-doc changes require docs/PROGRESS.md in the same changeset
-- behavior/contract/process changes require affected source-of-truth docs
-- if docs are intentionally not updated, state the exact reason in close-out
+Проверка влияния на документацию:
+- non-doc изменения требуют `docs/PROGRESS.md` в том же changeset
+- изменения behavior/contract/process требуют обновления затронутых source-of-truth документов
+- если docs намеренно не обновлены, указать точную причину в закрытии задачи
 
-## Close-out (обязательно заполнить перед сдачей)
-- [ ] Documentation impact проверен — да / явно исключён (причина: ...)
+Язык документации:
+- весь новый и изменяемый человекочитаемый текст в документации пишется на русском языке
+- технические идентификаторы, имена файлов, поля payload, команды и прямые цитаты можно оставлять в исходном виде
+
+## Закрытие задачи (обязательно заполнить перед сдачей)
+- [ ] Влияние на документацию проверено — да / явно исключено (причина: ...)
 - [ ] PROGRESS.md обновлён — да / нет / явно исключён (причина: ...)
 - [ ] DECISIONS.md обновлён — да / нет / явно исключён (причина: ...)
 - [ ] Другие docs обновлены — перечислить / нет / явно исключено

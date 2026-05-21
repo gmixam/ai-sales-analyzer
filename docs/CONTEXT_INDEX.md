@@ -30,7 +30,8 @@ pass for `Разбор звонка` / `Голос клиента`.
 2. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
 3. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
 4. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md)
-5. [docs/PROGRESS.md](docs/PROGRESS.md)
+5. [docs/MANAGER_REPORT_FEEDBACK.md](docs/MANAGER_REPORT_FEEDBACK.md)
+6. [docs/PROGRESS.md](docs/PROGRESS.md)
 
 Temporary plans such as `TMP_SITUATION_DAY_COMPOSER_TZ.md`,
 `docs/TEMP_LLM2_BLOCK_READY_V15_PLAN.md`, and
@@ -127,7 +128,16 @@ final report author.
 - не превращать reporting layer в semantic analyzer;
 - понять backward compatibility с Step 8W fallback.
 
-### 12. `docs/mvp1_sources/`
+### 12. [docs/MANAGER_REPORT_FEEDBACK.md](docs/MANAGER_REPORT_FEEDBACK.md)
+Читать, если задача основана на комментариях менеджеров/РОПа по фактически полученным отчетам или если нужно планировать улучшения качества report blocks по обратной связи.
+
+Зачем читать:
+- сохранить точную формулировку обратной связи от участников;
+- отделить факт жалобы от наших гипотез и будущих code changes;
+- увидеть приоритетные проверки по `ДЕНЬГИ НА СТОЛЕ`, договоренностям, полноте звонков, объему отчета и спорным coaching-выводам;
+- не чинить отчет вручную, а вести проблему к проверяемому upstream-исправлению.
+
+### 13. `docs/mvp1_sources/`
 Читать только когда задача затрагивает analyzer contract, checklist, manager card format или source prompt assets.
 
 Минимальный набор source-of-truth файлов:
