@@ -31,7 +31,8 @@ pass for `Разбор звонка` / `Голос клиента`.
 3. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
 4. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md)
 5. [docs/MANAGER_REPORT_FEEDBACK.md](docs/MANAGER_REPORT_FEEDBACK.md)
-6. [docs/PROGRESS.md](docs/PROGRESS.md)
+6. [docs/MANAGER_DAILY_REPORT_AUDIT.md](docs/MANAGER_DAILY_REPORT_AUDIT.md)
+7. [docs/PROGRESS.md](docs/PROGRESS.md)
 
 Temporary plans such as `TMP_SITUATION_DAY_COMPOSER_TZ.md`,
 `docs/TEMP_LLM2_BLOCK_READY_V15_PLAN.md`, and
@@ -137,7 +138,16 @@ final report author.
 - увидеть приоритетные проверки по `ДЕНЬГИ НА СТОЛЕ`, договоренностям, полноте звонков, объему отчета и спорным coaching-выводам;
 - не чинить отчет вручную, а вести проблему к проверяемому upstream-исправлению.
 
-### 13. `docs/mvp1_sources/`
+### 13. [docs/MANAGER_DAILY_REPORT_AUDIT.md](docs/MANAGER_DAILY_REPORT_AUDIT.md)
+Читать, если задача затрагивает оформление, порядок блоков, формулировки, объем PDF/email или product-shape ежедневного отчета `manager_daily`.
+
+Зачем читать:
+- увидеть текущую карту проблем ежедневного отчета как продукта;
+- понять приоритеты `P0/P1/P2` по доверию, объему, дублям и оформлению;
+- не возвращать рискованные блоки вроде `ДЕНЬГИ НА СТОЛЕ` без evidence/CRM-ready поведения;
+- сверять будущие правки с целевой структурой 4-5 страниц и honest coverage.
+
+### 14. `docs/mvp1_sources/`
 Читать только когда задача затрагивает analyzer contract, checklist, manager card format или source prompt assets.
 
 Минимальный набор source-of-truth файлов:
@@ -155,6 +165,7 @@ final report author.
 - **`manager_daily` selection model и report contract (canonical):** [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
 - **LLM2 report-ready evidence contract:** [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
 - Prompt policies и prompt/task split: [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
+- Product-аудит ежедневного отчета: [docs/MANAGER_DAILY_REPORT_AUDIT.md](docs/MANAGER_DAILY_REPORT_AUDIT.md)
 - Короткий шаблон будущих task-промптов: [docs/TASK_PROMPT_TEMPLATE.md](docs/TASK_PROMPT_TEMPLATE.md)
 
 ## Как использовать индекс в новой сессии

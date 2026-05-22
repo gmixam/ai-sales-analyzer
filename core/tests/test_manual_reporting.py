@@ -5926,6 +5926,19 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], 1)
         self.assertEqual(payload["call_outcomes_summary"]["refusal_count"], 1)
         self.assertEqual(payload["call_outcomes_summary"]["open_count"], 1)
+        rendered_status_counts = {
+            status: sum(1 for row in payload["call_list"] if row.get("call_list_status") == status)
+            for status in ("agreed", "rescheduled", "refusal", "open", "tech_service")
+        }
+        self.assertEqual(payload["call_outcomes_summary"]["agreed_count"], rendered_status_counts["agreed"])
+        self.assertEqual(payload["call_outcomes_summary"]["rescheduled_count"], rendered_status_counts["rescheduled"])
+        self.assertEqual(payload["call_outcomes_summary"]["refusal_count"], rendered_status_counts["refusal"])
+        self.assertEqual(payload["call_outcomes_summary"]["open_count"], rendered_status_counts["open"])
+        self.assertEqual(payload["call_outcomes_summary"]["tech_service_count"], rendered_status_counts["tech_service"])
+        self.assertEqual(
+            payload["call_outcomes_summary"]["source_note"],
+            "derived_from_call_list_display_status",
+        )
 
     def test_step8ah8a_business_outcome_ignores_synthetic_recommendation_refusal_terms(self) -> None:
         """Step 8AH-8A: synthetic coaching text must not flip an open follow-up to refusal."""
@@ -6234,19 +6247,24 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(rendered["artifact"]["render_variant"], "template_pdf_manager_daily_template_v2")
         self.assertEqual(rendered["artifact"]["generator_path"], "app.agents.calls.report_templates.render_report_artifact")
         self.assertIn("СИТУАЦИЯ ДНЯ", rendered["report_text"])
-        self.assertIn("ДЕНЬГИ НА СТОЛЕ", rendered["report_html"])
+        self.assertNotIn("ДЕНЬГИ НА СТОЛЕ", rendered["report_html"])
+        self.assertNotIn("PIPELINE ТЁПЛЫХ ЛИДОВ", rendered["report_html"])
+        self.assertNotIn("УТРЕННЯЯ КАРТОЧКА", rendered["report_html"])
+        self.assertIn("ТЁПЛЫЕ КОНТАКТЫ ДНЯ", rendered["report_html"])
+        self.assertIn("ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ", rendered["report_html"])
+        self.assertIn("ЛЕГЕНДА СТАТУСОВ", rendered["report_html"])
+        self.assertIn("Договорённость: есть явный коммерческий следующий шаг", rendered["report_text"])
         ordered_labels = [
             "ШАПКА",
             "СВОДНАЯ ТАБЛИЦА ЗВОНКОВ",
-            "ДЕНЬГИ НА СТОЛЕ",
-            "PIPELINE ТЁПЛЫХ ЛИДОВ",
+            "ТЁПЛЫЕ КОНТАКТЫ ДНЯ",
             "БАЛЛЫ ПО ЭТАПАМ",
             "СИТУАЦИЯ ДНЯ",
             "РАЗБОР ЗВОНКА",
             "ГОЛОС КЛИЕНТА",
             "ПОЗВОНИ ЗАВТРА",
-            "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ",
-            "УТРЕННЯЯ КАРТОЧКА",
+            "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ",
+            "ЛЕГЕНДА СТАТУСОВ",
         ]
         positions = [rendered["report_html"].index(f">{label}</div>") for label in ordered_labels]
         self.assertEqual(positions, sorted(positions))
@@ -6269,11 +6287,44 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("insufficient data", rendered["text"].lower())
         self.assertNotIn("preview shell", rendered["text"].lower())
         self.assertGreaterEqual(rendered["artifact"]["page_count"], 6)
-        self.assertIn("0:10", rendered["report_text"])
         self.assertIn("10:30", rendered["report_text"])
-        self.assertIn("~180 000 тенге", rendered["report_text"])
-        self.assertIn("Что имел в виду", rendered["report_text"])
-        self.assertNotIn("Что имел в виду", rendered["text"])
+        self.assertNotIn("~180 000 тенге", rendered["report_text"])
+        self.assertNotIn("ДЕНЬГИ НА СТОЛЕ", rendered["report_text"])
+        self.assertIn("ЛЕГЕНДА СТАТУСОВ", rendered["report_text"])
+        self.assertIn("ГОЛОС КЛИЕНТА", rendered["report_text"])
+        self.assertNotIn("ГОЛОС КЛИЕНТА", rendered["text"])
+
+    def test_manager_daily_voice_customer_dedupes_situation_day_call(self) -> None:
+        artifact = _artifact(call_date="2026-03-25 10:00:00")
+        call_id = str(artifact.interaction.id)
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+        payload["situation_evidence_quote"] = {
+            "call_id": call_id,
+            "client_text": "Скиньте материалы, я посмотрю.",
+        }
+        payload["voice_of_customer"] = {
+            "customer_scenes": [
+                {
+                    "call_id": call_id,
+                    "client_call_reference": "Клиент · 25 мар 2026, 10:00",
+                    "scene_summary": "Скиньте материалы, я посмотрю.",
+                    "quote": "Скиньте материалы, я посмотрю.",
+                }
+            ],
+            "situations": [],
+        }
+
+        sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
+
+        self.assertEqual(sections["voice_of_customer"]["customer_scenes"], [])
 
     def test_render_report_email_prefers_docx_first_when_requested(self) -> None:
         payload = build_manager_daily_payload(

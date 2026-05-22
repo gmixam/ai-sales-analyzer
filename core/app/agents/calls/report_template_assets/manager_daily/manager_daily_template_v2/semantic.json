@@ -7,15 +7,16 @@
     {"id": "report_header", "label": "ШАПКА", "kind": "header_card"},
     {"id": "day_summary", "label": "СВОДНАЯ ТАБЛИЦА ЗВОНКОВ", "kind": "outcome_table"},
     {"id": "money_on_table", "label": "ДЕНЬГИ НА СТОЛЕ", "kind": "money_focus"},
-    {"id": "warm_pipeline", "label": "PIPELINE ТЁПЛЫХ ЛИДОВ", "kind": "pipeline_summary"},
+    {"id": "warm_pipeline", "label": "ТЁПЛЫЕ КОНТАКТЫ ДНЯ", "kind": "pipeline_summary"},
     {"id": "review_block", "label": "БАЛЛЫ ПО ЭТАПАМ", "kind": "stage_scores_table"},
     {"id": "main_focus_for_tomorrow", "label": "СИТУАЦИЯ ДНЯ", "kind": "situation_card"},
     {"id": "call_breakdown", "label": "РАЗБОР ЗВОНКА", "kind": "call_breakdown"},
     {"id": "voice_of_customer", "label": "ГОЛОС КЛИЕНТА", "kind": "voice_of_customer"},
-    {"id": "additional_situations", "label": "ДОПОЛНИТЕЛЬНЫЕ 3 СИТУАЦИИ", "kind": "expanded_situations"},
+    {"id": "additional_situations", "label": "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ", "kind": "expanded_situations"},
     {"id": "challenge", "label": "ЧЕЛЛЕНДЖ НА ЗАВТРА", "kind": "challenge_card"},
     {"id": "call_tomorrow", "label": "ПОЗВОНИ ЗАВТРА", "kind": "call_tomorrow"},
-    {"id": "call_list", "label": "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ", "kind": "table"},
-    {"id": "morning_card", "label": "УТРЕННЯЯ КАРТОЧКА", "kind": "morning_card"}
+    {"id": "call_list", "label": "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ", "kind": "table"},
+    {"id": "morning_card", "label": "УТРЕННЯЯ КАРТОЧКА", "kind": "morning_card"},
+    {"id": "status_legend", "label": "ЛЕГЕНДА СТАТУСОВ", "kind": "status_legend"}
   ]
 }

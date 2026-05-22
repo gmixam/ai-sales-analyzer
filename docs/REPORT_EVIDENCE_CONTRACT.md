@@ -145,7 +145,7 @@ If the checklist changes, the validator must use the canonical checklist diction
 
 ## 1. Business Outcome Evidence
 
-Used by `ИТОГ ДНЯ`, `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and downstream consistency checks.
+Used by `ИТОГ ДНЯ`, `call_list` / visible appendix `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and downstream consistency checks.
 
 ```json
 {
@@ -177,7 +177,7 @@ Allowed statuses:
 
 ## 2. Call Report Summary
 
-Used later by `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and manager-facing recommendations in `ГОЛОС КЛИЕНТА`.
+Used later by `call_list` / visible appendix `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and manager-facing recommendations in `ГОЛОС КЛИЕНТА`.
 
 ```json
 {
@@ -196,7 +196,7 @@ Used later by `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, `КОГО ВЗЯТ�
 ```
 
 Field intent:
-- `short_topic` — краткая суть звонка for `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ`, column `Тип / суть`; max `120` chars.
+- `short_topic` — краткая суть звонка for `call_list`, visible appendix `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ`, column `Тип / суть`; max `120` chars.
 - `short_context` — short manager-facing context for the call-list `Контекст`; max `280` chars.
 - `manager_visible_summary` — richer manager-facing call-list context when the
   call needs more than a compressed `short_context`; max `640` chars. It must
@@ -336,7 +336,7 @@ Rules:
 
 ## 3A. Block-Ready Candidates (v15)
 
-Used by `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДЕНЬГИ НА СТОЛЕ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, `ЧЕЛЛЕНДЖ НА ЗАВТРА`, and `СПИСОК ВСЕХ ЗВОНКОВ ДНЯ` context enrichment.
+Used by `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДЕНЬГИ НА СТОЛЕ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, `ЧЕЛЛЕНДЖ НА ЗАВТРА`, and `call_list` context enrichment for the visible appendix `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ`.
 
 Starting with instruction version `edo_sales_mvp1_call_analysis_v15_block_ready`, fresh business-meaningful LLM2 analyses should prepare optional `report_evidence.block_candidates`. This is a block-ready layer above `semantic_case.report_block_fit`: `report_block_fit` says whether a call is suitable for a block, while `block_candidates` contains enough grounded material for that block to be rendered without the Reporting layer inventing the core meaning.
 

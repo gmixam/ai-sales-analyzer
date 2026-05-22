@@ -21,6 +21,18 @@ FONT_PATH = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 REPORT_RENDER_GENERATOR_PATH = "app.agents.calls.report_templates.render_report_artifact"
 DOCX_SOURCE_OF_TRUTH_PATH = "scripts/generate_docx_report.js"
 DOCX_PDF_CONVERSION_PATH = "soffice --headless --convert-to pdf"
+MANAGER_DAILY_MONEY_ON_TABLE_HIDDEN = True
+MANAGER_DAILY_STATUS_LEGEND = (
+    (
+        "Договорённость",
+        "есть явный коммерческий следующий шаг: счёт, КП, договор, оплата, встреча, демо или подключение.",
+    ),
+    ("Перенос", "согласован следующий контакт или клиент попросил вернуться позже."),
+    ("Открыт", "интерес или контакт есть, но конкретный следующий шаг не зафиксирован."),
+    ("Отказ", "клиент отказался, не заинтересован или отложил без понятного возврата."),
+    ("Тех/сервис", "техническая помощь, регистрация, подписание, доступ или другой не продажный разговор."),
+    ("Не подходит", "автоответчик, IVR, справочная информация или нет содержательного взаимодействия."),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +83,9 @@ def _section_meta(template: ReportTemplate, section_id: str) -> dict[str, Any]:
 
 def _section_hidden_when_empty(section: dict[str, Any]) -> bool:
     """Return True for optional manager_daily sections that should vanish when empty."""
-    return section.get("id") == "additional_situations" and not (section.get("situations") or [])
+    return bool(section.get("hidden")) or (
+        section.get("id") == "additional_situations" and not (section.get("situations") or [])
+    )
 
 
 def render_report_artifact(payload: dict[str, Any], *, prefer_docx_first: bool = False) -> dict[str, Any]:
@@ -279,6 +293,11 @@ def _manager_daily_focus_summary(report: dict[str, Any]) -> str:
         or str(section.get("situation_title") or "").strip()
         or "фокус указан в приложенном отчете"
     )
+
+
+def _manager_daily_status_legend_items() -> list[str]:
+    """Return compact manager-facing definitions for call statuses."""
+    return [f"{label}: {description}" for label, description in MANAGER_DAILY_STATUS_LEGEND]
 
 
 def _build_rop_weekly_email_summary(*, payload: dict[str, Any], report: dict[str, Any]) -> dict[str, str]:
@@ -698,6 +717,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     additional_scope = dict(data_scopes.get("additional_situations") or coaching_scope)
     challenge_scope = dict(data_scopes.get("challenge") or coaching_scope)
     warm_pipeline = _build_warm_pipeline_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
+    call_list_coverage_note = _build_call_list_coverage_note(payload=payload, call_list_count=len(call_list_raw))
     money_on_table = _build_money_on_table_data(
         call_list_raw=call_list_raw,
         call_outcomes=call_outcomes,
@@ -729,6 +749,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     if _unclassified_count > 0:
         outcome_cols.append({"label": "БЕЗ РАЗБОРА", "value": _unclassified_count, "tone": "neutral"})
     unclassified_note = _build_unclassified_summary_note(call_outcomes)
+    primary_call_ids = _manager_daily_primary_call_ids(payload)
+    situation_call_ids = _manager_daily_situation_call_ids(payload)
     _readiness_outcome = readiness.get("readiness_outcome") or ""
     _report_type_label = (
         "Сигнальный отчёт" if _readiness_outcome == "signal_report"
@@ -753,6 +775,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {
             **_section_meta(template, "money_on_table"),
             **money_on_table,
+            "hidden": MANAGER_DAILY_MONEY_ON_TABLE_HIDDEN,
+            "hidden_reason": "disabled_until_crm_ready",
         },
         {
             **_section_meta(template, "warm_pipeline"),
@@ -822,6 +846,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **_build_v5_voice_of_customer_section(
                 section=dict(payload.get("voice_of_customer") or {}),
                 recommendations=list(payload.get("recommendations") or []),
+                excluded_call_ids=situation_call_ids,
             ),
         },
         {
@@ -834,6 +859,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **_build_v5_additional_situations_section(
                 section=dict(payload.get("additional_situations") or {}),
                 data_scope=additional_scope,
+                excluded_call_ids=primary_call_ids,
             ),
         },
         {
@@ -885,7 +911,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 for idx, row in enumerate(call_list_raw)
             ],
             "note": (
-                f"Показаны все {len(call_list_raw)} звонков дня."
+                call_list_coverage_note
                 if call_list_raw
                 else "Звонки за выбранный день не найдены."
             ),
@@ -895,9 +921,15 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             "greeting": morning_card["greeting"],
             "summary_line": morning_card["summary_line"],
             "open_calls": morning_card["open_calls"],
-            "financial_line": money_on_table["highlight_line"],
+            "financial_line": "",
             "challenge": "",
             "call_tomorrow_contacts": list((_build_v5_call_tomorrow_section(section=dict(payload.get("call_tomorrow") or {}))).get("contacts") or [])[:3],
+            "hidden": True,
+            "hidden_reason": "separate_delivery_artifact_only",
+        },
+        {
+            **_section_meta(template, "status_legend"),
+            "items": _manager_daily_status_legend_items(),
         },
     ]
     return {
@@ -1395,6 +1427,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
         if section.get("challenge"):
             lines.append(f"Челлендж: {section.get('challenge')}")
         return [line for line in lines if line]
+    if kind == "status_legend":
+        return [f"- {item}" for item in section.get("items") or _manager_daily_status_legend_items()]
     if kind in {"text", "callout", "placeholder"}:
         result = [str(section.get("body") or "—")]
         if section.get("reinforcement"):
@@ -1519,12 +1553,12 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
         ["additional_situations", "challenge"],
         ["call_tomorrow"],
         ["call_list"],
-        ["morning_card"],
+        ["status_legend"],
     ]
     pages_html: list[str] = []
-    for page_number, page_group in enumerate(page_groups, start=1):
+    for page_group in page_groups:
         body_parts = []
-        if page_number == 1:
+        if not pages_html:
             body_parts.append(
                 "<section class=\"hero\">"
                 f"<div class=\"hero-title\">{html.escape(report['title'])}"
@@ -1532,11 +1566,19 @@ def _render_manager_daily_html_report(*, report: dict[str, Any], template: Repor
                 f"<div class=\"focus-week\">{html.escape(report.get('hero_focus') or '')}</div>"
                 "</section>"
             )
-        body_parts.extend(_render_html_section(sections[section_id]) for section_id in page_group if section_id in sections)
+        body_parts.extend(
+            _render_html_section(sections[section_id])
+            for section_id in page_group
+            if section_id in sections and not _section_hidden_when_empty(sections[section_id])
+        )
+        body_html = "".join(body_parts)
+        if not body_html.strip():
+            continue
+        page_number = len(pages_html) + 1
         pages_html.append(
             "<section class=\"page\">"
             f"{_manager_daily_page_header(report['metadata_line'])}"
-            f"{''.join(body_parts)}"
+            f"{body_html}"
             f"{_manager_daily_page_footer(report['footer'], page_number)}"
             "</section>"
         )
@@ -1886,6 +1928,15 @@ def _render_html_section(section: dict[str, Any]) -> str:
             + f"<ul>{calls}</ul>"
             + f"<p><strong>Челлендж:</strong> {html.escape(str(section.get('challenge') or ''))}</p>"
             + "</article></div></section>"
+        )
+    if kind == "status_legend":
+        items = "".join(
+            f"<li>{html.escape(str(item))}</li>"
+            for item in section.get("items") or _manager_daily_status_legend_items()
+        )
+        return (
+            f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
+            f"<ul>{items}</ul></div></section>"
         )
     if kind in {"text", "callout", "placeholder"}:
         note = (
@@ -2239,7 +2290,10 @@ def _render_manager_daily_pdf_report(
     challenge = sections["challenge"]
     call_tomorrow = sections["call_tomorrow"]
     call_list = sections["call_list"]
-    morning_card = sections["morning_card"]
+    status_legend = sections.get("status_legend") or {
+        "label": "ЛЕГЕНДА СТАТУСОВ",
+        "items": _manager_daily_status_legend_items(),
+    }
 
     page1 = add_page()
     draw_section_bar(page1, top=58, title=header["label"], color=accent)
@@ -2305,25 +2359,27 @@ def _render_manager_daily_pdf_report(
     if day_summary.get("breakdown_note"):
         draw_text(page1, left=margin, top=276, text=str(day_summary.get("breakdown_note") or ""), size=7.5, color=muted, max_width=width - (margin * 2))
 
-    draw_section_bar(page1, top=288, title=money_on_table["label"], color=amber)
-    money_box_h = max(
-        82,
-        int(
-            20
-            + measure_height(str(money_on_table.get("body") or ""), 9.2, width - (margin * 2) - 24)
-            + measure_height(str(money_on_table.get("highlight_line") or ""), 9.0, width - (margin * 2) - 24)
-            + measure_height(str(money_on_table.get("reason_line") or ""), 8.6, width - (margin * 2) - 24)
-            + 18
-        ),
-    )
-    draw_rect(page1, left=margin, top=318, box_width=width - (margin * 2), box_height=money_box_h, fill=light_yellow)
-    draw_rect(page1, left=margin, top=318, box_width=4, box_height=money_box_h, fill=amber)
-    draw_text(page1, left=margin + 12, top=330, text=str(money_on_table.get("body") or ""), size=9.2, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=352, text=str(money_on_table.get("highlight_line") or ""), size=9.0, color=accent, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=372, text=str(money_on_table.get("reason_line") or ""), size=8.6, color=black, max_width=width - (margin * 2) - 24)
-    draw_text(page1, left=margin + 12, top=390, text=str(money_on_table.get("note") or ""), size=7.8, color=muted, max_width=width - (margin * 2) - 24)
+    money_box_h = 0
+    if not money_on_table.get("hidden"):
+        draw_section_bar(page1, top=288, title=money_on_table["label"], color=amber)
+        money_box_h = max(
+            82,
+            int(
+                20
+                + measure_height(str(money_on_table.get("body") or ""), 9.2, width - (margin * 2) - 24)
+                + measure_height(str(money_on_table.get("highlight_line") or ""), 9.0, width - (margin * 2) - 24)
+                + measure_height(str(money_on_table.get("reason_line") or ""), 8.6, width - (margin * 2) - 24)
+                + 18
+            ),
+        )
+        draw_rect(page1, left=margin, top=318, box_width=width - (margin * 2), box_height=money_box_h, fill=light_yellow)
+        draw_rect(page1, left=margin, top=318, box_width=4, box_height=money_box_h, fill=amber)
+        draw_text(page1, left=margin + 12, top=330, text=str(money_on_table.get("body") or ""), size=9.2, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page1, left=margin + 12, top=352, text=str(money_on_table.get("highlight_line") or ""), size=9.0, color=accent, max_width=width - (margin * 2) - 24)
+        draw_text(page1, left=margin + 12, top=372, text=str(money_on_table.get("reason_line") or ""), size=8.6, color=black, max_width=width - (margin * 2) - 24)
+        draw_text(page1, left=margin + 12, top=390, text=str(money_on_table.get("note") or ""), size=7.8, color=muted, max_width=width - (margin * 2) - 24)
 
-    pipeline_top = 318 + money_box_h + 16
+    pipeline_top = 288 if money_on_table.get("hidden") else 318 + money_box_h + 16
     draw_section_bar(page1, top=pipeline_top, title=warm_pipeline["label"], color=accent)
     draw_rect(page1, left=margin, top=pipeline_top + 30, box_width=width - (margin * 2), box_height=104, fill=light_gray)
     draw_rect(page1, left=margin, top=pipeline_top + 30, box_width=4, box_height=104, fill=accent)
@@ -2459,45 +2515,46 @@ def _render_manager_daily_pdf_report(
         draw_text(page3, left=margin, top=voice_table_top, text="Клиентские цитаты появятся после накопления материала по звонкам.", size=8.6, color=muted, max_width=width - (margin * 2))
     footer(page3, 3)
 
-    page4 = add_page()
-    additional_top = 58
-    if additional.get("situations"):
-        draw_section_bar(page4, top=58, title=additional["label"], color=accent)
-        additional_top = 92
-        for item in (additional.get("situations") or [])[:3]:
-            card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
-            card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
-            card_h = 112
-            draw_rect(page4, left=margin, top=additional_top, box_width=width - (margin * 2), box_height=card_h, fill=card_fill)
-            draw_rect(page4, left=margin, top=additional_top, box_width=4, box_height=card_h, fill=card_color)
-            draw_text(page4, left=margin + 12, top=additional_top + 8, text=f"{item.get('badge') or 'Ситуация'} · {item.get('title') or ''}", size=9.2, color=card_color, max_width=width - (margin * 2) - 24)
-            cursor = additional_top + 26
-            if item.get("client_call_reference"):
-                draw_text(page4, left=margin + 12, top=cursor, text=str(item.get("client_call_reference") or ""), size=7.5, color=muted, max_width=width - (margin * 2) - 24)
-                cursor += 12
-            narrative_lines = _split_readable_text(str(item.get("narrative") or item.get("client_said") or ""))[:2]
-            for line in narrative_lines:
-                draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.7, color=black, max_width=width - (margin * 2) - 24)
-                cursor += 16
-            evidence_lines = _dialogue_text_lines((item.get("evidence_dialogue") or [])[:1])
-            for line in evidence_lines:
-                draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.3, color=muted, max_width=width - (margin * 2) - 24)
-                cursor += 14
-            if item.get("next_action"):
-                draw_text(page4, left=margin + 12, top=cursor, text=f"Что сделать: {item.get('next_action')}", size=7.7, color=card_color, max_width=width - (margin * 2) - 24)
-            additional_top += card_h + 10
-        challenge_top = additional_top + 2
-    else:
-        challenge_top = additional_top
-    if not challenge.get("hidden"):
-        draw_section_bar(page4, top=challenge_top, title=challenge["label"], color=accent)
-        draw_rect(page4, left=margin, top=challenge_top + 30, box_width=width - (margin * 2), box_height=106, fill=light_blue)
-        draw_rect(page4, left=margin, top=challenge_top + 30, box_width=4, box_height=106, fill=accent)
-        draw_text(page4, left=margin + 12, top=challenge_top + 42, text=str(challenge.get("goal_line") or ""), size=9.2, color=accent, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=challenge_top + 62, text=str(challenge.get("today_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=challenge_top + 80, text=str(challenge.get("record_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page4, left=margin + 12, top=challenge_top + 98, text=f"Фраза для завтра: {challenge.get('phrase_line') or ''}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
-    footer(page4, 4)
+    if additional.get("situations") or not challenge.get("hidden"):
+        page4 = add_page()
+        additional_top = 58
+        if additional.get("situations"):
+            draw_section_bar(page4, top=58, title=additional["label"], color=accent)
+            additional_top = 92
+            for item in (additional.get("situations") or [])[:3]:
+                card_fill = light_green if str(item.get("badge") or "").lower().startswith("силь") else light_orange
+                card_color = green if str(item.get("badge") or "").lower().startswith("силь") else amber
+                card_h = 112
+                draw_rect(page4, left=margin, top=additional_top, box_width=width - (margin * 2), box_height=card_h, fill=card_fill)
+                draw_rect(page4, left=margin, top=additional_top, box_width=4, box_height=card_h, fill=card_color)
+                draw_text(page4, left=margin + 12, top=additional_top + 8, text=f"{item.get('badge') or 'Ситуация'} · {item.get('title') or ''}", size=9.2, color=card_color, max_width=width - (margin * 2) - 24)
+                cursor = additional_top + 26
+                if item.get("client_call_reference"):
+                    draw_text(page4, left=margin + 12, top=cursor, text=str(item.get("client_call_reference") or ""), size=7.5, color=muted, max_width=width - (margin * 2) - 24)
+                    cursor += 12
+                narrative_lines = _split_readable_text(str(item.get("narrative") or item.get("client_said") or ""))[:2]
+                for line in narrative_lines:
+                    draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.7, color=black, max_width=width - (margin * 2) - 24)
+                    cursor += 16
+                evidence_lines = _dialogue_text_lines((item.get("evidence_dialogue") or [])[:1])
+                for line in evidence_lines:
+                    draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.3, color=muted, max_width=width - (margin * 2) - 24)
+                    cursor += 14
+                if item.get("next_action"):
+                    draw_text(page4, left=margin + 12, top=cursor, text=f"Что сделать: {item.get('next_action')}", size=7.7, color=card_color, max_width=width - (margin * 2) - 24)
+                additional_top += card_h + 10
+            challenge_top = additional_top + 2
+        else:
+            challenge_top = additional_top
+        if not challenge.get("hidden"):
+            draw_section_bar(page4, top=challenge_top, title=challenge["label"], color=accent)
+            draw_rect(page4, left=margin, top=challenge_top + 30, box_width=width - (margin * 2), box_height=106, fill=light_blue)
+            draw_rect(page4, left=margin, top=challenge_top + 30, box_width=4, box_height=106, fill=accent)
+            draw_text(page4, left=margin + 12, top=challenge_top + 42, text=str(challenge.get("goal_line") or ""), size=9.2, color=accent, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=challenge_top + 62, text=str(challenge.get("today_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=challenge_top + 80, text=str(challenge.get("record_line") or ""), size=8.5, color=black, max_width=width - (margin * 2) - 24)
+            draw_text(page4, left=margin + 12, top=challenge_top + 98, text=f"Фраза для завтра: {challenge.get('phrase_line') or ''}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
+        footer(page4, len(pages))
 
     page5 = add_page()
     draw_section_bar(page5, top=58, title=call_tomorrow["label"], color=accent)
@@ -2523,7 +2580,7 @@ def _render_manager_daily_pdf_report(
             color=muted,
             max_width=width - (margin * 2),
         )
-    footer(page5, 5)
+    footer(page5, len(pages))
 
     page6 = add_page()
     draw_section_bar(page6, top=58, title=call_list["label"], color=accent)
@@ -2537,32 +2594,16 @@ def _render_manager_daily_pdf_report(
     )
     if call_list.get("note"):
         draw_text(page6, left=margin, top=744, text=str(call_list.get("note") or ""), size=8.0, color=muted, max_width=width - (margin * 2))
-    footer(page6, 6)
+    footer(page6, len(pages))
 
     page7 = add_page()
-    draw_section_bar(page7, top=58, title=morning_card["label"], color=accent)
-    draw_rect(page7, left=margin, top=92, box_width=width - (margin * 2), box_height=250, fill=light_blue)
-    draw_rect(page7, left=margin, top=92, box_width=4, box_height=250, fill=accent)
-    draw_text(page7, left=margin + 16, top=114, text=str(morning_card.get("greeting") or ""), size=16.0, color=black, max_width=width - (margin * 2) - 32)
-    draw_text(page7, left=margin + 16, top=146, text=str(morning_card.get("summary_line") or ""), size=11.0, color=accent, max_width=width - (margin * 2) - 32)
-    if morning_card.get("financial_line"):
-        draw_text(page7, left=margin + 16, top=176, text=str(morning_card.get("financial_line") or ""), size=8.8, color=black, max_width=width - (margin * 2) - 32)
-    draw_text(page7, left=margin + 16, top=208, text="Позвони сегодня:", size=9.2, color=accent, max_width=width - (margin * 2) - 32)
-    contact_top = 228
-    contacts = morning_card.get("call_tomorrow_contacts") or []
-    if contacts:
-        for item in contacts[:3]:
-            draw_rect(page7, left=margin + 16, top=contact_top, box_width=width - (margin * 2) - 32, box_height=34, fill=white)
-            draw_text(page7, left=margin + 24, top=contact_top + 7, text=f"{item.get('client_call_reference') or item.get('client_label') or 'Клиент'}", size=8.8, color=black, max_width=150)
-            draw_text(page7, left=margin + 160, top=contact_top + 7, text=str(item.get("opening_script") or "Скрипт не задан"), size=7.8, color=muted, max_width=width - (margin * 2) - 200)
-            contact_top += 40
-    else:
-        draw_text(page7, left=margin + 16, top=contact_top, text="Открытых звонков нет — отличный результат!", size=9.2, color=green, max_width=width - (margin * 2) - 32)
-    draw_rect(page7, left=margin + 16, top=360, box_width=width - (margin * 2) - 32, box_height=70, fill=white)
-    draw_rect(page7, left=margin + 16, top=360, box_width=4, box_height=70, fill=amber)
-    draw_text(page7, left=margin + 28, top=374, text="Челлендж:", size=9.2, color=accent, max_width=width - (margin * 2) - 56)
-    draw_text(page7, left=margin + 28, top=394, text=str(morning_card.get("challenge") or ""), size=9.2, color=black, max_width=width - (margin * 2) - 56)
-    footer(page7, 7)
+    legend_top = 58
+    draw_section_bar(page7, top=legend_top, title=str(status_legend.get("label") or "ЛЕГЕНДА СТАТУСОВ"), color=accent)
+    legend_cursor = legend_top + 34
+    for item in (status_legend.get("items") or _manager_daily_status_legend_items())[:6]:
+        draw_text(page7, left=margin, top=legend_cursor, text=f"• {item}", size=8.4, color=black, max_width=width - (margin * 2))
+        legend_cursor += 26
+    footer(page7, len(pages))
 
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 
@@ -3093,6 +3134,36 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
     return " ".join(lines)
 
 
+def _build_call_list_coverage_note(*, payload: dict[str, Any], call_list_count: int) -> str:
+    """Return a short appendix coverage note for the rendered call list."""
+    sm = dict(payload.get("selection_model") or {})
+    if not sm:
+        return f"Приложение: показаны все {call_list_count} содержательных звонков выбранного дня."
+
+    raw_total = int(sm.get("raw_calls_total") or 0)
+    meaningful_total = int(sm.get("meaningful_calls_total") or call_list_count or 0)
+    parts: list[str] = []
+    if raw_total:
+        parts.append(f"найдено в телефонии: {raw_total}")
+    if meaningful_total and meaningful_total != raw_total:
+        parts.append(f"содержательных: {meaningful_total}")
+    parts.append(f"в списке: {call_list_count}")
+
+    reason_parts: list[str] = []
+    exclusion_reasons = dict(sm.get("exclusion_reasons") or {})
+    for code, label in _EXCLUSION_REASON_LABELS.items():
+        if code == "not_selected_for_core_review":
+            continue
+        count = int(exclusion_reasons.get(code) or 0)
+        if count > 0:
+            reason_parts.append(f"{label}: {count}")
+
+    note = "Покрытие приложения: " + " · ".join(parts) + "."
+    if reason_parts:
+        note += " Не вошли в список: " + ", ".join(reason_parts) + "."
+    return note
+
+
 def _build_manager_daily_window_note(*, readiness: dict[str, Any], window_days: int) -> str | None:
     """Return manager-facing transparency note when coaching data spans multiple days."""
     if window_days <= 1:
@@ -3524,7 +3595,7 @@ def _build_warm_pipeline_data(
     call_list_raw: list[dict[str, Any]],
     call_outcomes: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the fixed-structure v5 block 'PIPELINE' from existing call list/classification."""
+    """Build the fixed-structure v5 warm-contact block from local call-list signals."""
     warm_rows = [
         row
         for row in call_list_raw
@@ -3549,24 +3620,19 @@ def _build_warm_pipeline_data(
         for row in warm_rows
         if str(row.get("status") or "") == "open"
     ][:5]
-    conversion = round((agreed / total) * 100) if total else 0
     if total <= 0:
         return {
-            "summary_line": "Тёплые и горячие лиды в текущем срезе не выделены.",
-            "counts_line": "0 → Договорились · 0 → Перенос · 0 → Отказ · 0 → Открыт",
-            "conversion_line": "Конверсия тёплых: нет базы для расчёта.",
-            "average_line": "Среднее: нет базы для сравнения.",
+            "summary_line": "Тёплые контакты дня не выделены по локальным признакам звонков.",
+            "counts_line": "Требуют возврата: 0 · с договорённостью: 0 · переносов: 0 · отказов: 0.",
+            "conversion_line": "Это аналитическая группировка звонков, не CRM-воронка.",
+            "average_line": "",
             "contacts": [],
         }
     return {
-        "summary_line": f"{total} повторных/тёплых звонков сегодня.",
-        "counts_line": f"{agreed} → Договорились · {rescheduled} → Перенос · {refusal} → Отказ · {open_count} → Открыт",
-        "conversion_line": f"Конверсия тёплых: {conversion}% ({agreed} из {total})",
-        "average_line": (
-            "Среднее: нет базы для сравнения."
-            if int(call_outcomes.get("tech_service_count") or 0) >= 0
-            else "Среднее: нет данных."
-        ),
+        "summary_line": f"{total} контактов с потенциалом по признакам звонка.",
+        "counts_line": f"Требуют возврата: {open_count + rescheduled} · с договорённостью: {agreed} · переносов: {rescheduled} · отказов: {refusal}.",
+        "conversion_line": "Это аналитическая группировка звонков, не CRM-воронка.",
+        "average_line": "",
         "contacts": contacts,
     }
 
@@ -3923,10 +3989,20 @@ def _build_v5_voice_of_customer_section(
     *,
     section: dict[str, Any],
     recommendations: list[dict[str, Any]],
+    excluded_call_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Map voice payload to narrative scenes plus the compatible 3-column structure."""
+    excluded = set(excluded_call_ids or set())
     explicit_rows = [list(map(str, row)) for row in (section.get("rows") or []) if isinstance(row, (list, tuple))]
-    explicit_scenes = [_normalize_voice_customer_scene(item) for item in section.get("customer_scenes") or [] if isinstance(item, dict)]
+    explicit_scenes = [
+        scene
+        for scene in (
+            _normalize_voice_customer_scene(item)
+            for item in section.get("customer_scenes") or []
+            if isinstance(item, dict)
+        )
+        if not _voice_scene_duplicates_primary_scene(scene, excluded_call_ids=excluded)
+    ]
     if explicit_rows:
         return {
             "intro": str(
@@ -3940,9 +4016,11 @@ def _build_v5_voice_of_customer_section(
         str(recommendations[0].get("better_phrasing") or "")
     ) if recommendations else ""
     situation_scenes = [
-        _voice_scene_from_situation(item, reply_seed=reply_seed)
+        scene
         for item in section.get("situations") or []
         if isinstance(item, dict)
+        for scene in [_voice_scene_from_situation(item, reply_seed=reply_seed)]
+        if not _voice_scene_duplicates_primary_scene(scene, excluded_call_ids=excluded)
     ]
     rows = [
         [
@@ -3963,15 +4041,97 @@ def _build_v5_voice_of_customer_section(
     }
 
 
+def _voice_scene_duplicates_primary_scene(scene: dict[str, Any], *, excluded_call_ids: set[str]) -> bool:
+    """Hide same-call Voice Of Customer scenes unless they add a distinct takeaway."""
+    if not excluded_call_ids:
+        return False
+    scene_call_ids = _extract_call_ids_from_mapping(scene)
+    if not scene_call_ids or not scene_call_ids.intersection(excluded_call_ids):
+        return False
+    evidence_text = _dedupe_text_norm(
+        " ".join(
+            str(scene.get(key) or "")
+            for key in ("scene_summary", "quote", "quote_context")
+        )
+    )
+    takeaway_text = _dedupe_text_norm(
+        " ".join(
+            str(scene.get(key) or "")
+            for key in ("customer_meaning", "manager_response", "why_action_follows")
+        )
+    )
+    if not takeaway_text:
+        return True
+    if evidence_text and (takeaway_text in evidence_text or evidence_text in takeaway_text):
+        return True
+    # A real interpretation/action can stay even when the quote came from the same call.
+    return len(takeaway_text) < 32
+
+
+def _dedupe_text_norm(value: Any) -> str:
+    """Normalize short Russian snippets for same-scene duplicate checks."""
+    text = _clean_reader_text(str(value or "")).lower().replace("ё", "е")
+    return re.sub(r"[^\wа-я ]+", "", re.sub(r"\s+", " ", text)).strip()
+
+
+def _extract_call_ids_from_mapping(item: Any) -> set[str]:
+    if not isinstance(item, dict):
+        return set()
+    result: set[str] = set()
+    for key in ("call_id", "evidence_call_id", "interaction_id", "call_uuid"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            result.add(value)
+    return result
+
+
+def _manager_daily_primary_call_ids(payload: dict[str, Any]) -> set[str]:
+    """Collect exact call ids already used by primary narrative blocks."""
+    result: set[str] = set()
+    for source in (
+        payload.get("situation_evidence_quote"),
+        payload.get("situation_dialogue_excerpt"),
+        dict(payload.get("key_problem_of_day") or {}).get("call_example"),
+        payload.get("situation_day_evidence_packet"),
+        payload.get("call_breakdown"),
+    ):
+        result.update(_extract_call_ids_from_mapping(source))
+
+    voice = dict(payload.get("voice_of_customer") or {})
+    for item in list(voice.get("customer_scenes") or []) + list(voice.get("situations") or []):
+        result.update(_extract_call_ids_from_mapping(item))
+    return result
+
+
+def _manager_daily_situation_call_ids(payload: dict[str, Any]) -> set[str]:
+    """Collect exact call ids used by Situation Day for narrative dedupe."""
+    result: set[str] = set()
+    for source in (
+        payload.get("situation_evidence_quote"),
+        payload.get("situation_dialogue_excerpt"),
+        dict(payload.get("key_problem_of_day") or {}).get("call_example"),
+        payload.get("situation_day_evidence_packet"),
+    ):
+        result.update(_extract_call_ids_from_mapping(source))
+    return result
+
+
 def _build_v5_additional_situations_section(
     *,
     section: dict[str, Any],
     data_scope: dict[str, Any] | None = None,
+    excluded_call_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Expand compact additional situations into the v5 four-row card structure."""
     scope = dict(data_scope or section.get("data_scope_details") or {})
+    excluded = set(excluded_call_ids or set())
+    duplicate_filtered_count = 0
     situations: list[dict[str, Any]] = []
     for item in section.get("situations") or []:
+        item_call_ids = _extract_call_ids_from_mapping(item)
+        if item_call_ids and excluded.intersection(item_call_ids):
+            duplicate_filtered_count += 1
+            continue
         title = _clean_reader_text(str(item.get("title") or "Ситуация"))
         kind = str(item.get("kind") or "gap")
         client_said = _clean_reader_text(
@@ -4025,6 +4185,7 @@ def _build_v5_additional_situations_section(
         "data_scope": _data_scope_code(scope),
         "data_scope_details": scope,
         "scope_note": _data_scope_note(scope),
+        "duplicate_filtered_count": duplicate_filtered_count,
     }
 
 

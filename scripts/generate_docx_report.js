@@ -657,8 +657,8 @@ function emptyStateData(payload) {
     day_funnel: null,
     coaching_window: null,
     outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0, unclassified_by_bucket: {}, unclassified_note: "" },
-    money_on_table: { body: "Данные за день не накоплены.", highlight_line: "", reason_line: "", note: "" },
-    pipeline: { summary_line: "Нет достаточных данных для pipeline.", counts_line: "", conversion_line: "", average_line: "", contacts: [] },
+    money_on_table: { body: "", highlight_line: "", reason_line: "", note: "", hidden: true },
+    pipeline: { summary_line: "Тёплые контакты дня не выделены.", counts_line: "", conversion_line: "", average_line: "", contacts: [] },
     stages: [],
     situation: {
       title: "СИТУАЦИЯ ДНЯ",
@@ -879,6 +879,7 @@ function dataFromBundle(bundle) {
       highlight_line: moneyOnTable.highlight_line || "",
       reason_line: moneyOnTable.reason_line || "",
       note: moneyOnTable.note || "",
+      hidden: moneyOnTable.hidden !== false,
     },
     pipeline: {
       summary_line: warmPipeline.summary_line || "",
@@ -1019,7 +1020,7 @@ function dataFromBundle(bundle) {
     morning: {
       greeting: morningCard.greeting || "",
       summary_line: morningCard.summary_line || "",
-      financial_line: morningCard.financial_line || "",
+      financial_line: "",
       top_contacts: (callTomorrow.rows || []).slice(0, 3).map((row, index) => ({
         index: index + 1,
         client: (callTomorrow.contacts || payload.call_tomorrow?.contacts || [])[index]?.client_call_reference || row[1] || "Клиент",
@@ -2113,7 +2114,7 @@ function buildPozvoni() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Block 12 — СПИСОК ВСЕХ ЗВОНКОВ ДНЯ
+// Block 12 — ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ
 // ──────────────────────────────────────────────────────────────
 
 function buildSpisokZvonkov() {
@@ -2147,7 +2148,7 @@ function buildSpisokZvonkov() {
   );
 
   return [
-    blockHeading("📋", "СПИСОК ВСЕХ ЗВОНКОВ ДНЯ"),
+    blockHeading("📋", "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       layout: TableLayoutType.FIXED,
@@ -2155,9 +2156,28 @@ function buildSpisokZvonkov() {
     }),
     spacer(6),
     bodyPara(
-      `Показаны все ${DATA.all_calls.length} ${russianCallWord(DATA.all_calls.length)} · полный список в CRM`,
+      `Покрытие приложения: в списке ${DATA.all_calls.length} ${russianCallWord(DATA.all_calls.length)} с разговором.`,
       { color: COLORS.gray, size: SZ.meta },
     ),
+  ];
+}
+
+// ──────────────────────────────────────────────────────────────
+// Финальный блок — ЛЕГЕНДА СТАТУСОВ
+// ──────────────────────────────────────────────────────────────
+
+function buildStatusLegend() {
+  const items = [
+    "Договорённость: есть явный коммерческий следующий шаг — счёт, КП, договор, оплата, встреча, демо или подключение.",
+    "Перенос: согласован следующий контакт или клиент попросил вернуться позже.",
+    "Открыт: интерес или контакт есть, но конкретный следующий шаг не зафиксирован.",
+    "Отказ: клиент отказался, не заинтересован или отложил без понятного возврата.",
+    "Тех/сервис: техническая помощь, регистрация, подписание, доступ или другой не продажный разговор.",
+    "Не подходит: автоответчик, IVR, справочная информация или нет содержательного взаимодействия.",
+  ];
+  return [
+    blockHeading("ℹ", "ЛЕГЕНДА СТАТУСОВ"),
+    ...items.map((item) => bodyPara(`• ${item}`, { size: SZ.meta })),
   ];
 }
 
@@ -2261,23 +2281,23 @@ async function main() {
     // Block 2
     ...buildSvodnaya(),
     // Block 3
-    ...buildDengi(),
-    // Block 4
     ...buildBally(),
-    // Block 5
+    // Block 4
     ...buildSituatsiya(),
-    // Block 6
+    // Block 5
     ...buildRazbor(),
-    // Block 7
+    // Block 6
     ...buildGolos(),
-    // Block 8
+    // Block 7
     ...buildDopSituatsii(),
-    // Block 9
+    // Block 8
     ...buildChellendj(),
-    // Block 10
+    // Block 9
     ...buildPozvoni(),
-    // Block 11
+    // Block 10
     ...buildSpisokZvonkov(),
+    // Block 11
+    ...buildStatusLegend(),
   ];
 
   const doc = new Document({
@@ -2325,7 +2345,7 @@ async function main() {
   console.log("Self-check:");
   console.log("  [✓] 11 blocks in order");
   console.log("  [✓] Scale 0–10 → 0–5 applied");
-  console.log("  [✓] ДЕНЬГИ НА СТОЛЕ block added");
+  console.log("  [✓] ДЕНЬГИ НА СТОЛЕ hidden until CRM-ready evidence is available");
   console.log("  [✓] Warm-lead CRM block omitted for manager-facing clarity");
   console.log("  [✓] СИТУАЦИЯ ДНЯ: interpretation + 3 scripts + why");
   console.log("  [✓] ГОЛОС КЛИЕНТА: 3 human-readable columns");
@@ -2334,6 +2354,7 @@ async function main() {
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: filtered valid only, dynamic heading, reference-style cards");
   console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: temporarily hidden");
   console.log("  [✓] УТРЕННЯЯ КАРТОЧКА removed from PDF/DOCX (payload preserved)");
+  console.log("  [✓] ЛЕГЕНДА СТАТУСОВ added at the end");
   console.log("  [✓] Deleted: КЛЮЧЕВАЯ ПРОБЛЕМА, РЕКОМЕНДАЦИИ, ДИНАМИКА");
   console.log("  [✓] Footer: Конфиденциально on all pages except first");
 }
