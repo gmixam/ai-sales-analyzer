@@ -783,3 +783,11 @@
 - **Причина:** Product-аудит показал, что отчет стал содержательнее, но пытался одновременно быть коучинговым разбором, операционным журналом, коммерческой сводкой и утренней карточкой. Это раздувало PDF и создавало дубли между блоками.
 - **Scope:** manager-facing render model, template labels, Python HTML/PDF renderer, docx-first generator, tests and docs. Нет изменений STT/LLM analysis, source discovery, scheduler, delivery recipients, CRM integration, report-day selection или `rop_weekly`.
 - **Дата:** 2026-05-22
+
+## ADR-079: `БАЛЛЫ ПО ЭТАПАМ` показывают честный охват данных
+- **Решение:** В `manager_daily` блок `БАЛЛЫ ПО ЭТАПАМ` агрегируется не из узкого `coaching_core`, а из всех report-day meaningful calls с reusable analysis и числовыми `score_by_stage`.
+- **Решение:** Payload получает `stage_score_scope` с `meaningful_calls_total`, `scored_calls_total`, `coverage_pct`, `low_coverage` и manager-facing `note`.
+- **Решение:** HTML/PDF/DOCX render path обязан показывать строку охвата над таблицей этапов: `Посчитано по N разобранным звонкам из M содержательных звонков дня`. При низком покрытии строка должна предупреждать, что это срез по доступным разборам, а не полная оценка дня.
+- **Причина:** Human-review отчета Толегена за `2026-05-21` показал, что таблица этапов выглядела как оценка дня, хотя фактически считалась по одному звонку из узкого selection slice. Такой блок подрывает доверие к отчету даже тогда, когда сама агрегация технически корректна.
+- **Scope:** `manager_daily` payload, stage-score aggregation, render model, Python HTML/PDF renderer, docx-first generator, tests and docs. Нет изменений STT/LLM prompts, source discovery, final statuses, delivery recipients, scheduler или `rop_weekly`.
+- **Дата:** 2026-05-25

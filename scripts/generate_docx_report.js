@@ -905,6 +905,7 @@ function dataFromBundle(bundle) {
         is_weak: Boolean(criterion.is_weak),
       })),
     })),
+    stage_scope: payload.stage_score_scope || {},
     situation: {
       title: situation.situation_title || "СИТУАЦИЯ ДНЯ",
       block_label: situation.label || "СИТУАЦИЯ ДНЯ",
@@ -1541,19 +1542,28 @@ function buildBally() {
     rows.push(new TableRow({ children: rowCells }));
   }
 
-  return [
+  const block = [
     blockHeading("📈", "БАЛЛЫ ПО ЭТАПАМ"),
+  ];
+  if (DATA.stage_scope?.note) {
+    block.push(bodyPara(DATA.stage_scope.note, { color: COLORS.gray, size: SZ.meta }));
+    block.push(spacer(3));
+  }
+  block.push(
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       layout: TableLayoutType.FIXED,
       rows,
     }),
+  );
+  block.push(
     spacer(4),
     bodyPara(
       "Фокус на завтра — этап, который сейчас сильнее всего мешает продвинуть клиента дальше по воронке.",
       { color: COLORS.gray, size: SZ.meta },
     ),
-  ];
+  );
+  return block;
 }
 
 // ──────────────────────────────────────────────────────────────

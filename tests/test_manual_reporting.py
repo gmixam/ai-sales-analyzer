@@ -982,6 +982,95 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(stages["needs_discovery"]["problem_source"], "gap")
         self.assertNotIn("nd_depth", stages["needs_discovery"]["problem_summary"])
 
+    def test_manager_daily_stage_scores_use_all_ready_meaningful_day_analyses(self) -> None:
+        manager = _manager()
+
+        def stage_artifact(score: int, *, call_date: str) -> ReportArtifact:
+            artifact = _artifact_for_manager(
+                manager,
+                score_percent=70.0,
+                level="basic",
+                call_date=call_date,
+            )
+            artifact.analysis.scores_detail["score_by_stage"] = [
+                {
+                    "stage_code": "contact_start",
+                    "stage_name": "Первичный контакт",
+                    "stage_score": score,
+                    "max_stage_score": 2,
+                    "criteria_results": [
+                        {
+                            "criterion_code": "cs_permission",
+                            "criterion_name": "Проверка уместности",
+                            "score": score,
+                            "max_score": 2,
+                        }
+                    ],
+                }
+            ]
+            return artifact
+
+        included = stage_artifact(2, call_date="2026-03-25 10:00:00")
+        ready_not_selected_one = stage_artifact(1, call_date="2026-03-25 11:00:00")
+        ready_not_selected_two = stage_artifact(0, call_date="2026-03-25 12:00:00")
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[included],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[included, ready_not_selected_one, ready_not_selected_two],
+        )
+
+        stage = next(item for item in payload["score_by_stage"] if item["stage_code"] == "contact_start")
+        self.assertEqual(stage["calls_count"], 3)
+        self.assertEqual(stage["score"], 5.0)
+        self.assertEqual(payload["selection_model"]["meaningful_calls_total"], 3)
+        self.assertEqual(payload["selection_model"]["included_in_report_total"], 1)
+        self.assertEqual(payload["stage_score_scope"]["scored_calls_total"], 3)
+        self.assertEqual(payload["stage_score_scope"]["meaningful_calls_total"], 3)
+        self.assertIn("Посчитано по 3 разобранным звонкам из 3", payload["stage_score_scope"]["note"])
+
+    def test_manager_daily_stage_scores_expose_low_coverage_scope(self) -> None:
+        scored = _artifact(70.0, "basic")
+        scored.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "stage_score": 1,
+                "max_stage_score": 2,
+            }
+        ]
+        missing = [
+            ReportArtifact(
+                interaction=_interaction(text="Текст содержательного звонка", call_date=f"2026-03-25 1{idx}:00:00"),
+                analysis=None,
+                manager=scored.manager,
+                call_started_at=datetime.fromisoformat(f"2026-03-25T1{idx}:00:00").replace(tzinfo=UTC),
+            )
+            for idx in range(1, 5)
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[scored],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+            window_artifacts=[scored, *missing],
+        )
+
+        scope = payload["stage_score_scope"]
+        self.assertEqual(scope["meaningful_calls_total"], 5)
+        self.assertEqual(scope["scored_calls_total"], 1)
+        self.assertTrue(scope["low_coverage"])
+        self.assertIn("Покрытие низкое", scope["note"])
+
     def test_manager_daily_payload_adds_situation_evidence_quote_for_priority_stage(self) -> None:
         artifact = _artifact(50.0, "problematic")
         artifact.analysis.scores_detail["call"]["contact_name"] = "Анжелика"

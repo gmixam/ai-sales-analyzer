@@ -4276,6 +4276,85 @@ def _build_selection_model_counters(
     }
 
 
+def _analysis_has_scored_stage_scores(analysis: Analysis | None) -> bool:
+    """Return whether an analysis has numeric stage scores usable for aggregation."""
+    detail = dict(getattr(analysis, "scores_detail", None) or {})
+    for stage in detail.get("score_by_stage") or []:
+        if stage.get("stage_score") is None:
+            continue
+        try:
+            max_score = int(stage.get("max_stage_score") or 0)
+            stage_score = int(stage.get("stage_score") or 0)
+        except (TypeError, ValueError):
+            continue
+        if max_score > 0 and stage_score >= 0:
+            return True
+    return False
+
+
+def _filter_stage_score_artifacts(*, artifacts: list[ReportArtifact]) -> list[ReportArtifact]:
+    """Return report-day ready meaningful analyses for the stage-score aggregate.
+
+    This intentionally uses a broader base than coaching_core: refused/open/
+    rescheduled sales-like calls with reusable analyses still matter for the
+    day-level stage picture, even when they are not selected as narrative
+    examples.
+    """
+    selected: list[ReportArtifact] = []
+    for artifact in artifacts:
+        is_meaningful, _reason = _classify_meaningful_call(artifact)
+        if not is_meaningful:
+            continue
+        reusable, _reuse_reason = _is_analysis_reusable_for_reporting(artifact.analysis)
+        if not reusable:
+            continue
+        detail = dict(getattr(artifact.analysis, "scores_detail", None) or {})
+        call_type = str((detail.get("classification") or {}).get("call_type") or "").strip().lower()
+        if call_type in {"support", "internal"}:
+            continue
+        if not _analysis_has_scored_stage_scores(artifact.analysis):
+            continue
+        selected.append(artifact)
+    return selected
+
+
+def _build_stage_score_scope(
+    *,
+    stage_score_artifacts: list[ReportArtifact],
+    selection_model: dict[str, Any],
+    included_artifacts: list[ReportArtifact],
+) -> dict[str, Any]:
+    """Describe the data scope behind `БАЛЛЫ ПО ЭТАПАМ` for manager-facing honesty."""
+    meaningful_total = int(selection_model.get("meaningful_calls_total") or 0)
+    scored_total = len(stage_score_artifacts)
+    included_total = int(selection_model.get("included_in_report_total") or len(included_artifacts))
+    coverage_pct = round(scored_total / meaningful_total * 100, 1) if meaningful_total else 0.0
+    low_coverage = bool(meaningful_total and (scored_total < 3 or coverage_pct < 50.0))
+    if meaningful_total <= 0:
+        note = "Нет содержательных звонков дня для оценки этапов."
+    elif scored_total <= 0:
+        note = (
+            f"Нет разобранных звонков с оценкой этапов из {meaningful_total} "
+            "содержательных звонков дня."
+        )
+    else:
+        note = (
+            f"Посчитано по {scored_total} разобранным звонкам из {meaningful_total} "
+            "содержательных звонков дня."
+        )
+        if low_coverage:
+            note += " Покрытие низкое: это срез по доступным разборам, а не полная оценка дня."
+    return {
+        "scope": "report_day_ready_meaningful_stage_scores",
+        "meaningful_calls_total": meaningful_total,
+        "scored_calls_total": scored_total,
+        "included_in_report_total": included_total,
+        "coverage_pct": coverage_pct,
+        "low_coverage": low_coverage,
+        "note": note,
+    }
+
+
 def _evaluate_manager_daily_readiness(
     *,
     artifacts: list[ReportArtifact],
@@ -5340,9 +5419,19 @@ def build_manager_daily_payload(
     call_list_status_quality = _build_call_list_status_quality_diagnostics(call_list)
     agreement_outcome_diagnostics = _build_agreement_outcome_diagnostics(call_list)
     call_list_by_interaction_id = _call_list_rows_by_interaction_id(call_list)
+    selection_model = _build_selection_model_counters(
+        window_artifacts=operational_day_artifacts,
+        usable_artifacts=artifacts,
+    )
     coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
         artifacts=artifacts,
         call_list_by_interaction_id=call_list_by_interaction_id,
+    )
+    stage_score_artifacts = _filter_stage_score_artifacts(artifacts=operational_meaningful_artifacts)
+    stage_score_scope = _build_stage_score_scope(
+        stage_score_artifacts=stage_score_artifacts,
+        selection_model=selection_model,
+        included_artifacts=coaching_content_artifacts,
     )
     report_evidence_registry_items = build_report_evidence_registry(coaching_content_artifacts)
     report_bounds = _report_day_bounds(period=period, filters=filters)
@@ -5367,7 +5456,7 @@ def build_manager_daily_payload(
         artifacts=coaching_content_artifacts,
         improve_items=improve_items,
     )
-    score_by_stage = _aggregate_stage_scores(artifacts=coaching_content_artifacts)
+    score_by_stage = _aggregate_stage_scores(artifacts=stage_score_artifacts)
     daily_coaching_focus = _build_daily_coaching_focus(
         score_by_stage=score_by_stage,
         key_problem=key_problem,
@@ -5743,6 +5832,7 @@ def build_manager_daily_payload(
         "agreement_outcome_diagnostics": agreement_outcome_diagnostics,
         "manager_facing_completeness": manager_facing_completeness,
         "score_by_stage": score_by_stage,
+        "stage_score_scope": stage_score_scope,
         "situation_evidence_quote": situation_evidence_quote,
         "situation_dialogue_excerpt": situation_dialogue_excerpt,
         "situation_day_evidence_packet": situation_day_evidence_packet,
@@ -5788,10 +5878,7 @@ def build_manager_daily_payload(
                 recommendation_cards=recommendation_cards,
             ),
         },
-        "selection_model": _build_selection_model_counters(
-            window_artifacts=operational_day_artifacts,
-            usable_artifacts=artifacts,
-        ),
+        "selection_model": selection_model,
     }
     payload["meta"]["report_evidence"] = report_evidence_diagnostics["summary"]
     return payload

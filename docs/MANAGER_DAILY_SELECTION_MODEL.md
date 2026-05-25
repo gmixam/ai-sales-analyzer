@@ -99,7 +99,7 @@ when validated.
 
 ### Слой 3: `coaching_core`
 
-**Назначение:** звонки, которые идут в coaching-блоки, deep review, СИТУАЦИЯ ДНЯ, РАЗБОР ЗВОНКА, БАЛЛЫ ПО ЭТАПАМ.
+**Назначение:** звонки, которые идут в narrative/coaching-блоки, deep review, `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`.
 
 **Критерии включения:**
 - классифицированы как `sales`, `follow-up` или иные coaching-релевантные типы;
@@ -114,7 +114,9 @@ when validated.
 - звонки без транскрипта или без анализа.
 
 **Назначение в отчёте:**
-- `coaching_core` используется в коучинговых блоках: СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ;
+- `coaching_core` используется в narrative/coaching-блоках: `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`;
+- `БАЛЛЫ ПО ЭТАПАМ` считаются шире: из всех report-day meaningful calls с reusable analysis и числовыми `score_by_stage`, чтобы stage aggregate не выглядел как оценка только по выбранным coaching examples;
+- `payload.stage_score_scope` обязан показывать manager-facing строку охвата: `Посчитано по N разобранным звонкам из M содержательных звонков дня`; при низком покрытии добавляется предупреждение, что это срез по доступным разборам, а не полная оценка дня;
 - `coaching_core` используется для readiness decision (full_report / signal_report / skip_accumulate);
 - `coaching_core` — это не весь список дня.
 
@@ -563,7 +565,7 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - Explicit opt-in (`include_controlled_samples=true` / `--include-controlled-samples`) allows controlled rows to participate in selection for bounded verification only.
 - Future controlled sample / verification persistence must mark purpose explicitly. Controlled/verification rows must not overwrite a production row with the same `instruction_version`.
 
-**`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в coaching-блоках (СИТУАЦИЯ ДНЯ, БАЛЛЫ ПО ЭТАПАМ, РАЗБОР ЗВОНКА, ГОЛОС КЛИЕНТА, ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ).
+**`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в narrative/coaching-блоках (`СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`). `БАЛЛЫ ПО ЭТАПАМ` используют отдельный day-ready stage-score scope и обязаны показывать охват данных.
 
 **Post-summary outcome alignment (Step 8U):**
 - `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` строится из финального report-day `payload.call_list[]` / `BusinessOutcomeResolver` status, а не из raw `follow_up` по `coaching_core`.

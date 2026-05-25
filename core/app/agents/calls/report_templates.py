@@ -785,6 +785,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {
             **_section_meta(template, "review_block"),
             "stage_rows": _build_stage_score_rows(payload.get("score_by_stage") or []),
+            "stage_score_scope": dict(payload.get("stage_score_scope") or {}),
+            "note": str((payload.get("stage_score_scope") or {}).get("note") or ""),
         },
         {
             **_section_meta(template, "main_focus_for_tomorrow"),
@@ -1676,10 +1678,14 @@ def _render_html_section(section: dict[str, Any]) -> str:
                     "</tr>"
                 )
         body = "".join(rows) or "<tr><td colspan=\"6\">Данные по этапам появятся после накопления базы.</td></tr>"
+        note = (
+            f"<p class=\"muted\">{html.escape(str(section.get('note') or ''))}</p>"
+            if section.get("note") else ""
+        )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
             "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Звонков</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
-            f"<tbody>{body}</tbody></table></div></section>"
+            f"<tbody>{body}</tbody></table>{note}</div></section>"
         )
     if kind == "situation_card":
         scripts = "".join(f"<li>{html.escape(str(item))}</li>" for item in section.get("scripts") or [])
@@ -2391,6 +2397,18 @@ def _render_manager_daily_pdf_report(
 
     page2 = add_page()
     draw_section_bar(page2, top=58, title=review["label"], color=accent)
+    review_table_top = 88
+    if review.get("note"):
+        draw_text(
+            page2,
+            left=margin,
+            top=84,
+            text=str(review.get("note") or ""),
+            size=7.4,
+            color=muted,
+            max_width=width - (margin * 2),
+        )
+        review_table_top = 104
     review_rows = [
         [
             f"{row.get('funnel_label', '')} {row.get('stage_name', '')}".strip(),
@@ -2405,7 +2423,7 @@ def _render_manager_daily_pdf_report(
     review_col_widths = [190, 44, 46, 50, 135, 46]
     review_bottom = draw_table(
         page2,
-        top=88,
+        top=review_table_top,
         columns=["Этап", "Сегодня", "Звонков", "Среднее", "Шкала", "Статус"],
         rows=review_rows,
         col_widths=review_col_widths,
@@ -4745,6 +4763,7 @@ def _manager_status_text_color(
                 "<tr>"
                 f"<td>{html.escape((str(row.get('funnel_label') or '') + ' ' + str(row.get('stage_name') or '')).strip())}</td>"
                 f"<td>{html.escape(str(row.get('score') or '—'))}</td>"
+                f"<td>{html.escape(str(row.get('calls_count') or 0))}</td>"
                 "<td>—</td>"
                 f"<td>{html.escape(str(row.get('bar_text') or '—'))}</td>"
                 f"<td>{'●' if row.get('is_priority') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
@@ -4753,17 +4772,17 @@ def _manager_status_text_color(
             for crit in row.get("criteria_detail") or []:
                 rows.append(
                     "<tr class=\"sub-row\">"
-                    f"<td colspan=\"5\">{html.escape(str(crit.get('name') or 'Критерий'))}: {html.escape(str(crit.get('score') or '—'))}</td>"
+                    f"<td colspan=\"6\">{html.escape(str(crit.get('name') or 'Критерий'))}: {html.escape(str(crit.get('score') or '—'))}</td>"
                     "</tr>"
                 )
-        body = "".join(rows) or "<tr><td colspan=\"5\">Данные по этапам появятся после накопления базы.</td></tr>"
+        body = "".join(rows) or "<tr><td colspan=\"6\">Данные по этапам появятся после накопления базы.</td></tr>"
         note = (
             f"<p class=\"muted\">{html.escape(str(section.get('note') or ''))}</p>"
             if section.get("note") else ""
         )
         return (
             f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">"
-            "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
+            "<table><thead><tr><th>Этап</th><th>Сегодня</th><th>Звонков</th><th>Среднее</th><th>Шкала</th><th>Приоритет</th></tr></thead>"
             f"<tbody>{body}</tbody></table>{note}</div></section>"
         )
     if kind == "situation_card":
