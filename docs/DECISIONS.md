@@ -791,3 +791,13 @@
 - **Причина:** Human-review отчета Толегена за `2026-05-21` показал, что таблица этапов выглядела как оценка дня, хотя фактически считалась по одному звонку из узкого selection slice. Такой блок подрывает доверие к отчету даже тогда, когда сама агрегация технически корректна.
 - **Scope:** `manager_daily` payload, stage-score aggregation, render model, Python HTML/PDF renderer, docx-first generator, tests and docs. Нет изменений STT/LLM prompts, source discovery, final statuses, delivery recipients, scheduler или `rop_weekly`.
 - **Дата:** 2026-05-25
+
+## ADR-080: Временное тестирование через субагентов заменяет только runtime-вызов LLM
+- **Решение:** До стабилизации качества `manager_daily` допускается временный режим `LLM simulation`, в котором реальные `LLM-1`, `LLM-2` и `LLM-3` заменяются субагентами-симуляторами.
+- **Решение:** Субагенты должны получать те же input context и prompt assets, исполнять те же инструкции, возвращать те же JSON contracts, создавать те же downstream artifacts и проходить те же validators, normalizers и quality gates, что и реальные LLM-узлы.
+- **Решение:** Подмена находится только на runtime execution boundary: `CallsAnalyzer._request_llm_content()` для `LLM-1` / `LLM-2` и `_request_llm3_*()` в report composer modules для `LLM-3`. `analyze_call()`, persistence, selection/readiness, report layer, renderer и approved contracts не обходятся и не переписываются ради симуляции.
+- **Решение:** Основной запуск тестовых прогонов выполняется через чат/CLI/API, а не через operator UI. UI может использоваться только для просмотра результата, если это удобно.
+- **Решение:** Каждый simulated run должен сохранять временные input/output артефакты по узлам вместе с существующими persisted artifacts (`Interaction.text`, `Analysis.scores_detail`, `Analysis.raw_llm_response`, `interaction.metadata.ai_routing`, report observability).
+- **Причина:** Текущий механизм отчета сложно отлаживать на реальных LLM-вызовах: дорого, медленно и трудно локализовать, где именно возникает деградация качества. Временная подмена LLM на субагентов дает управляемые повторы без создания параллельного pipeline.
+- **Scope:** temporary testing/operating mode and bounded runtime execution boundary. STT-сервис не создается, database schema не меняется, UI не становится основным запуском тестов, approved analyzer/report contracts не меняются, validators/normalizers/quality gates не обходятся.
+- **Дата:** 2026-05-25

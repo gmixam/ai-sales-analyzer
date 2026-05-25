@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     ai_llm3_providers_json: str = Field(default="")
     ai_llm3_fixed_account_alias: str = Field(default="")
     ai_llm3_force_account_alias: str = Field(default="")
+    ai_llm_simulation_enabled: bool = Field(default=False)
+    ai_llm_simulation_run_id: str = Field(default="")
+    ai_llm_simulation_seed: str = Field(default="")
+    ai_llm_simulation_artifact_dir: str = Field(default="/tmp/asa_llm_sim_runs")
 
     # OnlinePBX
     onlinepbx_domain: str

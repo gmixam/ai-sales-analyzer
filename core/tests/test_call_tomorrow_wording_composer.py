@@ -68,6 +68,15 @@ class CallTomorrowWordingComposerTests(unittest.TestCase):
                         "why_this_wording": "Фраза продолжает согласованный канал и сразу фиксирует следующий шаг.",
                     }
                 ],
+                "_routing": {
+                    "layer": "llm3",
+                    "request_kind": "call_tomorrow_wording_composer",
+                    "execution_status": "simulated",
+                    "simulated": True,
+                    "simulation_run_id": "composer-test-run",
+                    "input_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_call_tomorrow_input.json",
+                    "output_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_call_tomorrow_output.json",
+                },
             }
 
         module._request_llm3_call_tomorrow_wording = fake_request
@@ -80,6 +89,9 @@ class CallTomorrowWordingComposerTests(unittest.TestCase):
         self.assertIn("не потерять следующий контакт", contact["reason"])
         self.assertIn("Когда удобно обсудить", contact["opening_script"])
         self.assertEqual(contact["wording_source"], "report_evidence.call_tomorrow_wording_composer.v1")
+        routing = result["selection_diagnostics"]["wording_composer"]["llm3_routing"]
+        self.assertEqual(routing["execution_status"], "simulated")
+        self.assertIn("/tmp/asa_llm_sim_runs/", routing["output_artifact"])
 
     def test_llm3_cannot_change_contact_count(self) -> None:
         module = _load_module()

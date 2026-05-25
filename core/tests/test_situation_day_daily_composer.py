@@ -175,6 +175,59 @@ class SituationDayDailyComposerTests(unittest.TestCase):
         self.assertIn("Клиент:", result["evidence_scene"])
         self.assertEqual(result["source_fact_ids"], ["fact-from-builder"])
 
+    def test_llm3_simulated_json_preserves_daily_normalizer_and_routing_diagnostics(self) -> None:
+        original_request = situation_day_daily_composer._request_llm3_daily_situation
+
+        def fake_request(payload):
+            candidate = payload["candidates"][0]
+            return {
+                "status": "verified",
+                "selected_call_id": candidate["call_id"],
+                "situation_title": "Следующий шаг остался без управления",
+                "moment_summary": "Клиент попросил КП, а менеджер не уточнил задачу и срок.",
+                "what_happened": "Клиент попросил КП, менеджер согласился отправить без уточнения критериев.",
+                "call_context_summary": "Клиент просит коммерческое предложение и ждет предметный следующий шаг.",
+                "manager_error": "Менеджер не уточнил критерии, срок и участников решения.",
+                "stage_code": candidate["stage_code"],
+                "proof_type": candidate["proof_type"],
+                "evidence_scene": candidate["evidence_scene"],
+                "dialogue_turns": candidate["dialogue_turns"],
+                "evidence_quotes": candidate["evidence_quotes"],
+                "supporting_quote": candidate["supporting_quote"],
+                "why_it_matters": "Без уточнений КП превращается в формальную отправку без управления сделкой.",
+                "next_time_action": "Сначала уточнить задачу и закрепить дату возврата.",
+                "scripts": [
+                    "Давайте уточню задачу и срок, чтобы КП было предметным.",
+                    "Когда удобно вернуться к обсуждению после того, как вы посмотрите КП?",
+                ],
+                "selection_reason": "llm3_simulation_selected_manager_gap",
+                "_routing": {
+                    "layer": "llm3",
+                    "request_kind": "situation_day_daily_composer",
+                    "execution_status": "simulated",
+                    "simulated": True,
+                    "simulation_run_id": "composer-test-run",
+                    "input_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_situation_day_input.json",
+                    "output_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_situation_day_output.json",
+                },
+            }
+
+        try:
+            situation_day_daily_composer._request_llm3_daily_situation = fake_request
+            result = compose_daily_situation_day(
+                {"evidence_items": [_manager_gap()]},
+                llm3_enabled=True,
+            )
+        finally:
+            situation_day_daily_composer._request_llm3_daily_situation = original_request
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["selection_reason"], "llm3_simulation_selected_manager_gap")
+        llm3_diagnostics = result["diagnostics"]["llm3"]
+        self.assertTrue(llm3_diagnostics["llm3_used"])
+        self.assertEqual(llm3_diagnostics["llm3_routing"]["execution_status"], "simulated")
+        self.assertIn("/tmp/asa_llm_sim_runs/", llm3_diagnostics["llm3_routing"]["input_artifact"])
+
 
 if __name__ == "__main__":
     unittest.main()

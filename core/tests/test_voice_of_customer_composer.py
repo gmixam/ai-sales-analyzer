@@ -187,6 +187,15 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
                         ),
                     ]
                 ],
+                "_routing": {
+                    "layer": "llm3",
+                    "request_kind": "voice_of_customer_composer",
+                    "execution_status": "simulated",
+                    "simulated": True,
+                    "simulation_run_id": "composer-test-run",
+                    "input_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_voice_of_customer_input.json",
+                    "output_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_voice_of_customer_output.json",
+                },
             }
 
         module._request_llm3_voice_of_customer = fake_request
@@ -197,6 +206,10 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "verified")
         self.assertTrue(result["selection_diagnostics"]["llm3"]["llm3_used"])
+        self.assertEqual(
+            result["selection_diagnostics"]["llm3"]["llm3_routing"]["execution_status"],
+            "simulated",
+        )
         self.assertEqual(result["source_note"], "report_evidence.voice_of_customer_composer.v2")
         self.assertEqual(result["selection_diagnostics"]["composer_version"], "voice_of_customer_composer_v2")
 

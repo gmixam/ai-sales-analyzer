@@ -440,6 +440,15 @@ class CallBreakdownComposerTests(unittest.TestCase):
                         "evidence_refs": inputs["transcript_scenes"][0]["evidence_refs"],
                     },
                 ],
+                "_routing": {
+                    "layer": "llm3",
+                    "request_kind": "call_breakdown_composer",
+                    "execution_status": "simulated",
+                    "simulated": True,
+                    "simulation_run_id": "composer-test-run",
+                    "input_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_call_breakdown_input.json",
+                    "output_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_call_breakdown_output.json",
+                },
             }
 
         module._request_llm3_call_breakdown = fake_request
@@ -457,6 +466,10 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertTrue(result.get("call_story"))
         self.assertTrue(result.get("key_turning_points"))
         self.assertIn("завтра до 12:00", result["rows"][0][3])
+        self.assertEqual(
+            result["selection_diagnostics"]["llm3_routing"]["execution_status"],
+            "simulated",
+        )
 
     def test_weak_llm3_b2b_breakdown_falls_back_to_deterministic_result(self) -> None:
         module = _load_call_breakdown_composer_module()

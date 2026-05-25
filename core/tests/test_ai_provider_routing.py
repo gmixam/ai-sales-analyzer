@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import importlib.util
 import json
 import sys
 import unittest
@@ -75,6 +76,50 @@ def _build_settings(**overrides: object) -> Settings:
     }
     base.update(overrides)
     return Settings(**base)
+
+
+def _llm_simulation_contract_available() -> bool:
+    """Return True once the shared LLM simulation integration is present."""
+    module_candidates = (
+        "app.agents.calls.llm_simulation",
+        "app.core_shared.llm_simulation",
+        "app.core_shared.ai_llm_simulation",
+        "app.core_shared.llm_simulation_executor",
+        "app.core_shared.config.llm_simulation",
+        "app.core_shared.testing.llm_simulation",
+    )
+    for name in module_candidates:
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except ModuleNotFoundError:
+            continue
+    return "ai_llm_simulation_enabled" in getattr(Settings, "model_fields", {})
+
+
+def _simulation_metadata_is_marked(metadata: dict[str, object]) -> bool:
+    """Accept a small set of explicit simulation audit markers."""
+    if metadata.get("simulated") is True:
+        return True
+    if metadata.get("execution_status") == "simulated":
+        return True
+    return "simulat" in json.dumps(metadata, ensure_ascii=False).lower()
+
+
+def _simulation_artifact_metadata_present(metadata: dict[str, object]) -> bool:
+    """Return True when routing metadata points at simulation input/output artifacts."""
+    flattened = json.dumps(metadata, ensure_ascii=False)
+    if "/tmp/asa_llm_sim_runs/" in flattened:
+        return True
+    return any("artifact" in str(key).lower() and value for key, value in metadata.items())
+
+
+def _simulation_env() -> dict[str, str]:
+    return {
+        "AI_LLM_SIMULATION_ENABLED": "true",
+        "AI_LLM_SIMULATION_RUN_ID": "routing-test-run",
+        "AI_LLM_SIMULATION_SEED": "routing-test-seed",
+    }
 
 
 class AIProviderRoutingTests(unittest.TestCase):
@@ -418,6 +463,138 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertEqual(candidate.execution_mode, "openai_compatible")
         self.assertEqual(metadata["request_kind"], "classification_first_pass")
         self.assertEqual(metadata["execution_status"], "executed")
+
+    @unittest.skipUnless(
+        _llm_simulation_contract_available(),
+        "shared LLM simulation executor/settings integration is not present yet",
+    )
+    def test_llm1_simulation_bypasses_openai_and_persists_routing_artifacts(self) -> None:
+        settings = _build_settings(
+            ai_llm1_providers_json="""
+            [
+              {
+                "provider": "openai",
+                "account_alias": "llm1_simulated_route",
+                "model": "gpt-4o-mini",
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base": "https://example-openai-compatible.test/v1"
+              }
+            ]
+            """,
+        )
+        analyzer = CallsAnalyzer(
+            department_id="00000000-0000-0000-0000-000000000001",
+            db=None,
+        )
+        analyzer.ai_router = AIProviderRouter(app_settings=settings)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="sim-llm1-call",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=240,
+            text="Клиент попросил отправить материалы и вернуться завтра.",
+            metadata_={"external_call_code": "sim-llm1-call"},
+        )
+
+        with patch.dict(os.environ, _simulation_env(), clear=False), patch(
+            "app.agents.calls.analyzer.OpenAI",
+            side_effect=AssertionError("OpenAI must not be called in LLM simulation mode"),
+        ):
+            result = analyzer._request_llm1_first_pass(
+                interaction=interaction,
+                instruction_version="test-instruction",
+            )
+
+        self.assertIsInstance(result["classification"], dict)
+        self.assertIsInstance(result["summary"], dict)
+        self.assertIn("follow_up", result)
+        llm1_metadata = interaction.metadata_["ai_routing"]["llm1"]
+        self.assertEqual(llm1_metadata["selected_account_alias"], "llm1_simulated_route")
+        self.assertEqual(llm1_metadata["request_kind"], "classification_first_pass")
+        self.assertTrue(_simulation_metadata_is_marked(llm1_metadata))
+        self.assertTrue(_simulation_artifact_metadata_present(llm1_metadata))
+
+    @unittest.skipUnless(
+        _llm_simulation_contract_available(),
+        "shared LLM simulation executor/settings integration is not present yet",
+    )
+    def test_llm2_simulation_returns_valid_contract_json_and_persists_routing_artifacts(self) -> None:
+        settings = _build_settings(
+            ai_llm2_providers_json="""
+            [
+              {
+                "provider": "openai",
+                "account_alias": "llm2_simulated_route",
+                "model": "gpt-4o",
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base": "https://example-openai-compatible.test/v1"
+              }
+            ]
+            """,
+        )
+        analyzer = CallsAnalyzer(
+            department_id="00000000-0000-0000-0000-000000000001",
+            db=None,
+        )
+        analyzer.ai_router = AIProviderRouter(app_settings=settings)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="sim-llm2-call",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=360,
+            text=(
+                "Клиент: Скиньте КП в WhatsApp, я посмотрю. "
+                "Менеджер: Хорошо, отправлю и завтра перезвоню."
+            ),
+            metadata_={
+                "external_call_code": "sim-llm2-call",
+                "call_date": "2026-05-14 09:00:00",
+                "direction": "out",
+            },
+        )
+        messages = [
+            {"role": "system", "content": analyzer.get_prompt_assets().analyze},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    analyzer.build_prompt_context(
+                        interaction=interaction,
+                        instruction_version=APPROVED_INSTRUCTION_VERSION,
+                    ),
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        with patch.dict(os.environ, _simulation_env(), clear=False), patch(
+            "app.agents.calls.analyzer.OpenAI",
+            side_effect=AssertionError("OpenAI must not be called in LLM simulation mode"),
+        ):
+            content = analyzer._request_analysis_content(
+                interaction=interaction,
+                messages=messages,
+                instruction_version=APPROVED_INSTRUCTION_VERSION,
+            )
+
+        raw = json.loads(content)
+        self.assertIsInstance(raw, dict)
+        normalized = analyzer._load_and_validate_contract(
+            content=content,
+            interaction=interaction,
+            instruction_version=APPROVED_INSTRUCTION_VERSION,
+        )
+        self.assertEqual(normalized["call"]["call_id"], str(interaction.id))
+        self.assertIsInstance(normalized["score_by_stage"], list)
+        self.assertTrue(normalized["score_by_stage"])
+        llm2_metadata = interaction.metadata_["ai_routing"]["llm2"]
+        self.assertEqual(llm2_metadata["selected_account_alias"], "llm2_simulated_route")
+        self.assertEqual(llm2_metadata["request_kind"], "approved_contract_generation")
+        self.assertTrue(_simulation_metadata_is_marked(llm2_metadata))
+        self.assertTrue(_simulation_artifact_metadata_present(llm2_metadata))
 
     def test_llm1_first_pass_executes_and_persists_usage_metadata(self) -> None:
         settings = _build_settings(

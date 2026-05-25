@@ -506,7 +506,6 @@ class VoiceOfCustomerQualityGate:
         quote_norm = _loose_norm(signal.quote)
         context = " ".join([signal.quote, signal.quote_context, signal.interpretation])
         evidence_context_norm = _loose_norm(" ".join([signal.quote, signal.quote_context]))
-        quote_context_norm = _loose_norm(signal.quote_context)
         if signal.speaker not in {"client", "unknown", "context"}:
             return "not_customer_signal"
         if not _has_enough_context(signal.quote_context):
@@ -740,13 +739,25 @@ def _try_llm3_voice_of_customer(
 
 
 def _request_llm3_voice_of_customer(payload: dict[str, Any]) -> dict[str, Any]:
+    prompt = _read_llm3_prompt()
+    subject_key = "voice_of_customer_composer"
+    simulated = _request_llm3_simulation(
+        payload=payload,
+        prompt=prompt,
+        request_kind="voice_of_customer_composer",
+        subject_key=subject_key,
+        input_artifact="llm3_voice_of_customer_input.json",
+        output_artifact="llm3_voice_of_customer_output.json",
+        notes="LLM-3 Voice Of Customer composer simulated.",
+    )
+    if simulated is not None:
+        return simulated
+
     from openai import OpenAI
 
     from app.core_shared.ai_routing import AIProviderRouter
     from app.core_shared.config.settings import settings
 
-    prompt = _read_llm3_prompt()
-    subject_key = "voice_of_customer_composer"
     route_plan = AIProviderRouter().build_route_plan(layer="llm3", subject_key=subject_key)
     candidate = route_plan.current_candidate()
     compatibility_candidate = candidate
@@ -787,6 +798,159 @@ def _request_llm3_voice_of_customer(payload: dict[str, Any]) -> dict[str, Any]:
         notes="LLM-3 Voice Of Customer composer completed.",
     )
     return result
+
+
+def _request_llm3_simulation(
+    *,
+    payload: dict[str, Any],
+    prompt: str,
+    request_kind: str,
+    subject_key: str,
+    input_artifact: str,
+    output_artifact: str,
+    notes: str,
+) -> dict[str, Any] | None:
+    try:
+        from app.agents.calls import llm_simulation
+    except Exception:
+        return None
+
+    enabled = _llm_simulation_enabled(llm_simulation)
+    if enabled is False:
+        return None
+    executor = _llm_simulation_executor(llm_simulation)
+    if executor is None:
+        if enabled is True:
+            raise RuntimeError("LLM simulation is enabled but no LLM-3 simulation executor is available")
+        return None
+
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    context = {
+        "layer": "llm3",
+        "node": request_kind,
+        "request_kind": request_kind,
+        "subject_key": subject_key,
+        "prompt": prompt,
+        "system_prompt": prompt,
+        "payload": payload,
+        "input_payload": payload,
+        "messages": messages,
+        "input_artifact": input_artifact,
+        "input_artifact_name": input_artifact,
+        "output_artifact": output_artifact,
+        "output_artifact_name": output_artifact,
+    }
+    _write_llm_simulation_artifact(llm_simulation, input_artifact, payload, context)
+    raw = _call_llm_simulation_callable(executor, context)
+    if raw is None:
+        if enabled is True:
+            raise RuntimeError("LLM simulation is enabled but executor returned no LLM-3 result")
+        return None
+    result = _as_dict(raw)
+    result.setdefault(
+        "_routing",
+        {
+            "layer": "llm3",
+            "provider": "llm_simulation",
+            "simulation": True,
+            "request_kind": request_kind,
+            "subject_key": subject_key,
+            "notes": notes,
+        },
+    )
+    _write_llm_simulation_artifact(llm_simulation, output_artifact, result, context)
+    return result
+
+
+def _llm_simulation_enabled(llm_simulation: Any) -> bool | None:
+    for name in (
+        "is_llm_simulation_enabled",
+        "llm_simulation_enabled",
+        "simulation_enabled",
+        "is_enabled",
+        "enabled",
+    ):
+        value = getattr(llm_simulation, name, None)
+        if callable(value):
+            try:
+                return bool(value(layer="llm3"))
+            except TypeError:
+                return bool(value())
+        if value is not None:
+            return bool(value)
+    return None
+
+
+def _llm_simulation_executor(llm_simulation: Any) -> Any | None:
+    for name in (
+        "request_llm3_composer",
+        "request_llm3",
+        "request_llm_simulation",
+        "run_llm_simulation",
+        "simulate_llm_call",
+        "simulate",
+        "execute",
+    ):
+        executor = getattr(llm_simulation, name, None)
+        if callable(executor):
+            return executor
+    return None
+
+
+def _write_llm_simulation_artifact(
+    llm_simulation: Any,
+    artifact_name: str,
+    payload: Any,
+    context: dict[str, Any],
+) -> None:
+    for name in (
+        "write_llm_artifact",
+        "write_simulation_artifact",
+        "save_llm_artifact",
+        "save_simulation_artifact",
+        "record_llm_artifact",
+        "record_artifact",
+    ):
+        writer = getattr(llm_simulation, name, None)
+        if callable(writer):
+            _call_llm_simulation_callable(
+                writer,
+                {
+                    **context,
+                    "artifact_name": artifact_name,
+                    "name": artifact_name,
+                    "filename": artifact_name,
+                    "data": payload,
+                    "value": payload,
+                    "payload": payload,
+                },
+            )
+            return
+
+
+def _call_llm_simulation_callable(func: Any, kwargs: dict[str, Any]) -> Any:
+    import inspect
+
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return func(**kwargs)
+    parameters = signature.parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return func(**kwargs)
+    accepted = {
+        name: kwargs[name]
+        for name in parameters
+        if name in kwargs
+    }
+    if accepted or not parameters:
+        return func(**accepted)
+    if len(parameters) == 1:
+        return func(kwargs["payload"])
+    return func(**accepted)
 
 
 def _normalize_llm3_voice_of_customer(

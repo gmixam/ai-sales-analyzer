@@ -196,6 +196,57 @@ class SituationDayComposerTests(unittest.TestCase):
         self.assertLessEqual(len(payload["candidates"]), 8)
         self.assertIn("required_output_keys", payload)
 
+    def test_llm3_simulated_json_rewrite_passes_quality_gate_and_keeps_routing(self) -> None:
+        call_id = str(uuid4())
+        transcript = (
+            "Клиент: У нас 150 АВР в месяц, бухгалтерия создает документы, "
+            "региональный менеджер проверяет ставку и реквизиты. Нужны роли "
+            "доступа по регионам и общий доступ руководства. Менеджер: Да, можно. "
+            "Клиент: Тогда я ожидаю сумму тарифа до 10 человек. Менеджер: Я уточню "
+            "тариф и перезвоню."
+        )
+        llm3_writer = situation_day_composer.LLM3SituationDayWriter()
+        llm3_writer.enabled = lambda: True
+
+        def fake_request(*, candidates):
+            selected = candidates[0]
+            return {
+                "status": "verified",
+                "selected_candidate_id": selected.candidate_id,
+                "selected_call_id": selected.call_id,
+                "problem_title": "B2B-запрос остался без управляемого следующего шага",
+                "client_context": selected.client_context,
+                "evidence_scene": selected.evidence_scene,
+                "manager_gap": selected.manager_gap,
+                "why_it_matters": selected.why_it_matters,
+                "next_time_action": selected.next_time_action,
+                "suggested_phrase": selected.suggested_phrase,
+                "proof_type": selected.proof_type,
+                "proof_strength": selected.proof_strength,
+                "_routing": {
+                    "layer": "llm3",
+                    "request_kind": "situation_day_composer",
+                    "execution_status": "simulated",
+                    "simulated": True,
+                    "simulation_run_id": "composer-test-run",
+                    "input_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_situation_day_input.json",
+                    "output_artifact": "/tmp/asa_llm_sim_runs/composer-test-run/llm3_situation_day_output.json",
+                },
+            }
+
+        llm3_writer._request = fake_request
+        composer = SituationDayComposer(llm3_writer=llm3_writer)
+
+        result = composer.compose([_artifact(transcript, interaction_id=call_id)])
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["selected_call_id"], call_id)
+        self.assertTrue(result["quality_diagnostics"]["llm3"]["llm3_used"])
+        self.assertEqual(
+            result["quality_diagnostics"]["llm3"]["llm3_routing"]["execution_status"],
+            "simulated",
+        )
+
     def test_composer_exposes_internal_candidate_pool(self) -> None:
         composer = SituationDayComposer()
         transcript = (

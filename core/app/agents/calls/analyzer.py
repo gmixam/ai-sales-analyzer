@@ -18,6 +18,11 @@ from app.core_shared.ai_routing import AIProviderRouter
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Interaction
 from app.core_shared.exceptions import AnalysisError, LLMResponseError, SemanticAnalysisError
+from app.agents.calls.llm_simulation import (
+    request_simulated_llm_content,
+    simulated_routing_metadata,
+    simulation_enabled,
+)
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 MVP1_SOURCE_FILE_NAMES = {
@@ -1201,6 +1206,56 @@ class CallsAnalyzer:
             "llm1": "LLM-1",
             "llm2": "LLM-2",
         }.get(layer, layer.upper())
+        if simulation_enabled():
+            route_plan = self.ai_router.build_route_plan(
+                layer=layer,
+                subject_key=str(interaction.id),
+            )
+            selected = route_plan.current_candidate()
+            content = request_simulated_llm_content(
+                layer=layer,
+                request_kind=request_kind,
+                messages=messages,
+                subject_key=str(interaction.id),
+                instruction_version=instruction_version,
+            )
+            layer_metadata = simulated_routing_metadata(
+                layer=layer,
+                request_kind=request_kind,
+                subject_key=str(interaction.id),
+            )
+            layer_metadata.update(
+                {
+                    "policy": route_plan.policy,
+                    "requested_policy": route_plan.requested_policy,
+                    "forced_override": route_plan.forced_override,
+                    "force_reason": route_plan.force_reason or "ai_llm_simulation_enabled",
+                    "configured_pool_size": route_plan.configured_pool_size,
+                    "selected_provider": selected.provider,
+                    "selected_account_alias": selected.account_alias,
+                    "selected_api_key_env": selected.api_key_env,
+                    "selected_model": selected.model,
+                    "selected_api_base": selected.api_base,
+                    "selected_endpoint": selected.endpoint,
+                    "selected_timeout_sec": selected.timeout_sec,
+                    "selected_max_retries_for_this_provider": (
+                        selected.max_retries_for_this_provider
+                    ),
+                    "selected_execution_mode": "simulation",
+                }
+            )
+            self._store_ai_routing_metadata(
+                interaction=interaction,
+                layer_metadata=layer_metadata,
+            )
+            self.logger.info(
+                "analyzer.llm_simulated",
+                interaction_id=str(interaction.id),
+                instruction_version=instruction_version,
+                layer=layer,
+                request_kind=request_kind,
+            )
+            return content
         route_plan = self.ai_router.build_route_plan(
             layer=layer,
             subject_key=str(interaction.id),
