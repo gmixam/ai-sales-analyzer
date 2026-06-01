@@ -45,6 +45,25 @@ _REFUSAL_TERMS = (
     "не такие большие объём",
 )
 _SERVICE_TERMS = ("ошиб", "не получилось", "не смог", "не смогла", "техподдерж", "сервис")
+_GENERIC_OPEN_ENDED_TERMS = (
+    "понять текущий интерес",
+    "уточнить актуальность",
+    "договориться о следующем шаге",
+    "договориться о конкретном следующем шаге",
+    "есть ли смысл двигаться дальше",
+    "поддерживать связь",
+    "общий follow up",
+    "общий follow-up",
+)
+_PROFILE_ALIGNMENT_TERMS: dict[str, tuple[str, ...]] = {
+    "invoice_payment": ("счет", "счёт", "оплат", "выстав", "получ", "срок"),
+    "meeting_demo": ("встреч", "демо", "презентац", "zoom", "зум", "участ", "повест"),
+    "materials_request": ("материал", "информац", "коммерческ", "кп", "whatsapp", "ватсап", "отправ", "обсуд"),
+    "internal_discussion": ("обсуд", "коллег", "аргумент", "соглас", "решени"),
+    "rescheduled": ("вернуться", "перезвон", "продолж", "напомн", "согласован"),
+    "trust_barrier": ("довер", "безопас", "канал", "whatsapp", "ватсап", "email", "почт", "провер"),
+    "agreement": ("договор", "подтверд", "соглас"),
+}
 
 
 def compose_call_tomorrow_wording(
@@ -75,15 +94,21 @@ def compose_call_tomorrow_wording(
             updated_contacts.append(contact)
             continue
         updated = dict(contact)
-        updated["reason"] = _first_text(improved.get("reason"), contact.get("reason")) or ""
+        updated["reason"] = _clean_manager_field(
+            _first_text(improved.get("reason"), contact.get("reason")) or ""
+        )
         updated["next_step"] = _ensure_sentence(
-            _first_text(improved.get("next_step"), contact.get("next_step")) or ""
+            _clean_manager_field(
+                _first_text(improved.get("next_step"), contact.get("next_step")) or ""
+            )
         )
         updated["recommendation"] = updated["next_step"]
-        updated["opening_script"] = _first_text(
-            improved.get("opening_script"),
-            contact.get("opening_script"),
-        ) or ""
+        updated["opening_script"] = _clean_manager_field(
+            _first_text(
+                improved.get("opening_script"),
+                contact.get("opening_script"),
+            ) or ""
+        )
         updated["wording_source"] = CALL_TOMORROW_WORDING_SOURCE
         updated["wording_reason"] = _first_text(improved.get("why_this_wording")) or ""
         updated_contacts.append(updated)
@@ -391,9 +416,13 @@ def _normalize_llm3_call_tomorrow_wording(
         expected_key = str(source.get("contact_key") or "")
         if str(item.get("contact_key") or "") != expected_key:
             return None, "contact_key_or_order_changed"
-        reason = _first_text(item.get("reason"), source.get("reason")) or ""
-        next_step = _ensure_sentence(_first_text(item.get("next_step"), source.get("next_step")) or "")
-        opening_script = _first_text(item.get("opening_script"), source.get("opening_script")) or ""
+        reason = _clean_manager_field(_first_text(item.get("reason"), source.get("reason")) or "")
+        next_step = _ensure_sentence(
+            _clean_manager_field(_first_text(item.get("next_step"), source.get("next_step")) or "")
+        )
+        opening_script = _clean_manager_field(
+            _first_text(item.get("opening_script"), source.get("opening_script")) or ""
+        )
         why = _first_text(item.get("why_this_wording")) or ""
         probe = " ".join([reason, next_step, opening_script, why])
         if not _manager_facing_russian_enough(probe):
@@ -445,6 +474,10 @@ def _wording_rejection_reason(
         return "sales_push_after_refusal"
     if _has_any(evidence, _SERVICE_TERMS) and _has_any(output, _SALES_PUSH_TERMS):
         return "sales_push_before_service_issue_closed"
+    profile = _text(source.get("action_profile")).lower()
+    alignment = _PROFILE_ALIGNMENT_TERMS.get(profile)
+    if alignment and _has_any(output, _GENERIC_OPEN_ENDED_TERMS):
+        return "generic_follow_up_over_concrete_signal"
     unsupported_terms = _SALES_PUSH_TERMS
     for term in unsupported_terms:
         normalized = _loose_norm(term)
@@ -537,6 +570,13 @@ def _first_text(*values: Any) -> str | None:
 
 def _text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _clean_manager_field(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    return re.sub(r"(?i)\bконтекст\s*:\s*", "", text).strip()
 
 
 def _loose_norm(value: Any) -> str:

@@ -44,8 +44,17 @@ class DatabaseError(ASAError):
 class LLMResponseError(AnalysisError):
     """LLM вернул невалидный JSON или не прошёл Pydantic-валидацию."""
 
-    def __init__(self, message: str, interaction_id: str, raw_response: str = ""):
+    def __init__(
+        self,
+        message: str,
+        interaction_id: str,
+        raw_response: str = "",
+        normalized_result: dict | None = None,
+        reason_code: str = "",
+    ):
         self.raw_response = raw_response
+        self.normalized_result = normalized_result or {}
+        self.reason_code = reason_code
         super().__init__(message=message, interaction_id=interaction_id, original=None)
 
 
@@ -60,6 +69,10 @@ class SemanticAnalysisError(LLMResponseError):
         normalized_result: dict | None = None,
         reason_code: str = "",
     ):
-        self.normalized_result = normalized_result or {}
-        self.reason_code = reason_code
-        super().__init__(message=message, interaction_id=interaction_id, raw_response=raw_response)
+        super().__init__(
+            message=message,
+            interaction_id=interaction_id,
+            raw_response=raw_response,
+            normalized_result=normalized_result,
+            reason_code=reason_code,
+        )

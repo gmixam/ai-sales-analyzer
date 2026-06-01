@@ -174,6 +174,9 @@
 Довести daily/weekly отчёты до business-ready presentation layer перед пилотом.
 Для `manager_daily` текущий фокус уже вышел за чистое оформление: отчет должен
 передавать смысл дня, но без полной post-pilot архитектуры rich-reporting.
+На 2026-05-27 работа идет в режиме Gate 5 block-by-block калибровки качества
+после test Telegram previews по контрольным датам `2026-05-18`,
+`2026-05-19`, `2026-05-20`.
 
 ### Что должно быть на выходе
 - polished business-facing report structure
@@ -183,6 +186,7 @@
 - consistent list-of-calls presentation
 - grounded narrative blocks for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, and follow-up actions
 - clear role boundary: LLM2 produces per-call evidence, LLM3 composes bounded narrative blocks, Report Layer validates/renders
+- fact/evidence gates remain strict while form/table constraints move to LLM3 instructions, repair or diagnostics where safe
 - no auto-send to business without operator review
 - no external CRM/revenue/money integration unless separately reopened
 
@@ -269,11 +273,14 @@
 - ready-only/no-delivery preview flow for report-quality review.
 
 Что является следующим главным фокусом:
-- перезапустить LLM2-ready data for one manager on 2026-05-19;
-- собрать свежий `manager_daily` preview без доставки;
-- сравнить смысловое качество `Ситуации дня` и связанных narrative blocks;
-- закрыть DDC-11 residual for scene-specific `Как сделать лучше` / examples;
-- затем убрать legacy test expectations around the old `Разбор звонка` table shape.
+- Gate 5 Block 1: `БАЛЛЫ ПО ЭТАПАМ` + `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ` +
+  `КОНТАКТЫ В РАБОТУ`;
+- ввести единый manager-facing status source для summary, appendix,
+  follow-up selection и diagnostics;
+- переименовать follow-up block так, чтобы он не обещал только `завтра`;
+- повторно проверить контрольные отчеты `2026-05-18`, `2026-05-19`,
+  `2026-05-20` через operator/test preview;
+- не переходить к Block 2 до acceptance Block 1.
 
 Что не является текущим фокусом:
 - broad evidence/action consistency pass for money, warm pipeline, challenge and other non-current blocks;

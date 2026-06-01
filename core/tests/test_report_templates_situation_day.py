@@ -103,6 +103,76 @@ class SituationDayTemplateTests(unittest.TestCase):
         self.assertNotIn("Варианты речёвок", html)
         self.assertNotIn("situation_day_quote_not_grounded_in_transcript", html)
 
+    def test_evidence_status_labels_are_localized_in_visible_text(self) -> None:
+        report_templates = _load_report_templates_module()
+        section = {
+            "id": "situation_day",
+            "label": "СИТУАЦИЯ ДНЯ",
+            "kind": "situation_card",
+            "coaching_view": {
+                "pattern_title": "Следующий шаг подтвержден звонком",
+                "situation_day_evidence_status": "verified",
+                "proof_strength": "strong",
+                "what_happened": "Менеджер зафиксировал следующий шаг.",
+            },
+        }
+
+        visible_text = "\n".join(report_templates._section_to_text_lines(section))
+        html_visible_text = re.sub(r"<[^>]+>", " ", report_templates._render_html_section(section))
+
+        self.assertIn("подтверждено / сильная доказательная база", visible_text)
+        self.assertNotRegex(visible_text, r"\b(verified|strong|medium)\b")
+        self.assertNotRegex(html_visible_text, r"\b(verified|strong|medium)\b")
+
+    def test_call_list_visible_render_uses_compact_shape(self) -> None:
+        report_templates = _load_report_templates_module()
+        section = {
+            "id": "call_list",
+            "label": "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ",
+            "kind": "table",
+            "columns": ["#", "Клиент", "Тип / суть", "Контекст", "Статус"],
+            "rows": [["1", "Алия", "Продажи", "Клиент попросил КП", "Договорённость"]],
+            "compact_columns": ["Статус", "В работу", "Когда", "Суть звонка / договорённость"],
+            "compact_rows": [["Договорённость", "Да", "10:00", "Алия. Клиент попросил КП"]],
+        }
+
+        visible_text = "\n".join(report_templates._section_to_text_lines(section))
+        html_doc = report_templates._render_html_section(section)
+
+        self.assertIn("Статус | В работу | Когда | Суть звонка / договорённость", visible_text)
+        self.assertIn("Договорённость | Да | 10:00 | Алия. Клиент попросил КП", visible_text)
+        self.assertIn("<th>В работу</th>", html_doc)
+        self.assertNotIn("<th>Тип / суть</th>", html_doc)
+
+    def test_call_list_compact_rows_preserve_existing_payload_facts(self) -> None:
+        report_templates = _load_report_templates_module()
+
+        rows = report_templates._build_call_list_compact_rows(
+            call_list_raw=[
+                {
+                    "interaction_id": "call-1",
+                    "client_call_reference": "Алия · 10:00",
+                    "time_label": "10:00",
+                    "call_list_status": "agreed",
+                    "call_list_topic": "Клиент попросил КП",
+                    "call_list_context": "Договорились отправить КП в WhatsApp.",
+                }
+            ],
+            call_tomorrow_contacts=[
+                {
+                    "interaction_id": "call-1",
+                    "client_call_reference": "Алия · 10:00",
+                }
+            ],
+        )
+
+        self.assertEqual(rows[0][0], "Договорённость")
+        self.assertEqual(rows[0][1], "Да")
+        self.assertEqual(rows[0][2], "10:00")
+        self.assertIn("Алия · 10:00", rows[0][3])
+        self.assertIn("Клиент попросил КП", rows[0][3])
+        self.assertIn("Договорились отправить КП в WhatsApp", rows[0][3])
+
     def test_manager_daily_pdf_insufficient_situation_day_hides_detail_rows(self) -> None:
         report_templates = _load_report_templates_module()
         template = report_templates.load_report_template("manager_daily")

@@ -382,7 +382,7 @@ def build_call_breakdown_llm3_payload(
     selected = dict(selected_call or {})
     packet = dict(situation_evidence_packet or {})
     scenes = list(transcript_scenes or [])
-    facts = dict(llm2_facts or {})
+    facts = _bounded_llm2_facts_for_llm3(llm2_facts)
     complex_b2b_detected = _detect_complex_b2b_from_payload_parts(
         selected_call=selected,
         situation_evidence_packet=packet,
@@ -404,6 +404,7 @@ def build_call_breakdown_llm3_payload(
             "fragment_context_min_chars": 90,
             "fragment_must_be_mini_scene": True,
             "same_call_only": True,
+            "llm2_facts_are_bounded": True,
         },
         "non_duplication_guard": {
             "situation_day_problem_title": _text(
@@ -486,6 +487,79 @@ def build_llm3_contract_payload(
             "must_not_repeat_situation_day_wording_only": True,
         },
     }
+
+
+def _bounded_llm2_facts_for_llm3(llm2_facts: dict[str, Any] | None) -> dict[str, Any]:
+    """Project persisted LLM2 material into bounded facts/proof cards for LLM3."""
+    facts = _as_dict(llm2_facts)
+    return {
+        "business_outcome": _clip(_first_text(facts.get("business_outcome")), limit=420),
+        "call_report_summary": _clip(_first_text(facts.get("call_report_summary")), limit=520),
+        "score_by_stage": _bounded_score_by_stage(facts.get("score_by_stage")),
+        "proof_cards": _bounded_proof_cards_from_facts(facts),
+    }
+
+
+def _bounded_score_by_stage(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for raw in value or []:
+        item = _as_dict(raw)
+        stage_code = _first_text(item.get("stage_code"), item.get("code"))
+        if not stage_code:
+            continue
+        result.append(
+            {
+                "stage_code": stage_code,
+                "stage_name": _clip(
+                    _first_text(item.get("stage_name"), item.get("label"), item.get("name")),
+                    limit=120,
+                ),
+                "score": item.get("score"),
+                "max_score": item.get("max_score"),
+            }
+        )
+        if len(result) >= 8:
+            break
+    return result
+
+
+def _bounded_proof_cards_from_facts(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for container in (
+        facts,
+        _as_dict(facts.get("llm2c")),
+        _as_dict(facts.get("proof_artifact")),
+        _as_dict(facts.get("report_evidence")),
+    ):
+        for raw_card in container.get("proof_cards") or []:
+            card = _as_dict(raw_card)
+            proof_id = _first_text(card.get("proof_id"), card.get("proof_card_id"))
+            claim = _clip(_first_text(card.get("softened_claim"), card.get("claim")), limit=420)
+            proof_status = _first_text(card.get("proof_status"), card.get("status"))
+            if not (proof_id or claim or proof_status):
+                continue
+            cards.append(
+                {
+                    "proof_id": proof_id,
+                    "claim_id": _first_text(card.get("claim_id")),
+                    "stage_code": _first_text(card.get("stage_code")),
+                    "claim": claim,
+                    "proof_status": proof_status,
+                    "proof_type": _first_text(card.get("proof_type")),
+                    "proof_strength": _first_text(card.get("proof_strength"), card.get("evidence_strength")),
+                    "evidence_quote": _clip(_first_text(card.get("evidence_quote")), limit=520),
+                    "supporting_evidence_ids": [
+                        _first_text(item)
+                        for item in (card.get("supporting_evidence_ids") or [])[:8]
+                        if _first_text(item)
+                    ],
+                    "proof_explanation": _clip(_first_text(card.get("proof_explanation")), limit=520),
+                    "reject_reason": _first_text(card.get("reject_reason")),
+                }
+            )
+            if len(cards) >= 8:
+                return cards
+    return cards
 
 
 def _try_llm3_call_breakdown(
@@ -762,6 +836,10 @@ def _normalize_llm3_call_breakdown(
         return None, "status_not_verified"
     if not expected_call_id or _text(raw.get("call_id")) != expected_call_id:
         return None, "call_id_mismatch"
+    raw_stage_code = _first_text(raw.get("stage_code"))
+    expected_stage_code = _first_text(selected_call.get("stage_code"))
+    if raw_stage_code and expected_stage_code and raw_stage_code != expected_stage_code:
+        return None, "stage_code_changed"
 
     moments = [_as_dict(item) for item in raw.get("moments") or [] if isinstance(item, dict)]
     rows = [row for row in raw.get("rows") or [] if isinstance(row, list)]
@@ -793,6 +871,13 @@ def _normalize_llm3_call_breakdown(
         if normalized is None:
             return None, "moment_required_fields_missing"
         normalized_moments.append(normalized)
+    proof_support_failure = _llm3_breakdown_proof_support_failure(
+        rows=rows[:4],
+        moments=normalized_moments,
+        payload=payload,
+    )
+    if proof_support_failure:
+        return None, proof_support_failure
     key_turning_points = _normalize_key_turning_points(
         raw_points=raw.get("key_turning_points"),
         moments=normalized_moments,
@@ -858,7 +943,6 @@ def _normalize_llm3_call_breakdown(
             "moments": normalized_moments,
             "rows": rows[:4],
             "call_breakdown_evidence_strength": _first_text(
-                raw.get("call_breakdown_evidence_strength"),
                 _as_dict(payload.get("situation_evidence_packet")).get("proof_strength"),
                 "medium",
             ),
@@ -1043,6 +1127,93 @@ def _normalize_llm3_moment(
     normalized["quote_role"] = _first_text(moment.get("quote_role"), "supports_context")
     normalized["evidence_strength"] = _first_text(moment.get("evidence_strength"), "medium")
     return normalized
+
+
+def _llm3_breakdown_proof_support_failure(
+    *,
+    rows: list[list[Any]],
+    moments: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> str | None:
+    if not rows or not moments:
+        return "missing_rows_or_moments"
+    for index, row in enumerate(rows, start=1):
+        moment = moments[index - 1] if index - 1 < len(moments) else {}
+        if _has_proof_id(moment):
+            continue
+        fragment = _strip_fragment_prefix(row[2] if len(row) > 2 else "")
+        supporting_quote = _first_text(
+            fragment,
+            moment.get("supporting_quote"),
+            moment.get("fragment"),
+            _first_evidence_quote(moment.get("evidence_refs")),
+        )
+        if not supporting_quote:
+            return f"row_{index}_missing_proof_fragment_or_proof_id"
+        if not _proof_fragment_is_grounded_in_payload(supporting_quote, payload):
+            return f"row_{index}_ungrounded_proof_fragment"
+    if any(_has_proof_id(moment) or _proof_fragment_is_grounded_in_payload(moment.get("supporting_quote"), payload) for moment in moments):
+        return None
+    return "narrative_missing_proof_fragment_or_proof_id"
+
+
+def _has_proof_id(value: Any) -> bool:
+    item = _as_dict(value)
+    if _first_text(item.get("proof_id"), item.get("proof_card_id")):
+        return True
+    for ref in item.get("evidence_refs") or []:
+        ref_item = _as_dict(ref)
+        if _first_text(ref_item.get("proof_id"), ref_item.get("proof_card_id")):
+            return True
+    return False
+
+
+def _proof_fragment_is_grounded_in_payload(fragment: Any, payload: dict[str, Any]) -> bool:
+    fragment_norm = _loose_norm(_strip_fragment_prefix(fragment))
+    if not fragment_norm:
+        return False
+    if fragment_norm == _loose_norm(_MISSING_FRAGMENT_NOTE):
+        return False
+    payload_texts = _payload_proof_texts(payload)
+    for text in payload_texts:
+        text_norm = _loose_norm(text)
+        if not text_norm:
+            continue
+        if fragment_norm in text_norm or text_norm in fragment_norm:
+            return True
+    return False
+
+
+def _payload_proof_texts(payload: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    packet = _as_dict(payload.get("situation_evidence_packet"))
+    for value in (
+        packet.get("supporting_quote"),
+        packet.get("evidence_scene"),
+        _as_dict(packet.get("dialogue_excerpt")).get("quote"),
+    ):
+        text = _first_text(value)
+        if text:
+            texts.append(text)
+    for turn in _normalize_turns(_as_dict(packet.get("dialogue_excerpt")).get("turns")):
+        text = _text(turn.get("text"))
+        if text:
+            texts.append(text)
+    for scene in payload.get("transcript_scenes") or []:
+        scene_dict = _as_dict(scene)
+        for key in ("summary", "quote", "supporting_quote"):
+            text = _first_text(scene_dict.get(key))
+            if text:
+                texts.append(text)
+        for turn in _normalize_turns(scene_dict.get("turns")):
+            text = _text(turn.get("text"))
+            if text:
+                texts.append(text)
+        for ref in scene_dict.get("evidence_refs") or []:
+            text = _first_text(_as_dict(ref).get("quote"))
+            if text:
+                texts.append(text)
+    return texts
 
 
 def _rows_from_llm3_moments(moments: list[dict[str, Any]]) -> list[list[str]]:

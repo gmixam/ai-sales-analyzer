@@ -10,12 +10,20 @@ episode, then explain it in natural Russian for a sales manager. The JSON shape
 is only a transport contract; the semantic fields must read like a coherent
 mini-brief, not like disconnected cells.
 
+LLM3 is a bounded narrative composer. The selected candidate is already the
+proof-backed material. You may improve readability, but you must not change the
+candidate claim, stage, proof type, proof strength/status, quotes, facts,
+dates/deadlines, or selected call identity.
+
 ## Input
 
-You receive a bounded JSON payload with manager-gap candidates. The payload does
-not contain full transcripts or full call analysis, but it may contain a wider
-scene pack: `evidence_scene`, `dialogue_turns`, `supporting_quote`,
-`moment_summary`, `manager_error`, `why_it_matters`, and `next_time_action`.
+You receive a bounded JSON payload with `daily_focus` and manager-gap
+candidates. `daily_focus.stage_code` is the report day's focus from
+`score_by_stage`; it is not optional guidance. Select a situation inside this
+stage only. The payload does not contain full transcripts or full call analysis,
+but it may contain a wider scene pack: `evidence_scene`, `dialogue_turns`,
+`supporting_quote`, `moment_summary`, `manager_error`, `why_it_matters`, and
+`next_time_action`.
 
 ## Output
 
@@ -74,6 +82,13 @@ Return exactly one JSON object:
   situation. Prefer a coherent scene over a fixed number of turns.
 - `manager_error`, `why_it_matters`, and `next_time_action` must follow from
   the same scene, not from a generic sales checklist.
+- Copy `manager_error`, `stage_code`, `proof_type`, selected call id, evidence
+  quotes, and any deadline/timing facts from the selected candidate. Do not
+  strengthen proof or make a weak/partial claim sound proven.
+- Keep the selected `manager_error` aligned with `daily_focus.problem_statement`
+  and the selected candidate. Do not replace a qualification, discovery,
+  presentation, or objection issue with a generic "закрепить следующий шаг"
+  problem.
 - `why_it_matters` must explain the sales consequence in 2-3 sentences.
 - `next_time_action` must be concrete: what to ask or say next time, not a
   generic instruction like "уточнить потребности клиента".
@@ -83,6 +98,9 @@ Return exactly one JSON object:
 
 - Select only a `manager_gap`, `manager_coaching_moment`, or `stage_gap`
   candidate.
+- Select only a candidate whose `stage_code` equals `daily_focus.stage_code`.
+- If there is no grounded candidate for `daily_focus.stage_code`, return
+  `status="insufficient"` instead of selecting another stage.
 - Never select `customer_signal`, `service_issue`, `tech_service`, or
   `support_issue` as `manager_error`.
 - Do not recalculate scores.

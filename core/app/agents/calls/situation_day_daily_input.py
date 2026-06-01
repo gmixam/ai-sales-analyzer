@@ -15,6 +15,10 @@ except ImportError:  # pragma: no cover - supports direct file imports in tests
 
 
 CONTRACT_VERSION = "situation_day_daily_input_v1"
+VERIFIED_PROOF_STATUS = "verified_proof_card"
+SOFTENED_PROOF_STATUS = "softened_proof_card"
+ADMITTED_PROOF_STATUSES = {VERIFIED_PROOF_STATUS, SOFTENED_PROOF_STATUS}
+_SOFTENED_CARD_STATUSES = {"soften", "softened", "downgrade"}
 _MANAGER_GAP_TYPES = {"manager_gap"}
 _CUSTOMER_SIGNAL_TYPES = {"customer_signal", "service_issue"}
 _STRENGTH_RANK = {"strong": 3, "medium": 2, "weak": 1, "insufficient": 0}
@@ -25,6 +29,7 @@ def build_situation_day_daily_input(
     *,
     report_evidence_index: dict[str, dict[str, Any]] | None = None,
     evidence_registry_items: Iterable[Any] | None = None,
+    daily_focus: dict[str, Any] | None = None,
     max_calls: int = 12,
     max_scenes_per_call: int = 5,
 ) -> dict[str, Any]:
@@ -79,6 +84,9 @@ def build_situation_day_daily_input(
             excluded["duplicate_evidence"] += 1
             continue
         seen_evidence.add(evidence_key)
+        if not _is_verified_proof_pool_item(item):
+            excluded["missing_verified_proof"] += 1
+            continue
 
         sources[source] += 1
         if _as_list(item.get("dialogue_scene")) or quote:
@@ -108,16 +116,87 @@ def build_situation_day_daily_input(
         excluded["max_calls"] += len(calls) - max_calls
         calls = calls[:max_calls]
 
-    return {
+    focus_payload = _daily_focus_payload(daily_focus)
+    if focus_payload:
+        focus_payload = dict(focus_payload)
+        focus_payload["proof_pool"] = _daily_focus_proof_pool_payload(
+            focus=focus_payload,
+            calls=calls,
+        )
+    diagnostics: dict[str, Any] = {
+        "input_calls_count": len(call_inputs),
+        "included_calls_count": len(calls),
+        "fragments_count": fragments_count,
+        "sources": dict(sorted(sources.items())),
+        "excluded_count_by_reason": dict(sorted(excluded.items())),
+    }
+    if focus_payload:
+        diagnostics["focus_stage_code"] = focus_payload.get("stage_code")
+        diagnostics["focus_matching_verified_scenes_count"] = focus_payload["proof_pool"][
+            "matching_scenes_count"
+        ]
+
+    result = {
         "contract_version": CONTRACT_VERSION,
         "calls": calls,
-        "diagnostics": {
-            "input_calls_count": len(call_inputs),
-            "included_calls_count": len(calls),
-            "fragments_count": fragments_count,
-            "sources": dict(sorted(sources.items())),
-            "excluded_count_by_reason": dict(sorted(excluded.items())),
-        },
+        "diagnostics": diagnostics,
+    }
+    if focus_payload:
+        result["daily_focus"] = focus_payload
+    return result
+
+
+def _daily_focus_payload(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    focus = _as_dict(value)
+    stage_code = _text(focus.get("stage_code"))
+    if not stage_code:
+        return None
+    return _drop_none(
+        {
+            "stage_code": stage_code,
+            "stage_id": _text(focus.get("stage_id")),
+            "stage_name": _text(focus.get("stage_name")),
+            "problem_statement": _bounded_text(focus.get("problem_statement"), 500),
+            "problem_signal": _text(focus.get("problem_signal")),
+            "challenge_metric_source": _text(focus.get("challenge_metric_source")),
+            "confidence": _text(focus.get("confidence")),
+        }
+    )
+
+
+def _daily_focus_proof_pool_payload(
+    *,
+    focus: dict[str, Any],
+    calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    focus_stage = _text(focus.get("stage_code"))
+    stage_counts: Counter[str] = Counter()
+    matching_call_ids: list[str] = []
+    matching_scene_ids: list[str] = []
+
+    for call in calls:
+        call_id = _text(call.get("call_id"))
+        matched_call = False
+        for scene in _as_list(call.get("evidence_scenes")):
+            scene_map = _as_dict(scene)
+            stage_code = _text(scene_map.get("stage_code"))
+            if stage_code:
+                stage_counts[stage_code] += 1
+            if focus_stage and stage_code == focus_stage:
+                matched_call = True
+                scene_id = _text(scene_map.get("scene_id"))
+                if scene_id and scene_id not in matching_scene_ids:
+                    matching_scene_ids.append(scene_id)
+        if matched_call and call_id and call_id not in matching_call_ids:
+            matching_call_ids.append(call_id)
+
+    return {
+        "selection_policy": "prefer_matching_stage_verified_proof_scene",
+        "has_matching_stage_proof": bool(matching_scene_ids),
+        "matching_scenes_count": len(matching_scene_ids),
+        "matching_call_ids": matching_call_ids[:12],
+        "matching_scene_ids": matching_scene_ids[:24],
+        "available_stage_counts": dict(sorted(stage_counts.items())),
     }
 
 
@@ -133,8 +212,15 @@ def _collect_registry_items(
     else:
         items.extend(build_report_evidence_registry(artifacts))
 
+    artifact_call_ids = {
+        call_id
+        for artifact in artifacts
+        if (call_id := _extract_call_id(artifact))
+    }
     index_artifacts = []
     for call_id, raw in (report_evidence_index or {}).items():
+        if call_id not in artifact_call_ids:
+            continue
         payload = _as_dict(raw)
         evidence = _as_dict(payload.get("report_evidence") or payload)
         if evidence:
@@ -313,6 +399,14 @@ def _scene_from_item(item: dict[str, Any], *, transcript: str | None = None) -> 
             "evidence_type": _text(item.get("evidence_type")),
             "proof_type": _text(item.get("proof_type")),
             "proof_strength": _text(item.get("proof_strength")),
+            "proof_status": _first_text(
+                item.get("proof_status"),
+                _path_get(item, "diagnostics.proof_status"),
+            ),
+            "proof_id": _first_text(
+                _path_get(item, "diagnostics.proof_id"),
+                _path_get(item, "proof_card.proof_id"),
+            ),
             "stage_code": _text(item.get("stage_code")),
             "score": _first_present(
                 _path_get(item, "diagnostics.score"),
@@ -417,7 +511,7 @@ def _has_relevant_content(call: dict[str, Any]) -> bool:
     return any(
         _as_list(call.get(key))
         for key in ("manager_gaps", "strengths", "customer_signals", "evidence_scenes")
-    ) or bool(_first_text(call.get("llm2_summary"), call.get("call_summary")))
+    )
 
 
 def _extract_call_id(artifact: Any) -> str | None:
@@ -461,6 +555,27 @@ def _item_as_dict(item: Any) -> dict[str, Any]:
     if is_dataclass(item):
         return asdict(item)
     return _as_dict(item)
+
+
+def _is_verified_proof_pool_item(item: dict[str, Any]) -> bool:
+    diagnostics = _as_dict(item.get("diagnostics"))
+    if diagnostics.get("verified_source") is True:
+        return True
+    proof_status = _first_text(item.get("proof_status"), diagnostics.get("proof_status"))
+    if proof_status in ADMITTED_PROOF_STATUSES:
+        return True
+    proof_card = _as_dict(item.get("proof_card"))
+    if not proof_card:
+        return False
+    if _text(proof_card.get("reject_reason")):
+        return False
+    status = (_text(proof_card.get("status")) or "").lower()
+    if status and status not in {"verified", "proven"} | _SOFTENED_CARD_STATUSES:
+        return False
+    evidence_type = _text(item.get("evidence_type"))
+    if evidence_type in _MANAGER_GAP_TYPES and proof_card.get("gap_proven") is False:
+        return False
+    return True
 
 
 def _date_time_labels(value: str | None) -> tuple[str | None, str | None]:

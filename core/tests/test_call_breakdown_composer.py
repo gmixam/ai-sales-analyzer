@@ -394,6 +394,43 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertIn("required_output_keys", payload)
         self.assertTrue(payload["composition_rules"]["narrative_preferred"])
 
+    def test_llm3_payload_contains_bounded_facts_and_proof_cards_not_legacy_soup(self) -> None:
+        module = _load_call_breakdown_composer_module()
+        call_id = str(uuid4())
+        inputs = _simple_followup_inputs(call_id)
+        llm2_facts = {
+            **inputs["llm2_facts"],
+            "full_transcript": "RAW FULL TRANSCRIPT MUST NOT REACH LLM3",
+            "report_evidence": {
+                "block_candidates": {"legacy": "LEGACY SOUP MUST NOT REACH LLM3"},
+                "proof_cards": [
+                    {
+                        "proof_id": "proof-1",
+                        "claim_id": "claim-1",
+                        "stage_code": "completion_next_step",
+                        "claim": "Следующий шаг не закреплен конкретно.",
+                        "proof_status": "proven",
+                        "proof_type": "sequence_inference",
+                        "evidence_quote": "Я уточню расчет и завтра вам перезвоню.",
+                    }
+                ],
+            },
+        }
+
+        payload = module.build_call_breakdown_llm3_payload(
+            selected_call=inputs["selected_call"],
+            transcript_scenes=inputs["transcript_scenes"],
+            situation_evidence_packet=inputs["situation_evidence_packet"],
+            llm2_facts=llm2_facts,
+        )
+
+        payload_text = str(payload)
+        self.assertNotIn("RAW FULL TRANSCRIPT", payload_text)
+        self.assertNotIn("LEGACY SOUP", payload_text)
+        self.assertEqual(payload["llm2_facts"]["proof_cards"][0]["proof_id"], "proof-1")
+        self.assertEqual(payload["llm2_facts"]["proof_cards"][0]["proof_status"], "proven")
+        self.assertTrue(payload["composition_rules"]["llm2_facts_are_bounded"])
+
     def test_llm3_payload_allows_one_grounded_moment_for_simple_call(self) -> None:
         module = _load_call_breakdown_composer_module()
         call_id = str(uuid4())
@@ -469,6 +506,63 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertEqual(
             result["selection_diagnostics"]["llm3_routing"]["execution_status"],
             "simulated",
+        )
+
+    def test_llm3_breakdown_without_grounded_fragment_or_proof_id_falls_back(self) -> None:
+        module = _load_call_breakdown_composer_module()
+        call_id = str(uuid4())
+        inputs = _simple_followup_inputs(call_id)
+        invented_fragment = (
+            "Клиент: Нам нужен другой продукт, которого нет в исходных сценах. "
+            "Менеджер: Тогда я обещаю подготовить специальный договор завтра. "
+            "Клиент: Жду договор и отдельную скидку, хотя этого не было в payload."
+        )
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "call_id": call_id,
+                "call_story": "Модель пытается построить уверенный разбор на неподтвержденном фрагменте.",
+                "what_manager_missed": "Менеджер якобы не закрепил специальный договор.",
+                "better_path": "Нужно якобы обещать отдельную скидку.",
+                "rows": [
+                    [
+                        "Момент 1 - Неподтвержденный фрагмент",
+                        "Что было не так: Разбор опирается на фразу, которой нет во входных сценах.",
+                        f"Фрагмент: {invented_fragment}",
+                        "Сказать: вернуться со специальным договором и скидкой.",
+                    ],
+                ],
+                "moments": [
+                    {
+                        "moment": "Момент 1 - Неподтвержденный фрагмент",
+                        "call_id": call_id,
+                        "what": "Разбор опирается на фразу, которой нет во входных сценах.",
+                        "moment_summary": "Неподтвержденный фрагмент не должен стать уверенным разбором.",
+                        "supporting_quote": invented_fragment,
+                        "better": "Сказать: вернуться со специальным договором и скидкой.",
+                        "proof_type": "sequence_inference",
+                        "proof_explanation": "Нет proof_id и grounded fragment.",
+                        "evidence_refs": [{"source": "llm3_untrusted"}],
+                    },
+                ],
+            }
+
+        module._request_llm3_call_breakdown = fake_request
+        result = module.compose_call_breakdown(
+            selected_call=inputs["selected_call"],
+            transcript_scenes=inputs["transcript_scenes"],
+            situation_evidence_packet=inputs["situation_evidence_packet"],
+            llm2_facts=inputs["llm2_facts"],
+            llm3_enabled=True,
+        )
+
+        diagnostics = result["selection_diagnostics"]
+        self.assertTrue(diagnostics["deterministic_fallback_used"])
+        self.assertFalse(diagnostics["llm3_used"])
+        self.assertEqual(
+            diagnostics["llm3"]["llm3_rejection_reason"],
+            "row_1_ungrounded_proof_fragment",
         )
 
     def test_weak_llm3_b2b_breakdown_falls_back_to_deterministic_result(self) -> None:

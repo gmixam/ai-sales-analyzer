@@ -17,25 +17,37 @@
 
 ## Текущий implementation status
 
-Статус на 2026-05-25: первый runtime slice реализован.
+Статус на 2026-05-25: реализованы два временных runtime mode:
+`local simulation` и первый `subagent_runtime`.
 
 Реализовано:
 - env-переключатели `AI_LLM_SIMULATION_ENABLED`,
   `AI_LLM_SIMULATION_RUN_ID`, `AI_LLM_SIMULATION_SEED`,
   `AI_LLM_SIMULATION_ARTIFACT_DIR`;
+- env-переключатели `AI_LLM_EXECUTION_MODE=subagent_runtime`,
+  `AI_LLM_SUBAGENT_RUNTIME_ENABLED`, `AI_LLM_SUBAGENT_COMMAND`,
+  `AI_LLM_SUBAGENT_RUNNER_CMD`,
+  `AI_LLM_SUBAGENT_RUN_ID`, `AI_LLM_SUBAGENT_ARTIFACT_DIR`,
+  `AI_LLM_SUBAGENT_TIMEOUT_SEC`;
 - общий временный executor `app.agents.calls.llm_simulation`;
 - подмена `LLM-1` / `LLM-2` в `CallsAnalyzer._request_llm_content()`;
 - подмена `LLM-3` в `_request_llm3_*()` composer-модулей;
 - запись временных input/output artifacts в
-  `/tmp/asa_llm_sim_runs/<run_id>/`;
-- routing/diagnostic metadata с `execution_status=simulated`;
+  `/tmp/asa_llm_sim_runs/<run_id>/` для local simulation и
+  `/tmp/asa_llm_subagent_runs/<run_id>/` для `subagent_runtime`;
+- routing/diagnostic metadata с `execution_status=simulated` или
+  `execution_status=subagent_executed`;
 - focused regression tests для analyzer и composer boundaries.
 
-Ограничение первого slice: симулятор возвращает контрактно-валидные
-эвристические ответы для проверки pipeline и report layer. Он еще не является
-калиброванной копией конкретной модели по качеству формулировок и типовым
-ошибкам. Калибровка поведения субагентов по реальным LLM-ответам остается
-следующим шагом.
+Ограничение local simulation: симулятор возвращает контрактно-валидные
+эвристические ответы для проверки pipeline и report layer.
+
+Ограничение первого `subagent_runtime`: внешний runner уже проходит через
+настоящие validators/normalizers и fail-closed path, но поведение LLM-2
+субагента пока не откалибровано. Контрольный прогон Толегена за `2026-05-21`
+показал частые retry на LLM-2 и неполное закрытие readiness, поэтому следующий
+шаг — калибровать prompt/output wrapper субагента под approved contract без
+ослабления validators.
 
 ## Главное требование
 
@@ -58,6 +70,27 @@
 
 Это не меняет существующее проектное определение `agent` из `ARCHITECTURE.md`,
 где agent является детерминированным Python-модулем workflow.
+
+## Разделение ролей субагентов
+
+В проектной работе есть два разных класса субагентов:
+
+| Тип | Назначение | Что делает | Чего не делает |
+|---|---|---|---|
+| `implementation subagent` | Реализация доработок | Меняет код, prompts, validators, tests, docs в рамках выданной задачи | Не имитирует LLM-узел в том же проверочном контуре |
+| `LLM-node simulation subagent` | Runtime-подмена `LLM-1` / `LLM-2` / `LLM-3` | Получает тот же context/prompt, возвращает тот же JSON contract, проходит те же validators | Не меняет код и не принимает архитектурные решения |
+
+Основной агент в чате является orchestrator:
+
+- запускает implementation-субагентов для доработок;
+- запускает LLM-node simulation субагентов для проверки LLM-boundary;
+- не смешивает эти роли;
+- собирает input/output artifacts;
+- сравнивает old/new artifacts;
+- останавливает работу на approval gates пользователя.
+
+Это правило нужно, чтобы не получилось, что один агент одновременно сделал
+доработку и сам же "подтвердил" ее как LLM-узел без независимого runtime-контроля.
 
 ## Зоны подмены
 
@@ -160,6 +193,21 @@ AI_LLM_SIMULATION_RUN_ID=<run_id>
 AI_LLM_SIMULATION_SEED=<seed>
 AI_LLM_SIMULATION_ARTIFACT_DIR=/tmp/asa_llm_sim_runs
 ```
+
+Пример репозиторного runner для `subagent_runtime` без real OpenAI:
+
+```text
+AI_LLM_EXECUTION_MODE=subagent_runtime
+AI_LLM_SIMULATION_ENABLED=false
+AI_LLM_SUBAGENT_RUNNER_CMD="python report_scripts/llm_subagent_contract_runner.py"
+AI_LLM_SUBAGENT_RUN_ID=<run_id>
+AI_LLM_SUBAGENT_ARTIFACT_DIR=/tmp/asa_llm_subagent_runs
+```
+
+В API-контейнере `/app` указывает на `core/`, поэтому container-visible
+runner находится в `core/report_scripts/llm_subagent_contract_runner.py`.
+Host-visible копия для локальных запусков находится в
+`scripts/llm_subagent_contract_runner.py`.
 
 Базовый тестовый сценарий:
 - `preset=manager_daily`;

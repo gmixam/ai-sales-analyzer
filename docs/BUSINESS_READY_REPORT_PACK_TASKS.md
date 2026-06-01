@@ -6,21 +6,35 @@
 на основе сравнения current repo версии `manager_daily` с новой версией отчёта
 (`Ежедневный_отчет_v4_ФИНАЛ.pdf`, загружена 2026-04-16).
 
-Документ является source of truth для текущих implementation tasks по
+Документ является source of truth для backlog/task breakdown по
 `manager_daily` quality внутри Вехи 6.5.
 
+Для текущего Gate 5 implementation source of truth по механизму `LLM-2` /
+Report Layer / `LLM-3` используется:
+
+```text
+docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md
+```
+
+Оперативный task-status отчет по автономному исполнению Gate 5:
+
+```text
+docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md
+```
+
 Первичная фиксация 2026-04-16 начиналась как presentation-layer pack. На
-2026-05-21 активная работа уже включает bounded semantic/report-block work:
-LLM2 v15 готовит per-call report evidence, LLM3 пишет отдельные narrative
-blocks, Report Layer валидирует, маршрутизирует и рендерит. Это не full
-post-pilot rich-report mechanism и не auto-delivery rollout.
+2026-05-27 активная работа уже идет как Gate 5 block-by-block калибровка:
+`LLM-2` стабилизируется как поставщик анализа/evidence, Report Layer выбирает
+bounded candidate pool и держит hard fact gates, `LLM-3` оформляет смысловые
+блоки внутри этих границ. Это не full post-pilot rich-report mechanism и не
+auto-delivery rollout.
 
 ## Веха и шаг
 
 - Веха roadmap: **6.5 Business-ready Report Pack**
-- Статус: active semantic report-quality stabilization; SFB-1..SFB-5 implemented on branch `feature/llm2-block-ready-v15`
+- Статус: активная Gate 5 block-by-block стабилизация качества отчета на branch `feature/llm2-block-ready-v15`
 - Зафиксировано: 2026-04-16
-- Актуализировано: 2026-05-21
+- Актуализировано: 2026-05-27
 
 ## Boundary — что разрешено в этой вехе
 
@@ -35,6 +49,8 @@ post-pilot rich-report mechanism и не auto-delivery rollout.
 - complete and honest list-of-calls presentation
 - bounded prompt/contract/composer updates for already verified report blocks
 - LLM3 narrative composition when Report Layer keeps deterministic selection and evidence validation
+- subagent-runtime verification for `LLM-1` / `LLM-2` / `LLM-3` calibration
+- block-by-block acceptance for Gate 5 preview reports
 
 **Запрещено:**
 - full new reporting architecture
@@ -45,6 +61,42 @@ post-pilot rich-report mechanism и не auto-delivery rollout.
 - full coaching / pattern engine
 - full rich daily mechanism upgrade
 - auto-send to business without operator review
+
+## Текущий фокус Gate 5 — 2026-05-27
+
+Контрольные даты:
+
+```text
+2026-05-18
+2026-05-19
+2026-05-20
+```
+
+Текущий порядок приемки:
+
+1. `БАЛЛЫ ПО ЭТАПАМ` + `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ` +
+   `КОНТАКТЫ В РАБОТУ`.
+2. `СИТУАЦИЯ ДНЯ` + `РАЗБОР ЗВОНКА`.
+3. `ДОПОЛНИТЕЛЬНАЯ СИТУАЦИЯ`.
+4. `ГОЛОС КЛИЕНТА`.
+
+Block 1 implementation rules:
+
+- title/follow-up wording should not promise only `завтра`;
+- one canonical manager-facing status source must feed summary, appendix,
+  follow-up selection and diagnostics;
+- `LLM-3` may improve wording for accepted follow-up contacts only; it must not
+  change selection, priority, status or deadline;
+- status conflicts must be visible as warning/blocking diagnostics, not hidden
+  behind `passed`;
+- after implementation, rerender the three control reports and get approval
+  before Block 2.
+
+Supporting audit:
+
+```text
+docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md
+```
 
 ## Operating rule for report quality fixes
 

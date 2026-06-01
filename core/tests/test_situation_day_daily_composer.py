@@ -175,6 +175,175 @@ class SituationDayDailyComposerTests(unittest.TestCase):
         self.assertIn("Клиент:", result["evidence_scene"])
         self.assertEqual(result["source_fact_ids"], ["fact-from-builder"])
 
+    def test_daily_focus_limits_selection_to_score_priority_stage(self) -> None:
+        result = compose_daily_situation_day(
+            {
+                "daily_focus": {
+                    "stage_code": "objection_handling",
+                    "problem_statement": "Менеджер не раскрыл, что именно смущает клиента в цене.",
+                },
+                "evidence_items": [
+                    _manager_gap(
+                        call_id="call-next-step",
+                        score=99,
+                        stage_code="completion_next_step",
+                        manager_error="Менеджер не закрепил дату следующего контакта.",
+                    ),
+                    _manager_gap(
+                        call_id="call-objection",
+                        score=50,
+                        stage_code="objection_handling",
+                        situation_title="Возражение по цене осталось неразобранным",
+                        manager_error="Менеджер не уточнил, что именно смущает клиента в цене.",
+                    ),
+                ],
+            },
+            llm3_enabled=False,
+        )
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["selected_call_id"], "call-objection")
+        self.assertEqual(result["stage_code"], "objection_handling")
+        self.assertEqual(result["manager_error"], "Менеджер не уточнил, что именно смущает клиента в цене.")
+        self.assertIn(
+            "non_focus_stage_manager_gap",
+            {item["reason"] for item in result["rejected_candidates"]},
+        )
+
+    def test_daily_focus_fails_closed_without_focus_stage_candidate(self) -> None:
+        result = compose_daily_situation_day(
+            {
+                "daily_focus": {
+                    "stage_code": "needs_discovery",
+                    "problem_statement": "Боль текущего процесса и риски не раскрыты.",
+                },
+                "evidence_items": [
+                    _manager_gap(
+                        call_id="call-qualification",
+                        stage_code="qualification_primary",
+                        manager_error="Менеджер не уточнил роль собеседника.",
+                    )
+                ],
+            },
+            llm3_enabled=False,
+        )
+
+        self.assertEqual(result["status"], "insufficient")
+        self.assertEqual(result["selection_reason"], "no_focus_stage_manager_gap_scene")
+        self.assertEqual(result["diagnostics"]["daily_focus"]["stage_code"], "needs_discovery")
+        self.assertEqual(result["rejected_candidates"][0]["reason"], "non_focus_stage_manager_gap")
+
+    def test_llm3_generic_next_step_rewrite_is_rejected_for_non_next_step_focus(self) -> None:
+        original_request = situation_day_daily_composer._request_llm3_daily_situation
+
+        def fake_request(payload):
+            candidate = payload["candidates"][0]
+            return {
+                "status": "verified",
+                "selected_call_id": candidate["call_id"],
+                "situation_title": "Закрепить следующий шаг конкретнее",
+                "moment_summary": candidate["moment_summary"],
+                "what_happened": candidate["what_happened"],
+                "manager_error": "Следующий шаг не был закреплен достаточно конкретно по владельцу и сроку.",
+                "stage_code": candidate["stage_code"],
+                "proof_type": candidate["proof_type"],
+                "evidence_scene": candidate["evidence_scene"],
+                "supporting_quote": candidate["supporting_quote"],
+                "why_it_matters": "Без конкретного срока клиенту проще отложить решение.",
+                "next_time_action": "В конце разговора назвать действие, владельца и точное время следующего контакта.",
+                "scripts": [
+                    "Давайте зафиксируем следующий шаг.",
+                    "Когда я могу вернуться к вам?",
+                ],
+                "selection_reason": "llm3_daily_situation_selection",
+            }
+
+        try:
+            situation_day_daily_composer._request_llm3_daily_situation = fake_request
+            result = compose_daily_situation_day(
+                {
+                    "daily_focus": {
+                        "stage_code": "objection_handling",
+                        "problem_statement": "Менеджер не раскрыл, что именно смущает клиента в цене.",
+                    },
+                    "evidence_items": [
+                        _manager_gap(
+                            call_id="call-objection",
+                            stage_code="objection_handling",
+                            situation_title="Возражение по цене осталось неразобранным",
+                            manager_error="Менеджер не уточнил, что именно смущает клиента в цене.",
+                            next_time_action="Сначала уточнить, что именно кажется дорогим.",
+                            scripts=["Что именно в цене вызывает сомнение: бюджет, частота использования или сравнение?"],
+                        )
+                    ],
+                },
+                llm3_enabled=True,
+            )
+        finally:
+            situation_day_daily_composer._request_llm3_daily_situation = original_request
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["selection_reason"], "best_manager_gap_scene_by_score")
+        self.assertEqual(result["manager_error"], "Менеджер не уточнил, что именно смущает клиента в цене.")
+        self.assertEqual(
+            result["diagnostics"]["llm3"]["llm3_rejection_reason"],
+            "llm3_output_replaced_focus_with_generic_next_step",
+        )
+
+    def test_llm3_stage_or_proof_rewrite_is_rejected_to_selected_candidate(self) -> None:
+        original_request = situation_day_daily_composer._request_llm3_daily_situation
+
+        def fake_request(payload):
+            candidate = payload["candidates"][0]
+            return {
+                "status": "verified",
+                "selected_call_id": candidate["call_id"],
+                "situation_title": candidate["situation_title"],
+                "moment_summary": candidate["moment_summary"],
+                "what_happened": candidate["what_happened"],
+                "manager_error": "Менеджер якобы сменил фокус на другой этап.",
+                "stage_code": "completion_next_step",
+                "proof_type": "direct_quote",
+                "evidence_scene": candidate["evidence_scene"],
+                "supporting_quote": candidate["supporting_quote"],
+                "why_it_matters": candidate["why_it_matters"],
+                "next_time_action": candidate["next_time_action"],
+                "scripts": candidate["scripts"],
+                "selection_reason": "llm3_rewrote_stage_and_proof",
+            }
+
+        try:
+            situation_day_daily_composer._request_llm3_daily_situation = fake_request
+            result = compose_daily_situation_day(
+                {
+                    "daily_focus": {
+                        "stage_code": "objection_handling",
+                        "problem_statement": "Менеджер не раскрыл, что именно смущает клиента в цене.",
+                    },
+                    "evidence_items": [
+                        _manager_gap(
+                            call_id="call-objection",
+                            stage_code="objection_handling",
+                            proof_type="sequence_inference",
+                            situation_title="Возражение по цене осталось неразобранным",
+                            manager_error="Менеджер не уточнил, что именно смущает клиента в цене.",
+                            next_time_action="Сначала уточнить, что именно кажется дорогим.",
+                            scripts=["Что именно в цене вызывает сомнение: бюджет, частота использования или сравнение?"],
+                        )
+                    ],
+                },
+                llm3_enabled=True,
+            )
+        finally:
+            situation_day_daily_composer._request_llm3_daily_situation = original_request
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["selection_reason"], "best_manager_gap_scene_by_score")
+        self.assertEqual(result["stage_code"], "objection_handling")
+        self.assertEqual(result["proof_type"], "sequence_inference")
+        self.assertEqual(result["manager_error"], "Менеджер не уточнил, что именно смущает клиента в цене.")
+        self.assertEqual(result["diagnostics"]["llm3"]["llm3_rejection_reason"], "stage_code_changed")
+
     def test_llm3_simulated_json_preserves_daily_normalizer_and_routing_diagnostics(self) -> None:
         original_request = situation_day_daily_composer._request_llm3_daily_situation
 

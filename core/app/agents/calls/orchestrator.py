@@ -347,7 +347,10 @@ class CallsManualPilotOrchestrator:
         analysis.strengths = result.get("strengths") or []
         analysis.weaknesses = result.get("gaps") or []
         analysis.recommendations = result.get("recommendations") or []
-        analysis.call_topic = result["summary"].get("call_goal") or result["summary"].get("short_summary")
+        analysis.call_topic = self._truncate_db_text(
+            result["summary"].get("call_goal") or result["summary"].get("short_summary"),
+            max_len=255,
+        )
         analysis.topics = result.get("analytics_tags") or []
         analysis.is_failed = False
         analysis.fail_reason = None
@@ -400,7 +403,10 @@ class CallsManualPilotOrchestrator:
         analysis.weaknesses = list(normalized_result.get("gaps") or [])
         analysis.recommendations = list(normalized_result.get("recommendations") or [])
         summary = dict(normalized_result.get("summary") or {})
-        analysis.call_topic = summary.get("call_goal") or summary.get("short_summary")
+        analysis.call_topic = self._truncate_db_text(
+            summary.get("call_goal") or summary.get("short_summary"),
+            max_len=255,
+        )
         analysis.topics = list(normalized_result.get("analytics_tags") or [])
         analysis.is_failed = True
         analysis.fail_reason = fail_reason or getattr(error, "reason_code", None) or str(error)
@@ -449,6 +455,16 @@ class CallsManualPilotOrchestrator:
         analysis.manager_id = interaction.manager_id
         analysis.instruction_version = instruction_version
         return analysis
+
+    @staticmethod
+    def _truncate_db_text(value: Any, *, max_len: int) -> str | None:
+        """Return text sized for bounded varchar columns."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 3].rstrip() + "..."
 
     def _replace_agreements(self, *, interaction: Interaction, agreements: list[dict[str, Any]]) -> None:
         """Replace derived agreements for the current interaction."""

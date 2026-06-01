@@ -421,8 +421,10 @@ def _situation_day_narrative_parts(coaching_view: dict[str, Any]) -> list[str]:
 
 
 def _situation_day_narrative_text(coaching_view: dict[str, Any]) -> str:
-    what_happened = _situation_day_value(coaching_view, "what_happened", fallback="")
+    what_happened = _manager_facing_situation_what_happened(coaching_view)
     context = _situation_day_value(coaching_view, "call_context_summary", fallback="")
+    if _technical_report_token(context):
+        context = ""
     evidence_quotes = [
         str(item).strip()
         for item in (coaching_view.get("evidence_quotes") or [])
@@ -438,6 +440,37 @@ def _situation_day_narrative_text(coaching_view: dict[str, Any]) -> str:
         if quote_lines:
             parts.append("Это видно по репликам:\n" + "\n".join(quote_lines))
     return "\n\n".join(parts).strip() or "Нет данных"
+
+
+def _manager_facing_situation_what_happened(coaching_view: dict[str, Any]) -> str:
+    """Turn generic LLM3 Situation Day phrasing into a specific manager-facing line."""
+    raw = _clean_reader_text(_situation_day_value(coaching_view, "what_happened", fallback=""))
+    if not raw:
+        return ""
+    generic_prefix = "В выбранном звонке видно, что разговор можно было завершить более управляемо."
+    if generic_prefix not in raw:
+        return raw
+    _, _, support = raw.partition("Опора:")
+    quote = _clean_call_breakdown_proof_text(
+        support or str(coaching_view.get("supporting_quote") or "")
+    )
+    missing = _clean_reader_text(
+        str(
+            coaching_view.get("what_was_missing")
+            or coaching_view.get("manager_error")
+            or ""
+        )
+    )
+    action = _clean_reader_text(str(coaching_view.get("next_time_action") or ""))
+    if missing:
+        sentence = f"Менеджер дошёл до следующего шага, но {missing[:1].lower() + missing[1:]}"
+    elif action:
+        sentence = f"Разговор требовал более чёткого закрепления: {action[:1].lower() + action[1:]}"
+    else:
+        sentence = "Разговор требовал более чёткого закрепления следующего действия."
+    if quote:
+        return f"{sentence} Опора: {quote}"
+    return sentence
 
 
 def _split_readable_text(value: str) -> list[str]:
@@ -816,7 +849,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 recommendations=list(payload.get("recommendations") or []),
             ),
             "call_example": dict(payload["key_problem_of_day"].get("call_example") or {}),
-            "coaching_view": dict(payload.get("situation_day_coaching_view") or {}),
+            "coaching_view": _clean_reader_value(dict(payload.get("situation_day_coaching_view") or {})),
             "dialogue_excerpt": dict(payload.get("situation_dialogue_excerpt") or {}),
             "evidence_quote": dict(payload.get("situation_evidence_quote") or {}),
             "evidence_packet": dict(payload.get("situation_day_evidence_packet") or {}),
@@ -875,10 +908,18 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **_build_v5_call_tomorrow_section(
                 section=dict(payload.get("call_tomorrow") or {}),
             ),
+            "hidden": True,
+            "hidden_reason": "merged_into_call_list",
         },
         {
             **_section_meta(template, "call_list"),
             "columns": ["#", "Клиент", "Тип / суть", "Контекст", "Статус"],
+            "compact_columns": [
+                "Статус",
+                "Контакт",
+                "Суть звонка",
+                "Договоренность",
+            ],
             "rows": [
                 [
                     str(idx + 1),
@@ -896,7 +937,9 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                         or _call_context_label(
                             str(
                                 (
-                                    row.get("call_list_status")
+                                    row.get("final_manager_status")
+                                    if "final_manager_status" in row
+                                    else row.get("call_list_status")
                                     if "call_list_status" in row
                                     else row.get("status")
                                 )
@@ -912,6 +955,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 ]
                 for idx, row in enumerate(call_list_raw)
             ],
+            "compact_rows": _build_call_list_compact_rows(
+                call_list_raw=call_list_raw,
+                call_tomorrow_contacts=list((payload.get("call_tomorrow") or {}).get("contacts") or []),
+            ),
             "note": (
                 call_list_coverage_note
                 if call_list_raw
@@ -1260,15 +1307,7 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             ]
             lines.extend(_render_situation_day_text_lines(coaching_view))
             if coaching_view.get("situation_day_evidence_status"):
-                lines.append(
-                    "Статус доказательства: "
-                    f"{coaching_view.get('situation_day_evidence_status')}"
-                    + (
-                        f" / {coaching_view.get('proof_strength')}"
-                        if coaching_view.get("proof_strength")
-                        else ""
-                    )
-                )
+                lines.append("Статус доказательства: " + _evidence_status_display_text(coaching_view))
             if evidence_status == "insufficient" and coaching_view.get("insufficiency_reason"):
                 lines.append(f"Причина: {coaching_view.get('insufficiency_reason')}")
             return [line for line in lines if line and not line.endswith(": ")]
@@ -1353,7 +1392,8 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                     lines.append("Реплики:")
                     lines.extend(_dialogue_text_lines(dialogue))
                 if scene.get("manager_response"):
-                    lines.append(f"Как с этим работать: {scene.get('manager_response')}")
+                    lines.append("Как с этим работать")
+                    lines.extend(_split_readable_text(str(scene.get("manager_response") or "")))
             return lines
         rows = section.get("rows") or []
         if rows:
@@ -1383,11 +1423,12 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                         lines.extend(_split_readable_text(value))
             evidence = item.get("evidence_dialogue") or _dialogue_from_context_text(str(item.get("evidence_quote") or ""))
             if evidence:
-                lines.append("Подтверждение:")
+                lines.append("Подтверждение")
                 lines.extend(_dialogue_text_lines(evidence))
             action = str(item.get("next_action") or item.get("how_to") or "").strip()
             if action:
-                lines.append(f"Что сделать: {action}")
+                lines.append("Что сделать")
+                lines.extend(_split_readable_text(_capitalize_reader_sentence(action)))
             lines.append("")
         return lines[:-1] if lines and lines[-1] == "" else lines or ["—"]
     if kind == "challenge_card":
@@ -1500,8 +1541,10 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
             lines.extend([f"- {item}" for item in group.get("items") or ["—"]])
         return lines
     if kind == "table":
-        rows = section.get("rows") or []
-        header = " | ".join(section.get("columns") or [])
+        columns = section.get("compact_columns") if section.get("id") == "call_list" else None
+        rows = section.get("compact_rows") if section.get("id") == "call_list" else None
+        rows = rows or section.get("rows") or []
+        header = " | ".join(columns or section.get("columns") or [])
         lines = [header] + [" | ".join(_value(cell) for cell in row) for row in rows]
         if section.get("note"):
             lines.append(str(section["note"]))
@@ -1716,11 +1759,10 @@ def _render_html_section(section: dict[str, Any]) -> str:
             status_html = ""
             evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):
-                strength = str(coaching_view.get("proof_strength") or "")
                 reason = str(coaching_view.get("insufficiency_reason") or "")
                 status_html = (
                     "<p class=\"muted\"><strong>Статус доказательства:</strong> "
-                    f"{html.escape(evidence_status + (f' / {strength}' if strength else ''))}</p>"
+                    f"{html.escape(_evidence_status_display_text(coaching_view))}</p>"
                     + (
                         f"<p class=\"muted\"><strong>Причина:</strong> {html.escape(reason)}</p>"
                         if evidence_status == "insufficient" and reason
@@ -1848,7 +1890,9 @@ def _render_html_section(section: dict[str, Any]) -> str:
                     body_parts.append("<p><strong>Реплики:</strong></p>")
                     body_parts.extend(_dialogue_html_lines(scene.get("dialogue_evidence") or []))
                 if scene.get("manager_response"):
-                    body_parts.append(f"<p><strong>Как с этим работать:</strong> {html.escape(str(scene.get('manager_response') or ''))}</p>")
+                    body_parts.append("<p><strong>Как с этим работать</strong></p>")
+                    for part in _split_readable_text(str(scene.get("manager_response") or "")):
+                        body_parts.append(f"<p>{html.escape(part)}</p>")
                 cards.append(f"<article class=\"card\">{''.join(body_parts)}</article>")
             return (
                 f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"
@@ -2037,10 +2081,12 @@ def _render_html_section(section: dict[str, Any]) -> str:
         memo_class = "memo-page" if section.get("page_break_before") else ""
         return f"<section class=\"{' '.join(classes)} {memo_class}\">{title}<div class=\"section-body\"><div class=\"cards-grid\">{''.join(groups_html)}</div></div></section>"
     if kind == "table":
-        header = "".join(f"<th>{html.escape(str(item))}</th>" for item in section.get("columns") or [])
+        columns = section.get("compact_columns") if section.get("id") == "call_list" else None
+        table_rows = section.get("compact_rows") if section.get("id") == "call_list" else None
+        header = "".join(f"<th>{html.escape(str(item))}</th>" for item in columns or section.get("columns") or [])
         rows = "".join(
             "<tr>" + "".join(f"<td>{html.escape(_value(cell))}</td>" for cell in row) + "</tr>"
-            for row in section.get("rows") or []
+            for row in table_rows or section.get("rows") or []
         )
         note = (
             f"<p class=\"call-table-note\">{html.escape(str(section['note']))}</p>"
@@ -2294,7 +2340,6 @@ def _render_manager_daily_pdf_report(
     voice = sections["voice_of_customer"]
     additional = sections["additional_situations"]
     challenge = sections["challenge"]
-    call_tomorrow = sections["call_tomorrow"]
     call_list = sections["call_list"]
     status_legend = sections.get("status_legend") or {
         "label": "ЛЕГЕНДА СТАТУСОВ",
@@ -2512,7 +2557,8 @@ def _render_manager_daily_pdf_report(
             if str(scene.get("customer_meaning") or "").strip():
                 scene_lines.append(f"Что клиент имеет в виду: {str(scene.get('customer_meaning') or '').strip()}")
             if str(scene.get("manager_response") or "").strip():
-                scene_lines.append(f"Как с этим работать: {str(scene.get('manager_response') or '').strip()}")
+                scene_lines.append("Как с этим работать")
+                scene_lines.append(str(scene.get("manager_response") or "").strip())
             for line in _split_readable_text(" ".join(scene_lines))[:2]:
                 draw_text(page3, left=margin + 8, top=cursor, text=line, size=7.2, color=black, max_width=width - (margin * 2) - 8)
                 cursor += 16
@@ -2559,7 +2605,9 @@ def _render_manager_daily_pdf_report(
                     draw_text(page4, left=margin + 12, top=cursor, text=line, size=7.3, color=muted, max_width=width - (margin * 2) - 24)
                     cursor += 14
                 if item.get("next_action"):
-                    draw_text(page4, left=margin + 12, top=cursor, text=f"Что сделать: {item.get('next_action')}", size=7.7, color=card_color, max_width=width - (margin * 2) - 24)
+                    draw_text(page4, left=margin + 12, top=cursor, text="Что сделать", size=7.7, color=card_color, max_width=width - (margin * 2) - 24)
+                    cursor += 12
+                    draw_text(page4, left=margin + 12, top=cursor, text=_capitalize_reader_sentence(item.get("next_action")), size=7.7, color=black, max_width=width - (margin * 2) - 24)
                 additional_top += card_h + 10
             challenge_top = additional_top + 2
         else:
@@ -2574,54 +2622,38 @@ def _render_manager_daily_pdf_report(
             draw_text(page4, left=margin + 12, top=challenge_top + 98, text=f"Фраза для завтра: {challenge.get('phrase_line') or ''}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
         footer(page4, len(pages))
 
-    page5 = add_page()
-    draw_section_bar(page5, top=58, title=call_tomorrow["label"], color=accent)
-    if call_tomorrow.get("rows"):
+    call_list_columns = call_list.get("compact_columns") or call_list.get("columns") or []
+    call_list_rows = call_list.get("compact_rows") or call_list.get("rows") or []
+    visible_call_list_rows = [list(map(str, row)) for row in call_list_rows] or [
+        ["—"] * max(1, len(call_list_columns))
+    ]
+    rows_per_call_list_page = 12 if len(call_list_columns) == 4 else len(visible_call_list_rows)
+    for chunk_start in range(0, len(visible_call_list_rows), rows_per_call_list_page):
+        page5 = add_page()
+        title = str(call_list["label"])
+        if chunk_start:
+            title = f"{title} (продолжение)"
+        draw_section_bar(page5, top=58, title=title, color=accent)
         draw_table(
             page5,
             top=92,
-            columns=["Приоритет", "Клиент", "Контекст", "Рекомендация"],
-            rows=[list(map(str, row)) for row in (call_tomorrow.get("rows") or [])],
-            col_widths=[66, 130, 105, 210],
-            body_size=6.9,
+            columns=[str(column) for column in call_list_columns],
+            rows=visible_call_list_rows[chunk_start : chunk_start + rows_per_call_list_page],
+            col_widths=[118, 128, 174, 91] if len(call_list_columns) == 4 else [24, 188, 110, 112, 77],
+            body_size=6.35 if len(call_list_columns) == 4 else 7.2,
         )
-    else:
-        draw_text(
-            page5,
-            left=margin,
-            top=94,
-            text=str(
-                call_tomorrow.get("empty_state")
-                or "Нет коммерческих звонков для работы завтра по итогам отчётного дня."
-            ),
-            size=9.0,
-            color=muted,
-            max_width=width - (margin * 2),
-        )
-    footer(page5, len(pages))
+        if call_list.get("note") and chunk_start + rows_per_call_list_page >= len(visible_call_list_rows):
+            draw_text(page5, left=margin, top=744, text=str(call_list.get("note") or ""), size=8.0, color=muted, max_width=width - (margin * 2))
+        footer(page5, len(pages))
 
     page6 = add_page()
-    draw_section_bar(page6, top=58, title=call_list["label"], color=accent)
-    draw_table(
-        page6,
-        top=92,
-        columns=[str(column) for column in (call_list.get("columns") or [])],
-        rows=[list(map(str, row)) for row in (call_list.get("rows") or [])] or [["—"] * max(1, len(call_list.get("columns") or []))],
-        col_widths=[24, 188, 110, 112, 77],
-        body_size=7.2,
-    )
-    if call_list.get("note"):
-        draw_text(page6, left=margin, top=744, text=str(call_list.get("note") or ""), size=8.0, color=muted, max_width=width - (margin * 2))
-    footer(page6, len(pages))
-
-    page7 = add_page()
     legend_top = 58
-    draw_section_bar(page7, top=legend_top, title=str(status_legend.get("label") or "ЛЕГЕНДА СТАТУСОВ"), color=accent)
+    draw_section_bar(page6, top=legend_top, title=str(status_legend.get("label") or "ЛЕГЕНДА СТАТУСОВ"), color=accent)
     legend_cursor = legend_top + 34
     for item in (status_legend.get("items") or _manager_daily_status_legend_items())[:6]:
-        draw_text(page7, left=margin, top=legend_cursor, text=f"• {item}", size=8.4, color=black, max_width=width - (margin * 2))
+        draw_text(page6, left=margin, top=legend_cursor, text=f"• {item}", size=8.4, color=black, max_width=width - (margin * 2))
         legend_cursor += 26
-    footer(page7, len(pages))
+    footer(page6, len(pages))
 
     return _build_pdf_bytes(pages=pages, font=font, page_width=width, page_height=height), len(pages)
 
@@ -3350,11 +3382,12 @@ def _additional_situation_card_html(item: dict[str, Any]) -> str:
                 body_parts.extend(f"<p>{html.escape(part)}</p>" for part in _split_readable_text(text))
     evidence = item.get("evidence_dialogue") or _dialogue_from_context_text(str(item.get("evidence_quote") or ""))
     if evidence:
-        body_parts.append("<p><strong>Подтверждение:</strong></p>")
+        body_parts.append("<p><strong>Подтверждение</strong></p>")
         body_parts.extend(_dialogue_html_lines(evidence))
     action = str(item.get("next_action") or item.get("how_to") or "").strip()
     if action:
-        body_parts.append(f"<p><strong>Что сделать:</strong> {html.escape(action)}</p>")
+        body_parts.append("<p><strong>Что сделать</strong></p>")
+        body_parts.extend(f"<p>{html.escape(part)}</p>" for part in _split_readable_text(_capitalize_reader_sentence(action)))
     return f"<article class=\"card\">{''.join(body_parts)}</article>"
 
 
@@ -3366,8 +3399,8 @@ _CALL_TOMORROW_STATUS_LABEL: dict[str, str] = {
 
 
 def _render_call_tomorrow_html(section: dict[str, Any]) -> str:
-    """Render ПОЗВОНИ ЗАВТРА block with follow-up contacts and opening scripts."""
-    label = html.escape(str(section.get("label") or "ПОЗВОНИ ЗАВТРА"))
+    """Render КОНТАКТЫ В РАБОТУ block with follow-up contacts and opening scripts."""
+    label = html.escape(str(section.get("label") or "КОНТАКТЫ В РАБОТУ"))
     contacts = list(section.get("contacts") or [])
     if section.get("is_placeholder") or not contacts:
         empty_state = html.escape(
@@ -3816,10 +3849,74 @@ def _call_breakdown_row_missing_confirming_fragment(row: list[str]) -> bool:
 
 
 def _call_breakdown_fragment_or_note(value: str) -> str:
-    text = _clean_reader_text(value).strip()
+    text = _format_call_breakdown_proof_text(value)
     if not text or text == "—":
         return ""
     return text
+
+
+def _format_call_breakdown_proof_text(value: Any) -> str:
+    turns = _parse_inline_call_breakdown_turns(str(value or ""))
+    if len(turns) >= 2:
+        return "\n".join(
+            f"{turn['speaker']}: {turn['text']}" for turn in turns if turn.get("text")
+        )
+    if len(turns) == 1:
+        return _clean_call_breakdown_proof_text(turns[0].get("text"))
+    return _clean_call_breakdown_proof_text(value)
+
+
+def _parse_inline_call_breakdown_turns(value: str) -> list[dict[str, str]]:
+    text = _clean_reader_text(value)
+    if not text:
+        return []
+    text = re.sub(
+        r"(?i)(?:доказательный\s+фрагмент|подтверждение|фрагмент)\s*:\s*",
+        "",
+        text,
+    )
+    label_pattern = re.compile(
+        r"(?i)(?:^|\s)(контекст|клиент|менеджер|оператор|продавец|собеседник|сторона\s*[12]|side\s*[12])\s*:\s*"
+    )
+    matches = list(label_pattern.finditer(text))
+    if not matches:
+        return []
+    turns: list[dict[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        turn_text = _clean_call_breakdown_proof_text(text[start:end])
+        if not turn_text:
+            continue
+        label = match.group(1).strip().lower()
+        if "2" in label:
+            speaker = "Сторона 2"
+        elif "1" in label:
+            speaker = "Сторона 1"
+        else:
+            speaker = "Сторона 1" if len(turns) % 2 == 0 else "Сторона 2"
+        turns.append({"speaker": speaker, "text": turn_text})
+    return turns if len(turns) >= 2 else turns
+
+
+def _clean_call_breakdown_proof_text(value: Any) -> str:
+    text = _clean_reader_text(str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\b(?:доказательный\s+фрагмент|подтверждение|фрагмент)\s*:\s*", "", text)
+    text = re.sub(r"(?i)\bконтекст\s*:\s*", "", text)
+    text = re.sub(
+        r"(?i)\b(?:клиент|менеджер|оператор|продавец|собеседник|сторона\s*[12])\s*:\s*",
+        "",
+        text,
+    )
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .:;«»\"")
+
+
+def _technical_report_token(value: Any) -> bool:
+    normalized = re.sub(r"[^a-zа-я0-9]+", "", str(value or "").strip().lower().replace("ё", "е"))
+    return normalized in {"documenttype", "none", "null"}
 
 
 def _split_call_breakdown_summary_and_proof(value: str) -> tuple[str, str]:
@@ -3827,23 +3924,31 @@ def _split_call_breakdown_summary_and_proof(value: str) -> tuple[str, str]:
     text = _clean_reader_text(value).strip()
     if not text or text == "—":
         return "", ""
+    marker_match = re.search(
+        r"(?i)\b(?:доказательный\s+фрагмент|подтверждение|фрагмент)\s*:\s*",
+        text,
+    )
+    if marker_match:
+        summary = _clean_call_breakdown_proof_text(text[: marker_match.start()])
+        proof = _clean_call_breakdown_proof_text(text[marker_match.end():])
+        return summary, proof
     embedded_what, embedded_fragment = _split_call_breakdown_fragment(text)
     if embedded_fragment:
-        return embedded_what, embedded_fragment
+        return embedded_what, _clean_call_breakdown_proof_text(embedded_fragment)
     dialogue_match = re.search(r"(?i)(?:^|\s)(менеджер|клиент|оператор|продавец|собеседник)\s*:", text)
     if dialogue_match:
         summary = text[: dialogue_match.start()].strip(" .:-")
-        proof = text[dialogue_match.start():].strip()
+        proof = _clean_call_breakdown_proof_text(text[dialogue_match.start():])
         return summary, proof
     if re.match(r"^[«\"].+[»\"]$", text):
-        return "", text
+        return "", _clean_call_breakdown_proof_text(text)
     return text, ""
 
 
 def _call_breakdown_merge_what_and_summary(what: str, summary: str) -> str:
     """Keep interpretation in `Что было` and reserve the proof column for dialogue/evidence."""
     base = _clean_reader_text(what).strip()
-    extra = _clean_reader_text(summary).strip()
+    extra = _clean_call_breakdown_proof_text(summary)
     if not base:
         return extra or "—"
     if not extra or extra == base:
@@ -3950,21 +4055,81 @@ def _normalize_voice_customer_scene(item: dict[str, Any]) -> dict[str, Any]:
             str(item.get("client_call_reference") or item.get("client_label") or "Клиент")
         ),
         "scene_summary": _clean_reader_text(
-            str(item.get("scene_summary") or item.get("quote_context") or item.get("quote") or "")
+            _voice_context_text(item.get("scene_summary") or item.get("quote_context") or item.get("quote") or "")
         ),
         "quote": _clean_reader_text(str(item.get("quote") or "")),
-        "quote_context": _clean_reader_text(str(item.get("quote_context") or item.get("scene_summary") or "")),
-        "customer_meaning": _clean_reader_text(
-            str(item.get("customer_meaning") or item.get("interpretation") or item.get("context") or "")
+        "quote_context": _clean_reader_text(
+            _voice_context_text(item.get("quote_context") or item.get("scene_summary") or "")
         ),
         "manager_response": _clean_reader_text(
-            str(item.get("manager_response") or item.get("manager_action") or "")
+            _voice_action_text(item.get("manager_response") or item.get("manager_action") or "")
+        ),
+        "customer_meaning": _clean_reader_text(
+            _voice_meaning_text(
+                item.get("customer_meaning") or item.get("interpretation") or item.get("context") or "",
+                item.get("manager_response") or item.get("manager_action") or "",
+            )
         ),
         "why_action_follows": _clean_reader_text(str(item.get("why_action_follows") or "")),
         "dialogue_evidence": list(item.get("dialogue_evidence") or []),
         "customer_signal": item.get("customer_signal"),
         "source": item.get("source"),
     }
+
+
+def _voice_meaning_text(value: Any, action: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.split(r"\s*(?:Что сделать|Как с этим работать)\s*:\s*", text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    action_text = str(action or "").strip()
+    if action_text and action_text in text:
+        text = text.replace(action_text, "").strip()
+    return text
+
+
+def _voice_action_text(value: Any) -> str:
+    text = re.sub(
+        r"^(?:Что сделать|Как с этим работать)\s*:\s*",
+        "",
+        str(value or "").strip(),
+        flags=re.IGNORECASE,
+    )
+    return text[:1].upper() + text[1:] if text else ""
+
+
+def _voice_context_text(value: Any) -> str:
+    """Remove technical `Контекст:` labels from customer-voice mini-scenes."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    label_pattern = re.compile(
+        r"(Клиент|Менеджер|Контекст|Сторона\s*1|Сторона\s*2|Customer|Manager|Side\s*1|Side\s*2)\s*:\s*",
+        flags=re.IGNORECASE,
+    )
+    matches = list(label_pattern.finditer(text))
+    if not matches:
+        return text
+    parts: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        turn_text = text[start:end].strip()
+        if not turn_text:
+            continue
+        raw_label = match.group(1).strip().lower()
+        if raw_label in {"клиент", "customer"}:
+            label = "Клиент"
+        elif raw_label in {"менеджер", "manager"}:
+            label = "Менеджер"
+        elif "2" in raw_label:
+            label = "Сторона 2"
+        elif "1" in raw_label:
+            label = "Сторона 1"
+        else:
+            label = "Сторона 1" if index % 2 == 0 else "Сторона 2"
+        parts.append(f"{label}: {turn_text}")
+    return " ".join(parts) if parts else text.replace("Контекст:", "").strip()
 
 
 def _voice_scene_from_situation(item: dict[str, Any], *, reply_seed: str = "") -> dict[str, Any]:
@@ -3990,7 +4155,13 @@ def _dialogue_from_context_text(value: str) -> list[dict[str, str]]:
     text = str(value or "").strip()
     if not text:
         return []
-    matches = list(re.finditer(r"(Клиент|Менеджер|Контекст|Customer|Manager)\s*:\s*", text, flags=re.IGNORECASE))
+    matches = list(
+        re.finditer(
+            r"(Клиент|Менеджер|Контекст|Сторона\s*1|Сторона\s*2|Customer|Manager|Side\s*1|Side\s*2)\s*:\s*",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
     if not matches:
         return [{"speaker": "unknown", "text": text}]
     items: list[dict[str, str]] = []
@@ -4144,6 +4315,7 @@ def _build_v5_additional_situations_section(
     scope = dict(data_scope or section.get("data_scope_details") or {})
     excluded = set(excluded_call_ids or set())
     duplicate_filtered_count = 0
+    evidence_filtered_count = 0
     situations: list[dict[str, Any]] = []
     for item in section.get("situations") or []:
         item_call_ids = _extract_call_ids_from_mapping(item)
@@ -4159,6 +4331,12 @@ def _build_v5_additional_situations_section(
         how_to = _clean_reader_text(str(item.get("how_to") or item.get("next_action") or ""))
         why = _clean_reader_text(str(item.get("why") or item.get("why_this_works") or ""))
         if not title or not client_said or not meant or not how_to:
+            continue
+        evidence_dialogue = list(item.get("evidence_dialogue") or []) or _dialogue_from_context_text(
+            str(item.get("evidence_quote") or "")
+        )
+        if not evidence_dialogue or str(item.get("evidence_quality") or "").strip().lower() == "weak":
+            evidence_filtered_count += 1
             continue
         narrative = _clean_reader_text(
             str(
@@ -4185,7 +4363,8 @@ def _build_v5_additional_situations_section(
                 "data_scope": item.get("data_scope"),
                 "evidence_call_id": item.get("evidence_call_id"),
                 "evidence_quote": item.get("evidence_quote"),
-                "evidence_dialogue": list(item.get("evidence_dialogue") or []),
+                "evidence_quality": item.get("evidence_quality"),
+                "evidence_dialogue": evidence_dialogue,
                 "client_call_reference": item.get("client_call_reference"),
                 "confidence": item.get("confidence"),
                 "signal": int(item.get("signal") or 0),
@@ -4204,6 +4383,7 @@ def _build_v5_additional_situations_section(
         "data_scope_details": scope,
         "scope_note": _data_scope_note(scope),
         "duplicate_filtered_count": duplicate_filtered_count,
+        "evidence_filtered_count": evidence_filtered_count,
     }
 
 
@@ -4262,9 +4442,9 @@ def _deadline_label_for_contact(item: dict[str, Any]) -> str:
     """Return manager-facing timing/reason label for a follow-up row."""
     status = str(item.get("status") or "open")
     deadline = _format_deadline_human(str(item.get("deadline") or "").strip() or None)
-    reason = _clean_reader_text(str(item.get("reason") or "")).strip()
+    reason = _clean_call_tomorrow_visible_text(item.get("reason"))
     if reason:
-        return f"Контекст: {reason}"
+        return f"Повод: {reason}"
     if deadline:
         return f"Срок: {deadline}"
     if status == "rescheduled":
@@ -4334,11 +4514,20 @@ def _build_v5_call_tomorrow_section(*, section: dict[str, Any]) -> dict[str, Any
 
 def _call_tomorrow_recommendation(item: dict[str, Any]) -> str:
     """Combine action and opening script without keeping a separate 'first phrase' column."""
-    goal = _call_goal_for_contact(item)
+    goal = _clean_call_tomorrow_visible_text(_call_goal_for_contact(item))
     phrase = _first_phrase_for_contact(item).strip(" «»\"")
     if phrase:
         return f"{goal} Можно начать: «{phrase}»."
     return goal
+
+
+def _clean_call_tomorrow_visible_text(value: Any) -> str:
+    """Remove technical labels from Block 5 manager-facing cells."""
+    text = _clean_reader_text(str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\bконтекст\s*:\s*", "", text)
+    return text.strip()
 
 
 def _build_morning_card_data(
@@ -4519,7 +4708,9 @@ def _manager_daily_page_footer(footer: str, page_number: int) -> str:
 
 def _clean_reader_text(text: str) -> str:
     """Clean leftover service wording from reader-facing text."""
-    cleaned = text.replace("not available", "нет данных").replace("Note:", "").strip()
+    cleaned = text.replace("not available", "нет данных").replace("Note:", "")
+    cleaned = re.sub(r"\bdocument_type\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return (
         cleaned.replace("persisted payload", "текущей выборке")
         .replace("rerun pipeline", "полный прогон")
@@ -4529,6 +4720,21 @@ def _clean_reader_text(text: str) -> str:
         .replace("без полного rerun", "без повторного полного прогона")
         .replace("coaching takeaway", "ориентир")
     )
+
+
+def _clean_reader_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _clean_reader_text(value)
+    if isinstance(value, list):
+        return [_clean_reader_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _clean_reader_value(item) for key, item in value.items()}
+    return value
+
+
+def _capitalize_reader_sentence(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[:1].upper() + text[1:] if text else ""
 
 
 _CALL_TYPE_SHORT: dict[str, str] = {
@@ -4647,7 +4853,13 @@ def _call_status_label(value: Any) -> str:
 
 def _call_list_status_label(row: dict[str, Any]) -> str:
     """Return manager-facing status for one call-list row."""
-    status = row.get("call_list_status") if "call_list_status" in row else row.get("status")
+    status = (
+        row.get("final_manager_status")
+        if "final_manager_status" in row
+        else row.get("call_list_status")
+        if "call_list_status" in row
+        else row.get("status")
+    )
     if status is None:
         return str(
             row.get("call_list_unclassified_status_label")
@@ -4657,10 +4869,225 @@ def _call_list_status_label(row: dict[str, Any]) -> str:
     return _call_status_label(status)
 
 
+def _evidence_status_display_text(coaching_view: dict[str, Any]) -> str:
+    """Return localized visible evidence status without raw service labels."""
+    status = _localized_service_label(
+        coaching_view.get("situation_day_evidence_status"),
+        {
+            "verified": "подтверждено",
+            "proven": "подтверждено",
+            "softened": "частично подтверждено",
+            "soften": "частично подтверждено",
+            "insufficient": "недостаточно данных",
+            "failed": "недостаточно данных",
+        },
+    )
+    strength = _localized_service_label(
+        coaching_view.get("proof_strength"),
+        {
+            "strong": "сильная доказательная база",
+            "medium": "средняя доказательная база",
+            "basic": "базовая доказательная база",
+            "weak": "слабая доказательная база",
+            "insufficient": "доказательств недостаточно",
+        },
+    )
+    return f"{status} / {strength}" if strength else status
+
+
+def _localized_service_label(value: Any, mapping: dict[str, str]) -> str:
+    """Localize known service labels and keep unknown reader text unchanged."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return mapping.get(text.lower(), text)
+
+
+def _build_call_list_compact_rows(
+    *,
+    call_list_raw: list[dict[str, Any]],
+    call_tomorrow_contacts: list[dict[str, Any]],
+) -> list[list[str]]:
+    """Build the merged call-list/follow-up table for the manager report."""
+    work_by_id = {
+        str(item.get("interaction_id") or "").strip(): item
+        for item in call_tomorrow_contacts
+        if str(item.get("interaction_id") or "").strip()
+    }
+    work_by_ref = {
+        str(item.get("client_call_reference") or "").strip(): item
+        for item in call_tomorrow_contacts
+        if str(item.get("client_call_reference") or "").strip()
+    }
+    return [
+        [
+            _call_list_status_priority_when_label(
+                row,
+                matched_contact=_call_list_matched_contact(
+                    row,
+                    work_by_id=work_by_id,
+                    work_by_ref=work_by_ref,
+                ),
+            ),
+            _call_list_contact_label(
+                row,
+                matched_contact=_call_list_matched_contact(
+                    row,
+                    work_by_id=work_by_id,
+                    work_by_ref=work_by_ref,
+                ),
+            ),
+            _call_list_essence_label(row, include_contact=False),
+            _call_list_recommendation_label(
+                row,
+                matched_contact=_call_list_matched_contact(
+                    row,
+                    work_by_id=work_by_id,
+                    work_by_ref=work_by_ref,
+                ),
+            ),
+        ]
+        for row in call_list_raw
+    ]
+
+
+def _call_list_matched_contact(
+    row: dict[str, Any],
+    *,
+    work_by_id: dict[str, dict[str, Any]],
+    work_by_ref: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the follow-up contact selected for this call-list row, if any."""
+    interaction_id = str(row.get("interaction_id") or "").strip()
+    reference = str(row.get("client_call_reference") or "").strip()
+    if interaction_id and interaction_id in work_by_id:
+        return work_by_id[interaction_id]
+    if reference and reference in work_by_ref:
+        return work_by_ref[reference]
+    return None
+
+
+def _call_list_status_priority_when_label(
+    row: dict[str, Any],
+    *,
+    matched_contact: dict[str, Any] | None,
+) -> str:
+    """Return status plus follow-up priority/deadline when the call is in work."""
+    parts = [_call_list_status_label(row)]
+    if matched_contact:
+        priority = _manager_reader_value(
+            matched_contact.get("priority_label")
+            or _priority_label_for_contact(str(matched_contact.get("priority_code") or "low")),
+            "",
+        )
+        when = _call_list_follow_up_when_label(matched_contact)
+        if priority:
+            parts.append(priority)
+        if when:
+            parts.append(when)
+    else:
+        status_text = parts[0].lower()
+        if "договор" in status_text or "перенос" in status_text:
+            when = _manager_reader_value(row.get("deadline"), "")
+            if when:
+                parts.append(f"Срок: {when}")
+    return " · ".join(part for part in parts if part)
+
+
+def _call_list_follow_up_when_label(contact: dict[str, Any]) -> str:
+    """Return a concise follow-up date/time label for the merged table."""
+    deadline = _format_deadline_human(str(contact.get("deadline") or "").strip() or None)
+    if deadline:
+        return f"Срок: {deadline}"
+    reason = _clean_call_tomorrow_visible_text(contact.get("reason"))
+    match = re.search(r"(?i)\bкогда\s*:\s*(?:до\s*)?([^.;]+)", reason)
+    if match:
+        value = match.group(1).strip(" .;")
+        if value:
+            return f"Срок: {value}"
+    return ""
+
+
+def _call_list_contact_label(
+    row: dict[str, Any],
+    *,
+    matched_contact: dict[str, Any] | None,
+) -> str:
+    """Return the contact cell in the former call_tomorrow style."""
+    source = matched_contact or row
+    return _manager_reader_value(
+        source.get("client_call_reference")
+        or source.get("client_label")
+        or row.get("client_or_phone")
+        or row.get("client_phone"),
+        "Клиент не определён",
+    )
+
+
+def _call_list_recommendation_label(
+    row: dict[str, Any],
+    *,
+    matched_contact: dict[str, Any] | None,
+) -> str:
+    """Return the same concise next-action value used before the header-only edit."""
+    if not matched_contact:
+        return "—"
+    return _call_list_trim_cell(_call_goal_for_contact(matched_contact), limit=135)
+
+
+def _call_list_essence_label(row: dict[str, Any], *, include_contact: bool = True) -> str:
+    """Combine existing manager-facing facts into one compact essence cell."""
+    client = _manager_reader_value(
+        row.get("client_call_reference") or row.get("client_or_phone"),
+        "Клиент не определён",
+    )
+    topic = _manager_reader_value(
+        row.get("call_list_topic") or _call_topic_label(row.get("call_type"), row.get("scenario_type")),
+        "",
+    )
+    context = _manager_reader_value(
+        row.get("call_list_context")
+        or _call_context_label(
+            str(
+                (
+                    row.get("final_manager_status")
+                    if "final_manager_status" in row
+                    else row.get("call_list_status")
+                    if "call_list_status" in row
+                    else row.get("status")
+                )
+                or ""
+            ),
+            row.get("deadline"),
+            row.get("reason"),
+            row=row,
+        ),
+        "",
+    )
+    parts: list[str] = [client] if include_contact else []
+    if topic and topic != "—" and topic not in context:
+        parts.append(topic)
+    if context and context != "—":
+        parts.append(context)
+    return _call_list_trim_cell(
+        ". ".join(part.strip().rstrip(".") for part in parts if part and part.strip()).strip(),
+        limit=220,
+    ) or "—"
+
+
+def _call_list_trim_cell(value: Any, *, limit: int) -> str:
+    """Keep dense report table cells readable in PDF."""
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _call_level_label(value: Any) -> str:
     """Map internal quality level to reader-facing label."""
     mapping = {
         "strong": "Сильный",
+        "medium": "Средний",
         "baseline": "Базовый",
         "problematic": "Проблемный",
     }
@@ -4908,7 +5335,9 @@ def _manager_status_text_color(
                     body_parts.append("<p><strong>Реплики:</strong></p>")
                     body_parts.extend(_dialogue_html_lines(scene.get("dialogue_evidence") or []))
                 if scene.get("manager_response"):
-                    body_parts.append(f"<p><strong>Как с этим работать:</strong> {html.escape(str(scene.get('manager_response') or ''))}</p>")
+                    body_parts.append("<p><strong>Как с этим работать</strong></p>")
+                    for part in _split_readable_text(str(scene.get("manager_response") or "")):
+                        body_parts.append(f"<p>{html.escape(part)}</p>")
                 cards.append(f"<article class=\"card\">{''.join(body_parts)}</article>")
             return (
                 f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\">{intro}"

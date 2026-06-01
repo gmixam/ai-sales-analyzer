@@ -52,6 +52,8 @@ class CallTomorrowWordingComposerTests(unittest.TestCase):
         self.assertIn("Do not add, remove, reorder", text)
         self.assertIn("do_not_change_priority_status_deadline", text)
         self.assertIn("same number of contacts", text)
+        self.assertIn("Контекст:", text)
+        self.assertIn("concrete customer signal", text)
 
     def test_llm3_wording_updates_only_text_fields(self) -> None:
         module = _load_module()
@@ -108,6 +110,51 @@ class CallTomorrowWordingComposerTests(unittest.TestCase):
             result["selection_diagnostics"]["wording_composer"]["llm3_rejection_reason"],
             "contacts_count_changed",
         )
+
+    def test_llm3_strips_technical_context_label(self) -> None:
+        module = _load_module()
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "contacts": [
+                    {
+                        "contact_key": "call-1",
+                        "reason": "Контекст: клиент попросил материалы в WhatsApp и ждёт предложение.",
+                        "next_step": "Контекст: отправить материалы и согласовать дату возврата.",
+                        "opening_script": "Контекст: добрый день, отправляю материалы в WhatsApp.",
+                        "why_this_wording": "Опирается на запрос материалов.",
+                    }
+                ],
+            }
+
+        module._request_llm3_call_tomorrow_wording = fake_request
+        result = module.compose_call_tomorrow_wording(_call_tomorrow(), llm3_enabled=True)
+        contact = result["contacts"][0]
+
+        self.assertNotIn("Контекст:", contact["reason"])
+        self.assertNotIn("Контекст:", contact["next_step"])
+        self.assertNotIn("Контекст:", contact["opening_script"])
+
+    def test_concrete_signal_rejects_generic_open_follow_up(self) -> None:
+        module = _load_module()
+        source = {
+            "action_profile": "materials_request",
+            "reason": "Клиент попросил материалы в WhatsApp и готов посмотреть предложение.",
+            "next_step": "Отправить материал и согласовать дату возврата к обсуждению.",
+            "opening_script": "Добрый день. Отправил материалы, как договорились.",
+            "signal_text": "Клиент: Скиньте в WhatsApp, я посмотрю.",
+            "evidence_signal_text": "Клиент попросил материалы в WhatsApp.",
+        }
+
+        reason = module._wording_rejection_reason(
+            source=source,
+            reason="Клиент открыт к дальнейшему контакту.",
+            next_step="Уточнить актуальность и договориться о конкретном следующем шаге.",
+            opening_script="Добрый день. Хочу уточнить, актуален ли вопрос.",
+        )
+
+        self.assertEqual(reason, "generic_follow_up_over_concrete_signal")
 
     def test_refusal_evidence_rejects_sales_push(self) -> None:
         module = _load_module()

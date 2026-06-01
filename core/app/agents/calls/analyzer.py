@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -19,9 +20,12 @@ from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Interaction
 from app.core_shared.exceptions import AnalysisError, LLMResponseError, SemanticAnalysisError
 from app.agents.calls.llm_simulation import (
+    SubagentRuntimeError,
+    request_subagent_llm_content,
     request_simulated_llm_content,
     simulated_routing_metadata,
     simulation_enabled,
+    subagent_runtime_enabled,
 )
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
@@ -50,8 +54,16 @@ APPROVED_INSTRUCTION_VERSION = "edo_sales_mvp1_call_analysis_v15_block_ready"
 EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION = (
     "edo_sales_mvp1_call_analysis_v16_context_evidence"
 )
+EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION = (
+    "edo_sales_mvp1_call_analysis_v17_univ_evidence"
+)
+LAYERED_LLM2_ORCHESTRATION_VERSION = "llm2_layered_runtime_v1"
+LAYERED_LLM2_ANALYSIS_MODES = {"layered", "layered_v1", "layered_llm2", "llm2_layered"}
 CONTEXT_EVIDENCE_INSTRUCTION_VERSIONS = {
     EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION,
+}
+UNIVERSAL_EVIDENCE_INSTRUCTION_VERSIONS = {
+    EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION,
 }
 APPROVED_CHECKLIST_VERSION = "edo_sales_mvp1_checklist_v1"
 SEMANTIC_EMPTY_ANALYSIS_REASON = "semantically_empty_analysis"
@@ -516,6 +528,10 @@ class PromptAssetSet:
     analyze: str
     agreements: str
     insights: str
+    analyze_facts_scenes: str = ""
+    analyze_scoring_gaps: str = ""
+    analyze_claim_proof: str = ""
+    analyze_recommendations: str = ""
 
 
 class CallsAnalyzer:
@@ -543,7 +559,21 @@ class CallsAnalyzer:
         if str(instruction_version or "").strip() in CONTEXT_EVIDENCE_INSTRUCTION_VERSIONS:
             overlay = self._get_prompt("analyze_v16_context_evidence")
             return f"{base_prompt.rstrip()}\n\n{overlay.strip()}\n"
+        if str(instruction_version or "").strip() in UNIVERSAL_EVIDENCE_INSTRUCTION_VERSIONS:
+            overlay = self._get_prompt("analyze_v17_universal_evidence")
+            return f"{base_prompt.rstrip()}\n\n{overlay.strip()}\n"
         return base_prompt
+
+    @staticmethod
+    def _llm2_layered_analysis_enabled() -> bool:
+        """Return whether LLM-2 should run as layered 2A/2B/2C/2D passes."""
+
+        mode = (
+            os.getenv("AI_LLM2_ANALYSIS_MODE")
+            or getattr(settings, "ai_llm2_analysis_mode", "")
+            or "monolithic"
+        )
+        return str(mode).strip().lower() in LAYERED_LLM2_ANALYSIS_MODES
 
     def _resolve_source_file(self, key: str) -> Path | None:
         """Resolve one approved MVP-1 source file across known runtime locations."""
@@ -600,6 +630,10 @@ class CallsAnalyzer:
             analyze=self._get_analyze_prompt(instruction_version),
             agreements=self._get_prompt("agreements"),
             insights=self._get_prompt("insights"),
+            analyze_facts_scenes=self._get_prompt("analyze_facts_scenes"),
+            analyze_scoring_gaps=self._get_prompt("analyze_scoring_gaps"),
+            analyze_claim_proof=self._get_prompt("analyze_claim_proof"),
+            analyze_recommendations=self._get_prompt("analyze_recommendations"),
         )
 
     def build_checklist_definition(self) -> dict[str, Any]:
@@ -859,6 +893,12 @@ class CallsAnalyzer:
             interaction=interaction,
             instruction_version=instruction_version,
         )
+        if self._llm2_layered_analysis_enabled():
+            return self._analyze_call_with_layered_llm2(
+                interaction=interaction,
+                instruction_version=instruction_version,
+                llm1_first_pass=llm1_first_pass,
+            )
 
         messages = [
             {"role": "system", "content": self._get_analyze_prompt(instruction_version)},
@@ -962,6 +1002,481 @@ class CallsAnalyzer:
             stages=len(validated["score_by_stage"]),
         )
         return validated
+
+    def _analyze_call_with_layered_llm2(
+        self,
+        *,
+        interaction: Interaction,
+        instruction_version: str,
+        llm1_first_pass: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run opt-in layered LLM-2 passes and return the existing contract shape."""
+
+        prompt_context = self.build_prompt_context(
+            interaction=interaction,
+            instruction_version=instruction_version,
+            llm1_first_pass=llm1_first_pass,
+        )
+        admission_gate = self._llm2_admission_gate(
+            interaction=interaction,
+            llm1_first_pass=llm1_first_pass,
+        )
+        if not admission_gate["admitted"]:
+            normalized = self._mark_not_coachable_result(
+                normalized_result={
+                    "classification": {
+                        "analysis_eligibility": "not_eligible",
+                        "eligibility_reason": admission_gate["reason_code"],
+                    },
+                    "diagnostics": {"llm2_admission_gate": admission_gate},
+                },
+                llm1_first_pass=llm1_first_pass,
+            )
+            self._store_analysis_forensics(
+                interaction=interaction,
+                raw_llm_response=json.dumps(
+                    {
+                        "artifact_type": "llm2_admission_gate_rejection",
+                        "call_id": str(interaction.id),
+                        "instruction_version": instruction_version,
+                        "llm2_admission_gate": admission_gate,
+                    },
+                    ensure_ascii=False,
+                ),
+                normalized_result=normalized,
+                failure_reason=admission_gate["reason_code"],
+            )
+            raise SemanticAnalysisError(
+                "Analyzer did not admit call into layered LLM-2.",
+                interaction_id=str(interaction.id),
+                raw_response=json.dumps(admission_gate, ensure_ascii=False),
+                normalized_result=normalized,
+                reason_code=admission_gate["reason_code"],
+            )
+        prompt_assets = self.get_prompt_assets(instruction_version=instruction_version)
+        artifacts: dict[str, Any] = {}
+        pass_metadata: dict[str, Any] = {}
+        pass_plan = [
+            ("llm2a", "llm2a_facts_scenes", prompt_assets.analyze_facts_scenes, ()),
+            ("llm2b", "llm2b_scoring_gaps", prompt_assets.analyze_scoring_gaps, ("llm2a",)),
+            ("llm2c", "llm2c_claim_proof", prompt_assets.analyze_claim_proof, ("llm2a", "llm2b")),
+            (
+                "llm2d",
+                "llm2d_recommendations",
+                prompt_assets.analyze_recommendations,
+                ("llm2a", "llm2b", "llm2c"),
+            ),
+        ]
+        layered_artifact: dict[str, Any] = {
+            "artifact_type": "llm2_layered_runtime_artifact",
+            "artifact_version": LAYERED_LLM2_ORCHESTRATION_VERSION,
+            "call_id": str(interaction.id),
+            "source": "CallsAnalyzer.layered_llm2",
+            "instruction_version": instruction_version,
+            "llm2_admission_gate": deepcopy(admission_gate),
+        }
+        self.logger.info(
+            "analyzer.llm2_layered_start",
+            interaction_id=str(interaction.id),
+            instruction_version=instruction_version,
+        )
+        try:
+            for artifact_key, request_kind, system_prompt, dependency_keys in pass_plan:
+                dependency_payload = {
+                    key: artifacts[key]
+                    for key in dependency_keys
+                    if artifacts.get(key) is not None
+                }
+                artifacts[artifact_key] = self._request_llm2_layered_pass(
+                    interaction=interaction,
+                    instruction_version=instruction_version,
+                    request_kind=request_kind,
+                    system_prompt=system_prompt,
+                    prompt_context=prompt_context,
+                    previous_artifacts=dependency_payload,
+                    admission_gate=admission_gate,
+                )
+                if artifact_key == "llm2a":
+                    self._apply_llm2_admission_gate_to_llm2a(
+                        artifacts[artifact_key],
+                        admission_gate=admission_gate,
+                    )
+                if artifact_key == "llm2b":
+                    self._validate_llm2b_scoring_after_admission(
+                        interaction=interaction,
+                        llm2a=artifacts.get("llm2a") or {},
+                        llm2b=artifacts[artifact_key],
+                        admission_gate=admission_gate,
+                    )
+                pass_metadata[artifact_key] = self._current_ai_routing_metadata(
+                    interaction=interaction,
+                    layer="llm2",
+                )
+            layered_artifact.update(artifacts)
+
+            from app.agents.calls.llm2_layered_analysis import (
+                LAYERED_ADAPTER_INSTRUCTION_VERSION,
+                normalize_llm2_layered_analysis,
+            )
+
+            normalized = normalize_llm2_layered_analysis(
+                layered_artifact,
+                transcript=interaction.text or "",
+                validate_evidence=settings.ai_llm2_report_evidence_validation_enabled,
+            )
+            normalized.scores_detail["llm2_layered_runtime"] = {
+                "enabled": True,
+                "orchestration_version": LAYERED_LLM2_ORCHESTRATION_VERSION,
+                "adapter_instruction_version": LAYERED_ADAPTER_INSTRUCTION_VERSION,
+                "manager_claims_require_proof_cards": True,
+                "pass_artifact_keys": list(artifacts),
+                "pass_metadata": deepcopy(pass_metadata),
+                "validation_valid": normalized.is_valid,
+                "report_evidence_validation_enabled": settings.ai_llm2_report_evidence_validation_enabled,
+                "semantic_validation_enabled": settings.ai_llm2_semantic_validation_enabled,
+            }
+            normalized.scores_detail["llm2_layered_artifacts"] = deepcopy(artifacts)
+            if not normalized.is_valid:
+                validation = normalized.report_evidence_validation
+                issue_codes = [
+                    getattr(issue, "code", "unknown")
+                    for issue in (validation.errors if validation is not None else [])
+                ]
+                raise LLMResponseError(
+                    "Layered LLM-2 report_evidence validation failed: "
+                    + ", ".join(issue_codes or ["unknown"]),
+                    interaction_id=str(interaction.id),
+                    raw_response=json.dumps(layered_artifact, ensure_ascii=False),
+                    normalized_result=normalized.scores_detail,
+                )
+            validated = self._validate_and_normalize_contract(
+                raw_contract=normalized.scores_detail,
+                interaction=interaction,
+                instruction_version=instruction_version,
+            )
+            validated["llm2_layered_runtime"]["validation_valid"] = True
+            self._store_analysis_forensics(
+                interaction=interaction,
+                raw_llm_response=json.dumps(layered_artifact, ensure_ascii=False),
+                normalized_result=validated,
+                failure_reason=None,
+            )
+            self.logger.info(
+                "analyzer.llm2_layered_done",
+                interaction_id=str(interaction.id),
+                instruction_version=instruction_version,
+                stages=len(validated.get("score_by_stage") or []),
+            )
+            return validated
+        except (LLMResponseError, SemanticAnalysisError) as exc:
+            self._store_analysis_forensics(
+                interaction=interaction,
+                raw_llm_response=json.dumps(
+                    {
+                        **layered_artifact,
+                        "completed_passes": sorted(artifacts),
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+                normalized_result=getattr(exc, "normalized_result", None),
+                failure_reason=getattr(exc, "reason_code", None)
+                or "llm2_layered_validation_failed",
+            )
+            raise
+        except Exception as exc:
+            failure_payload = {
+                "artifact_type": "llm2_layered_runtime_failure",
+                "artifact_version": LAYERED_LLM2_ORCHESTRATION_VERSION,
+                "call_id": str(interaction.id),
+                "instruction_version": instruction_version,
+                "completed_passes": sorted(artifacts),
+                "error": str(exc),
+            }
+            self._store_analysis_forensics(
+                interaction=interaction,
+                raw_llm_response=json.dumps(failure_payload, ensure_ascii=False),
+                normalized_result=None,
+                failure_reason="llm2_layered_runtime_failed",
+            )
+            raise AnalysisError(
+                f"Layered LLM-2 runtime failed closed: {exc}",
+                interaction_id=str(interaction.id),
+                original=exc,
+            ) from exc
+
+    def _llm2_admission_gate(
+        self,
+        *,
+        interaction: Interaction,
+        llm1_first_pass: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return the single whole-call admission decision before layered LLM-2."""
+
+        transcript = str(getattr(interaction, "text", "") or "").strip()
+        classification = dict(llm1_first_pass.get("classification") or {})
+        call_type = str(classification.get("call_type") or "").strip().lower()
+        eligibility = str(classification.get("analysis_eligibility") or "").strip().lower()
+        reason = str(classification.get("eligibility_reason") or "").strip().lower()
+        non_commercial_or_unusable_reason = any(
+            token in reason
+            for token in (
+                "support",
+                "technical",
+                "non-sales",
+                "not_sales",
+                "internal",
+                "ivr",
+                "no_speech",
+                "poor_transcript",
+                "poor transcript",
+                "unusable_transcript",
+            )
+        )
+
+        if not transcript:
+            return {
+                "admitted": False,
+                "reason_code": "llm2_admission_no_transcript",
+                "source": "pre_llm2_admission_gate",
+                "duration_sec": getattr(interaction, "duration_sec", None),
+                "call_type": call_type or None,
+                "llm1_eligibility": eligibility or None,
+            }
+        if call_type in {"support", "internal"} or (
+            eligibility == "not_eligible" and (call_type == "other" or non_commercial_or_unusable_reason)
+        ):
+            return {
+                "admitted": False,
+                "reason_code": "llm2_admission_non_commercial_or_unusable",
+                "source": "pre_llm2_admission_gate",
+                "duration_sec": getattr(interaction, "duration_sec", None),
+                "call_type": call_type,
+                "llm1_eligibility": eligibility or None,
+                "llm1_reason": reason or None,
+            }
+        return {
+            "admitted": True,
+            "reason_code": "llm2_admission_accepted",
+            "source": "pre_llm2_admission_gate",
+            "duration_sec": getattr(interaction, "duration_sec", None),
+            "call_type": call_type or None,
+            "llm1_eligibility": eligibility or None,
+            "llm1_reason": reason or None,
+            "duration_is_not_stop_condition": True,
+        }
+
+    def _apply_llm2_admission_gate_to_llm2a(
+        self,
+        artifact: dict[str, Any],
+        *,
+        admission_gate: dict[str, Any],
+    ) -> None:
+        """Prevent an admitted commercial call from being stopped inside LLM-2A."""
+
+        artifact["llm2_admission_gate"] = deepcopy(admission_gate)
+        if not admission_gate.get("admitted"):
+            return
+        eligibility = str(artifact.get("analysis_eligibility") or "").strip().lower()
+        if eligibility not in {"not_eligible", "insufficient"}:
+            return
+        if not self._llm2a_indicates_commercial_scoring_scope(artifact):
+            return
+        original = {
+            "analysis_eligibility": artifact.get("analysis_eligibility"),
+            "eligibility_reason": artifact.get("eligibility_reason"),
+        }
+        artifact["analysis_eligibility"] = "eligible"
+        artifact["eligibility_reason"] = "llm2_admission_gate_accepted_commercial_scope"
+        artifact.setdefault("admission_gate_overrides", []).append(
+            {
+                "field": "analysis_eligibility",
+                "original": original,
+                "reason": (
+                    "Whole-call admission belongs before LLM-2; duration or short "
+                    "commercial context must not stop downstream scoring."
+                ),
+            }
+        )
+
+    def _validate_llm2b_scoring_after_admission(
+        self,
+        *,
+        interaction: Interaction,
+        llm2a: dict[str, Any],
+        llm2b: dict[str, Any],
+        admission_gate: dict[str, Any],
+    ) -> None:
+        """Fail closed when LLM-2B silently skips scoring an admitted commercial call."""
+
+        if not admission_gate.get("admitted"):
+            return
+        if not self._llm2a_indicates_commercial_scoring_scope(llm2a):
+            return
+        if llm2b.get("criteria_results") or llm2b.get("stage_scores"):
+            return
+        diagnostic = {
+            "reason_code": "llm2b_missing_scores_for_admitted_commercial_call",
+            "llm2_admission_gate": admission_gate,
+            "llm2a": {
+                "analysis_eligibility": llm2a.get("analysis_eligibility"),
+                "eligibility_reason": llm2a.get("eligibility_reason"),
+                "business_outcome_signal": llm2a.get("business_outcome_signal"),
+                "scenes_count": len(llm2a.get("scenes") or []),
+                "evidence_count": len(llm2a.get("evidence_ledger") or []),
+            },
+            "llm2b": {
+                "criteria_results_count": len(llm2b.get("criteria_results") or []),
+                "stage_scores_count": len(llm2b.get("stage_scores") or []),
+                "fail_closed": llm2b.get("fail_closed"),
+            },
+        }
+        raise LLMResponseError(
+            "LLM-2B returned no scoring for an admitted commercial call.",
+            interaction_id=str(interaction.id),
+            raw_response=json.dumps(diagnostic, ensure_ascii=False),
+            normalized_result=diagnostic,
+            reason_code="llm2b_missing_scores_for_admitted_commercial_call",
+        )
+
+    @staticmethod
+    def _llm2a_indicates_commercial_scoring_scope(artifact: dict[str, Any]) -> bool:
+        """Return whether LLM-2A output describes a call that should be scored."""
+
+        business_outcome = dict(artifact.get("business_outcome_signal") or {})
+        status = str(business_outcome.get("status") or "").strip().lower()
+        if status == "tech_service" or status == "insufficient":
+            return False
+        if status in {"agreement", "rescheduled", "refusal", "open", "not_suitable"}:
+            return True
+
+        reason = str(artifact.get("eligibility_reason") or "").strip().lower()
+        if any(token in reason for token in ("support", "technical", "internal", "non-sales", "not_sales")):
+            return False
+        has_observed_content = bool(artifact.get("scenes")) and bool(artifact.get("evidence_ledger"))
+        has_duration_only_rejection = any(
+            token in reason
+            for token in (
+                "duration_below",
+                "below threshold",
+                "ниже порога",
+                "180",
+                "корот",
+                "short",
+            )
+        )
+        return has_observed_content and has_duration_only_rejection
+
+    def _request_llm2_layered_pass(
+        self,
+        *,
+        interaction: Interaction,
+        instruction_version: str,
+        request_kind: str,
+        system_prompt: str,
+        prompt_context: dict[str, Any],
+        previous_artifacts: dict[str, Any],
+        admission_gate: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Request and parse one LLM-2 layered pass artifact."""
+
+        call_id = str(interaction.id)
+        if request_kind == "llm2a_facts_scenes":
+            metadata = dict(interaction.metadata_ or {})
+            user_payload = {
+                "call_id": call_id,
+                "metadata": metadata,
+                "transcript": interaction.text or "",
+                "segments": metadata.get("segments")
+                or metadata.get("transcript_segments")
+                or metadata.get("utterances")
+                or [],
+                "llm1_first_pass": prompt_context.get("llm1_first_pass") or {},
+                "llm2_admission_gate": admission_gate or {},
+                "checklist_observation_frame": prompt_context["checklist_definition"],
+            }
+        elif request_kind == "llm2b_scoring_gaps":
+            user_payload = {
+                "call_id": call_id,
+                "llm2a_artifact": previous_artifacts.get("llm2a") or {},
+                "llm2_admission_gate": admission_gate or {},
+                "checklist_definition": prompt_context["checklist_definition"],
+                "mvp1_contract_shape": prompt_context["analysis_result_contract_template"],
+            }
+        elif request_kind == "llm2c_claim_proof":
+            user_payload = {
+                "call_id": call_id,
+                "llm2a_artifact": previous_artifacts.get("llm2a") or {},
+                "llm2b_artifact": previous_artifacts.get("llm2b") or {},
+                "llm2_admission_gate": admission_gate or {},
+            }
+        elif request_kind == "llm2d_recommendations":
+            user_payload = {
+                "call_id": call_id,
+                "llm2a_artifact": previous_artifacts.get("llm2a") or {},
+                "llm2b_artifact": previous_artifacts.get("llm2b") or {},
+                "llm2c_artifact": previous_artifacts.get("llm2c") or {},
+                "llm2_admission_gate": admission_gate or {},
+                "mvp1_contract_shape": prompt_context["analysis_result_contract_template"],
+                "report_evidence_contract_v1": prompt_context["approved_sources"].get(
+                    "report_evidence_contract_markdown",
+                    "",
+                ),
+            }
+        else:
+            user_payload = {
+                "request_kind": request_kind,
+                "interaction": prompt_context["interaction"],
+                "checklist_definition": prompt_context["checklist_definition"],
+                "analysis_result_contract_template": prompt_context[
+                    "analysis_result_contract_template"
+                ],
+                "llm1_first_pass": prompt_context.get("llm1_first_pass"),
+                "previous_artifacts": previous_artifacts,
+            }
+        content = self._request_llm_content(
+            interaction=interaction,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"{self._get_prompt('llm2_pass_contracts').rstrip()}\n\n"
+                        f"{system_prompt.strip()}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(user_payload, ensure_ascii=False, indent=2),
+                },
+            ],
+            instruction_version=instruction_version,
+            layer="llm2",
+            request_kind=request_kind,
+            executor_label="LLM-2 OpenAI-compatible executor",
+            temperature=0.1,
+        )
+        try:
+            artifact = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise LLMResponseError(
+                f"{request_kind} returned invalid JSON",
+                interaction_id=str(interaction.id),
+                raw_response=content,
+            ) from exc
+        if not isinstance(artifact, dict):
+            raise LLMResponseError(
+                f"{request_kind} must return a JSON object",
+                interaction_id=str(interaction.id),
+                raw_response=content,
+            )
+        artifact.setdefault("call_id", str(interaction.id))
+        if str(artifact.get("status") or "").strip().lower() in {"failed", "error"}:
+            raise LLMResponseError(
+                f"{request_kind} returned failed status",
+                interaction_id=str(interaction.id),
+                raw_response=content,
+            )
+        return artifact
 
     @staticmethod
     def _should_mark_not_coachable(
@@ -1256,6 +1771,82 @@ class CallsAnalyzer:
                 request_kind=request_kind,
             )
             return content
+        if subagent_runtime_enabled():
+            route_plan = self.ai_router.build_route_plan(
+                layer=layer,
+                subject_key=str(interaction.id),
+            )
+            selected = route_plan.current_candidate()
+            self.logger.info(
+                "analyzer.llm_subagent_start",
+                interaction_id=str(interaction.id),
+                instruction_version=instruction_version,
+                layer=layer,
+                provider=selected.provider,
+                account_alias=selected.account_alias,
+                request_kind=request_kind,
+            )
+            try:
+                result = request_subagent_llm_content(
+                    layer=layer,
+                    request_kind=request_kind,
+                    messages=messages,
+                    subject_key=str(interaction.id),
+                    instruction_version=instruction_version,
+                )
+            except SubagentRuntimeError as exc:
+                route_plan.mark_attempt_failure(str(exc))
+                layer_metadata = route_plan.to_metadata(
+                    executed=False,
+                    request_kind=request_kind,
+                    execution_status="subagent_failed",
+                    executed_endpoint_path="external_subagent_runner",
+                    notes=f"{layer_label} subagent runtime failed closed.",
+                )
+                layer_metadata.update(getattr(exc, "metadata", {}) or {})
+                layer_metadata["selected_execution_mode"] = "subagent_runtime"
+                layer_metadata["actual_execution_mode"] = "subagent_runtime"
+                layer_metadata["execution_status"] = "subagent_failed"
+                self._store_ai_routing_metadata(
+                    interaction=interaction,
+                    layer_metadata=layer_metadata,
+                )
+                raise AnalysisError(
+                    f"{layer_label} subagent runtime failed: {exc}",
+                    interaction_id=str(interaction.id),
+                    original=exc,
+                ) from exc
+            route_plan.mark_attempt_success()
+            layer_metadata = route_plan.to_metadata(
+                request_kind=request_kind,
+                execution_status="subagent_executed",
+                executed_endpoint_path="external_subagent_runner",
+                provider_request_id=result.metadata.get("provider_request_id"),
+                notes=f"{layer_label} subagent runtime request completed.",
+            )
+            layer_metadata.update(result.metadata)
+            layer_metadata["planned_real_llm_route"] = {
+                "selected_provider": selected.provider,
+                "selected_account_alias": selected.account_alias,
+                "selected_api_key_env": selected.api_key_env,
+                "selected_model": selected.model,
+                "selected_api_base": selected.api_base,
+                "selected_endpoint": selected.endpoint,
+            }
+            layer_metadata["selected_execution_mode"] = "subagent_runtime"
+            layer_metadata["actual_execution_mode"] = "subagent_runtime"
+            self._store_ai_routing_metadata(
+                interaction=interaction,
+                layer_metadata=layer_metadata,
+            )
+            self.logger.info(
+                "analyzer.llm_subagent_done",
+                interaction_id=str(interaction.id),
+                instruction_version=instruction_version,
+                layer=layer,
+                request_kind=request_kind,
+            )
+            return result.content
         route_plan = self.ai_router.build_route_plan(
             layer=layer,
             subject_key=str(interaction.id),
@@ -1508,12 +2099,13 @@ class CallsAnalyzer:
             }
             for stage in CHECKLIST_DEFINITION["stages"]
         }
-        self._validate_report_evidence_block_candidate_stage_codes(
-            contract=contract,
-            allowed_stage_codes=set(allowed_stage_map),
-            interaction_id=str(interaction.id),
-            raw_response=json.dumps(raw_contract, ensure_ascii=False),
-        )
+        if settings.ai_llm2_report_evidence_validation_enabled:
+            self._validate_report_evidence_block_candidate_stage_codes(
+                contract=contract,
+                allowed_stage_codes=set(allowed_stage_map),
+                interaction_id=str(interaction.id),
+                raw_response=json.dumps(raw_contract, ensure_ascii=False),
+            )
         for stage in contract["score_by_stage"] or []:
             stage_code = stage.get("stage_code")
             if stage_code not in allowed_stage_map:
@@ -1639,6 +2231,8 @@ class CallsAnalyzer:
         raw_response: str,
     ) -> None:
         """Reject shape-valid but semantically empty analysis outputs."""
+        if not settings.ai_llm2_semantic_validation_enabled:
+            return
         reason_codes = self._semantic_invalid_reason_codes(contract)
         if reason_codes:
             raise SemanticAnalysisError(
@@ -1772,6 +2366,18 @@ class CallsAnalyzer:
             interaction.metadata_ = metadata
 
     @staticmethod
+    def _current_ai_routing_metadata(
+        *,
+        interaction: Interaction,
+        layer: str,
+    ) -> dict[str, Any]:
+        """Return the latest stored routing metadata for a layer."""
+        metadata = dict(interaction.metadata_ or {})
+        ai_routing = dict(metadata.get("ai_routing") or {})
+        layer_metadata = ai_routing.get(layer)
+        return deepcopy(layer_metadata) if isinstance(layer_metadata, dict) else {}
+
+    @staticmethod
     def _repair_criterion_scores_from_checklist(stage: dict[str, Any]) -> None:
         """Fill criterion max_score from the approved checklist when LLM omits it."""
         known_criteria = {
@@ -1866,6 +2472,12 @@ class CallsAnalyzer:
 
     def _enrich_contract_for_reporting(self, contract: dict[str, Any]) -> None:
         """Derive bounded coaching fields from existing criterion evidence."""
+        layered_runtime = contract.get("llm2_layered_runtime")
+        if (
+            isinstance(layered_runtime, dict)
+            and layered_runtime.get("manager_claims_require_proof_cards") is True
+        ):
+            return
         if not self._is_sales_relevant_contract(contract):
             return
         weak_criteria, strong_criteria = self._collect_reportable_criteria(contract)

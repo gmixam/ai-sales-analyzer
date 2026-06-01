@@ -44,6 +44,13 @@ class ReportBlockRouterTests(unittest.TestCase):
             "score": 91,
             "quote": "Скиньте в WhatsApp, я посмотрю.",
             "source": "report_evidence.voice_of_customer[0]",
+            "proof_card": {
+                "proof_id": "proof-voc-1",
+                "scene_id": "scene-voc-1",
+                "evidence_ids": ["ev-voc-1"],
+                "evidence_quote": "Скиньте в WhatsApp, я посмотрю.",
+                "reject_reason": None,
+            },
         }
 
         result = route_evidence_items([item])
@@ -70,6 +77,13 @@ class ReportBlockRouterTests(unittest.TestCase):
             "score": 85,
             "quote": "Документ не открывается в личном кабинете.",
             "source": "report_evidence.semantic_case",
+            "proof_card": {
+                "proof_id": "proof-service-1",
+                "scene_id": "scene-service-1",
+                "evidence_ids": ["ev-service-1"],
+                "evidence_quote": "Документ не открывается в личном кабинете.",
+                "reject_reason": None,
+            },
         }
 
         result = route_evidence_items([item])
@@ -104,6 +118,17 @@ class ReportBlockRouterTests(unittest.TestCase):
                 "возврата к обсуждению."
             ),
         )
+        medium_moment = {
+            **medium_moment.__dict__,
+            "proof_card": {
+                "proof_id": "proof-moment-1",
+                "scene_id": "scene-moment-1",
+                "evidence_ids": ["ev-moment-1"],
+                "evidence_quote": "Хорошо, отправлю материалы.",
+                "gap_proven": True,
+                "reject_reason": None,
+            },
+        }
 
         result = route_evidence_items([customer_signal, medium_moment])
 
@@ -126,6 +151,13 @@ class ReportBlockRouterTests(unittest.TestCase):
             "proof_strength": "strong",
             "score": 90,
             "evidence_scene": "Клиент попросил материалы, менеджер не закрепил срок возврата.",
+            "proof_card": {
+                "proof_id": "proof-same",
+                "status": "proven",
+                "evidence_quote": "Клиент попросил материалы, менеджер не закрепил срок возврата.",
+                "gap_proven": True,
+                "reject_reason": None,
+            },
         }
         other_call = {
             "item_id": "gap-other",
@@ -134,6 +166,13 @@ class ReportBlockRouterTests(unittest.TestCase):
             "proof_strength": "strong",
             "score": 95,
             "evidence_scene": "Другой звонок с похожей ошибкой.",
+            "proof_card": {
+                "proof_id": "proof-other",
+                "status": "proven",
+                "evidence_quote": "Другой звонок с похожей ошибкой.",
+                "gap_proven": True,
+                "reject_reason": None,
+            },
         }
 
         result = route_evidence_items(
@@ -149,13 +188,13 @@ class ReportBlockRouterTests(unittest.TestCase):
         }
         self.assertEqual(reasons, {"wrong_call"})
 
-    def test_weak_legacy_rows_are_not_eligible(self) -> None:
+    def test_legacy_rows_without_proof_card_are_not_eligible(self) -> None:
         item = {
-            "item_id": "legacy-weak-1",
+            "item_id": "legacy-no-proof-1",
             "call_id": "call-3",
             "evidence_type": "manager_gap",
-            "evidence_quality": "weak",
-            "score": 58,
+            "proof_strength": "strong",
+            "score": 88,
             "source": "report_evidence.situation_candidates[0]",
             "what_happened": "Нужно лучше выявлять потребности.",
             "usable_in_report": True,
@@ -168,16 +207,86 @@ class ReportBlockRouterTests(unittest.TestCase):
         rejected = {
             entry["block"]: entry["reason"]
             for entry in result["diagnostics"]["rejected"]
-            if entry["item_id"] == "legacy-weak-1"
+            if entry["item_id"] == "legacy-no-proof-1"
             and entry["block"] in {"situation_day", "call_breakdown"}
         }
         self.assertEqual(
             rejected,
             {
-                "situation_day": "weak_proof",
-                "call_breakdown": "weak_proof",
+                "situation_day": "missing_proof_card",
+                "call_breakdown": "missing_proof_card",
             },
         )
+
+    def test_diagnostics_only_mode_routes_usable_legacy_rows_without_proof_card(self) -> None:
+        item = {
+            "item_id": "legacy-usable-1",
+            "call_id": "call-3",
+            "evidence_type": "manager_gap",
+            "proof_strength": "strong",
+            "score": 88,
+            "source": "report_evidence.situation_candidates[0]",
+            "evidence_scene": "Клиент просит материалы, менеджер не закрепляет следующий контакт.",
+            "what_happened": "Менеджер отправляет материалы без даты следующего шага.",
+            "usable_in_report": True,
+        }
+
+        result = route_evidence_items([item], require_verified_proof=False)
+
+        self.assertEqual(result["diagnostics"]["proof_gate_mode"], "diagnostics_only")
+        self.assertEqual(result["situation_day"][0]["item_id"], "legacy-usable-1")
+        self.assertEqual(result["call_breakdown"][0]["item_id"], "legacy-usable-1")
+        routed_reasons = {
+            entry["block"]: entry["reason"]
+            for entry in result["diagnostics"]["routed"]
+            if entry["item_id"] == "legacy-usable-1"
+            and entry["block"] in {"situation_day", "call_breakdown"}
+        }
+        self.assertEqual(
+            routed_reasons,
+            {
+                "situation_day": "manager_gap_verified_for_situation_day",
+                "call_breakdown": "fallback_best_manager_moment",
+            },
+        )
+        usable, reason = is_usable_for_block(
+            item,
+            "situation_day",
+            require_verified_proof=False,
+        )
+        self.assertTrue(usable)
+        self.assertEqual(reason, "manager_gap_verified_for_situation_day")
+
+    def test_softened_proof_card_routes_with_softened_status(self) -> None:
+        item = {
+            "item_id": "softened-gap-1",
+            "call_id": "call-softened",
+            "evidence_type": "manager_gap",
+            "proof_strength": "medium",
+            "score": 81,
+            "source": "report_evidence.proof_cards",
+            "what_happened": "Похоже, менеджер не до конца закрепил дату следующего контакта.",
+            "proof_card": {
+                "proof_id": "proof-softened-gap-1",
+                "status": "soften",
+                "scene_id": "scene-softened-gap-1",
+                "evidence_ids": ["ev-softened-gap-1"],
+                "evidence_quote": "Я отправлю информацию, посмотрите.",
+                "gap_proven": True,
+                "reject_reason": None,
+            },
+        }
+
+        result = route_evidence_items([item])
+
+        self.assertEqual(result["situation_day"][0]["item_id"], "softened-gap-1")
+        self.assertEqual(result["call_breakdown"][0]["item_id"], "softened-gap-1")
+        statuses = {
+            entry["proof_status"]
+            for entry in result["diagnostics"]["routed"]
+            if entry["item_id"] == "softened-gap-1"
+        }
+        self.assertEqual(statuses, {"softened_proof_card"})
 
     def test_block_suitability_fit_false_blocks_routing(self) -> None:
         item = {
@@ -219,6 +328,67 @@ class ReportBlockRouterTests(unittest.TestCase):
                 "call_breakdown": "fit_false",
             },
         )
+
+    def test_call_essence_consistency_diagnostics_for_call_list_and_follow_up(self) -> None:
+        item = {
+            "item_id": "essence-1",
+            "call_id": "call-essence",
+            "source": "report_evidence.call_essence",
+            "evidence_type": "call_essence",
+            "proof_strength": "medium",
+            "score": 90,
+            "call_essence": {
+                "topic": "Презентация по ЭДО",
+                "outcome": "agreement",
+                "agreement": "Договорились созвониться на презентацию по ЭДО.",
+                "next_step": "Отправить приглашение на презентацию.",
+                "manager_visible_text": "Клиент заинтересован в презентации по ЭДО.",
+            },
+        }
+
+        result = route_evidence_items([item])
+
+        self.assertEqual(result["call_list"][0]["item_id"], "essence-1")
+        self.assertEqual(result["follow_up"][0]["item_id"], "essence-1")
+        self.assertEqual(
+            result["diagnostics"]["source_consistency"],
+            [
+                {
+                    "call_id": "call-essence",
+                    "consistent": True,
+                    "reason": "same_source",
+                    "call_list_source": "report_evidence.call_essence",
+                    "follow_up_source": "report_evidence.call_essence",
+                    "preferred_source": "report_evidence.call_essence",
+                }
+            ],
+        )
+
+    def test_generic_call_essence_still_routes_call_list_but_not_follow_up(self) -> None:
+        item = {
+            "item_id": "essence-generic",
+            "call_id": "call-generic",
+            "source": "report_evidence.call_essence",
+            "evidence_type": "call_essence",
+            "proof_strength": "weak",
+            "score": 80,
+            "call_essence": {
+                "topic": "есть договоренность",
+                "outcome": "agreement",
+                "agreement": "есть договоренность",
+            },
+        }
+
+        result = route_evidence_items([item])
+
+        self.assertEqual(result["call_list"][0]["item_id"], "essence-generic")
+        self.assertEqual(result["follow_up"], [])
+        rejected = {
+            entry["reason"]
+            for entry in result["diagnostics"]["rejected"]
+            if entry["item_id"] == "essence-generic" and entry["block"] == "follow_up"
+        }
+        self.assertEqual(rejected, {"missing_next_step"})
 
 
 if __name__ == "__main__":

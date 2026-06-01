@@ -801,3 +801,111 @@
 - **Причина:** Текущий механизм отчета сложно отлаживать на реальных LLM-вызовах: дорого, медленно и трудно локализовать, где именно возникает деградация качества. Временная подмена LLM на субагентов дает управляемые повторы без создания параллельного pipeline.
 - **Scope:** temporary testing/operating mode and bounded runtime execution boundary. STT-сервис не создается, database schema не меняется, UI не становится основным запуском тестов, approved analyzer/report contracts не меняются, validators/normalizers/quality gates не обходятся.
 - **Дата:** 2026-05-25
+
+## ADR-081: `subagent_runtime` является отдельным runtime-режимом, не local simulation
+- **Решение:** Для полноценной проверки подмены LLM вводится отдельный режим `AI_LLM_EXECUTION_MODE=subagent_runtime` / `AI_LLM_SUBAGENT_RUNTIME_ENABLED=true`. Он не равен `AI_LLM_SIMULATION_ENABLED`: local simulation остается быстрой эвристической заглушкой, а `subagent_runtime` вызывает внешний runner/subprocess.
+- **Решение:** В первом runtime implementation внешний runner по умолчанию может быть `codex exec`; он получает тот же input payload/messages, обязан вернуть один JSON object и пишет input/output artifacts в `AI_LLM_SUBAGENT_ARTIFACT_DIR/<run_id>/`.
+- **Решение:** Если runner недоступен, падает, возвращает пустой/невалидный JSON или не проходит текущие validators, механизм должен fail closed и фиксировать audit metadata. Нельзя тихо падать обратно в real OpenAI или local simulation внутри этого режима.
+- **Решение:** Для отчетных прогонов, где нужно исключить reuse старых LLM-анализов, runner запускается с отдельной `analysis_instruction_version`, например `subagent_runtime_v1`; старые analyses не должны удовлетворять readiness для такого контрольного прогона.
+- **Причина:** Первый Telegram-прогон Толегена за `2026-05-21` показал, что local simulation не является достаточным доказательством полной подмены. `subagent_runtime` нужен, чтобы реально проверить prompt/contract/validator boundary и увидеть, где субагент не повторяет поведение LLM.
+- **Scope:** runtime LLM execution boundary, audit artifacts, routing metadata, manual reporting reuse guard. Нет изменений STT-сервиса, DB schema, UI запуска, analyzer/report contracts или business delivery policy.
+- **Дата:** 2026-05-25
+
+## ADR-082: LLM-1 становится классификатором и карточкой звонка перед LLM-2
+- **Решение:** Целевая роль `LLM-1` меняется на дешевый классификатор, который заполняет краткую карточку звонка и определяет, должен ли звонок идти в `LLM-2` для полноценного анализа.
+- **Решение:** `LLM-1` не должен выполнять глубокий анализ качества работы менеджера, писать развернутые рекомендации, готовить report evidence или формировать блоки отчета.
+- **Решение:** Минимальный целевой артефакт `LLM-1`: пригодность звонка к анализу, причина допуска/отсева, базовая классификация, краткая карточка звонка, технические признаки маршрутизации и audit/reason codes.
+- **Решение:** Если `LLM-1` отсеивает звонок, downstream-механизм должен получить явный audit/reason code, чтобы отбор можно было проверить на контрольной выборке.
+- **Решение:** В будущей архитектуре `LLM-1` является кандидатом на вынос в сервисную границу STT/post-STT enrichment: аудио -> транскрипт -> карточка звонка/eligibility. Это не меняет роль самого STT, который остается преобразованием аудио в текст.
+- **Решение:** `LLM-2` остается узлом полноценного анализа только для звонков, которые прошли eligibility/routing `LLM-1` или были принудительно отправлены в анализ в тестовом режиме.
+- **Причина:** Текущий `LLM-1` выглядит как слабый предварительный черновик для `LLM-2` и не дает понятной экономии или управляемости. Чтобы упростить калибровку и снизить стоимость прогонов, `LLM-1` должен иметь узкую, проверяемую и дешевую функцию классификации, карточки звонка и допуска в глубокий анализ.
+- **Scope:** целевая архитектурная роль `LLM-1`, будущая калибровка prompt/contract и тестирование субагентами. Это решение само по себе не меняет код, approved analyzer/report contracts, STT, `LLM-2` prompt, `LLM-3` report composition, delivery или scheduler.
+- **Дата:** 2026-05-26
+
+## ADR-083: Изменения LLM-2 и manager_daily проходят через evidence-first протокол
+- **Решение:** Следующие улучшения `LLM-2`, report selection и `LLM-3` должны выполняться по evidence-first протоколу из `docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md`.
+- **Решение:** Улучшения начинаются с `LLM-2 artifact parity / artifact simplification`: сначала сравниваем текущие артефакты `LLM-2` до/после и только потом проверяем влияние на `LLM-3` и отчет.
+- **Решение:** Упрощение `LLM-2` включает сокращение активного instruction pack: в prompt остаются смысл звонка, факты, оценка, grounding, checklist и универсальный evidence pack; report-specific routing, block-ready narrative material и исторические implementation notes выносятся из активной инструкции.
+- **Решение:** Все изменения, касающиеся `LLM-1`, `LLM-2` и `LLM-3`, во время калибровки проверяются через `subagent_runtime`, а не через реальные LLM. Local simulation не считается полноценной подменой.
+- **Решение:** После стабилизации `LLM-2` обязательно выполняется end-to-end проверка реальных отчетов через субагентов до PDF/Telegram, чтобы подтвердить manager-facing качество, а не только корректность JSON.
+- **Решение:** Контракт `LLM-1` закрепляется в последнюю очередь: eligibility, call type, short call card, routing flags, audit/reason codes. Это финальный этап после доработки `LLM-2`, report layer / `LLM-3` и проверки реальных отчетов.
+- **Решение:** Одна итерация должна менять один проверяемый смысловой контур или один слой артефакта, а не весь отчет сразу.
+- **Решение:** Manager-facing claim считается допустимым только если известны источник, звонок, артефакт, evidence и counter-evidence проверка. При слабом evidence механизм должен fail closed: ослабить формулировку, скрыть блок или вывести диагностический fallback.
+- **Причина:** Блоки отчета зависят от большого количества downstream-решений. Если начать с видимого блока, можно улучшить текст, но оставить слабый источник данных. Сначала нужно стабилизировать `LLM-2` как поставщика анализа и evidence pack.
+- **Scope:** operating model for upcoming LLM/report quality changes. Это не меняет runtime behavior, prompts, contracts, renderer, delivery или scheduler само по себе.
+- **Дата:** 2026-05-26
+
+## ADR-084: Контрольные даты и блокер пилота для LLM2-калибровки
+- **Решение:** Ближайший контрольный цикл строится вокруг дат `2026-05-18`, `2026-05-19`, `2026-05-20`.
+- **Решение:** Текущий блокер пилота — не техническая сборка, доставка, Telegram/PDF/rendering или запуск отчетов. Эти части в целом работали: отчеты собирались и уходили.
+- **Решение:** Главный блокер — нестабильное качество `LLM-2`: смысл анализа, доказательная база, подкрепление claims, точность оценки и связь recommendations с gaps/evidence.
+- **Решение:** Утверждена граница `LLM-2` из `docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md`: `LLM-2` отвечает за смысл звонка, факты, оценку, gaps, recommendations и универсальный evidence pack; `LLM-2` не является report-template engine и не должен готовить report-specific routing под текущие блоки отчета.
+- **Решение:** Исполнители не должны начинать с косметики отчета, delivery, UI или scheduler. Сначала стабилизируются `LLM-2` artifact, instruction pack, evidence/scoring, затем report layer / `LLM-3`, затем реальные отчеты через субагентов, и только потом финальное закрепление `LLM-1`.
+- **Причина:** Без стабильного анализа, evidence и подтверждения claims пилот нельзя продолжать, даже если отчет технически успешно доставляется.
+- **Scope:** planning and implementation guardrails for the next LLM/report quality cycle. Это не меняет runtime behavior, prompts, contracts, renderer, delivery или scheduler само по себе.
+- **Дата:** 2026-05-26
+
+## ADR-085: Active work state является обязательным handoff-механизмом проекта
+- **Решение:** Общий прогресс проекта по-прежнему фиксируется в `docs/PROGRESS.md`, а принятые решения — в `docs/DECISIONS.md`.
+- **Решение:** `docs/ACTIVE_WORK_STATE.md` является короткой оперативной карточкой текущего этапа, а не заменой общего progress log. Он должен содержать текущий статус, последнюю безопасную точку восстановления, pending approval gates, что требуется от пользователя и следующий практический шаг.
+- **Решение:** При обрыве связи, восстановлении сервера без истории чата или создании нового чата агент должен начинать с `docs/ACTIVE_WORK_STATE.md`, затем читать `docs/CONTEXT_INDEX.md`, `docs/DECISIONS.md` и `docs/PROGRESS.md`.
+- **Решение:** Перед паузой, ожиданием пользователя, запуском длинного прогона или переходом между подэтапами агент должен обновить `docs/ACTIVE_WORK_STATE.md`. После завершения значимого этапа итог обязательно переносится в `docs/PROGRESS.md`, а новые standing decisions — в `docs/DECISIONS.md`.
+- **Решение:** Если требуется решение пользователя, агент должен поставить `status: waiting_for_user`, явно записать вопрос и варианты в `docs/ACTIVE_WORK_STATE.md`, написать в чат сообщение с маркером `НУЖНО ВАШЕ УТВЕРЖДЕНИЕ` и остановить дальнейшую реализацию до ответа.
+- **Решение:** Если доступен безопасный operator/test Telegram-канал, допускается короткий Telegram ping пользователю о том, что в чате требуется утверждение. Такой ping не является бизнес-доставкой, не отправляется менеджерам и не заменяет source of truth в `ACTIVE_WORK_STATE.md`.
+- **Решение:** `docs/CONTEXT_INDEX.md` должен ссылаться на `docs/ACTIVE_WORK_STATE.md` как на нулевой шаг восстановления контекста.
+- **Причина:** Проект выполняется длинными итерациями через чат, где возможны обрывы связи, неполная загрузка истории или продолжение из нового чата. Без живого handoff-файла агенты могут потерять контекст, повторить уже принятые решения или продолжить работу после approval gate.
+- **Scope:** project-wide operating rule for agent continuity, handoff and user approval notifications. Это не меняет runtime behavior продукта, LLM contracts, report rendering, delivery semantics или scheduler само по себе.
+- **Дата:** 2026-05-26
+
+## ADR-086: Основной агент оркестрирует два типа субагентов
+- **Решение:** В LLM2-калибровке и связанных report-quality задачах доработки выполняют `implementation subagents`, а имитацию `LLM-1`, `LLM-2`, `LLM-3` выполняют отдельные `LLM-node simulation subagents`.
+- **Решение:** Основной агент в чате является orchestrator: ставит задачи implementation-субагентам, запускает LLM-node simulation субагентов, собирает артефакты, проверяет validators/artifact diff/report diagnostics, обновляет документацию и останавливается на approval gates пользователя.
+- **Решение:** Один и тот же субагент не должен одновременно быть исполнителем доработки и имитатором LLM-узла в одном проверочном контуре.
+- **Решение:** Результаты implementation-субагентов должны проверяться через независимые runtime boundaries: validators, normalizers, artifact diff, report-level diagnostics и отдельные LLM-node simulation runs через `subagent_runtime`.
+- **Решение:** LLM-node simulation subagents не меняют код, не принимают архитектурные решения и не обходят approved contracts; они только исполняют роль соответствующего LLM-узла по текущим инструкциям и контрактам.
+- **Причина:** Нужно избежать ситуации, когда один агент реализовал изменение и сам же подтвердил его как LLM-узел. Разделение ролей дает более надежную проверку и сохраняет близость к реальному LLM runtime.
+- **Scope:** operating rule for agent orchestration during LLM/report-quality work. Это не меняет approved product runtime behavior, database schema, delivery semantics или scheduler само по себе.
+- **Дата:** 2026-05-26
+
+## ADR-087: Gate 5 калибруется по блокам, строго по очереди
+- **Решение:** После частичного review Telegram preview за `2026-05-18`..`2026-05-20` дальнейшая калибровка `manager_daily` идет не всем отчетом сразу, а по блокам.
+- **Решение:** Порядок блоков фиксируется так: 1) `БАЛЛЫ ПО ЭТАПАМ` + `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ` + `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`; 2) `СИТУАЦИЯ ДНЯ` + `РАЗБОР ЗВОНКА`; 3) `ДОПОЛНИТЕЛЬНАЯ СИТУАЦИЯ`; 4) `ГОЛОС КЛИЕНТА`.
+- **Решение:** Нельзя переходить к следующему блоку, пока текущий блок не протестирован на контрольных отчетах и не принят пользователем.
+- **Решение:** В одном block-gate допускаются только bounded изменения, относящиеся к текущему блоку: artifact supply, selection, LLM3 input/output, renderer или wording. Нельзя одновременно чинить соседние блоки, если это не строго необходимо для корректности текущего блока.
+- **Решение:** Для каждого блока сохраняется evidence-first проверка: source artifact -> report selection -> LLM3 input/output, если применимо -> payload -> PDF/Telegram preview -> approval пользователя.
+- **Причина:** Gate 5 показал, что механизм технически собирается и доставляется, но manager-facing качество нужно стабилизировать постепенно. Блоковая приемка снижает шум, упрощает диагностику и не дает агентам вносить широкие правки без понятной проверки.
+- **Scope:** operating rule for the next report-quality phase. Это не меняет runtime behavior само по себе и не разрешает бизнес-доставку менеджерам.
+- **Дата:** 2026-05-26
+
+## ADR-088: Report Layer / LLM-3 освобождаются от лишней структуры, но не от fact gates
+- **Решение:** Перед исправлением багов Block 1 выполнен audit Report Layer / `LLM-3`; выводы продолжены в основном рабочем документе `docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md`, а детальный вспомогательный артефакт сохранен как `docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md`.
+- **Решение:** Source of truth по текущим правкам механизма остается `docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md`; отдельные audit/review файлы не заменяют его.
+- **Решение:** Строгими остаются `call_id`, report-day scope, final manager-facing status, deadlines, scores, stage, quotes/scenes, evidence refs, counter-evidence gates и запрет invented facts.
+- **Решение:** Жесткие требования к форме, которые не защищают факты, должны переноситься в `LLM-3` instructions или repair/warning слой: row shape, short compatibility rows, optional scripts, table-first wording, fixed "tomorrow" naming, substring-only grounding where source refs are available.
+- **Решение:** `LLM-3` может выбирать и оформлять только внутри bounded candidate pool, подготовленного Report Layer. Он не может менять статус, срок, клиента, score, stage, scope или добавлять новые факты.
+- **Решение:** Для Block 1 `LLM-3` остается wording-composer: он может улучшать причину, следующий шаг и opening script, но не selection, priority, status или deadline.
+- **Причина:** Gate 5 показал, что технически корректный отчет может терять смысл, если downstream слой заставляет `LLM-3` заполнять старые микрополя и таблицы вместо понятной manager-facing истории. Нужно освободить смысловую композицию, сохранив проверяемые границы фактов.
+- **Scope:** planning and guardrails for upcoming report-quality implementation. Это не меняет runtime behavior, contracts, renderer, prompts или delivery само по себе.
+- **Дата:** 2026-05-27
+
+## ADR-089: Gate 5 возвращается к аудиту всего механизма анализа
+- **Решение:** После пользовательского разбора `СИТУАЦИЯ ДНЯ` Gate 5 block-by-block movement приостанавливается. Активная точка восстановления — pre-block аудит всего механизма анализа, а не дальнейшая локальная доработка Block 2.
+- **Решение:** Перед новыми исправлениями нужно проверить всю цепочку: `LLM-1 -> LLM-2 -> validators/normalizers -> report evidence registry -> report block router -> Report Layer -> LLM-3 -> payload/render/PDF/Telegram`.
+- **Решение:** Главная проверяемая граница: `LLM-2` отвечает за смысл звонка, факты, оценки, gaps, recommendations, evidence и counter-evidence; Report Layer выбирает и проверяет bounded candidate pool; `LLM-3` только выбирает/оформляет внутри допущенного материала и не усиливает слабый claim.
+- **Решение:** Локальные Block 2 правки, сделанные после комментариев пользователя, считаются post-checkpoint worktree state. Они могут быть переиспользованы позже, но не являются принятой целевой архитектурой до approval механизма.
+- **Решение:** Implementation agents и LLM-node simulation agents остаются разделенными; для `LLM-1`, `LLM-2` и `LLM-3` используются отдельные simulation agents. Основной агент оркестрирует, собирает артефакты и останавливается на approval gates.
+- **Решение:** Business delivery остается выключенной. Telegram можно использовать только как test/operator уведомление, когда требуется действие пользователя или отправляется preview для approval.
+- **Причина:** Пример показал системный риск: отчет может иметь строгую структуру и технически verified path, но смысловой claim не подтверждается разговором. Это нельзя надежно исправить косметикой render layer или отдельным prompt `LLM-3`; нужен пересмотр ownership и hard gates в механизме анализа.
+- **Scope:** operating decision for current Gate 5 direction. Это не меняет runtime behavior, prompts, contracts, renderer, delivery или scheduler само по себе.
+- **Дата:** 2026-05-27
+
+## ADR-090: Условия допуска живут до LLM-2, а не внутри LLM-2 узлов
+- **Решение:** Единственное место, где решается, идет ли звонок в layered `LLM-2` анализ, — входной `LLM-2 admission gate` до запуска `LLM-2A/2B/2C/2D`.
+- **Решение:** Если звонок передан в `LLM-2`, узлы `LLM-2A`, `LLM-2B`, `LLM-2C` и `LLM-2D` не должны добавлять новые условия допуска и не должны целиком останавливать анализ звонка.
+- **Решение:** `LLM-2A` отвечает за facts/scenes/evidence и может отмечать quality risks, но не может закрывать scoring для уже допущенного коммерческого звонка через `analysis_eligibility=not_eligible`.
+- **Решение:** `LLM-2B` обязан вернуть `stage_scores` по применимым этапам для каждого допущенного коммерчески релевантного звонка. Пустой `stage_scores=[]` после допуска считается ошибкой выполнения, retry/repair/diagnostics case, а не нормальным результатом.
+- **Решение:** Длительность меньше `180` секунд не является самостоятельной причиной исключить коммерчески релевантный звонок из `LLM-2` scoring. Порог `CALLS_MIN_DURATION_SEC=180` не меняется в этой итерации и остается source/intake/config порогом и контекстным quality signal.
+- **Решение:** `LLM-2C` и `LLM-2D` могут reject/soften конкретные claims или рекомендации, но не должны скрывать звонок целиком и менять eligibility.
+- **Причина:** Full-day проверка Толегена за `2026-05-19` показала, что layered `LLM-2` был запущен по `24` звонкам, но только `3` получили числовой `score_by_stage`; `21` были срезаны внутренним `analysis_eligibility=not_eligible`, чаще всего из-за `duration_below_threshold`, включая коммерчески релевантные короткие звонки. Это нарушает ownership: смысловой допуск должен быть upstream, а `LLM-2` узлы должны выполнять свои роли по уже принятому input.
+- **Scope:** planning and implementation guardrail for the next LLM2/report-quality pass. Это решение само по себе не меняет код, prompts, runtime, renderer, delivery или scheduler; реализация фиксируется отдельными задачами в `docs/ACTIVE_WORK_STATE.md` и `docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md`.
+- **Дата:** 2026-06-01

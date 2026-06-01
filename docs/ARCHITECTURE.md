@@ -25,7 +25,7 @@ Current MVP-1 runtime status:
 - `STT`: routed and executed through the provider router.
 - `LLM-1`: routed and executed through a separate first-pass request for classification / summary / follow-up context.
 - `LLM-2`: routed and executed through the provider router for the approved deep-analysis request.
-- `LLM-3`: routed through the provider router for optional report-composer calls over selected/grounded material. It currently supports Situation Day, Call Breakdown, Voice of Customer, Tomorrow wording, and Additional Situations narrative composition when enabled.
+- `LLM-3`: routed through the provider router for optional report-composer calls over selected/grounded material. It currently supports Situation Day, Call Breakdown, Voice of Customer, Tomorrow wording, and Additional Situations narrative composition when enabled. It may improve meaning/wording inside a bounded candidate pool, but it must not change call identity, report scope, final status, deadlines, scores, stages, priorities, or source facts.
 - Current adapter scope is intentionally bounded:
   - `STT` has concrete runtime adapters for `assemblyai` and `openai/whisper`.
   - `LLM-1` currently runs through the OpenAI client using routed `model` + `api_base`, so other vendors require OpenAI-compatible API semantics or a future explicit adapter.
@@ -87,6 +87,9 @@ Allowed bounded extension:
 - in the current Business-ready Report Pack this bounded report-composer layer is called `LLM-3`;
 - this is not an analyzer redesign and does not override deterministic selection,
   final outcomes, deadlines, report-day scope, or evidence gates.
+- текущее правило Gate 5: нарушения fact/scope/evidence fail closed, а чистые
+  form/row/length compatibility issues могут быть отремонтированы, понижены
+  или показаны как diagnostics, если underlying narrative grounded.
 
 Implementation boundary for the first bounded slice:
 - reuse the existing manual/operator-driven entrypoint pattern instead of introducing scheduler-driven orchestration;

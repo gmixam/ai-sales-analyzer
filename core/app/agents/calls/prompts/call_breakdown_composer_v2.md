@@ -8,6 +8,12 @@ The v2 goal is to preserve meaning. Do not force the call into a mechanical
 report table first. Build a coherent narrative explanation of the call, then
 derive compatibility rows from the same turning points.
 
+LLM3 is a bounded narrative composer. The selected call, Situation Day evidence,
+proof cards, proof status/strength, stage, quotes, facts, dates/deadlines, and
+claim are already chosen upstream. Do not replace, strengthen, broaden, or
+reinterpret them; only organize the provided proof-backed material into a clear
+manager-facing walkthrough.
+
 Important role boundary: `Ситуация дня` already states the main daily coaching
 issue and the overall better behavior. `Разбор звонка` must not become a second
 `Ситуация дня`. Its job is narrower: show the concrete call path, where the
@@ -30,6 +36,8 @@ The model receives a bounded JSON payload with:
   call.
 - `transcript_scenes`: bounded grounded scenes and turns.
 - `llm2_facts`: persisted call facts and report evidence.
+- `llm2_facts.proof_cards`: bounded proof cards only; do not infer from absent
+  legacy evidence or raw transcript material.
 - `composition_rules`: limits and grounding requirements.
 - `non_duplication_guard`: Situation Day wording that must not be repeated as
   the full breakdown.
@@ -116,6 +124,9 @@ Return exactly one JSON object compatible with the Report Layer:
 
 - Every dialogue line must be copied from transcript turns or from provided
   grounded excerpts. Do not fabricate dialogue.
+- A verified row, moment, or narrative claim must have either a grounded proof
+  fragment copied from the input or a `proof_id` copied from a provided proof
+  card. If you cannot attach one of those, return `status="insufficient"`.
 - If speaker attribution is weak, use `unknown`, `side_1`, or `side_2`.
 - A quote may support context without directly proving a manager gap. If the
   proof is sequence/absence, explain that in `proof_explanation`.
@@ -148,7 +159,9 @@ For `status="verified"`:
    `composition_rules.verified_min_moments` when enough scenes exist.
 4. Every turning point has grounded dialogue or evidence refs.
 5. `moments` and `rows` are present and align with the turning points.
-6. The block explains manager behavior, customer context, and next better path.
+6. Every row/moment/narrative claim carries a grounded proof fragment or copied
+   `proof_id`; otherwise the output is not verified.
+7. The block explains manager behavior, customer context, and next better path.
 
 If the evidence cannot support the narrative, return `status="insufficient"`
 and explain the failed checks in `selection_diagnostics.quality_gate`.

@@ -25,8 +25,53 @@ def _load_module():
     return module
 
 
+def _proof_card(quote: str, *, claim: str | None = None, claim_type: str = "customer_signal") -> dict:
+    return {
+        "proof_id": f"proof-{abs(hash((quote, claim_type))) % 100000}",
+        "scene_id": f"scene-{abs(hash(quote)) % 100000}",
+        "claim": claim or quote,
+        "claim_type": claim_type,
+        "proof_type": "direct_quote",
+        "status": "proven",
+        "evidence_ids": ["ev-1"],
+        "evidence_quote": quote,
+        "supporting_evidence": [{"speaker": "client", "quote": quote}],
+    }
+
+
+def _proof_ref(quote: str) -> list[dict]:
+    card = _proof_card(quote)
+    return [
+        {
+            "source": "test",
+            "proof_id": card["proof_id"],
+            "scene_id": card["scene_id"],
+            "evidence_ids": card["evidence_ids"],
+            "quote": quote,
+            "proof_status": "verified_proof_card",
+        }
+    ]
+
+
+def _with_voc_proof_cards(report_evidence: dict | None) -> dict | None:
+    if report_evidence is None:
+        return None
+    result = dict(report_evidence)
+    voice_items = []
+    for raw_item in result.get("voice_of_customer") or []:
+        item = dict(raw_item)
+        quote = str(item.get("quote") or "").strip()
+        if quote and "proof_card" not in item:
+            item["proof_card"] = _proof_card(quote, claim=item.get("meaning"))
+        voice_items.append(item)
+    if voice_items:
+        result["voice_of_customer"] = voice_items
+    return result
+
+
 def _artifact(transcript: str, *, call_id: str | None = None, report_evidence: dict | None = None):
     interaction_id = call_id or str(uuid4())
+    report_evidence = _with_voc_proof_cards(report_evidence) or {}
     return SimpleNamespace(
         interaction=SimpleNamespace(
             id=interaction_id,
@@ -39,7 +84,7 @@ def _artifact(transcript: str, *, call_id: str | None = None, report_evidence: d
         analysis=SimpleNamespace(
             scores_detail={
                 "report_evidence_version": "v1",
-                "report_evidence": report_evidence or {},
+                "report_evidence": report_evidence,
                 "evidence_fragments": [],
                 "product_signals": [],
             }
@@ -58,6 +103,9 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         self.assertIn("mini-scene", text)
         self.assertIn("What does the client actually mean", text)
         self.assertIn("How should the manager work with that meaning", text)
+        self.assertIn("proof_refs", text)
+        self.assertIn("locked proof-pool fields", text)
+        self.assertIn("side_1", text)
 
     def test_problematic_short_callback_quote_with_contract_action_is_rejected(self) -> None:
         module = _load_module()
@@ -78,6 +126,10 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
                     "manager_action": "Что сделать: отправить договор клиенту.",
                     "customer_signal": "document_or_signature_need",
                     "source": "legacy_voice_of_customer",
+                    "proof_card": _proof_card(
+                        "Ладно, хорошо, я перезвоню",
+                        claim="Клиент переносит инициативу на обратный звонок.",
+                    ),
                 }
             ]
         }
@@ -93,6 +145,36 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         rejected = result["voice_of_customer_quality"]["rejected"]
         self.assertTrue(rejected)
         self.assertIn("recommendation_contract_without_context", rejected[0]["rejection_reason"])
+
+    def test_legacy_voice_without_verified_proof_is_not_used_as_signal(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Менеджер: Я отправлю информацию. "
+            "Клиент: Ладно, я перезвоню."
+        )
+        legacy_voice = {
+            "situations": [
+                {
+                    "call_id": call_id,
+                    "quote": "Ладно, я перезвоню.",
+                    "context": "Клиент переносит следующий контакт.",
+                    "interpretation": "Клиент переносит следующий контакт.",
+                    "manager_action": "Что сделать: предложить точку возврата.",
+                    "customer_signal": "timing_or_internal_discussion",
+                    "source": "legacy_voice_of_customer",
+                }
+            ]
+        }
+
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id)],
+            legacy_voice_of_customer=legacy_voice,
+            llm3_enabled=False,
+        )
+
+        self.assertEqual(result["status"], "insufficient")
+        self.assertEqual(result["voice_of_customer_quality"]["input_count"], 0)
 
     def test_expands_short_material_request_to_mini_scene(self) -> None:
         module = _load_module()
@@ -278,6 +360,128 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         self.assertEqual(len(result["customer_scenes"][0]["dialogue_evidence"]), 3)
         self.assertEqual(len(result["rows"][0]), 3)
 
+    def test_llm3_cannot_mutate_locked_signal_identity_or_proof_refs(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Клиент: Пока не будем подписывать договор. "
+            "Менеджер: Понял, могу уточнить причину паузы?"
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "client",
+                    "business_signal": "medium",
+                    "quote": "Пока не будем подписывать договор.",
+                    "meaning": "Клиент ставит паузу и отказывается от подписания сейчас.",
+                    "topic": "refusal",
+                    "proof_card": _proof_card(
+                        "Пока не будем подписывать договор.",
+                        claim="Клиент ставит паузу и отказывается от подписания сейчас.",
+                    ),
+                }
+            ]
+        }
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "customer_scenes": [
+                    {
+                        "signal_id": _payload["signals"][0]["signal_id"],
+                        "call_id": "wrong-call",
+                        "client_call_reference": "Другой клиент",
+                        "scene_summary": "Клиент якобы просит договор.",
+                        "quote": "Покажите договор.",
+                        "quote_context": "Клиент: Покажите договор. Менеджер: Отправлю.",
+                        "customer_meaning": "Клиент просит договор.",
+                        "manager_response": "Что сделать: коротко уточнить причину паузы.",
+                        "why_action_follows": "Клиент поставил паузу.",
+                        "customer_signal": "document_or_signature_need",
+                        "source": "llm3",
+                        "evidence_refs": [],
+                    }
+                ],
+                "situations": [],
+                "rows": [["Другой клиент", "Клиент: Покажите договор.", "Клиент просит договор."]],
+            }
+
+        module._request_llm3_voice_of_customer = fake_request
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=True,
+        )
+
+        scene = result["customer_scenes"][0]
+        situation = result["situations"][0]
+        self.assertEqual(scene["call_id"], call_id)
+        self.assertNotEqual(scene["client_call_reference"], "Другой клиент")
+        self.assertEqual(scene["quote"], "Пока не будем подписывать договор.")
+        self.assertEqual(scene["customer_signal"], "refusal_or_not_now")
+        self.assertEqual(scene["source"], "report_evidence.voice_of_customer")
+        self.assertTrue(scene["evidence_refs"])
+        self.assertEqual(situation["call_id"], call_id)
+        self.assertEqual(situation["quote"], "Пока не будем подписывать договор.")
+        self.assertEqual(situation["customer_signal"], "refusal_or_not_now")
+
+    def test_llm3_dialogue_evidence_must_be_grounded_in_source_context(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю материалы и вернусь завтра."
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "client",
+                    "business_signal": "medium",
+                    "quote": "Скиньте в WhatsApp, я посмотрю.",
+                    "meaning": "Клиент согласовал канал для материалов.",
+                    "topic": "whatsapp materials",
+                    "proof_card": _proof_card(
+                        "Скиньте в WhatsApp, я посмотрю.",
+                        claim="Клиент согласовал WhatsApp как канал продолжения.",
+                    ),
+                }
+            ]
+        }
+
+        def fake_request(_payload):
+            return {
+                "status": "verified",
+                "customer_scenes": [
+                    {
+                        "signal_id": _payload["signals"][0]["signal_id"],
+                        "call_id": call_id,
+                        "scene_summary": "Клиент согласовал WhatsApp как канал продолжения.",
+                        "quote": "Скиньте в WhatsApp, я посмотрю.",
+                        "quote_context": _payload["signals"][0]["quote_context"],
+                        "dialogue_evidence": [
+                            {"speaker": "client", "text": "Этой реплики не было в звонке."}
+                        ],
+                        "customer_meaning": "Клиент согласовал канал для материалов.",
+                        "manager_response": "Что сделать: отправить материалы в согласованный канал и назначить follow-up.",
+                        "why_action_follows": "Клиент попросил WhatsApp.",
+                        "customer_signal": "materials_channel_request",
+                    }
+                ],
+                "situations": [],
+                "rows": [],
+            }
+
+        module._request_llm3_voice_of_customer = fake_request
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=True,
+        )
+
+        dialogue_text = " ".join(turn["text"] for turn in result["customer_scenes"][0]["dialogue_evidence"])
+        self.assertNotIn("Этой реплики не было", dialogue_text)
+        self.assertIn("Скиньте в WhatsApp", dialogue_text)
+
     def test_llm3_material_action_without_material_context_falls_back(self) -> None:
         module = _load_module()
         call_id = str(uuid4())
@@ -375,6 +579,40 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
         self.assertNotIn("обсуждать решение", rendered)
         self.assertIn("я перезвоню", rendered)
         self.assertTrue("точку возврата" in rendered or "вернуться" in rendered)
+
+    def test_unclear_dialogue_uses_sides_not_technical_context_label(self) -> None:
+        module = _load_module()
+        call_id = str(uuid4())
+        transcript = (
+            "Сторона 1: Это ваш номер, я через некоторое время смогу?\n"
+            "Сторона 2: Рабочий, можете звонить.\n"
+            "Сторона 1: Хорошо, я вам перезвоню."
+        )
+        report_evidence = {
+            "voice_of_customer": [
+                {
+                    "usable_in_report": True,
+                    "speaker": "unknown",
+                    "business_signal": "medium",
+                    "quote": "Хорошо, я вам перезвоню.",
+                    "meaning": "Клиент переносит контакт на себя.",
+                    "topic": "timing",
+                }
+            ]
+        }
+
+        result = module.compose_voice_of_customer(
+            [_artifact(transcript, call_id=call_id, report_evidence=report_evidence)],
+            llm3_enabled=False,
+        )
+
+        rendered = " ".join(" ".join(map(str, row)) for row in result["rows"])
+        speakers = [turn["speaker"] for turn in result["customer_scenes"][0]["dialogue_evidence"]]
+        self.assertEqual(result["status"], "verified")
+        self.assertIn("Сторона 1:", rendered)
+        self.assertIn("Сторона 2:", rendered)
+        self.assertNotIn("Контекст:", rendered)
+        self.assertTrue(all(speaker in {"side_1", "side_2"} for speaker in speakers))
 
     def test_llm3_callback_scene_internal_discussion_is_repaired_and_speakers_are_consistent(self) -> None:
         module = _load_module()
@@ -485,6 +723,7 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
             manager_action="Что сделать: перевести интерес в следующий шаг с целью, участниками и сроком.",
             customer_signal="interest_signal",
             score=10,
+            evidence_refs=_proof_ref("Нет, пока, наверное, мы больше получаем через услуг, чем предоставляем."),
         )
 
         self.assertEqual(
@@ -508,6 +747,7 @@ class VoiceOfCustomerComposerTests(unittest.TestCase):
             manager_action="Что сделать: предложить показать сценарий подписания договора.",
             customer_signal="refusal_or_not_now",
             score=10,
+            evidence_refs=_proof_ref("Ну, вообще, да, слышала, но не знаю, нет, наверное, не рассматриваю."),
         )
 
         self.assertEqual(

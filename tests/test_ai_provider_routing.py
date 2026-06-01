@@ -6,6 +6,7 @@ import os
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ if str(CORE_ROOT) not in sys.path:
 from app.agents.calls.analyzer import (
     APPROVED_INSTRUCTION_VERSION,
     EXPERIMENTAL_CONTEXT_EVIDENCE_INSTRUCTION_VERSION,
+    EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION,
     CallsAnalyzer,
 )
 from app.agents.calls.extractor import CallsExtractor
@@ -122,6 +124,17 @@ def _simulation_env() -> dict[str, str]:
     }
 
 
+def _subagent_env(artifact_dir: str) -> dict[str, str]:
+    return {
+        "AI_LLM_SIMULATION_ENABLED": "false",
+        "AI_LLM_EXECUTION_MODE": "subagent_runtime",
+        "AI_LLM_SUBAGENT_RUNTIME_ENABLED": "false",
+        "AI_LLM_SUBAGENT_COMMAND": "",
+        "AI_LLM_SUBAGENT_RUN_ID": "routing-subagent-test-run",
+        "AI_LLM_SUBAGENT_ARTIFACT_DIR": artifact_dir,
+    }
+
+
 class AIProviderRoutingTests(unittest.TestCase):
     def test_analyzer_prompt_context_includes_report_evidence_contract(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
@@ -201,6 +214,59 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertIn(
             "Do not treat the presence of a short quote as proof",
             experimental_context["prompt_assets"]["analyze"],
+        )
+
+    def test_experimental_v17_prompt_context_adds_universal_evidence_overlay(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="prompt-context-v17-case",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=300,
+            text="Клиент: Пришлите расчет, потом решим по обучению.",
+            metadata_={
+                "external_call_code": "prompt-context-v17-case",
+                "manager_name": "Тестовый менеджер",
+                "call_date": "2026-05-18 09:00:00",
+                "direction": "out",
+                "phone": "+77070000000",
+            },
+        )
+
+        default_assets = analyzer.get_prompt_assets()
+        experimental_assets = analyzer.get_prompt_assets(
+            instruction_version=EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION,
+        )
+        experimental_context = analyzer.build_prompt_context(
+            interaction,
+            instruction_version=EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION,
+        )
+
+        self.assertEqual(
+            EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION,
+            "edo_sales_mvp1_call_analysis_v17_univ_evidence",
+        )
+        self.assertNotIn(
+            "LLM2 v17 Universal Evidence Boundary Overlay",
+            default_assets.analyze,
+        )
+        self.assertIn(
+            "LLM2 v17 Universal Evidence Boundary Overlay",
+            experimental_assets.analyze,
+        )
+        self.assertIn(
+            "LLM3 and the deterministic report layer own final block selection",
+            experimental_assets.analyze,
+        )
+        self.assertIn(
+            "LLM2 v17 Universal Evidence Boundary Overlay",
+            experimental_context["prompt_assets"]["analyze"],
+        )
+        self.assertEqual(
+            experimental_context["analysis_result_contract_template"]["instruction_version"],
+            EXPERIMENTAL_UNIVERSAL_EVIDENCE_INSTRUCTION_VERSION,
         )
 
     def test_analyzer_score_population_handles_dict_wrapped_stage_scores(self) -> None:
@@ -627,6 +693,127 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertEqual(llm2_metadata["request_kind"], "approved_contract_generation")
         self.assertTrue(_simulation_metadata_is_marked(llm2_metadata))
         self.assertTrue(_simulation_artifact_metadata_present(llm2_metadata))
+
+    def test_llm1_subagent_runtime_bypasses_openai_and_persists_artifacts(self) -> None:
+        settings = _build_settings(
+            ai_llm1_providers_json="""
+            [
+              {
+                "provider": "openai",
+                "account_alias": "llm1_subagent_route",
+                "model": "gpt-4o-mini",
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base": "https://example-openai-compatible.test/v1"
+              }
+            ]
+            """,
+        )
+        analyzer = CallsAnalyzer(
+            department_id="00000000-0000-0000-0000-000000000001",
+            db=None,
+        )
+        analyzer.ai_router = AIProviderRouter(app_settings=settings)
+        interaction = SimpleNamespace(
+            id=uuid4(),
+            external_id="subagent-llm1-call",
+            department_id=uuid4(),
+            manager_id=None,
+            source="onlinepbx",
+            duration_sec=240,
+            text="Клиент попросил отправить материалы и вернуться завтра.",
+            metadata_={"external_call_code": "subagent-llm1-call"},
+        )
+        runner_result = {
+            "classification": {
+                "call_type": "sales_primary",
+                "scenario_type": "repeat_contact",
+            },
+            "summary": {"short_summary": "Клиент попросил материалы."},
+            "follow_up": {
+                "next_step_fixed": True,
+                "next_step_type": "callback",
+                "next_step_text": "Вернуться завтра.",
+            },
+            "data_quality": {"classification_quality": "subagent"},
+            "analysis_focus": ["Проверить конкретность следующего шага."],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            _subagent_env(tmpdir),
+            clear=False,
+        ), patch(
+            "app.agents.calls.llm_simulation._run_subagent_runner",
+            return_value=runner_result,
+        ), patch(
+            "app.agents.calls.analyzer.OpenAI",
+            side_effect=AssertionError("OpenAI must not be called in subagent runtime mode"),
+        ):
+            result = analyzer._request_llm1_first_pass(
+                interaction=interaction,
+                instruction_version="test-instruction",
+            )
+
+        self.assertEqual(result["classification"]["call_type"], "sales_primary")
+        llm1_metadata = interaction.metadata_["ai_routing"]["llm1"]
+        self.assertEqual(llm1_metadata["selected_account_alias"], "codex_subagent_runtime")
+        self.assertEqual(
+            llm1_metadata["planned_real_llm_route"]["selected_account_alias"],
+            "llm1_subagent_route",
+        )
+        self.assertEqual(llm1_metadata["selected_execution_mode"], "subagent_runtime")
+        self.assertEqual(llm1_metadata["actual_execution_mode"], "subagent_runtime")
+        self.assertEqual(llm1_metadata["execution_status"], "subagent_executed")
+        self.assertEqual(llm1_metadata["request_kind"], "classification_first_pass")
+        self.assertIn("routing-subagent-test-run", llm1_metadata["input_artifact"])
+        self.assertIn("routing-subagent-test-run", llm1_metadata["output_artifact"])
+
+    def test_llm2_subagent_runtime_fails_closed_when_runner_is_unavailable(self) -> None:
+        settings = _build_settings(
+            ai_llm2_providers_json="""
+            [
+              {
+                "provider": "openai",
+                "account_alias": "llm2_subagent_route",
+                "model": "gpt-4o",
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base": "https://example-openai-compatible.test/v1"
+              }
+            ]
+            """,
+        )
+        analyzer = CallsAnalyzer(
+            department_id="00000000-0000-0000-0000-000000000001",
+            db=None,
+        )
+        analyzer.ai_router = AIProviderRouter(app_settings=settings)
+        interaction = SimpleNamespace(id=uuid4(), metadata_={})
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                **_subagent_env(tmpdir),
+                "AI_LLM_SUBAGENT_COMMAND": "definitely_missing_subagent_cmd",
+            },
+            clear=False,
+        ), patch(
+            "app.agents.calls.analyzer.OpenAI",
+            side_effect=AssertionError("OpenAI must not be called in subagent runtime mode"),
+        ):
+            with self.assertRaisesRegex(AnalysisError, "subagent runtime failed"):
+                analyzer._request_analysis_content(
+                    interaction=interaction,
+                    messages=[{"role": "user", "content": "test"}],
+                    instruction_version="test-instruction",
+                )
+
+        llm2_metadata = interaction.metadata_["ai_routing"]["llm2"]
+        self.assertEqual(llm2_metadata["selected_account_alias"], "codex_subagent_runtime")
+        self.assertEqual(llm2_metadata["selected_execution_mode"], "subagent_runtime")
+        self.assertEqual(llm2_metadata["execution_status"], "subagent_failed")
+        self.assertTrue(llm2_metadata["provider_failure"])
+        self.assertIn("routing-subagent-test-run", llm2_metadata["input_artifact"])
+        self.assertIn("routing-subagent-test-run", llm2_metadata["output_artifact"])
 
     def test_llm1_first_pass_executes_and_persists_usage_metadata(self) -> None:
         settings = _build_settings(

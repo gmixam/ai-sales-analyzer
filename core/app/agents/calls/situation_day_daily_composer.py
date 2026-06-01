@@ -96,6 +96,8 @@ def compose_daily_situation_day(
     """Return one verified or insufficient daily Situation Day candidate."""
 
     candidates, extraction_diagnostics = _extract_daily_candidates(daily_input)
+    daily_focus = _daily_focus_payload(daily_input)
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
     eligible: list[DailySituationCandidate] = []
     rejected: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -120,17 +122,54 @@ def compose_daily_situation_day(
                 "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
                 "candidate_count": len(candidates),
                 "eligible_count": 0,
+                "daily_focus": daily_focus,
                 "extraction": extraction_diagnostics,
                 "llm3": llm3_diagnostics,
             },
         )
 
+    if focus_stage_code:
+        focus_eligible = [
+            candidate for candidate in eligible if (candidate.stage_code or "").strip() == focus_stage_code
+        ]
+        if not focus_eligible:
+            return _insufficient(
+                reason="no_focus_stage_manager_gap_scene",
+                rejected_candidates=rejected
+                + [
+                    item.to_rejected("non_focus_stage_manager_gap")
+                    for item in eligible
+                    if (item.stage_code or "").strip() != focus_stage_code
+                ],
+                diagnostics={
+                    "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
+                    "candidate_count": len(candidates),
+                    "eligible_count": len(eligible),
+                    "focus_eligible_count": 0,
+                    "daily_focus": daily_focus,
+                    "extraction": extraction_diagnostics,
+                    "llm3": llm3_diagnostics,
+                },
+            )
+        rejected.extend(
+            item.to_rejected("non_focus_stage_manager_gap")
+            for item in eligible
+            if (item.stage_code or "").strip() != focus_stage_code
+        )
+        eligible = focus_eligible
+
     selected = eligible[0]
     if llm3_diagnostics["llm3_enabled"]:
         llm3_result, llm3_diagnostics = _try_llm3_daily_situation(
-            build_daily_situation_llm3_payload({"candidates": [item.to_payload_item() for item in eligible]}),
+            build_daily_situation_llm3_payload(
+                {
+                    "daily_focus": daily_focus,
+                    "candidates": [item.to_payload_item() for item in eligible],
+                }
+            ),
             eligible,
             llm3_diagnostics,
+            daily_focus=daily_focus,
         )
         if llm3_result is not None:
             llm3_result["diagnostics"] = {
@@ -138,6 +177,8 @@ def compose_daily_situation_day(
                 "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
                 "candidate_count": len(candidates),
                 "eligible_count": len(eligible),
+                "focus_eligible_count": len(eligible) if focus_stage_code else None,
+                "daily_focus": daily_focus,
                 "extraction": extraction_diagnostics,
                 "llm3": llm3_diagnostics,
             }
@@ -158,6 +199,8 @@ def compose_daily_situation_day(
             "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
             "candidate_count": len(candidates),
             "eligible_count": len(eligible),
+            "focus_eligible_count": len(eligible) if focus_stage_code else None,
+            "daily_focus": daily_focus,
             "extraction": extraction_diagnostics,
             "llm3": llm3_diagnostics,
         },
@@ -167,6 +210,7 @@ def compose_daily_situation_day(
 def build_daily_situation_llm3_payload(daily_input: dict[str, Any]) -> dict[str, Any]:
     """Build a bounded LLM3 payload without transcripts or full call analysis."""
 
+    daily_focus = _daily_focus_payload(daily_input)
     provided_candidates = daily_input.get("candidates")
     if isinstance(provided_candidates, list):
         candidates = [
@@ -181,14 +225,17 @@ def build_daily_situation_llm3_payload(daily_input: dict[str, Any]) -> dict[str,
     eligible.sort(key=_rank_key)
     return {
         "contract_version": SITUATION_DAY_DAILY_PROMPT_VERSION,
+        "daily_focus": daily_focus,
         "instruction": (
-            "Choose one manager_gap candidate for Ситуация дня or return insufficient. "
+            "Choose one manager_gap candidate for Ситуация дня inside daily_focus.stage_code "
+            "or return insufficient. "
             "Explain the selected episode as a coherent manager-facing mini-brief. "
             "Use only provided candidate fields; never use or request raw call text."
         ),
         "forbidden": [
             "Do not recalculate scores.",
             "Do not perform full call analysis.",
+            "Do not change the daily focus stage or replace its problem with a generic next-step issue.",
             "Do not invent facts, quotes, scenes, scripts, call ids, names, volumes, dates, or products.",
             "Do not select customer_signal or service_issue as manager_error.",
         ],
@@ -262,6 +309,26 @@ def _extract_daily_candidates(
         if candidate is not None:
             candidates.append(candidate)
     return candidates, {"raw_items_count": len(raw_items), "candidates_count": len(candidates)}
+
+
+def _daily_focus_payload(daily_input: dict[str, Any]) -> dict[str, Any] | None:
+    focus = _as_dict(daily_input.get("daily_focus"))
+    stage_code = _first_text(focus.get("stage_code"))
+    if not stage_code:
+        return None
+    return {
+        "stage_code": stage_code,
+        "stage_id": _first_text(focus.get("stage_id")),
+        "stage_name": _first_text(focus.get("stage_name")),
+        "problem_statement": _first_text(focus.get("problem_statement")),
+        "problem_signal": _first_text(focus.get("problem_signal")),
+        "challenge_metric_source": _first_text(focus.get("challenge_metric_source")),
+        "confidence": _first_text(focus.get("confidence")),
+    }
+
+
+def _daily_focus_stage_code(daily_focus: dict[str, Any] | None) -> str:
+    return str((daily_focus or {}).get("stage_code") or "").strip()
 
 
 def _candidate_items_from_daily_calls(value: Any) -> list[dict[str, Any]]:
@@ -544,6 +611,8 @@ def _try_llm3_daily_situation(
     payload: dict[str, Any],
     candidates: list[DailySituationCandidate],
     diagnostics: dict[str, Any],
+    *,
+    daily_focus: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     try:
         raw = _request_llm3_daily_situation(payload)
@@ -551,7 +620,7 @@ def _try_llm3_daily_situation(
         diagnostics["llm3_raw_status"] = raw.get("status")
         if isinstance(raw.get("_routing"), dict):
             diagnostics["llm3_routing"] = raw.get("_routing")
-        normalized, reason = _normalize_llm3_daily_situation(raw, candidates)
+        normalized, reason = _normalize_llm3_daily_situation(raw, candidates, daily_focus=daily_focus)
         if normalized is None:
             diagnostics["llm3_rejection_reason"] = reason
             diagnostics["llm3_response"] = _json_safe(raw)
@@ -785,6 +854,8 @@ def _call_llm_simulation_callable(func: Any, kwargs: dict[str, Any]) -> Any:
 def _normalize_llm3_daily_situation(
     raw: dict[str, Any],
     candidates: list[DailySituationCandidate],
+    *,
+    daily_focus: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     if _norm(raw.get("status")) != "verified":
         return None, "status_not_verified"
@@ -792,6 +863,20 @@ def _normalize_llm3_daily_situation(
     selected = next((candidate for candidate in candidates if candidate.call_id == selected_call_id), None)
     if selected is None:
         return None, "selected_call_id_not_in_payload"
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
+    if focus_stage_code and (selected.stage_code or "").strip() != focus_stage_code:
+        return None, "selected_candidate_not_in_daily_focus_stage"
+    if _llm3_claim_replaces_focus_with_next_step(raw, selected=selected, daily_focus=daily_focus):
+        return None, "llm3_output_replaced_focus_with_generic_next_step"
+    raw_stage_code = _first_text(raw.get("stage_code"))
+    if raw_stage_code and selected.stage_code and raw_stage_code != selected.stage_code:
+        return None, "stage_code_changed"
+    raw_proof_type = _norm(_first_text(raw.get("proof_type")))
+    if raw_proof_type and selected.proof_type and raw_proof_type != selected.proof_type:
+        return None, "proof_type_changed"
+    raw_proof_strength = _norm(_first_text(raw.get("proof_strength"), raw.get("confidence")))
+    if raw_proof_strength and selected.proof_strength and raw_proof_strength != selected.proof_strength:
+        return None, "proof_strength_changed"
 
     scene = _first_text(raw.get("evidence_scene"))
     if not _is_grounded(scene, selected.evidence_scene, selected.supporting_quote):
@@ -815,14 +900,14 @@ def _normalize_llm3_daily_situation(
             1100,
         )
         or None,
-        manager_error=_bounded(_first_text(raw.get("manager_error"), selected.manager_error), 900),
+        manager_error=selected.manager_error,
         evidence_scene=_bounded(scene or selected.evidence_scene, 2600),
         dialogue_turns=raw_dialogue_turns or selected.dialogue_turns,
         evidence_quotes=evidence_quotes or selected.evidence_quotes,
         supporting_quote=_bounded(quote or selected.supporting_quote or "", 700) or None,
         why_it_matters=_bounded(_first_text(raw.get("why_it_matters"), selected.why_it_matters), 900),
-        next_time_action=_bounded(_first_text(raw.get("next_time_action"), selected.next_time_action), 900),
-        scripts=_ensure_scripts(_scripts(raw) or selected.scripts, selected.next_time_action),
+        next_time_action=selected.next_time_action,
+        scripts=_ensure_scripts(selected.scripts, selected.next_time_action),
         source_fact_ids=selected.source_fact_ids,
     )
     valid, reason = _candidate_is_eligible(rewritten)
@@ -840,6 +925,53 @@ def _normalize_llm3_daily_situation(
         ),
         "",
     )
+
+
+def _llm3_claim_replaces_focus_with_next_step(
+    raw: dict[str, Any],
+    *,
+    selected: DailySituationCandidate,
+    daily_focus: dict[str, Any] | None,
+) -> bool:
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
+    if not focus_stage_code or focus_stage_code == "completion_next_step":
+        return False
+    if (selected.stage_code or "").strip() == "completion_next_step":
+        return False
+    candidate_claim = " ".join(
+        text
+        for text in (
+            selected.situation_title,
+            selected.manager_error,
+            selected.next_time_action,
+        )
+        if text
+    )
+    if _looks_like_next_step_claim(candidate_claim):
+        return False
+    raw_claim = " ".join(
+        text
+        for text in (
+            _first_text(raw.get("situation_title")),
+            _first_text(raw.get("manager_error")),
+            _first_text(raw.get("next_time_action")),
+            " ".join(str(item) for item in raw.get("scripts") or []),
+        )
+        if text
+    )
+    return _looks_like_next_step_claim(raw_claim)
+
+
+def _looks_like_next_step_claim(value: str) -> bool:
+    text = _norm(value)
+    if not text:
+        return False
+    has_next_step = "следующ" in text and any(token in text for token in ("шаг", "контакт", "касани"))
+    has_owner_deadline = "владел" in text and "срок" in text
+    has_fixing = any(token in text for token in ("закреп", "зафикс", "договор")) and any(
+        token in text for token in ("срок", "время", "дат", "контакт", "шаг")
+    )
+    return has_next_step or has_owner_deadline or has_fixing
 
 
 def _scene_text(item: dict[str, Any]) -> str:

@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     ai_llm2_providers_json: str = Field(default="")
     ai_llm2_fixed_account_alias: str = Field(default="")
     ai_llm2_force_account_alias: str = Field(default="")
+    ai_llm2_analysis_mode: str = Field(default="layered")
     ai_llm3_routing_policy: str = Field(default="fixed")
     ai_llm3_providers_json: str = Field(default="")
     ai_llm3_fixed_account_alias: str = Field(default="")
@@ -75,6 +76,14 @@ class Settings(BaseSettings):
     ai_llm_simulation_run_id: str = Field(default="")
     ai_llm_simulation_seed: str = Field(default="")
     ai_llm_simulation_artifact_dir: str = Field(default="/tmp/asa_llm_sim_runs")
+    ai_llm_execution_mode: str = Field(default="openai_compatible")
+    ai_llm_subagent_runtime_enabled: bool = Field(default=False)
+    ai_llm_subagent_command: str = Field(default="")
+    ai_llm_subagent_run_id: str = Field(default="")
+    ai_llm_subagent_artifact_dir: str = Field(default="/tmp/asa_llm_subagent_runs")
+    ai_llm_subagent_timeout_sec: int = Field(default=300, ge=1)
+    ai_llm2_report_evidence_validation_enabled: bool = Field(default=False)
+    ai_llm2_semantic_validation_enabled: bool = Field(default=False)
 
     # OnlinePBX
     onlinepbx_domain: str
@@ -147,6 +156,18 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_ai_routing_policy(cls, value: str) -> str:
         """Normalize configured AI routing policy names."""
+        return value.strip().lower()
+
+    @field_validator("ai_llm_execution_mode")
+    @classmethod
+    def normalize_ai_llm_execution_mode(cls, value: str) -> str:
+        """Normalize the LLM runtime execution mode."""
+        return value.strip().lower()
+
+    @field_validator("ai_llm2_analysis_mode")
+    @classmethod
+    def normalize_ai_llm2_analysis_mode(cls, value: str) -> str:
+        """Normalize the LLM-2 analysis orchestration mode."""
         return value.strip().lower()
 
     @field_validator(

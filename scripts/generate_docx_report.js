@@ -112,7 +112,25 @@ function russianCallWord(count) {
 }
 
 function cleanText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
+  return String(value || "").replace(/\bdocument_type\b/gi, "").replace(/\s+/g, " ").trim();
+}
+
+function cleanCallTomorrowVisibleText(value) {
+  return cleanText(value).replace(/\bконтекст\s*:\s*/gi, "").trim();
+}
+
+function shortTime(value) {
+  const text = cleanText(value);
+  return text.includes("T") && text.length >= 16 ? text.slice(11, 16) : text;
+}
+
+function compactCallEssence({ client, topic, context }) {
+  const parts = [cleanText(client)];
+  const topicText = cleanText(topic);
+  const contextText = cleanText(context);
+  if (topicText && topicText !== "—" && !contextText.includes(topicText)) parts.push(topicText);
+  if (contextText && contextText !== "—") parts.push(contextText);
+  return parts.map((part) => part.replace(/\.$/, "")).filter(Boolean).join(". ") || "—";
 }
 
 const PROOF_TYPE_LABELS = {
@@ -225,13 +243,40 @@ function buildSituationStageMeta(s) {
 
 function buildWhatHappenedText(s) {
   const coachingText = cleanText(s.coaching_view?.what_happened);
-  if (coachingText) return coachingText;
+  if (coachingText) return managerFacingSituationWhatHappened(s, coachingText);
   const dive = s.focus_stage_deep_dive || {};
   const problem = cleanText(dive.what_went_wrong);
   if (problem) {
     return `В одном из звонков по фокусному этапу проявилась проблема: ${problem}`;
   }
   return "";
+}
+
+function cleanBreakdownProofText(value) {
+  return cleanText(value)
+    .replace(/(?:доказательный\s+фрагмент|подтверждение|фрагмент)\s*:\s*/gi, "")
+    .replace(/контекст\s*:\s*/gi, "")
+    .replace(/(?:клиент|менеджер|оператор|продавец|собеседник|сторона\s*[12])\s*:\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[ .:;«"]+|[ .:;»"]+$/g, "");
+}
+
+function managerFacingSituationWhatHappened(s, rawText) {
+  const genericPrefix = "В выбранном звонке видно, что разговор можно было завершить более управляемо.";
+  if (!rawText.includes(genericPrefix)) return rawText;
+  const supportIndex = rawText.indexOf("Опора:");
+  const quote = cleanBreakdownProofText(
+    supportIndex >= 0 ? rawText.slice(supportIndex + "Опора:".length) : firstNonEmpty(s.coaching_view?.supporting_quote, ""),
+  );
+  const missing = cleanText(firstNonEmpty(s.coaching_view?.what_was_missing, s.coaching_view?.manager_error, ""));
+  const action = cleanText(s.coaching_view?.next_time_action);
+  let sentence = "Разговор требовал более чёткого закрепления следующего действия.";
+  if (missing) {
+    sentence = `Менеджер дошёл до следующего шага, но ${missing.charAt(0).toLowerCase()}${missing.slice(1)}`;
+  } else if (action) {
+    sentence = `Разговор требовал более чёткого закрепления: ${action.charAt(0).toLowerCase()}${action.slice(1)}`;
+  }
+  return quote ? `${sentence} Опора: ${quote}` : sentence;
 }
 
 function compactSemanticText(value) {
@@ -294,6 +339,12 @@ function dialogueCellParagraphsFromText(text, opts = {}) {
   const parsed = parseDialogueLines(raw);
   if (parsed.length > 0) {
     return parsed.map((turn, index) => dialoguePara(turn.speaker || speakerForQuoteIndex(index), turn.text, { size: opts.size || SZ.cell, limit: opts.limit || 420 }));
+  }
+  if (opts.speaker === null) {
+    return [new Paragraph({
+      children: [new TextRun({ text: shortQuote(raw.replace(/^«|»$/g, ""), opts.limit || 420), italics: true, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial" })],
+      spacing: { before: opts.before || 0, after: opts.after === undefined ? 40 : opts.after },
+    })];
   }
   return [dialoguePara(opts.speaker || "Сторона 1", raw.replace(/^«|»$/g, ""), { size: opts.size || SZ.cell, limit: opts.limit || 420 })];
 }
@@ -434,14 +485,14 @@ function buildNextActionWithExample(nextAction, scripts) {
 function tomorrowSituation(contact, row) {
   const status = cleanText(contact.status || "");
   const deadline = firstNonEmpty(contact.deadline, row[2]);
-  const detail = firstNonEmpty(
+  const detail = cleanCallTomorrowVisibleText(firstNonEmpty(
     stripOpeningPrefix(contact.opening_script),
     contact.next_step_text,
     contact.next_step,
     contact.reason,
     contact.context,
     row[2],
-  );
+  ));
   if (status === "agreed") {
     return detail ? `Договорённость: ${detail}` : "Есть договорённость с клиентом";
   }
@@ -456,7 +507,7 @@ function tomorrowSituation(contact, row) {
 
 function tomorrowRecommendation(contact, row) {
   const status = cleanText(contact.status || "");
-  const basis = `${cleanText(contact.reason)} ${cleanText(contact.context)} ${cleanText(row[3])}`.toLowerCase();
+  const basis = `${cleanCallTomorrowVisibleText(contact.reason)} ${cleanCallTomorrowVisibleText(contact.context)} ${cleanCallTomorrowVisibleText(row[3])}`.toLowerCase();
   const hasDeadline = Boolean(firstNonEmpty(contact.deadline, row[2]));
   if (status === "agreed") return "Подтвердить договорённость и довести до следующего шага";
   if (basis.includes("возраж")) return "Вернуться с ответом на возражение";
@@ -490,18 +541,26 @@ function normalizeBreakdownMoment(value, index) {
 const CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE = "Нет сохранённого подтверждения из звонка.";
 
 function breakdownFragmentOrNote(value) {
-  const text = cleanText(value);
+  const text = cleanBreakdownProofText(value);
   if (!text || text === "—") return CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE;
   return text;
 }
 
 function breakdownSupportingQuote(value) {
-  const text = quoteText(value);
+  const text = cleanBreakdownProofText(quoteText(value));
   if (!text || text === "—" || text === CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE) return "";
   return text;
 }
 
 function normalizeBreakdownObject(row, index) {
+  const rawSupportingQuote = firstNonEmpty(
+    quoteText(row.coaching_moment?.supporting_quote),
+    quoteText(row.supporting_quote),
+    dialogueExcerptText(row.dialogue_excerpt),
+    quoteText(row.fragment),
+    quoteText(row.quote),
+    quoteText(row.evidence_quote),
+  );
   const fallbackFragment = breakdownSupportingQuote(firstNonEmpty(
     quoteText(row.supporting_quote),
     dialogueExcerptText(row.dialogue_excerpt),
@@ -513,6 +572,7 @@ function normalizeBreakdownObject(row, index) {
     moment: normalizeBreakdownMoment(firstNonEmpty(row.moment, row.time, row.time_label, row.label), index),
     what: firstNonEmpty(row.what, row.what_happened, row.problem, row.issue, row.description, "—"),
     moment_summary: firstNonEmpty(row.coaching_moment?.summary, row.moment_summary, row.summary, ""),
+    supporting_quote_raw: rawSupportingQuote,
     supporting_quote: breakdownSupportingQuote(firstNonEmpty(
       quoteText(row.coaching_moment?.supporting_quote),
       quoteText(row.supporting_quote),
@@ -531,18 +591,25 @@ function normalizeBreakdownObject(row, index) {
 
 function splitBreakdownFragment(value) {
   const text = cleanText(value);
-  const match = text.match(/\s*Фрагмент:\s*[«"](.+?)[»"]\.?\s*$/);
+  const match = text.match(/\s*(?:Доказательный\s+фрагмент|Подтверждение|Фрагмент):\s*[«"]?(.+?)[»"]?\.?\s*$/i);
   if (!match) return { what: text, moment_summary: text || CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE, supporting_quote: "" };
   return {
     what: text.slice(0, match.index).replace(/[.\s]+$/, "") || "—",
     moment_summary: breakdownFragmentOrNote(match[1]),
-    supporting_quote: breakdownSupportingQuote(match[1]),
+    supporting_quote: breakdownSupportingQuote(cleanBreakdownProofText(match[1])),
   };
 }
 
 function splitBreakdownSummaryAndProof(value) {
   const text = cleanText(value);
   if (!text || text === "—") return { summary: "", proof: "" };
+  const markerMatch = text.match(/(?:доказательный\s+фрагмент|подтверждение|фрагмент)\s*:\s*/i);
+  if (markerMatch) {
+    return {
+      summary: cleanBreakdownProofText(text.slice(0, markerMatch.index || 0).replace(/[ .:-]+$/, "")),
+      proof: cleanBreakdownProofText(text.slice((markerMatch.index || 0) + markerMatch[0].length)),
+    };
+  }
   const split = splitBreakdownFragment(text);
   if (split.supporting_quote) {
     return { summary: split.what || "", proof: split.supporting_quote };
@@ -574,6 +641,7 @@ function normalizeBreakdownRow(row, index, context = {}) {
       moment: normalizeBreakdownMoment(row[0], index),
       what: row[1] || "—",
       moment_summary: momentSummary,
+      supporting_quote_raw: row[2],
       supporting_quote: quote,
       proof_type: parentProofType,
       supporting_quote_proof_type: parentQuoteRole === "supports_context" ? "context_support" : parentProofType,
@@ -588,6 +656,7 @@ function normalizeBreakdownRow(row, index, context = {}) {
     moment: normalizeBreakdownMoment(row[0], index),
     what: split.what || "—",
     moment_summary: momentSummary,
+    supporting_quote_raw: row[1],
     supporting_quote: split.supporting_quote && split.supporting_quote !== momentSummary ? split.supporting_quote : "",
     proof_type: parentProofType,
     supporting_quote_proof_type: parentQuoteRole === "supports_context" ? "context_support" : parentProofType,
@@ -682,6 +751,7 @@ function emptyStateData(payload) {
     key_problem: { title: "", description: "" },
     challenge: { goal_line: "", today_line: "", record_line: "", phrase_line: "" },
     call_tomorrow: [],
+    call_tomorrow_hidden: true,
     all_calls: [],
     morning: {
       greeting: `Добрый день, ${managerName}!`,
@@ -748,7 +818,31 @@ function dataFromBundle(bundle) {
     missing_classification: "Нет классификации",
     unknown: "Нет готового разбора",
   };
-  const allCalls = (callList.rows || []).map((row) => {
+  const callListRows = callList.compact_rows || callList.rows || [];
+  const callListColumns = callList.compact_columns || callList.columns || [];
+  const workContacts = payload.call_tomorrow?.contacts || [];
+  const workIds = new Set(workContacts.map((item) => cleanText(item.interaction_id)).filter(Boolean));
+  const workRefs = new Set(workContacts.map((item) => cleanText(item.client_call_reference)).filter(Boolean));
+  const compactCallListShape = (
+    Boolean(callList.compact_rows)
+    || (
+      callListColumns.length === 4
+      && String(callListColumns[0] || "").toLowerCase().includes("статус")
+      && String(callListColumns[1] || "").toLowerCase().includes("работ")
+    )
+  );
+  const allCalls = callListRows.map((row) => {
+    if (compactCallListShape) {
+      return {
+        status: row[0] || "Без разбора",
+        contact: row[1] || "—",
+        callEssence: row[2] || "—",
+        agreement: row[3] || "—",
+        work: row[1] || "—",
+        when: row[2] || "—",
+        essence: row[3] || "—",
+      };
+    }
     const oldShape = row.length >= 6;
     const payloadCall = (payload.call_list || [])[Number(row[0]) - 1];
     let status;
@@ -787,6 +881,27 @@ function dataFromBundle(bundle) {
       topic: (oldShape ? row[3] : row[2]) || "—",
       context,
       status,
+      work: (
+        (payloadCall && workIds.has(cleanText(payloadCall.interaction_id)))
+        || workRefs.has(cleanText((oldShape ? row[2] : row[1]) || payloadCall?.client_call_reference))
+      ) ? "Да" : "—",
+      when: payloadCall?.time_label || shortTime(payloadCall?.time) || "—",
+      essence: compactCallEssence({
+        client: (oldShape ? row[2] : row[1]) || "—",
+        topic: (oldShape ? row[3] : row[2]) || "—",
+        context,
+      }),
+      contact: (oldShape ? row[2] : row[1]) || "—",
+      callEssence: compactCallEssence({
+        client: "",
+        topic: (oldShape ? row[3] : row[2]) || "—",
+        context,
+      }),
+      agreement: (
+        payloadCall?.call_list_status === "agreed"
+        || payloadCall?.call_list_status === "rescheduled"
+        || payloadCall?.call_list_status === "open"
+      ) ? context : "—",
     };
   });
   const selectionMeaningfulCalls = safeNumber(payload.selection_model?.meaningful_calls_total, null);
@@ -963,11 +1078,11 @@ function dataFromBundle(bundle) {
     })),
     additional_situations: ((sections.additional_situations || {}).situations || [])
       .filter((item) => {
-        const sig = safeNumber(item.signal) || 0;
         const title = (item.title || "").trim();
-        if (sig <= 0) return false;
         if (!title || title === "Без названия") return false;
         if (/^(cs_|qp_|nd_|ep_|cl_)/.test(title)) return false;
+        if ((item.evidence_quality || "").trim().toLowerCase() === "weak") return false;
+        if (!((item.evidence_dialogue || []).length > 0 || (item.evidence_quote || "").trim())) return false;
         return true;
       })
       .slice(0, 3)
@@ -1012,11 +1127,12 @@ function dataFromBundle(bundle) {
         client: firstNonEmpty(contact.client_call_reference, row[1], contact.client_label, "Клиент"),
         phone: "",
         status: cleanText(contact.status || ""),
-        situation: row[2] || tomorrowSituation(contact, row),
-        recommendation: row[3] || `${tomorrowRecommendation(contact, row)}. Можно начать: «${tomorrowFirstPhrase(contact, row)}».`,
+        situation: cleanCallTomorrowVisibleText(row[2] || tomorrowSituation(contact, row)),
+        recommendation: cleanCallTomorrowVisibleText(row[3] || `${tomorrowRecommendation(contact, row)}. Можно начать: «${tomorrowFirstPhrase(contact, row)}».`),
         first_phrase: tomorrowFirstPhrase(contact, row),
       };
     }).filter((item) => item.client && cleanText(item.situation) !== "Следующий шаг не зафиксирован"),
+    call_tomorrow_hidden: callTomorrow.hidden === true || cleanText(callTomorrow.hidden_reason) === "merged_into_call_list",
     all_calls: allCalls,
     morning: {
       greeting: morningCard.greeting || "",
@@ -1050,6 +1166,7 @@ const COLORS = {
   sectionText: "FFFFFF",  // section header text (white on dark)
   tableHead:   "C8DCF0",  // table header row background (medium-light blue)
   priorityBg:  "FFF3CD",
+  divider:     "D9DEE7",
   white:       "FFFFFF",
   altRow:      "F9F9F9",
 };
@@ -1149,13 +1266,23 @@ function blockHeading(emoji, title) {
 }
 
 function bodyPara(text, opts = {}) {
-  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0, italic = false, before = 0, after = 60 } = opts;
+  const { bold = false, color = COLORS.black, size = SZ.body, indent = 0, italic = false, before = 0, after = 85 } = opts;
   return new Paragraph({
     indent: indent ? { left: indent } : undefined,
     children: [
       new TextRun({ text, bold, color, size, font: "Arial", italics: italic }),
     ],
     spacing: { before, after },
+  });
+}
+
+function softDivider() {
+  return new Paragraph({
+    children: [new TextRun({ text: "", size: 2, font: "Arial" })],
+    border: {
+      bottom: { style: BorderStyle.SINGLE, size: 3, color: COLORS.divider, space: 1 },
+    },
+    spacing: { before: 110, after: 90 },
   });
 }
 
@@ -1506,16 +1633,31 @@ function buildDengi() {
 // ──────────────────────────────────────────────────────────────
 
 function buildBally() {
+  const tableWidth = 10200;
+  const widths = {
+    stage: { size: 3000, type: WidthType.DXA },
+    score: { size: 700, type: WidthType.DXA },
+    calls: { size: 800, type: WidthType.DXA },
+    status: { size: 1200, type: WidthType.DXA },
+    comment: { size: 4500, type: WidthType.DXA },
+  };
+  const columnWidths = [
+    widths.stage.size,
+    widths.score.size,
+    widths.calls.size,
+    widths.status.size,
+    widths.comment.size,
+  ];
   const rows = [];
 
   rows.push(
     new TableRow({
       children: [
-        headCell("Этап", { width: { size: 29, type: WidthType.PERCENTAGE } }),
-        headCell("Балл", { width: { size: 9, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Звонков", { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Статус", { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-        headCell("Основная проблема", { width: { size: 39, type: WidthType.PERCENTAGE } }),
+        headCell("Этап", { width: widths.stage }),
+        headCell("Балл", { width: widths.score, align: AlignmentType.CENTER }),
+        headCell("Звонков", { width: widths.calls, align: AlignmentType.CENTER }),
+        headCell("Статус", { width: widths.status, align: AlignmentType.CENTER }),
+        headCell("Комментарий", { width: widths.comment }),
       ],
     })
   );
@@ -1532,11 +1674,11 @@ function buildBally() {
       : null;
 
     const rowCells = [
-      cell(st.name, { width: { size: 29, type: WidthType.PERCENTAGE }, color: nameColor, bold: st.priority, shading: rowShading }),
-      cell(scoreStr, { width: { size: 9, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
-      cell(String(st.calls_count ?? 0), { width: { size: 10, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: rowShading, size: SZ.cell }),
-      cell(status, { width: { size: 13, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
-      cell(stageProblem(st), { width: { size: 39, type: WidthType.PERCENTAGE }, shading: rowShading, size: SZ.cell }),
+      cell(st.name, { width: widths.stage, color: nameColor, bold: st.priority, shading: rowShading }),
+      cell(scoreStr, { width: widths.score, align: AlignmentType.CENTER, color: scoreColor, bold: st.priority, shading: rowShading }),
+      cell(String(st.calls_count ?? 0), { width: widths.calls, align: AlignmentType.CENTER, shading: rowShading, size: SZ.cell }),
+      cell(status, { width: widths.status, align: AlignmentType.CENTER, color: statusColor, bold: st.priority, shading: rowShading, size: SZ.cell }),
+      cell(stageProblem(st), { width: widths.comment, shading: rowShading, size: SZ.cell }),
     ];
 
     rows.push(new TableRow({ children: rowCells }));
@@ -1551,7 +1693,8 @@ function buildBally() {
   }
   block.push(
     new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
+      width: { size: tableWidth, type: WidthType.DXA },
+      columnWidths,
       layout: TableLayoutType.FIXED,
       rows,
     }),
@@ -1601,7 +1744,7 @@ function buildSituatsiya() {
   }
 
   const result = [
-    blockHeading("🎯", `${s.block_label || "СИТУАЦИЯ ДНЯ"} · ${patternTitle}`),
+    blockHeading("🎯", s.block_label || "СИТУАЦИЯ ДНЯ"),
   ];
   if (s.scope_note) {
     result.push(bodyPara(s.scope_note, { color: COLORS.gray, size: SZ.meta }));
@@ -1617,8 +1760,11 @@ function buildSituatsiya() {
     result.push(subHeading(s.example_label || "Пример из сегодня"));
     result.push(bodyPara(callRef, { size: SZ.cell }));
   }
-  if (narrativeText) {
+  if (patternTitle || narrativeText) {
     result.push(subHeading("Что произошло"));
+    if (patternTitle) {
+      result.push(bodyPara(patternTitle, { size: SZ.cell }));
+    }
     result.push(...buildSituationNarrativeParagraphs(narrativeText));
   }
   if (reviewRows.length > 0) {
@@ -1666,7 +1812,7 @@ function buildSituationNarrativeText({ whatHappenedText, callContext, evidenceQu
   if (whatHappenedText) {
     parts.push(whatHappenedText);
   }
-  if (callContext && !sameMeaningText(callContext, whatHappenedText)) {
+  if (callContext && !isTechnicalReportToken(callContext) && !sameMeaningText(callContext, whatHappenedText)) {
     parts.push(callContext);
   }
   const quotes = evidenceQuotes.length > 0
@@ -1685,23 +1831,67 @@ function buildSituationNarrativeText({ whatHappenedText, callContext, evidenceQu
   return parts.join("\n\n");
 }
 
+function isTechnicalReportToken(value) {
+  const normalized = compactSemanticText(value).replace(/_/g, "");
+  return ["documenttype", "none", "null"].includes(normalized);
+}
+
+function parseInlineEvidenceTurns(value) {
+  const text = cleanText(value)
+    .replace(/(?:доказательный\s+фрагмент|подтверждение|фрагмент)\s*:\s*/gi, "");
+  const labelRegex = /(?:^|\s)(контекст|клиент|менеджер|оператор|продавец|собеседник|сторона\s*[12]|side\s*[12])\s*:\s*/gi;
+  const matches = [...text.matchAll(labelRegex)];
+  if (matches.length === 0) return [];
+  const turns = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const start = (matches[index].index || 0) + matches[index][0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index || text.length : text.length;
+    const turnText = cleanBreakdownProofText(text.slice(start, end));
+    if (!turnText) continue;
+    const rawLabel = cleanText(matches[index][1]).toLowerCase();
+    let speaker = "";
+    if (/сторона\s*2|side\s*2/i.test(rawLabel)) speaker = "Сторона 2";
+    else if (/сторона\s*1|side\s*1/i.test(rawLabel)) speaker = "Сторона 1";
+    turns.push({ speaker, text: turnText });
+  }
+  if (turns.length >= 2) {
+    return turns.map((turn, index) => ({
+      ...turn,
+      speaker: turn.speaker || speakerForQuoteIndex(index),
+    }));
+  }
+  return turns;
+}
+
+function breakdownProofParagraphsFromText(value, opts = {}) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  const turns = parseInlineEvidenceTurns(raw);
+  if (turns.length >= 2) {
+    return turns.map((turn) => dialoguePara(turn.speaker, turn.text, {
+      size: opts.size || SZ.cell,
+      limit: opts.limit || 420,
+    }));
+  }
+  const text = cleanBreakdownProofText(turns[0]?.text || raw);
+  if (!text) return [];
+  return [new Paragraph({
+    children: [new TextRun({ text: shortQuote(text, opts.limit || 420), italics: true, size: opts.size || SZ.cell, color: opts.color || COLORS.black, font: "Arial" })],
+    spacing: { before: opts.before || 0, after: opts.after === undefined ? 40 : opts.after },
+  })];
+}
+
 // ──────────────────────────────────────────────────────────────
 // Block 7 — РАЗБОР ЗВОНКА
 // ──────────────────────────────────────────────────────────────
 
 function buildBreakdownMomentCell(s, i) {
-  const quote = s.supporting_quote_repeated_with_situation_day ? "" : firstNonEmpty(s.supporting_quote, "");
-  const rawQuoteLabel = proofTypeLabel(
-    firstNonEmpty(s.supporting_quote_proof_type, s.quote_role === "supports_context" ? "context_support" : "", s.proof_type),
-    "Подтверждение из звонка",
-  );
-  const quoteLabel = rawQuoteLabel === "Суть момента" ? "Подтверждение из звонка" : rawQuoteLabel;
+  const quote = s.supporting_quote_repeated_with_situation_day
+    ? ""
+    : firstNonEmpty(s.supporting_quote_raw, s.supporting_quote, "");
   const proof = firstNonEmpty(quote, "");
   const paras = proof
-    ? [
-        bodyPara(quoteLabel, { size: SZ.cell, bold: true, color: COLORS.heading, after: 30 }),
-        ...dialogueCellParagraphsFromText(proof, { size: SZ.cell, limit: 300, speaker: "Сторона 1" }),
-      ]
+    ? breakdownProofParagraphsFromText(proof, { size: SZ.cell, limit: 300 })
     : [new Paragraph({
         children: [new TextRun({ text: "—", size: SZ.cell, color: COLORS.gray, font: "Arial" })],
         spacing: { before: 0, after: 0 },
@@ -1739,16 +1929,19 @@ function buildBreakdownNarrativeParagraphs(data) {
       const title = cleanText(point.title) || `Момент ${index + 1}`;
       const what = cleanText(point.what_happened);
       const action = cleanText(point.better_action);
-      blocks.push(bodyPara(`${index + 1}. ${title}`, { size: SZ.cell, bold: true, color: COLORS.heading, before: index === 0 ? 0 : 60, after: 30 }));
+      if (index > 0) {
+        blocks.push(softDivider());
+      }
+      blocks.push(bodyPara(`${index + 1}. ${title}`, { size: SZ.cell, bold: true, color: COLORS.heading, before: index === 0 ? 0 : 20, after: 45 }));
       [what].filter(Boolean).forEach((line) => {
-        blocks.push(bodyPara(line, { size: SZ.cell, after: 35 }));
+        blocks.push(bodyPara(line, { size: SZ.cell, after: 60 }));
       });
       const evidenceParas = breakdownEvidenceParagraphs(point.dialogue_evidence, "", { size: SZ.cell, limit: 520 });
       if (evidenceParas.length > 0) {
         blocks.push(...evidenceParas);
       }
       if (action) {
-        blocks.push(bodyPara(`В этом месте лучше: ${action.replace(/^Сказать:\s*/i, "")}`, { size: SZ.cell, color: COLORS.heading, italic: true, before: 20 }));
+        blocks.push(bodyPara(`В этом месте лучше: ${action.replace(/^Сказать:\s*/i, "")}`, { size: SZ.cell, color: COLORS.heading, italic: true, before: 35, after: 70 }));
       }
     });
   }
@@ -1757,7 +1950,7 @@ function buildBreakdownNarrativeParagraphs(data) {
 
 function breakdownWhatText(s) {
   const what = cleanText(s.what);
-  const summary = cleanText(firstNonEmpty(s.moment_summary, s.summary, ""));
+  const summary = cleanBreakdownProofText(firstNonEmpty(s.moment_summary, s.summary, ""));
   if (!what) return summary || "—";
   if (!summary || sameMeaningText(what, summary)) return what;
   return `${what}. ${summary}`;
@@ -1842,10 +2035,10 @@ function buildGolos() {
     ];
     scenes.slice(0, 4).forEach((scene, index) => {
       const title = cleanText(scene.client) || `Клиент ${index + 1}`;
-      const summary = cleanText(scene.scene_summary);
-      const meaning = cleanText(scene.customer_meaning);
+      const summary = normalizeVoiceSceneText(scene.scene_summary);
       const why = cleanText(scene.why_action_follows);
-      const action = cleanText(scene.manager_response);
+      const action = cleanVoiceActionText(scene.manager_response);
+      const meaning = cleanVoiceMeaningText(scene.customer_meaning, action);
       const seenLines = new Set();
       const pushUniqueText = (text, opts = {}) => {
         const normalized = cleanText(text).toLowerCase();
@@ -1880,7 +2073,8 @@ function buildGolos() {
         }
       }
       if (action) {
-        blocks.push(bodyPara(`Как с этим работать: ${action.replace(/^(Что сделать|Как с этим работать):\s*/i, "")}`, { size: SZ.cell, color: COLORS.heading, italic: true }));
+        blocks.push(subHeading("Как с этим работать"));
+        blocks.push(bodyPara(action, { size: SZ.cell, color: COLORS.heading }));
       }
     });
     return blocks;
@@ -1922,6 +2116,46 @@ function buildGolos() {
       rows: [headerRow, ...dataRows],
     }),
   ];
+}
+
+function cleanVoiceMeaningText(value, action = "") {
+  let text = cleanText(value);
+  if (!text) return "";
+  text = text.split(/\s*(?:Что сделать|Как с этим работать)\s*:\s*/i)[0].trim();
+  const actionText = cleanText(action);
+  if (actionText && text.includes(actionText)) {
+    text = text.replace(actionText, "").trim();
+  }
+  return text;
+}
+
+function cleanVoiceActionText(value) {
+  const text = cleanText(value).replace(/^(Что сделать|Как с этим работать)\s*:\s*/i, "");
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+}
+
+function normalizeVoiceSceneText(value) {
+  const text = cleanText(value);
+  if (!text) return "";
+  const labelRegex = /(Клиент|Менеджер|Контекст|Сторона\s*1|Сторона\s*2|Customer|Manager|Side\s*1|Side\s*2)\s*:\s*/gi;
+  const matches = [...text.matchAll(labelRegex)];
+  if (matches.length === 0) return text;
+  const parts = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const start = (matches[index].index || 0) + matches[index][0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index || text.length : text.length;
+    const turnText = cleanText(text.slice(start, end));
+    if (!turnText) continue;
+    const rawLabel = cleanText(matches[index][1]).toLowerCase();
+    let speaker = "";
+    if (rawLabel === "клиент" || rawLabel === "customer") speaker = "Клиент";
+    else if (rawLabel === "менеджер" || rawLabel === "manager") speaker = "Менеджер";
+    else if (/сторона\s*2|side\s*2/i.test(rawLabel)) speaker = "Сторона 2";
+    else if (/сторона\s*1|side\s*1/i.test(rawLabel)) speaker = "Сторона 1";
+    else speaker = speakerForQuoteIndex(index);
+    parts.push(`${speaker}: ${turnText}`);
+  }
+  return parts.length > 0 ? parts.join(" ") : text.replace(/Контекст\s*:/gi, "").trim();
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1977,12 +2211,18 @@ function buildDopSituatsii() {
       blocks.push(...evidenceParas);
     }
     if (s.how_to) {
-      blocks.push(bodyPara(`Что сделать: ${s.how_to}`, { color: s.type === "strength" ? COLORS.heading : COLORS.green, italic: true }));
+      blocks.push(subHeading("Что сделать"));
+      blocks.push(bodyPara(capitalizeReaderSentence(s.how_to), { color: s.type === "strength" ? COLORS.heading : COLORS.green }));
     }
     blocks.push(spacer(8));
   }
 
   return blocks;
+}
+
+function capitalizeReaderSentence(value) {
+  const text = cleanText(value);
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -2079,13 +2319,13 @@ function buildChellendj() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Block 10 — КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА
+// Block 10 — КОНТАКТЫ В РАБОТУ
 // ──────────────────────────────────────────────────────────────
 
 function buildPozvoni() {
   if (!DATA.call_tomorrow || DATA.call_tomorrow.length === 0) {
     return [
-      blockHeading("📞", "КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА"),
+      blockHeading("📞", "КОНТАКТЫ В РАБОТУ"),
       bodyPara("На завтра нет обязательных клиентских действий по итогам звонков.", { color: COLORS.gray }),
     ];
   }
@@ -2114,7 +2354,7 @@ function buildPozvoni() {
   });
 
   return [
-    blockHeading("📞", "КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА"),
+    blockHeading("📞", "КОНТАКТЫ В РАБОТУ"),
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       layout: TableLayoutType.FIXED,
@@ -2128,6 +2368,20 @@ function buildPozvoni() {
 // ──────────────────────────────────────────────────────────────
 
 function buildSpisokZvonkov() {
+  const tableWidth = 10200;
+  const widths = {
+    status: { size: 1800, type: WidthType.DXA },
+    contact: { size: 1800, type: WidthType.DXA },
+    callEssence: { size: 3600, type: WidthType.DXA },
+    agreement: { size: 3000, type: WidthType.DXA },
+  };
+  const columnWidths = [
+    widths.status.size,
+    widths.contact.size,
+    widths.callEssence.size,
+    widths.agreement.size,
+  ];
+
   function statusColor(status) {
     if (status === "Договорённость" || status === "Договор") return COLORS.green;
     if (status === "Отказ") return COLORS.red;
@@ -2137,22 +2391,20 @@ function buildSpisokZvonkov() {
 
   const headerRow = new TableRow({
     children: [
-      headCell("#",       { width: { size: 4, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
-      headCell("Клиент",  { width: { size: 30, type: WidthType.PERCENTAGE } }),
-      headCell("Тип / суть", { width: { size: 21, type: WidthType.PERCENTAGE } }),
-      headCell("Контекст",{ width: { size: 30, type: WidthType.PERCENTAGE } }),
-      headCell("Статус",  { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER }),
+      headCell("Статус", { width: widths.status, align: AlignmentType.CENTER }),
+      headCell("Контакт", { width: widths.contact, align: AlignmentType.LEFT }),
+      headCell("Суть звонка", { width: widths.callEssence, align: AlignmentType.LEFT }),
+      headCell("Договоренность", { width: widths.agreement, align: AlignmentType.LEFT }),
     ],
   });
 
   const dataRows = DATA.all_calls.map((c, i) =>
     new TableRow({
       children: [
-        cell(String(c.n),   { width: { size: 4, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: altShading(i) }),
-        cell(c.client,      { width: { size: 30, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
-        cell(c.topic,       { width: { size: 21, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
-        cell(c.context,     { width: { size: 30, type: WidthType.PERCENTAGE }, shading: altShading(i) }),
-        cell(c.status,      { width: { size: 15, type: WidthType.PERCENTAGE }, align: AlignmentType.CENTER, shading: altShading(i), bold: true, color: statusColor(c.status) }),
+        cell(c.status,  { width: widths.status, align: AlignmentType.CENTER, shading: altShading(i), bold: true, color: statusColor(c.status), size: SZ.meta, vertAlign: VerticalAlign.TOP }),
+        cell(c.contact || c.work, { width: widths.contact, align: AlignmentType.LEFT, shading: altShading(i), size: SZ.meta, vertAlign: VerticalAlign.TOP }),
+        cell(c.callEssence || c.when, { width: widths.callEssence, align: AlignmentType.LEFT, shading: altShading(i), size: SZ.meta, vertAlign: VerticalAlign.TOP }),
+        cell(c.agreement || c.essence, { width: widths.agreement, align: AlignmentType.LEFT, shading: altShading(i), size: SZ.meta, vertAlign: VerticalAlign.TOP }),
       ],
     })
   );
@@ -2160,7 +2412,8 @@ function buildSpisokZvonkov() {
   return [
     blockHeading("📋", "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ"),
     new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
+      width: { size: tableWidth, type: WidthType.DXA },
+      columnWidths,
       layout: TableLayoutType.FIXED,
       rows: [headerRow, ...dataRows],
     }),
@@ -2303,7 +2556,7 @@ async function main() {
     // Block 8
     ...buildChellendj(),
     // Block 9
-    ...buildPozvoni(),
+    ...(DATA.call_tomorrow_hidden ? [] : buildPozvoni()),
     // Block 10
     ...buildSpisokZvonkov(),
     // Block 11
@@ -2359,7 +2612,7 @@ async function main() {
   console.log("  [✓] Warm-lead CRM block omitted for manager-facing clarity");
   console.log("  [✓] СИТУАЦИЯ ДНЯ: interpretation + 3 scripts + why");
   console.log("  [✓] ГОЛОС КЛИЕНТА: 3 human-readable columns");
-  console.log("  [✓] КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА: action table");
+  console.log("  [✓] КОНТАКТЫ В РАБОТУ: action table");
   console.log("  [✓] РАЗБОР ЗВОНКА: 4 columns with separate confirmation from call");
   console.log("  [✓] ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ: filtered valid only, dynamic heading, reference-style cards");
   console.log("  [✓] ЧЕЛЛЕНДЖ НА ЗАВТРА: temporarily hidden");

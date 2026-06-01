@@ -20,8 +20,8 @@
 - подтверждённые preset’ы:
   - `manager_daily`
   - `rop_weekly`
-- текущий product focus: качество `manager_daily` на LLM2 v15 evidence +
-  bounded LLM3 narrative composers
+- текущий product focus: Gate 5 block-by-block калибровка `manager_daily` через
+  `LLM-2` evidence, Report Layer hard gates и bounded `LLM-3` composition
 
 Current runtime split:
 - `manager_daily` — source-aware manual path
@@ -32,6 +32,7 @@ Current runtime split:
 ## С чего входить в контекст
 
 Обязательная стартовая точка:
+1. [docs/ACTIVE_WORK_STATE.md](docs/ACTIVE_WORK_STATE.md)
 1. [docs/CONTEXT_INDEX.md](docs/CONTEXT_INDEX.md)
 
 Дальше обязательно:
@@ -44,6 +45,7 @@ Current runtime split:
 1. [docs/AI_PROVIDER_ROUTING.md](docs/AI_PROVIDER_ROUTING.md)
 
 Если задача затрагивает `manager_daily` report quality:
+1. [docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md](docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md)
 1. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md)
 1. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
 1. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
@@ -64,15 +66,18 @@ Current runtime split:
 - stricter reuse/version checks уже встроены
 - semantic-empty analysis handling уже встроен
 - Git baseline уже создан
-- LLM2 v15 `block-ready` evidence используется как текущий semantic baseline
-- LLM3 composers now handle bounded narrative blocks for Situation Day, Call
-  Breakdown, Voice of Customer, Tomorrow wording, and Additional Situations
-- SFB-1..SFB-5 are implemented in branch `feature/llm2-block-ready-v15`
+- Gate 1-4 LLM2/report-layer calibration приняты или завершены на контрольных
+  датах `2026-05-18`..`2026-05-20`
+- Gate 5 preview принят частично; дальше отчет калибруется блоками
+- `LLM-2` target boundary: meaning/facts/scoring/gaps/recommendations/universal evidence pack
+- `LLM-3` composers handle bounded narrative/wording only inside Report Layer gates
+- active branch: `feature/llm2-block-ready-v15`
 
 Что остаётся открытым:
-- fresh LLM2-ready rerun for one 2026-05-19 manager and ready-only report comparison
-- DDC-11 residual: scene-specific `Ситуация дня` action/examples
-- legacy `manual_reporting -k call_breakdown` expectations cleanup
+- Gate 5 Block 1: status/title/follow-up selection fixes
+- rerender control reports for `2026-05-18`, `2026-05-19`, `2026-05-20`
+- get user approval before Block 2
+- final `LLM-1` contract закрепляется только после report-layer/LLM3 checks
 
 Confirmed residual blocker:
 - это operational issue, а не product/runtime bug

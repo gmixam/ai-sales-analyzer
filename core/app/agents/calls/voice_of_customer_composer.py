@@ -155,6 +155,24 @@ class VoiceCustomerSignal:
     evidence_refs: list[dict[str, Any]] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
+    def to_customer_scene(self) -> dict[str, Any]:
+        meaning = _meaning_without_action(self.interpretation, self.manager_action)
+        return {
+            "signal_id": self.signal_id,
+            "call_id": self.call_id,
+            "client_call_reference": self.client_call_reference,
+            "scene_summary": self.quote_context,
+            "quote": self.quote,
+            "quote_context": self.quote_context,
+            "dialogue_evidence": _normalize_dialogue_evidence([], fallback_text=self.quote_context),
+            "customer_meaning": meaning or self.interpretation,
+            "manager_response": self.manager_action,
+            "why_action_follows": _why_action_follows(self.customer_signal),
+            "customer_signal": self.customer_signal,
+            "source": self.source,
+            "evidence_refs": list(self.evidence_refs),
+        }
+
     def to_situation(self) -> dict[str, Any]:
         return {
             "call_id": self.call_id,
@@ -173,6 +191,7 @@ class VoiceCustomerSignal:
             "customer_signal": self.customer_signal,
             "source": self.source,
             "evidence_refs": list(self.evidence_refs),
+            "proof_refs": list(self.evidence_refs),
         }
 
     def to_row(self) -> list[str]:
@@ -261,6 +280,7 @@ class VoiceOfCustomerCandidateBuilder:
         calls_by_id = {call.call_id: call for call in calls}
         signals.extend(self._from_legacy(legacy_voice_of_customer, calls_by_id))
         for call in calls:
+            signals.extend(self._from_proof_cards(call))
             signals.extend(self._from_report_evidence(call))
             signals.extend(self._from_analysis_facts(call))
         return _dedupe_signals(signals)
@@ -276,6 +296,9 @@ class VoiceOfCustomerCandidateBuilder:
             call_id = _first_text(raw.get("call_id"))
             call = calls_by_id.get(call_id or "") if call_id else _first_call(calls_by_id)
             if call is None:
+                continue
+            proof_refs = _verified_proof_refs(raw, source=_first_text(raw.get("source"), "legacy_voice_of_customer") or "legacy_voice_of_customer")
+            if not proof_refs:
                 continue
             quote = _first_text(raw.get("quote")) or ""
             context = _first_text(raw.get("quote_context"), raw.get("context"), raw.get("interpretation")) or ""
@@ -296,8 +319,51 @@ class VoiceOfCustomerCandidateBuilder:
                     ),
                     manager_action=action,
                     customer_signal=category,
-                    evidence_refs=list(raw.get("evidence_refs") or []),
+                    evidence_refs=proof_refs,
                     base_score=52.0,
+                )
+            )
+        return result
+
+    def _from_proof_cards(self, call: VoiceCustomerCallInput) -> list[VoiceCustomerSignal]:
+        result: list[VoiceCustomerSignal] = []
+        for index, raw_card in enumerate(call.report_evidence.get("proof_cards") or []):
+            proof_card = _as_dict(raw_card)
+            if not proof_card or not _proof_card_is_verified(proof_card):
+                continue
+            claim_type = _text(proof_card.get("claim_type")).lower()
+            if claim_type not in {"customer_signal", "service_issue", "business_outcome"}:
+                continue
+            quote, speaker = _proof_card_quote_and_speaker(proof_card)
+            if not quote:
+                continue
+            quote_context = _expand_quote_context(call=call, quote=quote, provided_context=_text(proof_card.get("claim")))
+            category = _signal_category_from_proof_card(proof_card) or _signal_category(
+                quote=quote,
+                context=quote_context or _text(proof_card.get("claim")),
+            )
+            action = _action_for_signal(category, quote_context)
+            result.append(
+                self._signal(
+                    call=call,
+                    source="report_evidence.proof_cards",
+                    index=index,
+                    quote=quote,
+                    quote_context=quote_context,
+                    interpretation=_interpretation_for_signal(
+                        category=category,
+                        context=_first_text(proof_card.get("claim"), quote_context) or "",
+                        action=action,
+                    ),
+                    manager_action=action,
+                    customer_signal=category,
+                    evidence_refs=_proof_refs_from_card(
+                        proof_card,
+                        source="report_evidence.proof_cards",
+                        quote=quote,
+                    ),
+                    base_score=74.0,
+                    speaker=speaker,
                 )
             )
         return result
@@ -307,6 +373,9 @@ class VoiceOfCustomerCandidateBuilder:
         for index, raw_item in enumerate(call.report_evidence.get("voice_of_customer") or []):
             raw = _as_dict(raw_item)
             if not raw or raw.get("usable_in_report") is False:
+                continue
+            proof_refs = _verified_proof_refs(raw, source="report_evidence.voice_of_customer")
+            if not proof_refs:
                 continue
             speaker = _normalize_speaker(raw.get("speaker"))
             if speaker not in {"client", "unknown", "context"}:
@@ -333,7 +402,7 @@ class VoiceOfCustomerCandidateBuilder:
                     ),
                     manager_action=action,
                     customer_signal=category,
-                    evidence_refs=list(raw.get("evidence_refs") or []),
+                    evidence_refs=proof_refs,
                     base_score=66.0,
                     speaker=speaker,
                 )
@@ -342,6 +411,9 @@ class VoiceOfCustomerCandidateBuilder:
         turns = _turns_from_candidate(semantic_case)
         customer_turn = next((turn for turn in turns if turn.get("speaker") in {"client", "unknown"}), None)
         if customer_turn:
+            proof_refs = _verified_proof_refs(semantic_case, source="report_evidence.semantic_case")
+            if not proof_refs:
+                return result
             quote = _first_text(customer_turn.get("text")) or ""
             quote_context = _expand_quote_context(call=call, quote=quote, provided_context="")
             context = _first_text(
@@ -364,7 +436,7 @@ class VoiceOfCustomerCandidateBuilder:
                     ),
                     manager_action=_action_for_signal(category, context),
                     customer_signal=category,
-                    evidence_refs=list(semantic_case.get("evidence_refs") or []),
+                    evidence_refs=proof_refs,
                     base_score=70.0,
                     speaker=_first_text(customer_turn.get("speaker"), "client") or "client",
                 )
@@ -375,6 +447,9 @@ class VoiceOfCustomerCandidateBuilder:
         result: list[VoiceCustomerSignal] = []
         for index, frag in enumerate(call.analysis.get("evidence_fragments") or []):
             raw = _as_dict(frag)
+            proof_refs = _verified_proof_refs(raw, source="analysis.evidence_fragments")
+            if not proof_refs:
+                continue
             quote = _first_text(raw.get("client_text"))
             if not quote:
                 continue
@@ -396,12 +471,15 @@ class VoiceOfCustomerCandidateBuilder:
                     ),
                     manager_action=action,
                     customer_signal=category,
-                    evidence_refs=[{"source": "analysis.evidence_fragments", "quote": quote}],
+                    evidence_refs=proof_refs,
                     base_score=58.0,
                 )
             )
         for index, sig in enumerate(call.analysis.get("product_signals") or []):
             raw = _as_dict(sig)
+            proof_refs = _verified_proof_refs(raw, source="analysis.product_signals")
+            if not proof_refs:
+                continue
             quote = _first_text(raw.get("quote"))
             if not quote:
                 continue
@@ -423,7 +501,7 @@ class VoiceOfCustomerCandidateBuilder:
                     ),
                     manager_action=action,
                     customer_signal=category,
-                    evidence_refs=[{"source": "analysis.product_signals", "quote": quote}],
+                    evidence_refs=proof_refs,
                     base_score=54.0,
                 )
             )
@@ -518,6 +596,9 @@ class VoiceOfCustomerQualityGate:
             return "no_customer_signal_terms"
         action_norm = _loose_norm(signal.manager_action)
         interpretation_norm = _loose_norm(signal.interpretation)
+        safe_refusal_action = signal.customer_signal == "refusal_or_not_now" and any(
+            safe_marker in action_norm for safe_marker in ("не давить", "не продолжать", "сначала")
+        )
         if _has_unsupported_internal_discussion_claim(
             " ".join([signal.interpretation, signal.manager_action]),
             evidence=" ".join([signal.quote, signal.quote_context]),
@@ -533,13 +614,28 @@ class VoiceOfCustomerQualityGate:
             action_norm,
             (*_CONTRACT_ACTION_TERMS, *_PROPOSAL_ACTION_TERMS, *_DEMO_ACTION_TERMS, *_MATERIAL_ACTION_TERMS),
         ):
-            return "recommendation_sales_push_after_refusal"
-        if _has_any(action_norm, _CONTRACT_ACTION_TERMS) and not _has_any(evidence_context_norm, _CONTRACT_ACTION_TERMS):
+            if not safe_refusal_action:
+                return "recommendation_sales_push_after_refusal"
+        if (
+            _has_any(action_norm, _CONTRACT_ACTION_TERMS)
+            and not _has_any(evidence_context_norm, _CONTRACT_ACTION_TERMS)
+            and not safe_refusal_action
+        ):
             return "recommendation_contract_without_context"
-        if _has_any(action_norm, _PROPOSAL_ACTION_TERMS) and not _has_any(evidence_context_norm, _PROPOSAL_ACTION_TERMS):
+        if (
+            _has_any(action_norm, _PROPOSAL_ACTION_TERMS)
+            and not _has_any(evidence_context_norm, _PROPOSAL_ACTION_TERMS)
+            and not safe_refusal_action
+        ):
             return "recommendation_proposal_without_context"
-        if _has_any(action_norm, _MATERIAL_ACTION_TERMS) and not _has_any(evidence_context_norm, _MATERIAL_ACTION_TERMS):
+        if (
+            _has_any(action_norm, _MATERIAL_ACTION_TERMS)
+            and not _has_any(evidence_context_norm, _MATERIAL_ACTION_TERMS)
+            and not safe_refusal_action
+        ):
             return "recommendation_material_without_context"
+        if not signal.evidence_refs:
+            return "missing_proof_refs"
         if any(value in quote_norm for value in _VAGUE_CALLBACK_QUOTES) and not _has_extended_context(signal.quote_context):
             return "vague_callback_without_context"
         return None
@@ -561,6 +657,7 @@ class VoiceOfCustomerDeterministicWriter:
             "situations": [signal.to_situation() for signal in rendered],
             "items": [signal.to_situation() for signal in rendered],
             "signals": [signal.to_situation() for signal in rendered],
+            "customer_scenes": [signal.to_customer_scene() for signal in rendered],
             "rows": rows,
             "intro": "Клиентские сигналы сгруппированы по контексту и следующему действию.",
             "source_note": VOICE_OF_CUSTOMER_SOURCE,
@@ -588,6 +685,7 @@ class VoiceOfCustomerDeterministicWriter:
             "situations": [],
             "items": [],
             "signals": [],
+            "customer_scenes": [],
             "rows": [],
             "source_note": VOICE_OF_CUSTOMER_SOURCE,
             "selection_diagnostics": {
@@ -686,6 +784,14 @@ def build_voice_of_customer_llm3_payload(signals: list[VoiceCustomerSignal]) -> 
                 "customer_signal": signal.customer_signal,
                 "source": signal.source,
                 "evidence_refs": signal.evidence_refs,
+                "proof_refs": signal.evidence_refs,
+                "locked_fields": {
+                    "call_id": signal.call_id,
+                    "client_call_reference": signal.client_call_reference,
+                    "quote": signal.quote,
+                    "customer_signal": signal.customer_signal,
+                    "evidence_refs": signal.evidence_refs,
+                },
             }
             for signal in signals[:8]
         ],
@@ -971,15 +1077,20 @@ def _normalize_llm3_voice_of_customer(
         return None, "situations_count_out_of_range"
     if not customer_scenes:
         customer_scenes = _normalize_customer_scenes(situations, payload)
-    if not rows:
-        rows = [
-            [
-                _first_text(item.get("client_call_reference"), item.get("client_label"), item.get("call_id")) or "Клиент",
-                _first_text(item.get("scene_summary"), item.get("quote_context"), item.get("quote")) or "",
-                _first_text(item.get("customer_meaning"), item.get("interpretation"), item.get("context"), item.get("manager_action")) or "",
-            ]
-            for item in (customer_scenes or situations)
+    rows = [
+        [
+            _first_text(item.get("client_call_reference"), item.get("client_label"), item.get("call_id")) or "Клиент",
+            _first_text(item.get("scene_summary"), item.get("quote_context"), item.get("quote")) or "",
+            _first_text(
+                item.get("customer_meaning"),
+                item.get("interpretation"),
+                item.get("context"),
+                item.get("manager_action"),
+            )
+            or "",
         ]
+        for item in (customer_scenes or situations)
+    ]
     if not (1 <= len(rows) <= 4) or any(len(row) != 3 for row in rows):
         return None, "rows_shape_invalid"
     language_probe = " ".join(
@@ -1033,11 +1144,12 @@ def _normalize_customer_scenes(value: Any, payload: dict[str, Any]) -> list[dict
             continue
         item = dict(raw_scene)
         source_signal = _matching_payload_signal(item, signals, index)
-        quote = _first_text(item.get("quote"), item.get("customer_quote"), source_signal.get("quote")) or ""
-        quote_context = _first_text(item.get("quote_context"), item.get("scene"), source_signal.get("quote_context")) or ""
-        dialogue = _normalize_dialogue_evidence(
+        quote = _first_text(source_signal.get("quote"), item.get("quote"), item.get("customer_quote")) or ""
+        quote_context = _first_text(source_signal.get("quote_context"), item.get("quote_context"), item.get("scene")) or ""
+        dialogue = _grounded_dialogue_evidence(
             item.get("dialogue_evidence"),
             fallback_text=quote_context or quote,
+            evidence_text=" ".join([quote, quote_context]),
         )
         category = _first_text(source_signal.get("customer_signal"), item.get("customer_signal"))
         manager_response = _first_text(
@@ -1090,11 +1202,11 @@ def _normalize_customer_scenes(value: Any, payload: dict[str, Any]) -> list[dict
             _repair_callback_scene_without_internal_context(
                 {
                     "signal_id": _first_text(item.get("signal_id"), source_signal.get("signal_id")),
-                    "call_id": _first_text(item.get("call_id"), source_signal.get("call_id")),
+                    "call_id": _first_text(source_signal.get("call_id"), item.get("call_id")),
                     "client_call_reference": _first_text(
+                        source_signal.get("client_call_reference"),
                         item.get("client_call_reference"),
                         item.get("client_label"),
-                        source_signal.get("client_call_reference"),
                     ) or "Клиент",
                     "quote": quote,
                     "quote_context": quote_context,
@@ -1104,8 +1216,9 @@ def _normalize_customer_scenes(value: Any, payload: dict[str, Any]) -> list[dict
                     "why_action_follows": why_action_follows,
                     "dialogue_evidence": dialogue,
                     "customer_signal": category,
-                    "source": _first_text(item.get("source"), "voice_of_customer_composer"),
-                    "evidence_refs": list(item.get("evidence_refs") or source_signal.get("evidence_refs") or []),
+                    "source": _first_text(source_signal.get("source"), item.get("source"), "voice_of_customer_composer"),
+                    "evidence_refs": list(source_signal.get("evidence_refs") or item.get("evidence_refs") or []),
+                    "proof_refs": list(source_signal.get("proof_refs") or source_signal.get("evidence_refs") or []),
                 },
                 evidence=" ".join([quote, quote_context]),
             )
@@ -1189,6 +1302,7 @@ def _situation_from_customer_scene(scene: dict[str, Any]) -> dict[str, Any]:
         "customer_signal": scene.get("customer_signal"),
         "source": scene.get("source") or "voice_of_customer_composer",
         "evidence_refs": list(scene.get("evidence_refs") or []),
+        "proof_refs": list(scene.get("proof_refs") or scene.get("evidence_refs") or []),
     }
 
 
@@ -1211,7 +1325,13 @@ def _normalize_dialogue_evidence(value: Any, *, fallback_text: Any = "") -> list
     fallback = _strip_fragment_prefix(fallback_text)
     if not fallback:
         return []
-    matches = list(re.finditer(r"(Клиент|Менеджер|Контекст|Customer|Manager)\s*:\s*", fallback, flags=re.IGNORECASE))
+    matches = list(
+        re.finditer(
+            r"(Клиент|Менеджер|Контекст|Сторона\s*1|Сторона\s*2|Customer|Manager|Side\s*1|Side\s*2)\s*:\s*",
+            fallback,
+            flags=re.IGNORECASE,
+        )
+    )
     if matches:
         parsed: list[dict[str, str]] = []
         for index, match in enumerate(matches):
@@ -1222,7 +1342,19 @@ def _normalize_dialogue_evidence(value: Any, *, fallback_text: Any = "") -> list
                 parsed.append({"speaker": _normalize_speaker(match.group(1)), "text": text})
         if parsed:
             return _consistent_dialogue_speakers(parsed[:8])
-    return [{"speaker": "unknown", "text": fallback}]
+    return [{"speaker": "side_1", "text": fallback}]
+
+
+def _grounded_dialogue_evidence(
+    value: Any,
+    *,
+    fallback_text: Any,
+    evidence_text: Any,
+) -> list[dict[str, str]]:
+    dialogue = _normalize_dialogue_evidence(value, fallback_text="")
+    if dialogue and all(_quote_supported_by_context(turn.get("text"), evidence_text) for turn in dialogue):
+        return dialogue
+    return _normalize_dialogue_evidence([], fallback_text=fallback_text)
 
 
 def _consistent_dialogue_speakers(items: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1230,6 +1362,11 @@ def _consistent_dialogue_speakers(items: list[dict[str, str]]) -> list[dict[str,
     speakers = {_normalize_speaker(item.get("speaker")) for item in items}
     has_unclear = bool(speakers & {"unknown", "context", "side_1", "side_2"})
     has_named = bool(speakers & {"client", "manager"})
+    if has_unclear and not has_named:
+        return [
+            {**item, "speaker": "side_1" if index % 2 == 0 else "side_2"}
+            for index, item in enumerate(items)
+        ]
     if not (has_unclear and has_named):
         return items
     return [
@@ -1259,10 +1396,16 @@ def _repair_llm3_situations_with_payload(
             or _loose_norm(_first_text(item.get("quote")) or "") not in _loose_norm(quote_context)
         ):
             item["quote_context"] = source_context
-        item.setdefault("quote", source_signal.get("quote"))
-        item.setdefault("client_call_reference", source_signal.get("client_call_reference"))
-        item.setdefault("customer_signal", source_signal.get("customer_signal"))
-        item.setdefault("evidence_refs", source_signal.get("evidence_refs") or [])
+        if source_signal:
+            item["signal_id"] = source_signal.get("signal_id")
+            item["call_id"] = source_signal.get("call_id")
+            item["quote"] = source_signal.get("quote")
+            item["quote_context"] = source_context or item.get("quote_context")
+            item["client_call_reference"] = source_signal.get("client_call_reference")
+            item["customer_signal"] = source_signal.get("customer_signal")
+            item["source"] = source_signal.get("source")
+            item["evidence_refs"] = source_signal.get("evidence_refs") or []
+            item["proof_refs"] = source_signal.get("proof_refs") or source_signal.get("evidence_refs") or []
         repaired.append(item)
     return repaired
 
@@ -1309,6 +1452,7 @@ def _quality_for_llm3_result(result: dict[str, Any], fallback_quality: dict[str,
                 customer_signal=_first_text(raw.get("customer_signal")),
                 score=60.0,
                 speaker="client",
+                evidence_refs=list(raw.get("evidence_refs") or raw.get("proof_refs") or []),
             )
         )
     accepted, quality = VoiceOfCustomerQualityGate().filter(signals)
@@ -1464,20 +1608,159 @@ def _turns_from_candidate(raw: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _join_turns(turns: list[dict[str, Any]]) -> str:
-    labels = {"client": "Клиент", "customer": "Клиент", "manager": "Менеджер", "unknown": "Контекст", "context": "Контекст"}
-    parts = []
+    normalized_turns = []
+    has_unclear = False
     for turn in turns:
+        speaker = _normalize_speaker(turn.get("speaker"))
+        if speaker in {"unknown", "context"}:
+            inferred = _infer_speaker(_text(turn.get("text")))
+            speaker = inferred if inferred in {"client", "manager"} else speaker
+        if speaker in {"unknown", "context", "side_1", "side_2"}:
+            has_unclear = True
+        normalized_turns.append({**turn, "speaker": speaker})
+    if has_unclear:
+        normalized_turns = [
+            {
+                **turn,
+                "speaker": turn.get("speaker")
+                if turn.get("speaker") in {"client", "manager"}
+                else ("side_1" if index % 2 == 0 else "side_2"),
+            }
+            for index, turn in enumerate(normalized_turns)
+        ]
+    labels = {
+        "client": "Клиент",
+        "customer": "Клиент",
+        "manager": "Менеджер",
+        "side_1": "Сторона 1",
+        "side_2": "Сторона 2",
+        "unknown": "Сторона 1",
+        "context": "Сторона 1",
+    }
+    parts = []
+    for turn in normalized_turns:
         text = _text(turn.get("text"))
         if not text:
             continue
         speaker = _normalize_speaker(turn.get("speaker"))
-        if speaker in {"unknown", "context"}:
-            inferred = _infer_speaker(text)
-            if inferred in {"client", "manager"}:
-                speaker = inferred
-        label = labels.get(speaker, "Контекст")
+        label = labels.get(speaker, "Сторона 1")
         parts.append(f"{label}: {text}")
     return _clip(" ".join(parts), limit=760)
+
+
+def _verified_proof_refs(payload: dict[str, Any], *, source: str) -> list[dict[str, Any]]:
+    proof_card = _as_dict(payload.get("proof_card"))
+    if proof_card and _proof_card_is_verified(proof_card):
+        quote = _first_text(payload.get("quote"), proof_card.get("evidence_quote")) or ""
+        return _proof_refs_from_card(proof_card, source=source, quote=quote)
+
+    refs = []
+    for raw_ref in payload.get("proof_refs") or payload.get("evidence_refs") or []:
+        ref = _as_dict(raw_ref)
+        if not ref:
+            continue
+        status = _text(ref.get("proof_status") or ref.get("status")).lower()
+        if status and status not in {"verified_proof_card", "verified", "proven"}:
+            continue
+        proof_id = _first_text(ref.get("proof_id"), ref.get("id"))
+        evidence_ids = _string_list(ref.get("evidence_ids"))
+        quote = _first_text(ref.get("quote"), ref.get("evidence_quote"), payload.get("quote"))
+        if proof_id or evidence_ids or quote:
+            refs.append(
+                {
+                    "source": ref.get("source") or source,
+                    "proof_id": proof_id,
+                    "scene_id": _first_text(ref.get("scene_id")),
+                    "evidence_ids": evidence_ids,
+                    "quote": quote,
+                    "proof_status": "verified_proof_card",
+                }
+            )
+    return refs
+
+
+def _proof_card_is_verified(proof_card: dict[str, Any]) -> bool:
+    if not proof_card:
+        return False
+    if _text(proof_card.get("reject_reason")):
+        return False
+    status = _text(proof_card.get("status")).lower()
+    if status and status not in {"verified", "proven"}:
+        return False
+    return True
+
+
+def _proof_card_quote_and_speaker(proof_card: dict[str, Any]) -> tuple[str | None, str]:
+    for raw_item in proof_card.get("supporting_evidence") or []:
+        item = _as_dict(raw_item)
+        quote = _first_text(item.get("quote"), item.get("text"))
+        if quote:
+            return quote, _normalize_speaker(item.get("speaker")) or "client"
+    return _first_text(proof_card.get("evidence_quote")), "client"
+
+
+def _proof_refs_from_card(
+    proof_card: dict[str, Any],
+    *,
+    source: str,
+    quote: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "source": source,
+            "proof_id": _first_text(proof_card.get("proof_id"), proof_card.get("id")),
+            "scene_id": _first_text(proof_card.get("scene_id")),
+            "evidence_ids": _string_list(proof_card.get("evidence_ids")),
+            "quote": quote or _first_text(proof_card.get("evidence_quote")),
+            "claim": _first_text(proof_card.get("claim")),
+            "claim_type": _first_text(proof_card.get("claim_type")),
+            "proof_status": "verified_proof_card",
+        }
+    ]
+
+
+def _signal_category_from_proof_card(proof_card: dict[str, Any]) -> str | None:
+    claim_type = _text(proof_card.get("claim_type")).lower()
+    if claim_type == "service_issue":
+        return "service_or_usage_issue"
+    if claim_type == "customer_signal":
+        return _signal_category(
+            quote=_first_text(proof_card.get("evidence_quote")) or "",
+            context=_first_text(proof_card.get("claim")) or "",
+        )
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [text for item in value if (text := _first_text(item))]
+    text = _first_text(value)
+    return [text] if text else []
+
+
+def _meaning_without_action(interpretation: str, action: str) -> str:
+    text = _text(interpretation)
+    action_text = _text(action)
+    if action_text and action_text in text:
+        text = text.replace(action_text, "").strip()
+    return re.sub(r"\s*Что сделать:\s*$", "", text).strip()
+
+
+def _why_action_follows(category: str | None) -> str:
+    return {
+        "proposal_request": "Клиент просит КП, поэтому перед отправкой нужно уточнить параметры предложения.",
+        "document_or_signature_need": "Сигнал связан с документами, поэтому следующий шаг должен объяснять документный процесс.",
+        "roles_access_or_demo_need": "Клиенту нужен сценарий работы, поэтому уместно зафиксировать роли и показать процесс.",
+        "materials_channel_request": "Клиент согласовал канал, поэтому важно отправить материалы и закрепить точку возврата.",
+        "interest_signal": "Есть интерес, но его нужно перевести в конкретный следующий шаг.",
+        "timing_or_internal_discussion": "Клиент переносит инициативу, поэтому менеджеру нужна спокойная точка возврата.",
+        "current_process_objection": "Клиент показывает барьер текущего процесса, поэтому сначала нужно уточнить условия изменения.",
+        "trust_or_channel_barrier": "Клиент обозначает барьер доверия или канала, поэтому действие должно снизить давление.",
+        "refusal_or_not_now": "Клиент отказывается или ставит паузу, поэтому продажное давление нужно заменить уточнением причины.",
+        "service_or_usage_issue": "Клиент говорит о рабочей проблеме, поэтому сначала нужно закрыть сервисный вопрос.",
+    }.get(category or "", "Действие должно следовать только из сказанного клиентом в мини-сцене.")
 
 
 def _signal_category(*, quote: str, context: str) -> str | None:

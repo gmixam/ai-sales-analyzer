@@ -847,7 +847,7 @@ async def run(
     print(f"РАЗБОР ЗВОНКА: placeholder={cb.get('is_placeholder')}, stages={len(cb.get('stage_steps') or [])}, rows={len(cb.get('rows') or [])}")
     print(f"ГОЛОС КЛИЕНТА: placeholder={voc.get('is_placeholder')}, quotes={len(voc.get('situations') or [])}")
     print(f"ДОП СИТУАЦИИ:  placeholder={ads.get('is_placeholder')}, situations={len(ads.get('situations') or [])}")
-    print(f"ПОЗВОНИ ЗАВТРА: contacts={len(ct.get('contacts') or [])}")
+    print(f"КОНТАКТЫ В РАБОТУ: contacts={len(ct.get('contacts') or [])}")
     for c in (ct.get("contacts") or []):
         print(f"  {c.get('client_label')} | {c.get('status')} | {c.get('deadline')}")
     print(f"БАЛЛЫ ПО ЭТАПАМ: rows={len(sr)}")

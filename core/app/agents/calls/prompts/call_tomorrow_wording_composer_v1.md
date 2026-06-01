@@ -1,7 +1,7 @@
 # CallTomorrowWordingComposer v1 Prompt Contract
 
 Purpose: improve manager-facing wording for the report block
-"КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА". This is an LLM3 wording-composition contract,
+"КОНТАКТЫ В РАБОТУ". This is an LLM3 wording-composition contract,
 not a selection or prioritization contract.
 
 The model receives only contacts that the deterministic Report Layer has
@@ -67,9 +67,16 @@ Return exactly one JSON object:
 - Use only facts present in each contact's `reason`, `next_step`,
   `opening_script`, `signal_text`, and `evidence_signal_text`.
 - All manager-facing fields must be in Russian.
+- Do not use technical report labels such as `Контекст:` in manager-facing
+  fields. Write the reason directly.
 - Do not invent client names, roles, meetings, deadlines, amounts, products,
   documents, contracts, invoices, demos, or payment details unless present in
   that exact contact's evidence.
+- When the evidence contains a concrete customer signal (invoice/payment,
+  materials/КП, meeting/demo, internal discussion, reschedule, trust barrier),
+  do not replace it with generic wording like "уточнить актуальность" or
+  "договориться о следующем шаге". The action and opening phrase must carry
+  the concrete signal.
 - A refusal/not-now signal must not become a pushy sale. If the evidence shows
   refusal or low need, the wording should clarify reason/return condition, not
   push demo/materials/invoice.

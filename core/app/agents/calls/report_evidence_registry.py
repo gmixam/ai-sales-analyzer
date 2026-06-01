@@ -17,6 +17,7 @@ EvidenceType = Literal[
     "customer_signal",
     "service_issue",
     "follow_up_opportunity",
+    "call_essence",
     "neutral_summary",
     "positive_case",
 ]
@@ -29,6 +30,10 @@ ProofType = Literal[
     "positive_case",
 ]
 ProofStrength = Literal["strong", "medium", "weak", "insufficient"]
+
+VERIFIED_PROOF_STATUS = "verified_proof_card"
+SOFTENED_PROOF_STATUS = "softened_proof_card"
+_SOFTENED_CARD_STATUSES = {"soften", "softened", "downgrade"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +54,7 @@ class ReportEvidenceItem:
     block_suitability: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejection_reasons: list[str] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    call_essence: dict[str, Any] = field(default_factory=dict)
 
 
 def build_report_evidence_registry(artifacts: Any | Iterable[Any]) -> list[ReportEvidenceItem]:
@@ -86,6 +92,17 @@ def build_report_evidence_registry(artifacts: Any | Iterable[Any]) -> list[Repor
                 )
             )
 
+        call_essence = _as_mapping(evidence.get("call_essence"))
+        if call_essence:
+            items.append(
+                _build_call_essence_item(
+                    call_id=call_id,
+                    essence=call_essence,
+                    artifact_index=artifact_index,
+                    source_index=len(items),
+                )
+            )
+
         for moment_index, moment in enumerate(_as_list(evidence.get("manager_coaching_moments"))):
             moment_dict = _as_mapping(moment)
             if moment_dict:
@@ -110,6 +127,30 @@ def build_report_evidence_registry(artifacts: Any | Iterable[Any]) -> list[Repor
                     )
                 )
 
+        for situation_index, situation in enumerate(_as_list(evidence.get("additional_situations"))):
+            situation_dict = _as_mapping(situation)
+            if situation_dict:
+                items.append(
+                    _build_additional_situation_item(
+                        call_id=call_id,
+                        situation=situation_dict,
+                        artifact_index=artifact_index,
+                        source_index=situation_index,
+                    )
+                )
+
+        for candidate_index, candidate in enumerate(_as_list(evidence.get("follow_up_candidates"))):
+            candidate_dict = _as_mapping(candidate)
+            if candidate_dict:
+                items.append(
+                    _build_follow_up_candidate_item(
+                        call_id=call_id,
+                        candidate=candidate_dict,
+                        artifact_index=artifact_index,
+                        source_index=candidate_index,
+                    )
+                )
+
         for voc_index, item in enumerate(_as_list(evidence.get("voice_of_customer"))):
             voc_item = _as_mapping(item)
             if voc_item:
@@ -119,6 +160,42 @@ def build_report_evidence_registry(artifacts: Any | Iterable[Any]) -> list[Repor
                         item=voc_item,
                         artifact_index=artifact_index,
                         source_index=voc_index,
+                    )
+                )
+
+        for quote_index, quote in enumerate(_as_list(evidence.get("quote_bank"))):
+            quote_item = _as_mapping(quote)
+            if quote_item:
+                items.append(
+                    _build_quote_bank_item(
+                        call_id=call_id,
+                        item=quote_item,
+                        artifact_index=artifact_index,
+                        source_index=quote_index,
+                    )
+                )
+
+        for proof_index, proof_card in enumerate(_as_list(evidence.get("proof_cards"))):
+            proof_card_dict = _as_mapping(proof_card)
+            if proof_card_dict:
+                items.append(
+                    _build_proof_card_item(
+                        call_id=call_id,
+                        proof_card=proof_card_dict,
+                        artifact_index=artifact_index,
+                        source_index=proof_index,
+                    )
+                )
+
+        for fragment_index, fragment in enumerate(_as_list(evidence.get("evidence_fragments"))):
+            fragment_item = _as_mapping(fragment)
+            if fragment_item:
+                items.append(
+                    _build_evidence_fragment_item(
+                        call_id=call_id,
+                        fragment=fragment_item,
+                        artifact_index=artifact_index,
+                        source_index=fragment_index,
                     )
                 )
 
@@ -205,16 +282,20 @@ def _build_block_candidate_item(
         counter_evidence=_string_list(candidate.get("counter_evidence")),
         block_suitability=block_suitability,
         rejection_reasons=_dedupe(rejection_reasons),
-        diagnostics={
-            "artifact_index": artifact_index,
-            "source_index": source_index,
-            "fit": _as_bool(candidate.get("fit")),
-            "score": _as_int(candidate.get("score")),
-            "role": _text_or_none(candidate.get("role")),
-            "title_mode": _text_or_none(candidate.get("title_mode")),
-            "source_evidence_type": _text_or_none(candidate.get("evidence_type")),
-            "insufficiency_reason": _text_or_none(candidate.get("insufficiency_reason")),
-        },
+        diagnostics=_with_proof_diagnostics(
+            candidate,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "fit": _as_bool(candidate.get("fit")),
+                "score": _as_int(candidate.get("score")),
+                "role": _text_or_none(candidate.get("role")),
+                "title_mode": _text_or_none(candidate.get("title_mode")),
+                "source_evidence_type": _text_or_none(candidate.get("evidence_type")),
+                "insufficiency_reason": _text_or_none(candidate.get("insufficiency_reason")),
+            },
+        ),
     )
 
 
@@ -266,13 +347,17 @@ def _build_semantic_case_item(
             base_reasons=rejection_reasons,
         ),
         rejection_reasons=_dedupe(rejection_reasons),
-        diagnostics={
-            "artifact_index": artifact_index,
-            "source_index": source_index,
-            "case_type": _text_or_none(semantic_case.get("case_type")),
-            "priority": _text_or_none(semantic_case.get("priority")),
-            "evidence_quality": _text_or_none(semantic_case.get("evidence_quality")),
-        },
+        diagnostics=_with_proof_diagnostics(
+            semantic_case,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "case_type": _text_or_none(semantic_case.get("case_type")),
+                "priority": _text_or_none(semantic_case.get("priority")),
+                "evidence_quality": _text_or_none(semantic_case.get("evidence_quality")),
+            },
+        ),
     )
 
 
@@ -320,14 +405,18 @@ def _build_manager_coaching_item(
             )
         },
         rejection_reasons=_dedupe(rejection_reasons),
-        diagnostics={
-            "artifact_index": artifact_index,
-            "source_index": source_index,
-            "moment_type": _text_or_none(moment.get("moment_type")),
-            "priority": _text_or_none(moment.get("priority")),
-            "evidence_quality": _text_or_none(moment.get("evidence_quality")),
-            "what_better": _text_or_none(moment.get("what_better")),
-        },
+        diagnostics=_with_proof_diagnostics(
+            moment,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "moment_type": _text_or_none(moment.get("moment_type")),
+                "priority": _text_or_none(moment.get("priority")),
+                "evidence_quality": _text_or_none(moment.get("evidence_quality")),
+                "what_better": _text_or_none(moment.get("what_better")),
+            },
+        ),
     )
 
 
@@ -377,13 +466,280 @@ def _build_situation_candidate_item(
             )
         },
         rejection_reasons=_dedupe(rejection_reasons),
+        diagnostics=_with_proof_diagnostics(
+            candidate,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "problem_type": _text_or_none(candidate.get("problem_type")),
+                "priority": _text_or_none(candidate.get("priority")),
+                "evidence_quality": _text_or_none(candidate.get("evidence_quality")),
+            },
+        ),
+    )
+
+
+def _build_additional_situation_item(
+    *,
+    call_id: str | None,
+    situation: dict[str, Any],
+    artifact_index: int,
+    source_index: int,
+) -> ReportEvidenceItem:
+    source = "report_evidence.additional_situations"
+    evidence_type = _classify_additional_situation(situation)
+    proof_strength = _proof_strength(situation)
+    rejection_reasons = _base_rejection_reasons(situation, proof_strength)
+    dialogue_scene = _dialogue_scene(
+        situation.get("dialogue_fragment") or situation.get("best_dialogue_fragment")
+    )
+    supporting_quote = _first_text(
+        situation.get("supporting_quote"),
+        situation.get("quote"),
+        situation.get("client_quote"),
+        situation.get("customer_quote"),
+        situation.get("manager_quote"),
+    ) or _supporting_quote_from_scene(dialogue_scene)
+    if supporting_quote and not dialogue_scene:
+        dialogue_scene = [_quote_turn(situation, supporting_quote)]
+    if not (dialogue_scene or supporting_quote):
+        rejection_reasons.append("missing_dialogue_evidence")
+
+    return ReportEvidenceItem(
+        evidence_id=_evidence_id(call_id, source, source_index),
+        call_id=call_id,
+        source=source,
+        evidence_type=evidence_type,
+        proof_type=_proof_type(situation, evidence_type, proof_strength, dialogue_scene, supporting_quote),
+        proof_strength=proof_strength,
+        stage_code=_text_or_none(situation.get("stage_code")),
+        problem_title=_first_text(situation.get("title"), situation.get("case_title")),
+        manager_gap=_first_text(
+            situation.get("what_was_missing"),
+            situation.get("manager_gap"),
+            situation.get("recommended_action"),
+            situation.get("recommended_next_action"),
+            situation.get("what_better"),
+        )
+        if evidence_type == "manager_gap"
+        else None,
+        customer_context=_first_text(
+            situation.get("what_happened"),
+            situation.get("why_it_matters"),
+            situation.get("customer_signal"),
+            situation.get("core_meaning"),
+        ),
+        dialogue_scene=dialogue_scene,
+        supporting_quote=supporting_quote,
+        counter_evidence=_string_list(situation.get("counter_evidence")),
+        block_suitability={
+            "additional_situations": _block_suitability(
+                block_name="additional_situations",
+                source=source,
+                evidence_type=evidence_type,
+                proof_strength=proof_strength,
+                fit=True,
+                score=_as_int(situation.get("score")),
+                base_reasons=rejection_reasons,
+            )
+        },
+        rejection_reasons=_dedupe(rejection_reasons),
+        diagnostics=_with_proof_diagnostics(
+            situation,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "type": _text_or_none(situation.get("type") or situation.get("case_type")),
+                "priority": _text_or_none(situation.get("priority")),
+                "evidence_quality": _text_or_none(situation.get("evidence_quality")),
+            },
+        ),
+    )
+
+
+def _build_call_essence_item(
+    *,
+    call_id: str | None,
+    essence: dict[str, Any],
+    artifact_index: int,
+    source_index: int,
+) -> ReportEvidenceItem:
+    source = "report_evidence.call_essence"
+    outcome = _text_or_none(essence.get("outcome") or essence.get("status"))
+    topic = _text_or_none(essence.get("topic"))
+    agreement = _text_or_none(essence.get("agreement"))
+    next_step = _text_or_none(essence.get("next_step"))
+    manager_visible_text = _first_text(
+        essence.get("manager_visible_text"),
+        essence.get("manager_visible_summary"),
+        essence.get("short_context"),
+    )
+    reason = _first_text(
+        essence.get("refusal_or_interest_reason"),
+        essence.get("outcome_reason"),
+        essence.get("reason"),
+    )
+    service_request = _text_or_none(essence.get("service_request"))
+    deadline = _text_or_none(essence.get("deadline"))
+    evidence_quote = _text_or_none(essence.get("evidence_quote"))
+    proof_strength = _call_essence_proof_strength(essence)
+    rejection_reasons = _call_essence_rejection_reasons(
+        outcome=outcome,
+        topic=topic,
+        agreement=agreement,
+        next_step=next_step,
+        reason=reason,
+        service_request=service_request,
+        manager_visible_text=manager_visible_text,
+        proof_strength=proof_strength,
+    )
+    is_follow_up = (outcome or "").strip().lower() in {"agreement", "rescheduled", "open"}
+    fit_call_list = bool(topic or manager_visible_text or agreement or reason or service_request)
+    fit_follow_up = is_follow_up and bool(next_step)
+
+    normalized_essence = {
+        "topic": topic,
+        "outcome": outcome,
+        "refusal_or_interest_reason": _text_or_none(essence.get("refusal_or_interest_reason")),
+        "outcome_reason": _text_or_none(essence.get("outcome_reason")) or reason,
+        "agreement": agreement,
+        "next_step": next_step,
+        "deadline": deadline,
+        "service_request": service_request,
+        "manager_visible_text": manager_visible_text,
+        "source": _text_or_none(essence.get("source")) or source,
+    }
+    normalized_essence = {
+        key: value for key, value in normalized_essence.items() if value not in (None, "")
+    }
+
+    block_suitability = {
+        "call_list": _block_suitability(
+            block_name="call_list",
+            source=source,
+            evidence_type="call_essence",
+            proof_strength=proof_strength,
+            fit=fit_call_list,
+            score=_as_int(essence.get("score")) or 85,
+            base_reasons=rejection_reasons if not fit_call_list else [],
+        )
+    }
+    if is_follow_up:
+        block_suitability["follow_up"] = _block_suitability(
+            block_name="follow_up",
+            source=source,
+            evidence_type="follow_up_opportunity",
+            proof_strength=proof_strength,
+            fit=fit_follow_up,
+            score=_as_int(essence.get("score")) or 85,
+            base_reasons=rejection_reasons if not fit_follow_up else [],
+        )
+
+    return ReportEvidenceItem(
+        evidence_id=_evidence_id(call_id, source, source_index),
+        call_id=call_id,
+        source=source,
+        evidence_type="call_essence",
+        proof_type="sequence_inference",
+        proof_strength=proof_strength,
+        stage_code=_text_or_none(essence.get("stage_code")),
+        problem_title=topic,
+        manager_gap=None,
+        customer_context=_first_text(manager_visible_text, agreement, reason, service_request),
+        dialogue_scene=[_quote_turn(essence, evidence_quote)] if evidence_quote else [],
+        supporting_quote=evidence_quote,
+        counter_evidence=_string_list(essence.get("counter_evidence")),
+        block_suitability=block_suitability,
+        rejection_reasons=_dedupe(rejection_reasons),
         diagnostics={
             "artifact_index": artifact_index,
             "source_index": source_index,
-            "problem_type": _text_or_none(candidate.get("problem_type")),
-            "priority": _text_or_none(candidate.get("priority")),
-            "evidence_quality": _text_or_none(candidate.get("evidence_quality")),
+            "source_contract": "call_essence",
+            "outcome": outcome,
+            "deadline": deadline,
+            "quality_flags": _call_essence_quality_flags(
+                outcome=outcome,
+                topic=topic,
+                agreement=agreement,
+                next_step=next_step,
+                reason=reason,
+                service_request=service_request,
+                manager_visible_text=manager_visible_text,
+            ),
+            "proof_status": "diagnostics_only_call_essence",
+            "verified_source": False,
         },
+        call_essence=normalized_essence,
+    )
+
+
+def _build_follow_up_candidate_item(
+    *,
+    call_id: str | None,
+    candidate: dict[str, Any],
+    artifact_index: int,
+    source_index: int,
+) -> ReportEvidenceItem:
+    source = "report_evidence.follow_up_candidates"
+    evidence_type: EvidenceType = "follow_up_opportunity"
+    proof_strength = _follow_up_proof_strength(candidate)
+    rejection_reasons = _base_rejection_reasons(candidate, proof_strength)
+    next_action = _first_text(
+        candidate.get("next_step"),
+        candidate.get("manager_next_action"),
+        candidate.get("suggested_manager_phrase"),
+        candidate.get("first_phrase"),
+    )
+    if not next_action:
+        rejection_reasons.append("missing_next_action")
+
+    suitability = _block_suitability(
+        block_name="call_tomorrow",
+        source=source,
+        evidence_type=evidence_type,
+        proof_strength=proof_strength,
+        fit=True,
+        score=_as_int(candidate.get("score")),
+        base_reasons=rejection_reasons,
+    )
+
+    return ReportEvidenceItem(
+        evidence_id=_evidence_id(call_id, source, source_index),
+        call_id=call_id,
+        source=source,
+        evidence_type=evidence_type,
+        proof_type="sequence_inference",
+        proof_strength=proof_strength,
+        stage_code=_text_or_none(candidate.get("stage_code")),
+        problem_title=_first_text(candidate.get("client_label"), candidate.get("topic"), next_action),
+        manager_gap=None,
+        customer_context=_first_text(
+            candidate.get("why_follow_up"),
+            candidate.get("client_context"),
+            candidate.get("deadline"),
+            candidate.get("status"),
+        ),
+        dialogue_scene=[],
+        supporting_quote=_text_or_none(candidate.get("first_phrase")),
+        counter_evidence=_string_list(candidate.get("counter_evidence")),
+        block_suitability={
+            "follow_up": dict(suitability),
+            "call_tomorrow": suitability,
+        },
+        rejection_reasons=_dedupe(rejection_reasons),
+        diagnostics=_with_proof_diagnostics(
+            candidate,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "status": _text_or_none(candidate.get("status")),
+                "priority": _text_or_none(candidate.get("priority")),
+                "deadline": _text_or_none(candidate.get("deadline")),
+            },
+        ),
     )
 
 
@@ -396,7 +752,7 @@ def _build_voice_of_customer_item(
 ) -> ReportEvidenceItem:
     source = "report_evidence.voice_of_customer"
     evidence_type = _classify_voice_of_customer(item)
-    proof_strength = _proof_strength(item)
+    proof_strength = _proof_strength_with_business_signal(item)
     rejection_reasons = _base_rejection_reasons(item, proof_strength)
     quote = _text_or_none(item.get("quote"))
     if not quote:
@@ -441,13 +797,246 @@ def _build_voice_of_customer_item(
             ),
         },
         rejection_reasons=_dedupe(rejection_reasons),
-        diagnostics={
-            "artifact_index": artifact_index,
-            "source_index": source_index,
-            "topic": _text_or_none(item.get("topic")),
-            "business_signal": _text_or_none(item.get("business_signal")),
-            "evidence_quality": _text_or_none(item.get("evidence_quality")),
+        diagnostics=_with_proof_diagnostics(
+            item,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "topic": _text_or_none(item.get("topic")),
+                "business_signal": _text_or_none(item.get("business_signal")),
+                "evidence_quality": _text_or_none(item.get("evidence_quality")),
+            },
+        ),
+    )
+
+
+def _build_quote_bank_item(
+    *,
+    call_id: str | None,
+    item: dict[str, Any],
+    artifact_index: int,
+    source_index: int,
+) -> ReportEvidenceItem:
+    source = "report_evidence.quote_bank"
+    evidence_type = _classify_quote_bank_item(item)
+    proof_strength = _proof_strength_with_business_signal(item)
+    rejection_reasons = _base_rejection_reasons(item, proof_strength)
+    quote = _text_or_none(item.get("quote") or item.get("text"))
+    speaker = _text_or_none(item.get("speaker"))
+    if not quote:
+        rejection_reasons.append("missing_customer_quote")
+    if not speaker:
+        rejection_reasons.append("missing_speaker")
+
+    return ReportEvidenceItem(
+        evidence_id=_evidence_id(call_id, source, source_index),
+        call_id=call_id,
+        source=source,
+        evidence_type=evidence_type,
+        proof_type="service_issue" if evidence_type == "service_issue" else "customer_signal",
+        proof_strength=proof_strength,
+        stage_code=_text_or_none(item.get("stage_code")),
+        problem_title=_text_or_none(item.get("topic")),
+        manager_gap=None,
+        customer_context=_first_text(item.get("meaning"), item.get("topic"), item.get("business_signal")),
+        dialogue_scene=[{"speaker": speaker or "unknown", "text": quote}] if quote else [],
+        supporting_quote=quote,
+        counter_evidence=_string_list(item.get("counter_evidence")),
+        block_suitability={
+            "voice_of_customer": _block_suitability(
+                block_name="voice_of_customer",
+                source=source,
+                evidence_type=evidence_type,
+                proof_strength=proof_strength,
+                fit=bool(quote and speaker),
+                score=_as_int(item.get("score")),
+                base_reasons=rejection_reasons,
+            )
         },
+        rejection_reasons=_dedupe(rejection_reasons),
+        diagnostics=_with_proof_diagnostics(
+            item,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "topic": _text_or_none(item.get("topic")),
+                "speaker": speaker,
+                "business_signal": _text_or_none(item.get("business_signal")),
+                "evidence_quality": _text_or_none(item.get("evidence_quality")),
+            },
+        ),
+    )
+
+
+def _build_proof_card_item(
+    *,
+    call_id: str | None,
+    proof_card: dict[str, Any],
+    artifact_index: int,
+    source_index: int,
+) -> ReportEvidenceItem:
+    source = "report_evidence.proof_cards"
+    evidence_type = _proof_card_evidence_type(proof_card)
+    proof_strength = _proof_card_strength(proof_card)
+    status = (_text_or_none(proof_card.get("status")) or "").strip().lower()
+    dialogue_scene, supporting_quote = _proof_card_dialogue_scene(proof_card)
+    counter_evidence = [
+        quote
+        for quote in (
+            _text_or_none(item.get("quote"))
+            for item in _as_list(proof_card.get("counter_evidence"))
+            if isinstance(item, dict)
+        )
+        if quote
+    ]
+    rejection_reasons: list[str] = []
+    if status in {"reject", "rejected", "retry", "warning"}:
+        rejection_reasons.append(f"proof_card_{status}")
+    if proof_strength in {"weak", "insufficient"}:
+        rejection_reasons.append("insufficient_evidence")
+    if not dialogue_scene and not supporting_quote:
+        rejection_reasons.append("missing_dialogue_evidence")
+    if _text_or_none(proof_card.get("reject_reason")):
+        rejection_reasons.append("proof_card_rejected")
+
+    primary_block = _proof_card_primary_block(evidence_type)
+    block_suitability: dict[str, dict[str, Any]] = {}
+    if primary_block:
+        block_suitability[primary_block] = _block_suitability(
+            block_name=primary_block,
+            source=source,
+            evidence_type=evidence_type,
+            proof_strength=proof_strength,
+            fit=not rejection_reasons,
+            score=None,
+            base_reasons=rejection_reasons,
+        )
+    if evidence_type == "manager_gap":
+        block_suitability["call_breakdown"] = _block_suitability(
+            block_name="call_breakdown",
+            source=source,
+            evidence_type=evidence_type,
+            proof_strength=proof_strength,
+            fit=not rejection_reasons,
+            score=None,
+            base_reasons=rejection_reasons,
+        )
+
+    return ReportEvidenceItem(
+        evidence_id=_evidence_id(call_id, source, source_index),
+        call_id=call_id or _text_or_none(proof_card.get("call_id")),
+        source=source,
+        evidence_type=evidence_type,
+        proof_type=_proof_card_proof_type(proof_card),
+        proof_strength=proof_strength,
+        stage_code=_text_or_none(proof_card.get("stage_code")),
+        problem_title=_text_or_none(proof_card.get("claim")),
+        manager_gap=_text_or_none(proof_card.get("claim")) if evidence_type == "manager_gap" else None,
+        customer_context=_text_or_none(proof_card.get("claim"))
+        if evidence_type == "customer_signal"
+        else None,
+        dialogue_scene=dialogue_scene,
+        supporting_quote=supporting_quote,
+        counter_evidence=counter_evidence,
+        block_suitability=block_suitability,
+        rejection_reasons=_dedupe(rejection_reasons),
+        diagnostics=_with_proof_diagnostics(
+            {"proof_card": proof_card},
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "proof_source": "top_level_proof_cards",
+            },
+        ),
+    )
+
+
+def _build_evidence_fragment_item(
+    *,
+    call_id: str | None,
+    fragment: dict[str, Any],
+    artifact_index: int,
+    source_index: int,
+) -> ReportEvidenceItem:
+    source = "evidence_fragments"
+    evidence_type = _classify_evidence_fragment(fragment)
+    proof_strength = _proof_strength(fragment)
+    rejection_reasons = _base_rejection_reasons(fragment, proof_strength)
+    quote, speaker = _fragment_quote_and_speaker(fragment)
+    dialogue_scene = [{"speaker": speaker or "unknown", "text": quote}] if quote else []
+    if not quote:
+        rejection_reasons.append("missing_dialogue_evidence")
+
+    target_block = "voice_of_customer" if evidence_type == "customer_signal" else "call_breakdown"
+    block_suitability = {
+        target_block: _block_suitability(
+            block_name=target_block,
+            source=source,
+            evidence_type=evidence_type,
+            proof_strength=proof_strength,
+            fit=bool(quote),
+            score=_as_int(fragment.get("score")),
+            base_reasons=rejection_reasons,
+        )
+    }
+    if evidence_type == "manager_gap":
+        block_suitability["situation_day"] = _block_suitability(
+            block_name="situation_day",
+            source=source,
+            evidence_type=evidence_type,
+            proof_strength=proof_strength,
+            fit=bool(quote),
+            score=_as_int(fragment.get("score")),
+            base_reasons=rejection_reasons,
+        )
+
+    return ReportEvidenceItem(
+        evidence_id=_evidence_id(call_id, source, source_index),
+        call_id=call_id,
+        source=source,
+        evidence_type=evidence_type,
+        proof_type=_proof_type(fragment, evidence_type, proof_strength, dialogue_scene, quote),
+        proof_strength=proof_strength,
+        stage_code=_first_text(fragment.get("stage_code"), fragment.get("stage")),
+        problem_title=_first_text(
+            fragment.get("title"),
+            fragment.get("criterion_name"),
+            fragment.get("criterion_code"),
+        ),
+        manager_gap=_first_text(
+            fragment.get("manager_gap"),
+            fragment.get("what_was_missing"),
+            fragment.get("gap"),
+            fragment.get("comment"),
+        )
+        if evidence_type == "manager_gap"
+        else None,
+        customer_context=_first_text(
+            fragment.get("customer_signal"),
+            fragment.get("client_text"),
+            fragment.get("customer_text"),
+            fragment.get("quote"),
+            fragment.get("text"),
+        ),
+        dialogue_scene=dialogue_scene,
+        supporting_quote=quote,
+        counter_evidence=_string_list(fragment.get("counter_evidence")),
+        block_suitability=block_suitability,
+        rejection_reasons=_dedupe(rejection_reasons),
+        diagnostics=_with_proof_diagnostics(
+            fragment,
+            evidence_type,
+            {
+                "artifact_index": artifact_index,
+                "source_index": source_index,
+                "criterion_code": _text_or_none(fragment.get("criterion_code")),
+                "speaker": speaker,
+                "source_evidence_type": _text_or_none(fragment.get("evidence_type")),
+            },
+        ),
     )
 
 
@@ -482,6 +1071,19 @@ def _build_call_report_summary_item(
         supporting_quote=None,
         counter_evidence=[],
         block_suitability={
+            "call_list": _block_suitability(
+                block_name="call_list",
+                source=source,
+                evidence_type=evidence_type,
+                proof_strength=proof_strength,
+                fit=bool(
+                    _text_or_none(summary.get("manager_visible_summary"))
+                    or _text_or_none(summary.get("short_context"))
+                    or _text_or_none(summary.get("short_topic"))
+                ),
+                score=None,
+                base_reasons=rejection_reasons,
+            ),
             "call_tomorrow": _block_suitability(
                 block_name="call_tomorrow",
                 source=source,
@@ -499,6 +1101,8 @@ def _build_call_report_summary_item(
             "client_display_name": _text_or_none(summary.get("client_display_name")),
             "hotness": _text_or_none(summary.get("hotness")),
             "manager_next_action": _text_or_none(summary.get("manager_next_action")),
+            "call_list_source_priority": 40,
+            "call_list_quality": "medium" if not rejection_reasons else "warning",
         },
     )
 
@@ -522,6 +1126,11 @@ def _extract_report_evidence(artifact: Any) -> dict[str, Any]:
             "manager_coaching_moments",
             "situation_candidates",
             "voice_of_customer",
+            "additional_situations",
+            "follow_up_candidates",
+            "quote_bank",
+            "evidence_fragments",
+            "call_essence",
             "call_report_summary",
         ):
             if key in container and key not in merged:
@@ -600,6 +1209,46 @@ def _classify_voice_of_customer(item: dict[str, Any]) -> EvidenceType:
     return "customer_signal"
 
 
+def _classify_additional_situation(situation: dict[str, Any]) -> EvidenceType:
+    raw_type = str(
+        situation.get("evidence_type") or situation.get("type") or situation.get("case_type") or ""
+    ).strip().lower()
+    if raw_type in {"strong_practice", "positive_case", "worked"}:
+        return "positive_case"
+    return "manager_gap"
+
+
+def _classify_quote_bank_item(item: dict[str, Any]) -> EvidenceType:
+    raw_type = str(item.get("evidence_type") or item.get("type") or item.get("case_type") or "").strip().lower()
+    topic = str(item.get("topic") or "").strip().lower()
+    if raw_type in {"service_issue", "tech_service", "support_issue"} or topic in {
+        "service_issue",
+        "tech_service",
+        "support_issue",
+    }:
+        return "service_issue"
+    return "customer_signal"
+
+
+def _classify_evidence_fragment(fragment: dict[str, Any]) -> EvidenceType:
+    raw_type = str(
+        fragment.get("evidence_type") or fragment.get("type") or fragment.get("case_type") or ""
+    ).strip().lower()
+    if raw_type in {"manager_gap", "manager_coaching_moment", "stage_gap", "growth_zone", "missed_opportunity"}:
+        return "manager_gap"
+    if raw_type in {"customer_signal", "voice_of_customer"}:
+        return "customer_signal"
+    if _first_text(
+        fragment.get("manager_gap"),
+        fragment.get("what_was_missing"),
+        fragment.get("gap"),
+        fragment.get("manager_text"),
+        fragment.get("operator_text"),
+    ):
+        return "manager_gap"
+    return "customer_signal"
+
+
 def _proof_type(
     payload: dict[str, Any],
     evidence_type: EvidenceType,
@@ -658,6 +1307,155 @@ def _proof_strength(payload: dict[str, Any]) -> ProofStrength:
             return "weak"
         return "insufficient"
     return "weak"
+
+
+def _proof_strength_with_business_signal(payload: dict[str, Any]) -> ProofStrength:
+    if _has_proof_strength_hint(payload):
+        return _proof_strength(payload)
+    signal = str(payload.get("business_signal") or "").strip().lower()
+    if signal in {"high", "hot", "strong"}:
+        return "strong"
+    if signal in {"medium", "warm"}:
+        return "medium"
+    if signal in {"low", "cold", "weak"}:
+        return "weak"
+    if signal in {"insufficient", "none", "no_signal"}:
+        return "insufficient"
+    return _proof_strength(payload)
+
+
+def _follow_up_proof_strength(payload: dict[str, Any]) -> ProofStrength:
+    if _has_proof_strength_hint(payload):
+        return _proof_strength(payload)
+    priority = str(payload.get("priority") or "").strip().lower()
+    status = str(payload.get("status") or payload.get("follow_up_status") or "").strip().lower()
+    if priority in {"high", "urgent", "hot"}:
+        return "strong"
+    if priority in {"medium", "open", "warm"} or status in {"open", "agreement", "rescheduled"}:
+        return "medium"
+    if priority in {"low", "cold", "weak"}:
+        return "weak"
+    if _first_text(payload.get("next_step"), payload.get("manager_next_action"), payload.get("first_phrase")):
+        return "medium"
+    return "weak"
+
+
+CALL_ESSENCE_GENERIC_TEXT_MARKERS = (
+    "есть договоренность",
+    "есть договорённость",
+    "контакт в работу",
+    "нужно продолжить работу",
+    "продолжить работу",
+    "обсудили вопрос",
+    "обсудили сотрудничество",
+    "разговор с клиентом",
+)
+
+
+def _call_essence_proof_strength(payload: dict[str, Any]) -> ProofStrength:
+    if _has_proof_strength_hint(payload):
+        return _proof_strength(payload)
+    outcome = str(payload.get("outcome") or payload.get("status") or "").strip().lower()
+    has_topic = bool(_text_or_none(payload.get("topic")))
+    has_next_step = bool(_text_or_none(payload.get("next_step")))
+    has_agreement = bool(_text_or_none(payload.get("agreement")))
+    has_reason = bool(
+        _first_text(
+            payload.get("refusal_or_interest_reason"),
+            payload.get("outcome_reason"),
+            payload.get("reason"),
+        )
+    )
+    has_service_request = bool(_text_or_none(payload.get("service_request")))
+    if outcome in {"agreement", "rescheduled", "open"}:
+        return "medium" if has_topic and has_agreement and has_next_step else "weak"
+    if outcome == "refusal":
+        return "medium" if has_topic and has_reason else "weak"
+    if outcome == "tech_service":
+        return "medium" if has_service_request or has_topic else "weak"
+    if any((has_topic, has_reason, has_service_request)):
+        return "medium"
+    return "weak"
+
+
+def _call_essence_rejection_reasons(
+    *,
+    outcome: str | None,
+    topic: str | None,
+    agreement: str | None,
+    next_step: str | None,
+    reason: str | None,
+    service_request: str | None,
+    manager_visible_text: str | None,
+    proof_strength: ProofStrength,
+) -> list[str]:
+    reasons = _call_essence_quality_flags(
+        outcome=outcome,
+        topic=topic,
+        agreement=agreement,
+        next_step=next_step,
+        reason=reason,
+        service_request=service_request,
+        manager_visible_text=manager_visible_text,
+    )
+    if proof_strength in {"weak", "insufficient"}:
+        reasons.append("weak_call_essence")
+    return _dedupe(reasons)
+
+
+def _call_essence_quality_flags(
+    *,
+    outcome: str | None,
+    topic: str | None,
+    agreement: str | None,
+    next_step: str | None,
+    reason: str | None,
+    service_request: str | None,
+    manager_visible_text: str | None,
+) -> list[str]:
+    flags: list[str] = []
+    normalized_outcome = str(outcome or "").strip().lower()
+    if not (topic or manager_visible_text):
+        flags.append("missing_topic")
+    if normalized_outcome in {"agreement", "rescheduled", "open"}:
+        if not topic:
+            flags.append("missing_agreement_topic")
+        if not agreement:
+            flags.append("missing_agreement")
+        if not next_step:
+            flags.append("missing_next_step")
+    if normalized_outcome == "refusal" and not reason:
+        flags.append("missing_refusal_reason")
+    if normalized_outcome == "tech_service" and not (service_request or topic or manager_visible_text):
+        flags.append("missing_service_request")
+    for field, value in {
+        "topic": topic,
+        "agreement": agreement,
+        "next_step": next_step,
+        "reason": reason,
+        "service_request": service_request,
+        "manager_visible_text": manager_visible_text,
+    }.items():
+        if _call_essence_text_is_generic(value):
+            flags.append(f"generic_{field}")
+    return _dedupe(flags)
+
+
+def _call_essence_text_is_generic(value: str | None) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if len(text) < 10:
+        return True
+    return any(marker in text for marker in CALL_ESSENCE_GENERIC_TEXT_MARKERS)
+
+
+def _has_proof_strength_hint(payload: dict[str, Any]) -> bool:
+    return bool(
+        _text_or_none(payload.get("proof_strength"))
+        or _text_or_none(payload.get("evidence_quality"))
+        or _as_int(payload.get("score")) is not None
+    )
 
 
 def _block_suitability(
@@ -739,6 +1537,11 @@ def _base_rejection_reasons(payload: dict[str, Any], proof_strength: ProofStreng
     reasons: list[str] = []
     if payload.get("usable_in_report") is False:
         reasons.append("not_usable_in_report")
+    proof_card = _proof_card(payload)
+    if not proof_card:
+        reasons.append("missing_proof_card")
+    elif _proof_card_reject_reason(proof_card):
+        reasons.append("proof_card_rejected")
     if proof_strength == "weak":
         reasons.append("weak_evidence_quality")
     elif proof_strength == "insufficient":
@@ -751,6 +1554,128 @@ def _base_rejection_reasons(payload: dict[str, Any], proof_strength: ProofStreng
     if insufficiency:
         reasons.append("has_insufficiency_reason")
     return reasons
+
+
+def _with_proof_diagnostics(
+    payload: dict[str, Any],
+    evidence_type: EvidenceType,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    proof_card = _proof_card(payload)
+    if not proof_card:
+        return {
+            **diagnostics,
+            "proof_status": "legacy_hint_only",
+            "verified_source": False,
+            "proof_missing_reason": "missing_proof_card",
+        }
+
+    reject_reason = _proof_card_reject_reason(proof_card)
+    gap_proven = proof_card.get("gap_proven")
+    status = (_text_or_none(proof_card.get("status")) or "").strip().lower()
+    if reject_reason:
+        proof_status = "rejected_proof_card"
+        verified_source = False
+    elif evidence_type == "manager_gap" and gap_proven is False:
+        proof_status = "unverified_proof_card"
+        verified_source = False
+    elif status in _SOFTENED_CARD_STATUSES:
+        proof_status = SOFTENED_PROOF_STATUS
+        verified_source = False
+    elif status and status not in {"verified", "proven"}:
+        proof_status = "unverified_proof_card"
+        verified_source = False
+    else:
+        proof_status = VERIFIED_PROOF_STATUS
+        verified_source = True
+
+    return {
+        **diagnostics,
+        "proof_status": proof_status,
+        "verified_source": verified_source,
+        "proof_id": _text_or_none(proof_card.get("proof_id")),
+        "proof_scene_id": _text_or_none(proof_card.get("scene_id")),
+        "proof_evidence_ids": _string_list(proof_card.get("evidence_ids")),
+        "proof_claim_scope": _text_or_none(proof_card.get("claim_scope")),
+        "proof_reject_reason": reject_reason,
+    }
+
+
+def _proof_card(payload: dict[str, Any]) -> dict[str, Any]:
+    return _as_mapping(payload.get("proof_card"))
+
+
+def _proof_card_reject_reason(proof_card: dict[str, Any]) -> str | None:
+    return _text_or_none(proof_card.get("reject_reason"))
+
+
+def _proof_card_evidence_type(proof_card: dict[str, Any]) -> EvidenceType:
+    claim_type = (_text_or_none(proof_card.get("claim_type")) or "").strip().lower()
+    if claim_type == "customer_signal":
+        return "customer_signal"
+    if claim_type == "follow_up":
+        return "follow_up_opportunity"
+    if claim_type == "strong_practice":
+        return "positive_case"
+    if claim_type == "business_outcome":
+        return "follow_up_opportunity"
+    return "manager_gap"
+
+
+def _proof_card_proof_type(proof_card: dict[str, Any]) -> ProofType:
+    proof_type = (_text_or_none(proof_card.get("proof_type")) or "").strip().lower()
+    if proof_type == "direct_quote" and _proof_card_evidence_type(proof_card) == "customer_signal":
+        return "customer_signal"
+    if proof_type == "direct_quote":
+        return "direct_gap"
+    if proof_type == "absence_based":
+        return "absence_in_context"
+    return "sequence_inference"
+
+
+def _proof_card_strength(proof_card: dict[str, Any]) -> ProofStrength:
+    status = (_text_or_none(proof_card.get("status")) or "").strip().lower()
+    if status in {"verified", "proven"}:
+        return "strong" if proof_card.get("proof_type") == "direct_quote" else "medium"
+    if status in {"soften", "softened", "downgrade"}:
+        return "medium"
+    return "insufficient"
+
+
+def _proof_card_primary_block(evidence_type: EvidenceType) -> str | None:
+    if evidence_type == "manager_gap":
+        return "situation_day"
+    if evidence_type == "customer_signal":
+        return "voice_of_customer"
+    if evidence_type == "follow_up_opportunity":
+        return "follow_up"
+    if evidence_type == "positive_case":
+        return "additional_situations"
+    return None
+
+
+def _proof_card_dialogue_scene(proof_card: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    evidence_items = _as_list(proof_card.get("supporting_evidence"))
+    dialogue_scene: list[dict[str, Any]] = []
+    for item in evidence_items:
+        evidence = _as_mapping(item)
+        quote = _text_or_none(evidence.get("quote"))
+        if not quote:
+            continue
+        dialogue_scene.append(
+            {
+                "speaker": _text_or_none(evidence.get("speaker")) or "unknown",
+                "text": quote,
+            }
+        )
+    if not dialogue_scene:
+        quote = _text_or_none(proof_card.get("evidence_quote"))
+        if quote:
+            dialogue_scene.append({"speaker": "unknown", "text": quote})
+    supporting_quote = _text_or_none(proof_card.get("evidence_quote"))
+    if not supporting_quote and dialogue_scene:
+        supporting_quote = _text_or_none(dialogue_scene[0].get("text"))
+    return dialogue_scene, supporting_quote
 
 
 def _semantic_supporting_quote(
@@ -813,6 +1738,29 @@ def _customer_context_from_scene(dialogue_scene: list[dict[str, Any]]) -> str | 
         if str(turn.get("speaker") or "").strip().lower() in {"client", "customer"}:
             return _text_or_none(turn.get("text"))
     return None
+
+
+def _quote_turn(payload: dict[str, Any], quote: str) -> dict[str, Any]:
+    return {
+        "speaker": _text_or_none(payload.get("speaker")) or "unknown",
+        "text": quote,
+    }
+
+
+def _fragment_quote_and_speaker(fragment: dict[str, Any]) -> tuple[str | None, str | None]:
+    for field, speaker in (
+        ("client_text", "client"),
+        ("customer_text", "client"),
+        ("manager_text", "manager"),
+        ("operator_text", "manager"),
+        ("quote", _text_or_none(fragment.get("speaker")) or "unknown"),
+        ("text", _text_or_none(fragment.get("speaker")) or "unknown"),
+        ("transcript_excerpt", _text_or_none(fragment.get("speaker")) or "unknown"),
+    ):
+        quote = _text_or_none(fragment.get(field))
+        if quote:
+            return quote, speaker
+    return None, _text_or_none(fragment.get("speaker"))
 
 
 def _evidence_id(call_id: str | None, source: str, index: int) -> str:

@@ -46,7 +46,31 @@ MANAGER_GAP_TYPES = {"manager_gap", "manager_coaching_moment", "stage_gap"}
 CUSTOMER_SIGNAL_TYPES = {"customer_signal"}
 SERVICE_ISSUE_TYPES = {"service_issue", "tech_service", "support_issue"}
 FOLLOW_UP_TYPES = {"follow_up", "follow_up_opportunity", "open_next_step"}
+CALL_ESSENCE_TYPES = {"call_essence"}
 POSITIVE_CASE_TYPES = {"positive_case", "strong_practice"}
+VERIFIED_PROOF_STATUS = "verified_proof_card"
+SOFTENED_PROOF_STATUS = "softened_proof_card"
+ADMITTED_PROOF_STATUSES = {VERIFIED_PROOF_STATUS, SOFTENED_PROOF_STATUS}
+_VERIFIED_CARD_STATUSES = {"verified", "proven"}
+_SOFTENED_CARD_STATUSES = {"soften", "softened", "downgrade"}
+PROOF_REQUIRED_BLOCKS = {
+    "situation_day",
+    "call_breakdown",
+    "voice_of_customer",
+    "follow_up",
+    "challenge",
+    "additional_situations",
+}
+LEGACY_PROOF_SOURCES = {
+    "report_evidence.block_candidates",
+    "report_evidence.semantic_case",
+    "report_evidence.manager_coaching_moments",
+    "report_evidence.situation_candidates",
+    "report_evidence.additional_situations",
+    "report_evidence.voice_of_customer",
+    "report_evidence.follow_up_candidates",
+    "report_evidence.quote_bank",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -62,6 +86,7 @@ class BlockRoutingDecision:
     call_id: str | None = None
     source: str | None = None
     score: float | None = None
+    proof_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +99,7 @@ class BlockRoutingDecision:
             "call_id": self.call_id,
             "source": self.source,
             "score": self.score,
+            "proof_status": self.proof_status,
         }
 
 
@@ -81,6 +107,7 @@ def route_evidence_items(
     items: Iterable[Any],
     *,
     selected_situation_call_id: str | None = None,
+    require_verified_proof: bool = True,
 ) -> dict[str, Any]:
     """Route Evidence Registry items into report-block pools.
 
@@ -106,6 +133,7 @@ def route_evidence_items(
                 pools=pools,
                 routed=routed,
                 rejected=rejected,
+                require_verified_proof=require_verified_proof,
             )
             continue
 
@@ -114,6 +142,7 @@ def route_evidence_items(
                 item,
                 block,
                 selected_situation_call_id=selected_situation_call_id,
+                require_verified_proof=require_verified_proof,
             )
             decision = _decision(item, block, "routed" if usable else "rejected", reason)
             if usable:
@@ -130,8 +159,11 @@ def route_evidence_items(
         "selected_situation_call_id": selected_situation_call_id,
         **pools,
         "diagnostics": {
+            "proof_gate_mode": "strict" if require_verified_proof else "diagnostics_only",
+            "require_verified_proof": require_verified_proof,
             "routed": [item.to_dict() for item in routed],
             "rejected": [item.to_dict() for item in rejected],
+            "source_consistency": _source_consistency_diagnostics(pools),
             "summary": {
                 "input_count": len(normalized_items),
                 "routed_count_by_block": {
@@ -143,7 +175,12 @@ def route_evidence_items(
     }
 
 
-def is_usable_for_block(item: Any, block: str) -> tuple[bool, str]:
+def is_usable_for_block(
+    item: Any,
+    block: str,
+    *,
+    require_verified_proof: bool = True,
+) -> tuple[bool, str]:
     """Return whether ``item`` can be used for a canonical report block.
 
     The helper is deliberately fail-closed.  It accepts dicts, dataclasses,
@@ -154,7 +191,11 @@ def is_usable_for_block(item: Any, block: str) -> tuple[bool, str]:
     if canonical_block is None:
         return False, "unknown_block"
     normalized = _normalize_item(item, fallback_id="item")
-    return _evaluate_item_for_block(normalized, canonical_block)
+    return _evaluate_item_for_block(
+        normalized,
+        canonical_block,
+        require_verified_proof=require_verified_proof,
+    )
 
 
 def _route_call_breakdown_fallback(
@@ -163,11 +204,16 @@ def _route_call_breakdown_fallback(
     pools: dict[ReportBlock, list[dict[str, Any]]],
     routed: list[BlockRoutingDecision],
     rejected: list[BlockRoutingDecision],
+    require_verified_proof: bool,
 ) -> None:
     eligible: list[dict[str, Any]] = []
     weak_scene_fallback: list[dict[str, Any]] = []
     for item in normalized_items:
-        usable, reason = _evaluate_item_for_block(item, "call_breakdown")
+        usable, reason = _evaluate_item_for_block(
+            item,
+            "call_breakdown",
+            require_verified_proof=require_verified_proof,
+        )
         if usable:
             eligible.append(item)
             continue
@@ -206,6 +252,7 @@ def _evaluate_item_for_block(
     block: ReportBlock,
     *,
     selected_situation_call_id: str | None = None,
+    require_verified_proof: bool = True,
 ) -> tuple[bool, str]:
     if not _truthy_item(item):
         return False, "not_eligible"
@@ -231,6 +278,9 @@ def _evaluate_item_for_block(
         "additional_situations",
     }:
         return False, "counter_evidence"
+
+    if require_verified_proof and _requires_verified_proof(item, block) and not _has_verified_proof(item):
+        return False, "missing_proof_card"
 
     if evidence_type in SERVICE_ISSUE_TYPES and block in {
         "situation_day",
@@ -282,6 +332,12 @@ def _evaluate_item_for_block(
         return True, "customer_signal"
 
     if block == "follow_up":
+        if _evidence_type(item) in CALL_ESSENCE_TYPES and _norm(
+            _field(item, "status", "follow_up_status", "outcome_status", "outcome")
+        ) in {"open", "rescheduled", "agreement"} and not _text(
+            _field(item, "next_step", "manager_next_action")
+        ):
+            return False, "missing_next_step"
         if _is_follow_up_item(item):
             if proof_strength in WEAK_PROOF:
                 return False, "weak_proof"
@@ -365,8 +421,62 @@ def _pool_item(item: dict[str, Any], *, block: ReportBlock, reason: str) -> dict
         "block": block,
         "reason": reason,
         "score": _score(item),
+        "proof_status": _proof_status(item),
     }
     return routed_item
+
+
+def _source_consistency_diagnostics(
+    pools: dict[ReportBlock, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    call_list_by_call = _top_item_by_call_id(pools.get("call_list", []))
+    follow_up_by_call = _top_item_by_call_id(pools.get("follow_up", []))
+    diagnostics: list[dict[str, Any]] = []
+    for call_id in sorted(set(call_list_by_call) | set(follow_up_by_call)):
+        call_list_item = call_list_by_call.get(call_id)
+        follow_up_item = follow_up_by_call.get(call_id)
+        if not call_list_item or not follow_up_item:
+            diagnostics.append(
+                {
+                    "call_id": call_id,
+                    "consistent": True,
+                    "reason": "single_block_source",
+                    "call_list_source": _source_name(call_list_item),
+                    "follow_up_source": _source_name(follow_up_item),
+                }
+            )
+            continue
+        call_list_source = _source_name(call_list_item)
+        follow_up_source = _source_name(follow_up_item)
+        consistent = call_list_source == follow_up_source
+        diagnostics.append(
+            {
+                "call_id": call_id,
+                "consistent": consistent,
+                "reason": "same_source" if consistent else "multiple_sources_available",
+                "call_list_source": call_list_source,
+                "follow_up_source": follow_up_source,
+                "preferred_source": "report_evidence.call_essence"
+                if "report_evidence.call_essence" in {call_list_source, follow_up_source}
+                else call_list_source,
+            }
+        )
+    return diagnostics
+
+
+def _top_item_by_call_id(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in sorted(items, key=_sort_key):
+        call_id = _text(_field(item, "call_id", "interaction_id"))
+        if call_id and call_id not in result:
+            result[call_id] = item
+    return result
+
+
+def _source_name(item: dict[str, Any] | None) -> str | None:
+    if not item:
+        return None
+    return _text(_field(item, "source", "path")) or None
 
 
 def _decision(
@@ -385,6 +495,7 @@ def _decision(
         call_id=_text(_field(item, "call_id", "interaction_id")) or None,
         source=_text(_field(item, "source", "path")) or None,
         score=_score(item),
+        proof_status=_proof_status(item) or None,
     )
 
 
@@ -399,7 +510,16 @@ def _field(item: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in item:
             return item.get(key)
+    call_essence = item.get("call_essence")
+    if isinstance(call_essence, dict):
+        for key in keys:
+            if key in call_essence:
+                return call_essence.get(key)
     return None
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _block_suitability(item: dict[str, Any], block: ReportBlock) -> dict[str, Any] | None:
@@ -432,6 +552,8 @@ def _infer_evidence_type(item: dict[str, Any]) -> str:
         or "customer_signal" in reason
     ):
         return "customer_signal"
+    if case_type == "call_essence" or role == "call_list_context" or "call_essence" in source:
+        return "call_essence"
     if block == "follow_up" or role == "follow_up_action" or "follow_up" in reason:
         return "follow_up"
     if case_type == "service_issue" or "service" in reason or "service" in source:
@@ -479,6 +601,67 @@ def _truthy_item(item: dict[str, Any]) -> bool:
     if status in {"insufficient", "no_data", "not_eligible", "rejected"}:
         return False
     return True
+
+
+def _requires_verified_proof(item: dict[str, Any], block: ReportBlock) -> bool:
+    if block in {"situation_day", "call_breakdown"}:
+        return True
+    return block in PROOF_REQUIRED_BLOCKS and _is_legacy_proof_source(item)
+
+
+def _has_verified_proof(item: dict[str, Any]) -> bool:
+    if item.get("verified_source") is True:
+        return True
+    if _proof_status(item) in ADMITTED_PROOF_STATUSES:
+        return True
+    return _proof_card_is_verified(item)
+
+
+def _proof_status(item: dict[str, Any]) -> str:
+    status = _text(_field(item, "proof_status", "evidence_status"))
+    if status:
+        return status
+    diagnostics = _as_mapping(item.get("diagnostics"))
+    status = _text(diagnostics.get("proof_status"))
+    if status:
+        return status
+    if _as_mapping(item.get("proof_card")):
+        if _proof_card_is_verified(item):
+            status = _norm(_as_mapping(item.get("proof_card")).get("status"))
+            if status in _SOFTENED_CARD_STATUSES:
+                return SOFTENED_PROOF_STATUS
+            return VERIFIED_PROOF_STATUS
+        return "unverified_proof_card"
+    if _is_legacy_proof_source(item):
+        return "legacy_hint_only"
+    return ""
+
+
+def _proof_card_is_verified(item: dict[str, Any]) -> bool:
+    proof_card = _as_mapping(_field(item, "proof_card"))
+    if not proof_card:
+        return False
+    if _text(proof_card.get("reject_reason")):
+        return False
+    status = _norm(proof_card.get("status"))
+    if status and status not in _VERIFIED_CARD_STATUSES | _SOFTENED_CARD_STATUSES:
+        return False
+    evidence_type = _evidence_type(item)
+    if evidence_type in MANAGER_GAP_TYPES and proof_card.get("gap_proven") is False:
+        return False
+    return True
+
+
+def _is_legacy_proof_source(item: dict[str, Any]) -> bool:
+    source = _norm(_field(item, "source", "path"))
+    if not source:
+        return False
+    return any(
+        source == legacy_source
+        or source.startswith(f"{legacy_source}.")
+        or source.startswith(f"{legacy_source}[")
+        for legacy_source in LEGACY_PROOF_SOURCES
+    )
 
 
 def _has_counter_evidence(item: dict[str, Any]) -> bool:
@@ -534,12 +717,17 @@ def _is_pattern_level(item: dict[str, Any]) -> bool:
 def _is_follow_up_item(item: dict[str, Any]) -> bool:
     evidence_type = _evidence_type(item)
     role = _norm(_field(item, "role", "block_role"))
-    status = _norm(_field(item, "status", "follow_up_status", "outcome_status"))
+    status = _norm(_field(item, "status", "follow_up_status", "outcome_status", "outcome"))
     reason = _norm(_field(item, "reason_code", "reason"))
     return (
         evidence_type in FOLLOW_UP_TYPES
+        or (
+            evidence_type in CALL_ESSENCE_TYPES
+            and status in {"open", "rescheduled", "agreement"}
+            and bool(_text(_field(item, "next_step", "manager_next_action")))
+        )
         or role == "follow_up_action"
-        or status in {"open", "rescheduled", "agreement"}
+        or (evidence_type not in CALL_ESSENCE_TYPES and status in {"open", "rescheduled", "agreement"})
         or bool(item.get("open_next_steps"))
         or "client_requested_next_action" in reason
     )
@@ -583,10 +771,22 @@ def _is_secondary(item: dict[str, Any]) -> bool:
 def _has_call_list_context(item: dict[str, Any]) -> bool:
     block = _canonical_block(_text(_field(item, "block", "target_block")))
     role = _norm(_field(item, "role", "block_role"))
+    evidence_type = _evidence_type(item)
     return (
         block == "call_list"
+        or evidence_type in CALL_ESSENCE_TYPES
         or role in {"call_list_context", "neutral_summary"}
-        or bool(_text(_field(item, "short_topic", "short_context", "call_list_topic")))
+        or bool(
+            _text(
+                _field(
+                    item,
+                    "short_topic",
+                    "short_context",
+                    "call_list_topic",
+                    "manager_visible_text",
+                )
+            )
+        )
     )
 
 

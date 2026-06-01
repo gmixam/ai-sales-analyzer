@@ -4,7 +4,63 @@
 Этот файл задаёт быстрый и стабильный порядок входа в задачу для ИИ-кодера.
 Использовать как стартовую точку в новой сессии.
 
-## Текущая рабочая рамка на 2026-05-21
+## Первое действие при восстановлении сессии
+
+Если чат оборвался, история не подгрузилась или работа продолжается в новом чате,
+сначала открыть:
+
+```text
+/root/ai-sales-analyzer/docs/ACTIVE_WORK_STATE.md
+```
+
+`ACTIVE_WORK_STATE.md` является короткой оперативной карточкой текущего этапа, а
+не заменой общего прогресса. История проекта и завершенные шаги фиксируются в
+`docs/PROGRESS.md`, решения — в `docs/DECISIONS.md`. В active-state карточке
+фиксируются только текущий статус, последняя безопасная точка восстановления,
+pending approval gates и то, что нужно от пользователя. Если там указан
+`status: waiting_for_user`, агент не должен продолжать реализацию до ответа
+пользователя.
+
+## Текущая рабочая рамка на 2026-05-27
+
+Сейчас активная задача: возврат к исходной точке аудита всего механизма анализа,
+а не продолжение локальных Gate 5 block fixes. Проверяется цепочка
+`LLM-1 -> LLM-2 -> validators/normalizers -> report evidence registry -> report
+block router -> Report Layer -> LLM-3 -> payload/render/PDF/Telegram`.
+
+Работа остается в автономном режиме исполнения: главный агент координирует,
+implementation agents правят ограниченные участки, а отдельные simulation agents
+проверяют `LLM-1`, `LLM-2` и `LLM-3` без правки кода.
+
+Контрольные даты: `2026-05-18`, `2026-05-19`, `2026-05-20`.
+
+Текущий product decision:
+
+- техническая сборка и доставка отчетов в целом работали;
+- блокер пилота — нестабильное качество анализа, evidence и подкрепления claims;
+- утвержденная граница `LLM-2`: смысл звонка, факты, оценка, gaps,
+  recommendations и универсальный evidence pack;
+- `LLM-2` не должен быть report-template engine;
+- LLM-калибровка выполняется через `subagent_runtime`, не через реальные LLM;
+- финальная проверка — реальные отчеты до PDF/Telegram;
+- `LLM-1` закрепляется/переносится в последнюю очередь.
+- Gate 5 block-by-block movement остановлен до approval target mechanism;
+- локальные Block 2 правки после пользовательского комментария не считать
+  принятой целевой архитектурой.
+
+Текущие входные документы:
+
+1. [docs/ACTIVE_WORK_STATE.md](docs/ACTIVE_WORK_STATE.md)
+2. [docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md](docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md) — task-status отчет по блокам и агентам
+3. [docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md](docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md) — текущая рабочая карта правок механизма
+4. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md) — backlog/task breakdown Вехи 6.5
+5. [docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md](docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md) — вспомогательный артефакт, не основной source of truth
+6. [docs/TMP_LLM_NODES_ARTIFACTS_MAP.md](docs/TMP_LLM_NODES_ARTIFACTS_MAP.md)
+7. [docs/LLM_SUBAGENT_TESTING_MODE.md](docs/LLM_SUBAGENT_TESTING_MODE.md)
+8. [docs/DECISIONS.md](docs/DECISIONS.md)
+9. [docs/PROGRESS.md](docs/PROGRESS.md)
+
+## Историческая рабочая рамка на 2026-05-21
 
 Сейчас активная задача относится к `Веха 6.5 — Business-ready Report Pack` и ветке
 `LLM2 v15 semantic/report-block quality stabilization`.
@@ -50,6 +106,13 @@ composer/report layer. LLM2 остается per-call semantic evidence producer
 final report author.
 
 ## Обязательный порядок чтения
+
+### 0. [docs/ACTIVE_WORK_STATE.md](docs/ACTIVE_WORK_STATE.md)
+Зачем читать:
+- восстановить текущий статус после обрыва связи или нового чата;
+- увидеть, чего ждем от пользователя;
+- не продолжать реализацию, если работа стоит на approval gate;
+- понять последнюю безопасную точку восстановления.
 
 ### 1. [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
 Зачем читать:
@@ -154,6 +217,8 @@ final report author.
 - понять уточненные P2.0/P2.1 проблемы, найденные уже на живом PDF: `БАЛЛЫ ПО ЭТАПАМ` считались по слишком узкому `coaching_core`, а `Ситуация дня` / `Разбор звонка` могли исчезать при наличии фрагментов;
 - закрепить требование честного охвата для stage scores: `N разобранных звонков из M содержательных`;
 - увидеть, что P2.0 уже внедрен 2026-05-25, а P2.1 остается отдельной следующей задачей;
+- учесть новый открытый P2.5: блок follow-up интересов не должен называться строго `завтра`, если срок в разговоре другой;
+- учесть новый открытый P2.6 по отчетам Тимура за `2026-05-22`: rolling-window counts, неверный claim про следующий шаг, raw labels `Контекст` / `Сторона`, единая диаризация evidence;
 - отличить проблему низкого data coverage от проблемы selection/gating;
 - использовать acceptance criteria для `Другие заметные моменты`, scene-scoped тона и первой страницы.
 

@@ -7,7 +7,7 @@ import re
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from app.agents.calls.analyzer import CHECKLIST_DEFINITION
 
@@ -147,6 +147,46 @@ class CoachingMomentQuoteRole(StrEnum):
     SUPPORTS_CONTEXT = "supports_context"
     COUNTER_EVIDENCE = "counter_evidence"
     NOT_APPLICABLE = "not_applicable"
+
+
+class ProofCardProofType(StrEnum):
+    DIRECT_QUOTE = "direct_quote"
+    SEQUENCE_INFERENCE = "sequence_inference"
+    ABSENCE_BASED = "absence_based"
+
+
+class ProofCardClaimScope(StrEnum):
+    SCENE = "scene"
+    CALL = "call"
+    DAY = "day"
+
+
+class ProofCardClaimType(StrEnum):
+    MANAGER_GAP = "manager_gap"
+    CUSTOMER_SIGNAL = "customer_signal"
+    FOLLOW_UP = "follow_up"
+    BUSINESS_OUTCOME = "business_outcome"
+    STRONG_PRACTICE = "strong_practice"
+
+
+class ProofCardStatus(StrEnum):
+    VERIFIED = "verified"
+    PROVEN = "proven"
+    SOFTEN = "soften"
+    DOWNGRADE = "downgrade"
+    RETRY = "retry"
+    REJECT = "reject"
+    WARNING = "warning"
+
+
+class ProofCardRejectReason(StrEnum):
+    MISSING_SCENE = "missing_scene"
+    MISSING_EVIDENCE = "missing_evidence"
+    UNGROUNDED_QUOTE = "ungrounded_quote"
+    COUNTER_EVIDENCE_CONFLICT = "counter_evidence_conflict"
+    CLAIM_TOO_BROAD = "claim_too_broad"
+    MISSING_RECOMMENDATION_LINK = "missing_recommendation_link"
+    FORM_ONLY_ISSUE = "form_only_issue"
 
 
 class ReportBlockRole(StrEnum):
@@ -290,6 +330,21 @@ class CallReportSummary(_ReportEvidenceModel):
     hotness_reason: str | None = Field(default=None, max_length=280)
     manager_next_action: str | None = Field(default=None, max_length=280)
     suggested_manager_phrase: str | None = Field(default=None, max_length=240)
+
+
+class CallEssence(_ReportEvidenceModel):
+    topic: str | None = Field(default=None, max_length=160)
+    outcome: str | None = Field(default=None, max_length=40)
+    refusal_or_interest_reason: str | None = Field(default=None, max_length=280)
+    outcome_reason: str | None = Field(default=None, max_length=280)
+    agreement: str | None = Field(default=None, max_length=280)
+    next_step: str | None = Field(default=None, max_length=280)
+    deadline: str | None = Field(default=None, max_length=120)
+    service_request: str | None = Field(default=None, max_length=280)
+    manager_visible_text: str | None = Field(default=None, max_length=640)
+    source: str | None = Field(default=None, max_length=120)
+    evidence_quote: str | None = Field(default=None, max_length=700)
+    evidence_speaker: Speaker = Speaker.UNKNOWN
 
 
 class ReportBlockFitItem(_ReportEvidenceModel):
@@ -442,11 +497,40 @@ class ReportBlockCandidates(_ReportEvidenceModel):
     call_list_context: CallListContextBlockCandidate | None = None
 
 
+class ProofCardEvidence(_ReportEvidenceModel):
+    evidence_id: str | None = Field(default=None, max_length=120)
+    quote: str | None = Field(default=None, max_length=700)
+    speaker: Speaker = Speaker.UNKNOWN
+
+
+class ProofCard(_ReportEvidenceModel):
+    proof_id: str = Field(max_length=120)
+    claim: str = Field(max_length=420)
+    claim_scope: ProofCardClaimScope
+    claim_type: ProofCardClaimType | None = None
+    proof_type: ProofCardProofType
+    status: ProofCardStatus = Field(validation_alias=AliasChoices("status", "proof_status"))
+    stage_code: str
+    scene_id: str | None = Field(default=None, max_length=120)
+    evidence_id: str | None = Field(default=None, max_length=120)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=6)
+    evidence_quote: str | None = Field(default=None, max_length=700)
+    gap_proven: bool | None = None
+    recommendation_id: str | None = Field(default=None, max_length=120)
+    supporting_evidence: list[ProofCardEvidence] = Field(default_factory=list, max_length=4)
+    counter_evidence: list[ProofCardEvidence] = Field(default_factory=list, max_length=3)
+    expected_absent_element: str | None = Field(default=None, max_length=240)
+    reject_reason: ProofCardRejectReason | None = None
+    outcome_reason: str | None = Field(default=None, max_length=360)
+
+
 class ReportEvidence(_ReportEvidenceModel):
     business_outcome: BusinessOutcomeEvidence | None = None
+    call_essence: CallEssence | None = None
     call_report_summary: CallReportSummary | None = None
     semantic_case: SemanticCase | None = None
     block_candidates: ReportBlockCandidates | None = None
+    proof_cards: list[ProofCard] = Field(default_factory=list, max_length=24)
     situation_candidates: list[SituationCandidate] = Field(default_factory=list)
     manager_coaching_moments: list[ManagerCoachingMoment] = Field(default_factory=list)
     voice_of_customer: list[VoiceOfCustomerItem] = Field(default_factory=list)
@@ -614,6 +698,13 @@ def _validate_package_semantics(
             warnings=warnings,
         )
 
+    if evidence.call_essence is not None:
+        _validate_call_essence(
+            essence=evidence.call_essence,
+            errors=errors,
+            warnings=warnings,
+        )
+
     if evidence.semantic_case is not None:
         _validate_semantic_case(
             semantic_case=evidence.semantic_case,
@@ -631,6 +722,14 @@ def _validate_package_semantics(
             errors=errors,
             warnings=warnings,
         )
+
+    _validate_proof_cards(
+        proof_cards=evidence.proof_cards,
+        stage_codes=stage_codes,
+        transcript=transcript,
+        errors=errors,
+        warnings=warnings,
+    )
 
     for index, item in enumerate(evidence.situation_candidates):
         base = f"report_evidence.situation_candidates[{index}]"
@@ -1355,6 +1454,338 @@ def _validate_block_candidate_proof(
         )
 
 
+PROOF_CARD_COUNTER_STATUS_ALLOWED = {
+    ProofCardStatus.REJECT,
+    ProofCardStatus.SOFTEN,
+    ProofCardStatus.DOWNGRADE,
+}
+
+PROOF_CARD_VERIFIED_STATUSES = {
+    ProofCardStatus.VERIFIED,
+    ProofCardStatus.PROVEN,
+}
+
+
+def _validate_proof_cards(
+    *,
+    proof_cards: list[ProofCard],
+    stage_codes: set[str],
+    transcript: str | None,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    seen_proof_ids: set[str] = set()
+    for index, proof_card in enumerate(proof_cards):
+        path = f"report_evidence.proof_cards[{index}]"
+        for field in ("proof_id", "claim"):
+            if not _normalized_text(getattr(proof_card, field)):
+                errors.append(
+                    _issue(
+                        code="proof_card_missing_required_field",
+                        path=f"{path}.{field}",
+                        message=f"proof_card must include non-empty {field}.",
+                    )
+                )
+        if proof_card.proof_id in seen_proof_ids:
+            errors.append(
+                _issue(
+                    code="proof_card_duplicate_id",
+                    path=f"{path}.proof_id",
+                    message="proof_card.proof_id must be unique within report_evidence.",
+                )
+            )
+        seen_proof_ids.add(proof_card.proof_id)
+
+        _validate_stage_code(proof_card.stage_code, stage_codes, f"{path}.stage_code", errors)
+        _validate_proof_card_quotes(
+            proof_card=proof_card,
+            path=path,
+            transcript=transcript,
+            errors=errors,
+            warnings=warnings,
+        )
+        _validate_proof_card_status_contract(
+            proof_card=proof_card,
+            path=path,
+            errors=errors,
+            warnings=warnings,
+        )
+        _validate_proof_card_type_contract(
+            proof_card=proof_card,
+            path=path,
+            errors=errors,
+        )
+
+
+def _validate_proof_card_quotes(
+    *,
+    proof_card: ProofCard,
+    path: str,
+    transcript: str | None,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    if proof_card.evidence_quote:
+        _validate_grounded_text(
+            text=proof_card.evidence_quote,
+            transcript=transcript,
+            path=f"{path}.evidence_quote",
+            evidence_quality=None,
+            usable_in_report=True,
+            errors=errors,
+            warnings=warnings,
+        )
+        if (
+            proof_card.status in PROOF_CARD_VERIFIED_STATUSES
+            and proof_card.claim_type == ProofCardClaimType.MANAGER_GAP
+            and proof_card.proof_type == ProofCardProofType.DIRECT_QUOTE
+            and _proof_card_supporting_quote_overclaims(
+                proof_card=proof_card,
+                supporting_quote=proof_card.evidence_quote,
+            )
+        ):
+            errors.append(
+                _issue(
+                    code="proof_card_claim_evidence_mismatch",
+                    path=f"{path}.evidence_quote",
+                    message=(
+                        "Verified direct_quote proof_card uses a quote that does "
+                        "not directly prove the claimed manager gap; soften, "
+                        "downgrade, or reject the claim."
+                    ),
+                )
+            )
+
+    for evidence_index, evidence in enumerate(proof_card.supporting_evidence):
+        evidence_path = f"{path}.supporting_evidence[{evidence_index}]"
+        _validate_grounded_text(
+            text=evidence.quote,
+            transcript=transcript,
+            path=f"{evidence_path}.quote",
+            evidence_quality=None,
+            usable_in_report=True,
+            errors=errors,
+            warnings=warnings,
+        )
+        if (
+            proof_card.status in PROOF_CARD_VERIFIED_STATUSES
+            and proof_card.claim_type == ProofCardClaimType.MANAGER_GAP
+            and proof_card.proof_type == ProofCardProofType.DIRECT_QUOTE
+            and _proof_card_supporting_quote_overclaims(
+                proof_card=proof_card,
+                supporting_quote=evidence.quote,
+            )
+        ):
+            errors.append(
+                _issue(
+                    code="proof_card_claim_evidence_mismatch",
+                    path=f"{evidence_path}.quote",
+                    message=(
+                        "Verified direct_quote proof_card uses a quote that does "
+                        "not directly prove the claimed manager gap; soften, "
+                        "downgrade, or reject the claim."
+                    ),
+                )
+            )
+
+    for evidence_index, evidence in enumerate(proof_card.counter_evidence):
+        _validate_grounded_text(
+            text=evidence.quote,
+            transcript=transcript,
+            path=f"{path}.counter_evidence[{evidence_index}].quote",
+            evidence_quality=None,
+            usable_in_report=True,
+            errors=errors,
+            warnings=warnings,
+        )
+
+
+def _validate_proof_card_status_contract(
+    *,
+    proof_card: ProofCard,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    has_counter_evidence = any(
+        _normalized_text(item.quote) or _normalized_text(item.evidence_id)
+        for item in proof_card.counter_evidence
+    )
+    if (
+        has_counter_evidence
+        and proof_card.status not in PROOF_CARD_COUNTER_STATUS_ALLOWED
+    ):
+        errors.append(
+            _issue(
+                code="proof_card_counter_evidence_conflict",
+                path=f"{path}.counter_evidence",
+                message=(
+                    "proof_card with counter_evidence must be rejected, softened, "
+                    "or downgraded before it can pass admission."
+                ),
+            )
+        )
+
+    if proof_card.status in PROOF_CARD_VERIFIED_STATUSES:
+        if not _normalized_text(proof_card.scene_id):
+            errors.append(
+                _issue(
+                    code="proof_card_missing_scene",
+                    path=f"{path}.scene_id",
+                    message="status=verified proof_card must include scene_id.",
+                )
+            )
+        if (
+            proof_card.claim_type == ProofCardClaimType.MANAGER_GAP
+            and not _normalized_text(proof_card.recommendation_id)
+        ):
+            errors.append(
+                _issue(
+                    code="proof_card_missing_recommendation_link",
+                    path=f"{path}.recommendation_id",
+                    message=(
+                        "Verified manager_gap proof_card must link the downstream "
+                        "recommendation_id."
+                    ),
+                )
+            )
+        return
+
+    if proof_card.status in {
+        ProofCardStatus.REJECT,
+        ProofCardStatus.SOFTEN,
+        ProofCardStatus.DOWNGRADE,
+        ProofCardStatus.RETRY,
+    } and not _normalized_text(proof_card.outcome_reason):
+        errors.append(
+            _issue(
+                code="proof_card_missing_outcome_reason",
+                path=f"{path}.outcome_reason",
+                message=(
+                    "Non-verified proof_card outcomes must explain why the claim "
+                    "is rejected, softened, downgraded, or retried."
+                ),
+            )
+        )
+
+    if proof_card.status == ProofCardStatus.REJECT and proof_card.reject_reason is None:
+        errors.append(
+            _issue(
+                code="proof_card_missing_reject_reason",
+                path=f"{path}.reject_reason",
+                message="status=reject proof_card must include reject_reason.",
+            )
+        )
+
+    if proof_card.status == ProofCardStatus.WARNING:
+        warnings.append(
+            _issue(
+                code="proof_card_warning_status",
+                path=f"{path}.status",
+                message="proof_card is marked warning and should not be treated as verified.",
+            )
+        )
+
+
+def _validate_proof_card_type_contract(
+    *,
+    proof_card: ProofCard,
+    path: str,
+    errors: list[ReportEvidenceValidationIssue],
+) -> None:
+    if proof_card.status not in PROOF_CARD_VERIFIED_STATUSES:
+        return
+
+    if proof_card.proof_type == ProofCardProofType.DIRECT_QUOTE:
+        has_supporting_quote = any(
+            _normalized_text(item.quote) for item in proof_card.supporting_evidence
+        ) or bool(_normalized_text(proof_card.evidence_quote))
+        if not has_supporting_quote:
+            errors.append(
+                _issue(
+                    code="proof_card_direct_quote_without_quote",
+                    path=f"{path}.supporting_evidence",
+                    message="proof_type=direct_quote requires a supporting quote.",
+                )
+            )
+        if not _proof_card_has_evidence_id(proof_card):
+            errors.append(
+                _issue(
+                    code="proof_card_missing_evidence_id",
+                    path=f"{path}.evidence_id",
+                    message="status=verified proof_card requires evidence_id.",
+                )
+            )
+        return
+
+    if proof_card.proof_type == ProofCardProofType.SEQUENCE_INFERENCE:
+        if not _proof_card_has_evidence_id(proof_card):
+            errors.append(
+                _issue(
+                    code="proof_card_missing_evidence_id",
+                    path=f"{path}.evidence_id",
+                    message="status=verified proof_card requires evidence_id.",
+                )
+            )
+        evidence_count = sum(
+            1
+            for item in proof_card.supporting_evidence
+            if _normalized_text(item.evidence_id) or _normalized_text(item.quote)
+        )
+        if evidence_count < 2:
+            errors.append(
+                _issue(
+                    code="proof_card_sequence_inference_too_thin",
+                    path=f"{path}.supporting_evidence",
+                    message=(
+                        "proof_type=sequence_inference requires at least two "
+                        "supporting evidence points."
+                    ),
+                )
+            )
+        return
+
+    if proof_card.proof_type == ProofCardProofType.ABSENCE_BASED:
+        if not _normalized_text(proof_card.expected_absent_element):
+            errors.append(
+                _issue(
+                    code="proof_card_absence_without_expected_element",
+                    path=f"{path}.expected_absent_element",
+                    message=(
+                        "proof_type=absence_based requires expected_absent_element "
+                        "to define what should have appeared in the scene."
+                    ),
+                )
+            )
+
+
+def _proof_card_has_evidence_id(proof_card: ProofCard) -> bool:
+    if _normalized_text(proof_card.evidence_id):
+        return True
+    if any(_normalized_text(item) for item in proof_card.evidence_ids):
+        return True
+    return any(
+        _normalized_text(item.evidence_id) for item in proof_card.supporting_evidence
+    )
+
+
+def _proof_card_supporting_quote_overclaims(
+    *,
+    proof_card: ProofCard,
+    supporting_quote: str | None,
+) -> bool:
+    return (
+        _quote_looks_like_counter_evidence_for_gap_text(
+            supporting_quote=supporting_quote,
+            gap_claim_text=proof_card.claim,
+        )
+        or _quote_looks_like_context_only_for_gap_text(
+            supporting_quote=supporting_quote,
+            gap_claim_text=proof_card.claim,
+        )
+    )
+
+
 def _block_candidate_direct_gap_overclaimed(candidate: BlockCandidateBase) -> bool:
     claim_text = _block_candidate_gap_claim_text(candidate)
     return (
@@ -1540,6 +1971,10 @@ def _normalize_report_evidence_payload(
     payload = deepcopy(raw_report_evidence)
     if not isinstance(payload, dict):
         return payload
+    if not isinstance(payload.get("call_essence"), dict):
+        derived = _derive_call_essence_payload(payload)
+        if derived:
+            payload["call_essence"] = derived
     semantic_case = payload.get("semantic_case")
     if not isinstance(semantic_case, dict):
         return payload
@@ -1558,6 +1993,80 @@ def _normalize_report_evidence_payload(
             warnings=warnings,
         )
     return payload
+
+
+def _derive_call_essence_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    business_outcome = payload.get("business_outcome")
+    business_outcome = business_outcome if isinstance(business_outcome, dict) else {}
+    summary = payload.get("call_report_summary")
+    summary = summary if isinstance(summary, dict) else {}
+    call_list_context = {}
+    block_candidates = payload.get("block_candidates")
+    if isinstance(block_candidates, dict):
+        raw_call_list = block_candidates.get("call_list_context")
+        if isinstance(raw_call_list, dict):
+            call_list_context = raw_call_list
+    follow_up_items = [
+        item for item in payload.get("follow_up_candidates") or [] if isinstance(item, dict)
+    ]
+    follow_up = follow_up_items[0] if follow_up_items else {}
+
+    topic = _first_non_empty_text(
+        call_list_context.get("short_topic"),
+        summary.get("short_topic"),
+        follow_up.get("topic"),
+    )
+    next_step = _first_non_empty_text(
+        follow_up.get("next_step"),
+        summary.get("manager_next_action"),
+        call_list_context.get("action_hint"),
+        call_list_context.get("final_action_hint"),
+    )
+    deadline = _first_non_empty_text(follow_up.get("deadline"))
+    agreement = _first_non_empty_text(
+        follow_up.get("why_follow_up"),
+        call_list_context.get("short_context"),
+        summary.get("short_context"),
+    )
+    manager_visible_text = _first_non_empty_text(
+        call_list_context.get("call_list_context_rich"),
+        call_list_context.get("manager_visible_summary"),
+        summary.get("manager_visible_summary"),
+        summary.get("short_context"),
+    )
+    outcome = _first_non_empty_text(business_outcome.get("status"), follow_up.get("status"))
+    if outcome not in {item.value for item in BusinessOutcomeStatus}:
+        outcome = None
+    reason = _first_non_empty_text(
+        business_outcome.get("reason"),
+        summary.get("hotness_reason"),
+        follow_up.get("why_follow_up"),
+    )
+    if not any((topic, outcome, reason, agreement, next_step, manager_visible_text)):
+        return None
+
+    result = {
+        "topic": topic,
+        "outcome": outcome,
+        "refusal_or_interest_reason": reason,
+        "outcome_reason": reason,
+        "agreement": agreement,
+        "next_step": next_step,
+        "deadline": deadline,
+        "manager_visible_text": manager_visible_text,
+        "source": "derived_from_existing_report_evidence",
+        "evidence_quote": _first_non_empty_text(business_outcome.get("evidence_quote")),
+        "evidence_speaker": _first_non_empty_text(business_outcome.get("evidence_speaker"), "unknown"),
+    }
+    return {key: value for key, value in result.items() if value not in (None, "")}
+
+
+def _first_non_empty_text(*values: Any) -> str | None:
+    for value in values:
+        text = _as_non_empty_str(value)
+        if text:
+            return text
+    return None
 
 
 def _normalize_report_block_fit_coaching_moment(
@@ -2387,6 +2896,122 @@ def _validate_call_report_summary(
                     message="Refusal, tech/service, and not_suitable outcomes usually should not include a commercial suggested_manager_phrase.",
                 )
             )
+
+
+CALL_ESSENCE_GENERIC_TEXT_MARKERS = (
+    "есть договоренность",
+    "есть договорённость",
+    "договоренность есть",
+    "договорённость есть",
+    "контакт в работу",
+    "клиент в работу",
+    "нужно продолжить работу",
+    "продолжить работу",
+    "обсудили вопрос",
+    "обсудили сотрудничество",
+    "общение с клиентом",
+    "разговор с клиентом",
+)
+
+
+def _validate_call_essence(
+    *,
+    essence: CallEssence,
+    errors: list[ReportEvidenceValidationIssue],
+    warnings: list[ReportEvidenceValidationIssue],
+) -> None:
+    del errors
+    base = "report_evidence.call_essence"
+    outcome = _normalized_text(essence.outcome)
+    topic = _normalized_text(essence.topic)
+    agreement = _normalized_text(essence.agreement)
+    next_step = _normalized_text(essence.next_step)
+    reason = _normalized_text(essence.refusal_or_interest_reason or essence.outcome_reason)
+    service_request = _normalized_text(essence.service_request)
+    visible_text = _normalized_text(essence.manager_visible_text)
+
+    for field, value in (
+        ("topic", essence.topic),
+        ("refusal_or_interest_reason", essence.refusal_or_interest_reason),
+        ("outcome_reason", essence.outcome_reason),
+        ("agreement", essence.agreement),
+        ("next_step", essence.next_step),
+        ("service_request", essence.service_request),
+        ("manager_visible_text", essence.manager_visible_text),
+    ):
+        if _call_essence_text_is_generic(value):
+            warnings.append(
+                _issue(
+                    code="call_essence_generic_field",
+                    path=f"{base}.{field}",
+                    message="call_essence field is too generic for a manager-facing call list.",
+                )
+            )
+
+    if not topic and not visible_text:
+        warnings.append(
+            _issue(
+                code="call_essence_missing_topic",
+                path=f"{base}.topic",
+                message="call_essence should include the concrete topic or a manager-facing summary.",
+            )
+        )
+
+    if outcome and outcome not in {item.value for item in BusinessOutcomeStatus}:
+        warnings.append(
+            _issue(
+                code="call_essence_unknown_outcome",
+                path=f"{base}.outcome",
+                message="call_essence outcome is not one of the supported report outcomes.",
+            )
+        )
+
+    if outcome in {"agreement", "rescheduled", "open"}:
+        missing = []
+        if not topic:
+            missing.append("topic")
+        if not agreement:
+            missing.append("agreement")
+        if not next_step:
+            missing.append("next_step")
+        if missing:
+            warnings.append(
+                _issue(
+                    code="call_essence_incomplete_follow_up_contract",
+                    path=base,
+                    message=(
+                        "agreement/rescheduled/open call_essence should include "
+                        f"{', '.join(missing)}."
+                    ),
+                )
+            )
+
+    if outcome == "refusal" and not reason:
+        warnings.append(
+            _issue(
+                code="call_essence_missing_refusal_reason",
+                path=f"{base}.refusal_or_interest_reason",
+                message="refusal call_essence should include a short refusal reason.",
+            )
+        )
+
+    if outcome == "tech_service" and not (service_request or topic or visible_text):
+        warnings.append(
+            _issue(
+                code="call_essence_missing_service_request",
+                path=f"{base}.service_request",
+                message="tech_service call_essence should include the essence of the service request.",
+            )
+        )
+
+
+def _call_essence_text_is_generic(value: str | None) -> bool:
+    text = _normalized_text(value)
+    if not text:
+        return False
+    if len(text) < 10:
+        return True
+    return any(marker in text for marker in CALL_ESSENCE_GENERIC_TEXT_MARKERS)
 
 
 def _known_client_quote_texts(evidence: ReportEvidence) -> set[str]:

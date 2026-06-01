@@ -14,7 +14,7 @@
     {"id": "voice_of_customer", "label": "ГОЛОС КЛИЕНТА", "kind": "voice_of_customer"},
     {"id": "additional_situations", "label": "ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ", "kind": "expanded_situations"},
     {"id": "challenge", "label": "ЧЕЛЛЕНДЖ НА ЗАВТРА", "kind": "challenge_card"},
-    {"id": "call_tomorrow", "label": "ПОЗВОНИ ЗАВТРА", "kind": "call_tomorrow"},
+    {"id": "call_tomorrow", "label": "КОНТАКТЫ В РАБОТУ", "kind": "call_tomorrow"},
     {"id": "call_list", "label": "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ", "kind": "table"},
     {"id": "morning_card", "label": "УТРЕННЯЯ КАРТОЧКА", "kind": "morning_card"},
     {"id": "status_legend", "label": "ЛЕГЕНДА СТАТУСОВ", "kind": "status_legend"}
