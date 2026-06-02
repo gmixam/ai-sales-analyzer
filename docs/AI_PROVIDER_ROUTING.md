@@ -15,6 +15,11 @@
 - scheduler/retries/beat на уровне pipeline;
 - broad refactor runtime pipeline.
 
+Каноническая карта режимов запуска находится в
+`docs/RUNTIME_PROFILES.md`. Этот документ описывает техническую routing-модель и
+env-поля, но не должен быть единственным handoff-файлом для запуска тестов или
+боевого контура.
+
 ## Где в системе реально запускается AI
 
 ### STT
@@ -93,6 +98,98 @@
 - `AI_LLM3_PROVIDERS_JSON`
 - `AI_LLM3_FIXED_ACCOUNT_ALIAS`
 - `AI_LLM3_FORCE_ACCOUNT_ALIAS`
+
+## Active model profiles
+
+As of 2026-06-01, the current pilot runtime uses real OpenAI-compatible LLMs,
+not Codex subagents:
+
+```text
+AI_LLM_EXECUTION_MODE=openai_compatible
+AI_LLM_SUBAGENT_RUNTIME_ENABLED=false
+AI_LLM_SIMULATION_ENABLED=false
+LLM3_ENABLED=true
+```
+
+Default daily pilot profile: `cost_optimized`.
+
+```text
+STT  -> whisper-1
+LLM1 -> gpt-5.4-nano
+LLM2 -> gpt-5.4-mini
+LLM3 -> gpt-5.4-mini
+```
+
+Manual comparison profile: `max_quality`.
+
+```text
+STT  -> whisper-1
+LLM1 -> gpt-5.4-mini
+LLM2 -> gpt-5.5
+LLM3 -> gpt-5.4
+```
+
+`max_quality` is not the default because per-call LLM2 analysis becomes too
+expensive for daily operation. Use it only for selected control runs or disputed
+quality checks.
+
+Hybrid validation profile: `stt_llm1_api_llm2_llm3_subagents`.
+
+```text
+STT  -> API provider route
+LLM1 -> OpenAI-compatible API provider route
+LLM2 -> Codex subagent runtime
+LLM3 -> Codex subagent runtime
+```
+
+Use this profile when STT and LLM1 should stay real provider/API calls, while
+the semantic-analysis and report-composition layers are imitated by Codex
+subagents:
+
+```text
+AI_LLM_EXECUTION_MODE=openai_compatible
+AI_LLM_SUBAGENT_RUNTIME_ENABLED=false
+AI_LLM_SUBAGENT_RUNTIME_LAYERS=llm2,llm3
+AI_LLM_SIMULATION_ENABLED=false
+LLM3_ENABLED=true
+AI_LLM_SUBAGENT_RUNNER_CMD=<runner command>
+AI_LLM_SUBAGENT_RUN_ID=<run-id>
+AI_LLM_SUBAGENT_ARTIFACT_DIR=/tmp/asa_llm_subagent_runs
+AI_LLM_SUBAGENT_TIMEOUT_SEC=300
+```
+
+Runner options:
+
+- `AI_LLM_SUBAGENT_RUNNER_CMD=python /app/report_scripts/llm_subagent_contract_runner.py`
+  runs the container-visible contract runner and is useful for deterministic
+  smoke checks of the hybrid wiring.
+- `AI_LLM_SUBAGENT_COMMAND=<codex command>` uses the generic Codex subagent CLI
+  path when Codex is available inside the runtime environment.
+
+`AI_LLM_SUBAGENT_RUNTIME_LAYERS` is additive and layer-scoped. When it is empty,
+the legacy behavior is preserved: `AI_LLM_EXECUTION_MODE=subagent_runtime` or
+`AI_LLM_SUBAGENT_RUNTIME_ENABLED=true` sends all analyzer/composer LLM layers
+through subagents. When it contains a comma-separated layer list, only those
+layers are intercepted.
+
+Kimi / Moonshot trial entries are available as additional OpenAI-compatible
+provider-pool sources:
+
+```text
+LLM1 alias: kimi_llm1_main
+LLM2 alias: kimi_llm2_main
+LLM3 alias: kimi_llm3_main
+LLM1 model: moonshot-v1-8k
+LLM2/LLM3 model: kimi-k2.6
+api_base: https://api.moonshot.ai/v1
+api_key_env: MOONSHOT_API_KEY
+```
+
+They are configured with `provider="openai"` because the current LLM executors
+use the OpenAI SDK / Chat Completions-compatible adapter. To test Kimi, switch
+the relevant `AI_LLM*_FIXED_ACCOUNT_ALIAS` to the Kimi alias and recreate the
+runtime containers. Keep the default OpenAI aliases for normal `cost_optimized`
+runs.
 
 ## Supported routing policies
 

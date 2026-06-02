@@ -11,6 +11,7 @@
 
 ```text
 /root/ai-sales-analyzer/docs/ACTIVE_WORK_STATE.md
+/root/ai-sales-analyzer/docs/RUNTIME_PROFILES.md
 ```
 
 `ACTIVE_WORK_STATE.md` является короткой оперативной карточкой текущего этапа, а
@@ -51,14 +52,15 @@ implementation agents правят ограниченные участки, а �
 Текущие входные документы:
 
 1. [docs/ACTIVE_WORK_STATE.md](docs/ACTIVE_WORK_STATE.md)
-2. [docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md](docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md) — task-status отчет по блокам и агентам
-3. [docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md](docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md) — текущая рабочая карта правок механизма
-4. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md) — backlog/task breakdown Вехи 6.5
-5. [docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md](docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md) — вспомогательный артефакт, не основной source of truth
-6. [docs/TMP_LLM_NODES_ARTIFACTS_MAP.md](docs/TMP_LLM_NODES_ARTIFACTS_MAP.md)
-7. [docs/LLM_SUBAGENT_TESTING_MODE.md](docs/LLM_SUBAGENT_TESTING_MODE.md)
-8. [docs/DECISIONS.md](docs/DECISIONS.md)
-9. [docs/PROGRESS.md](docs/PROGRESS.md)
+2. [docs/RUNTIME_PROFILES.md](docs/RUNTIME_PROFILES.md) — runtime-профили: real API, max quality, hybrid Codex-subagents, full subagent, local simulation
+3. [docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md](docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md) — task-status отчет по блокам и агентам
+4. [docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md](docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md) — текущая рабочая карта правок механизма
+5. [docs/BUSINESS_READY_REPORT_PACK_TASKS.md](docs/BUSINESS_READY_REPORT_PACK_TASKS.md) — backlog/task breakdown Вехи 6.5
+6. [docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md](docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md) — вспомогательный артефакт, не основной source of truth
+7. [docs/TMP_LLM_NODES_ARTIFACTS_MAP.md](docs/TMP_LLM_NODES_ARTIFACTS_MAP.md)
+8. [docs/LLM_SUBAGENT_TESTING_MODE.md](docs/LLM_SUBAGENT_TESTING_MODE.md)
+9. [docs/DECISIONS.md](docs/DECISIONS.md)
+10. [docs/PROGRESS.md](docs/PROGRESS.md)
 
 ## Историческая рабочая рамка на 2026-05-21
 
@@ -114,43 +116,53 @@ final report author.
 - не продолжать реализацию, если работа стоит на approval gate;
 - понять последнюю безопасную точку восстановления.
 
-### 1. [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
+### 1. [docs/RUNTIME_PROFILES.md](docs/RUNTIME_PROFILES.md)
+Читать перед любым запуском STT/LLM/report pipeline или изменением runtime env.
+
+Зачем читать:
+- выбрать правильный профиль запуска: `cost_optimized`, `max_quality`,
+  `hybrid API + Codex-subagents`, `full Codex-subagent runtime` или
+  `local simulation`;
+- не перепутать реальные Codex-subagents с deterministic contract runner;
+- явно проверить, какие слои идут через API, а какие через subagent runtime.
+
+### 2. [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
 Зачем читать:
 - понять постоянные правила работы кодера в этом проекте;
 - не дублировать universal policies из task-промптов;
 - сразу увидеть порядок входа в задачу, scope control, verification-first и правила обновления docs.
 
-### 2. [docs/CONCEPT_MVP1.md](docs/CONCEPT_MVP1.md)
+### 3. [docs/CONCEPT_MVP1.md](docs/CONCEPT_MVP1.md)
 Зачем читать:
 - понять продуктовую рамку MVP-1;
 - увидеть, что входит в MVP-1 и что не входит;
 - не расширять scope за пределы подтверждённого этапа.
 
-### 3. [docs/ROADMAP.md](docs/ROADMAP.md)
+### 4. [docs/ROADMAP.md](docs/ROADMAP.md)
 Зачем читать:
 - понять, в какой вехе проект находится сейчас;
 - не перепутать Manual Output Validation с automation readiness;
 - увидеть следующий допустимый переход.
 
-### 4. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+### 5. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 Зачем читать:
 - понять pipeline и архитектурные инварианты;
 - не ломать determinism, contract stability и platform rules;
 - увидеть, что считается runtime behavior, а что operating layer.
 
-### 5. [docs/DECISIONS.md](docs/DECISIONS.md)
+### 6. [docs/DECISIONS.md](docs/DECISIONS.md)
 Зачем читать:
 - понять уже принятые решения и ограничения;
 - не принимать повторно уже закрытые вопросы;
 - видеть, какие изменения требуют явного ADR/update.
 
-### 6. [docs/PROGRESS.md](docs/PROGRESS.md)
+### 7. [docs/PROGRESS.md](docs/PROGRESS.md)
 Зачем читать:
 - понять фактический статус и последний подтверждённый шаг;
 - увидеть, что уже сделано, что в работе и что остаётся открытым;
 - не возвращаться к уже закрытым вопросам без причины.
 
-### 7. [docs/MANUAL_OUTPUT_VALIDATION_SPEC.md](docs/MANUAL_OUTPUT_VALIDATION_SPEC.md)
+### 8. [docs/MANUAL_OUTPUT_VALIDATION_SPEC.md](docs/MANUAL_OUTPUT_VALIDATION_SPEC.md)
 Читать по умолчанию только для исторической Manual Output Validation / single-call validation задачи. Для текущей LLM2 v15 report-quality задачи использовать рабочую рамку выше.
 
 Зачем читать:
@@ -158,7 +170,7 @@ final report author.
 - использовать acceptance criteria, defect taxonomy и exit criteria без повторения в task-промпте;
 - не уходить в automation readiness без явного подтверждения.
 
-### 8. [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
+### 9. [docs/PROMPTS_GUIDE.md](docs/PROMPTS_GUIDE.md)
 Читать, если задача затрагивает prompt assets, prompt docs или prompt behavior.
 
 Зачем читать:
@@ -166,7 +178,7 @@ final report author.
 - понять, что должно жить в source prompt assets / docs, а не в task-промпте;
 - не дублировать language/output/schema constraints в каждом новом запросе.
 
-### 9. [docs/MANUAL_REPORTING_PILOT.md](docs/MANUAL_REPORTING_PILOT.md)
+### 10. [docs/MANUAL_REPORTING_PILOT.md](docs/MANUAL_REPORTING_PILOT.md)
 Читать, если задача относится к ручному запуску отчётности, report presets, reuse logic, report-composer scope или delivery rules для reporting pilot.
 
 Зачем читать:
@@ -174,7 +186,7 @@ final report author.
 - не перепутать ручной reporting pilot с automation readiness;
 - видеть agreed launch parameters, presets, delivery rules и reuse/recompute policy.
 
-### 10. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
+### 11. [docs/MANAGER_DAILY_SELECTION_MODEL.md](docs/MANAGER_DAILY_SELECTION_MODEL.md)
 Читать, если задача затрагивает отбор звонков для `manager_daily`, report contract, слои данных, rolling window или счётчики / причины исключения.
 
 Зачем читать:
@@ -183,7 +195,7 @@ final report author.
 - понять rolling window rule и transparency requirements;
 - получить перечень bounded implementation tasks для реализации этого contract.
 
-### 11. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
+### 12. [docs/REPORT_EVIDENCE_CONTRACT.md](docs/REPORT_EVIDENCE_CONTRACT.md)
 Читать, если задача затрагивает LLM2 report-ready evidence, `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, prompt update plan или будущую интеграцию `report_evidence`.
 
 Зачем читать:
@@ -192,7 +204,7 @@ final report author.
 - не превращать reporting layer в semantic analyzer;
 - понять backward compatibility с Step 8W fallback.
 
-### 12. [docs/MANAGER_REPORT_FEEDBACK.md](docs/MANAGER_REPORT_FEEDBACK.md)
+### 13. [docs/MANAGER_REPORT_FEEDBACK.md](docs/MANAGER_REPORT_FEEDBACK.md)
 Читать, если задача основана на комментариях менеджеров/РОПа по фактически полученным отчетам или если нужно планировать улучшения качества report blocks по обратной связи.
 
 Зачем читать:
@@ -201,7 +213,7 @@ final report author.
 - увидеть приоритетные проверки по `ДЕНЬГИ НА СТОЛЕ`, договоренностям, полноте звонков, объему отчета и спорным coaching-выводам;
 - не чинить отчет вручную, а вести проблему к проверяемому upstream-исправлению.
 
-### 13. [docs/MANAGER_DAILY_REPORT_AUDIT.md](docs/MANAGER_DAILY_REPORT_AUDIT.md)
+### 14. [docs/MANAGER_DAILY_REPORT_AUDIT.md](docs/MANAGER_DAILY_REPORT_AUDIT.md)
 Читать, если задача затрагивает оформление, порядок блоков, формулировки, объем PDF/email или product-shape ежедневного отчета `manager_daily`.
 
 Зачем читать:
@@ -210,7 +222,7 @@ final report author.
 - не возвращать рискованные блоки вроде `ДЕНЬГИ НА СТОЛЕ` без evidence/CRM-ready поведения;
 - сверять будущие правки с целевой структурой 4-5 страниц и honest coverage.
 
-### 14. [docs/MANAGER_DAILY_REPORT_P2_FIX_PLAN.md](docs/MANAGER_DAILY_REPORT_P2_FIX_PLAN.md)
+### 15. [docs/MANAGER_DAILY_REPORT_P2_FIX_PLAN.md](docs/MANAGER_DAILY_REPORT_P2_FIX_PLAN.md)
 Читать перед внедрением P2 после human-review тестового отчета Толегена за `2026-05-21` и новых прогонов за `2026-05-22`.
 
 Зачем читать:
@@ -222,7 +234,7 @@ final report author.
 - отличить проблему низкого data coverage от проблемы selection/gating;
 - использовать acceptance criteria для `Другие заметные моменты`, scene-scoped тона и первой страницы.
 
-### 15. `docs/mvp1_sources/`
+### 16. `docs/mvp1_sources/`
 Читать только когда задача затрагивает analyzer contract, checklist, manager card format или source prompt assets.
 
 Минимальный набор source-of-truth файлов:

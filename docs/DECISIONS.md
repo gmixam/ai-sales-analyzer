@@ -909,3 +909,12 @@
 - **Причина:** Full-day проверка Толегена за `2026-05-19` показала, что layered `LLM-2` был запущен по `24` звонкам, но только `3` получили числовой `score_by_stage`; `21` были срезаны внутренним `analysis_eligibility=not_eligible`, чаще всего из-за `duration_below_threshold`, включая коммерчески релевантные короткие звонки. Это нарушает ownership: смысловой допуск должен быть upstream, а `LLM-2` узлы должны выполнять свои роли по уже принятому input.
 - **Scope:** planning and implementation guardrail for the next LLM2/report-quality pass. Это решение само по себе не меняет код, prompts, runtime, renderer, delivery или scheduler; реализация фиксируется отдельными задачами в `docs/ACTIVE_WORK_STATE.md` и `docs/LLM2_ARCHITECTURE_AUDIT_AND_TARGET_MODEL.md`.
 - **Дата:** 2026-06-01
+
+## ADR-091: Runtime-профили фиксируются отдельным handoff-документом
+- **Решение:** `docs/RUNTIME_PROFILES.md` становится верхнеуровневым source of truth для выбора режима запуска: `cost_optimized`, `max_quality`, `hybrid API + Codex-subagents`, `full Codex-subagent runtime` и `local simulation`.
+- **Решение:** `README.md`, `docs/CONTEXT_INDEX.md` и `AGENTS.md` должны ссылаться на `docs/RUNTIME_PROFILES.md`, чтобы новый агент видел режимы до запуска STT/LLM/report pipeline или business delivery.
+- **Решение:** `docs/AI_PROVIDER_ROUTING.md` остается технической детализацией routing/env, а `docs/LLM_SUBAGENT_TESTING_MODE.md` — детализацией subagent-runtime. Они не заменяют верхнеуровневую карту профилей.
+- **Решение:** Термин "имитировать LLM" должен быть записан явно: механизм pipeline остается настоящим, а заменяется только runtime executor LLM-узла. Если используется `AI_LLM_SUBAGENT_COMMAND=<codex command>`, роль LLM выполняют реальные Codex-agents. Если используется `AI_LLM_SUBAGENT_RUNNER_CMD=python /app/report_scripts/llm_subagent_contract_runner.py`, это deterministic contract runner для smoke/wiring, не доказательство смыслового качества.
+- **Причина:** Проект теперь поддерживает несколько runtime-профилей, и без единого handoff-документа новый агент может перепутать real API run, max quality run, local simulation, contract runner и реальные Codex-subagents. Особенно рискованно смешивать "имитацию LLM" как настоящую работу Codex-agents с технической заглушкой contract runner.
+- **Scope:** project-wide operating rule and documentation source-of-truth for runtime/test/production mode selection. Это не меняет analyzer contract, STT, LLM prompts, report renderer, delivery semantics или scheduler само по себе.
+- **Дата:** 2026-06-02

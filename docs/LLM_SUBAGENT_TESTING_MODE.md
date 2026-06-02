@@ -2,8 +2,12 @@
 
 ## Назначение
 
-Этот документ фиксирует временный режим тестирования, в котором реальные
-`LLM-1`, `LLM-2` и `LLM-3` заменяются субагентами-симуляторами.
+Этот документ фиксирует временный режим тестирования, в котором runtime-вызовы
+`LLM-1`, `LLM-2` и `LLM-3` могут заменяться subagent runtime.
+
+Каноническая верхнеуровневая карта режимов находится в
+`docs/RUNTIME_PROFILES.md`. Этот файл раскрывает детали именно subagent testing
+mode.
 
 Цель режима:
 - снизить стоимость повторных прогонов записанных звонков;
@@ -17,8 +21,9 @@
 
 ## Текущий implementation status
 
-Статус на 2026-05-25: реализованы два временных runtime mode:
-`local simulation` и первый `subagent_runtime`.
+Статус на 2026-06-02: реализованы runtime mode:
+`local simulation`, полный `subagent_runtime` и layer-scoped hybrid mode через
+`AI_LLM_SUBAGENT_RUNTIME_LAYERS`.
 
 Реализовано:
 - env-переключатели `AI_LLM_SIMULATION_ENABLED`,
@@ -27,6 +32,7 @@
 - env-переключатели `AI_LLM_EXECUTION_MODE=subagent_runtime`,
   `AI_LLM_SUBAGENT_RUNTIME_ENABLED`, `AI_LLM_SUBAGENT_COMMAND`,
   `AI_LLM_SUBAGENT_RUNNER_CMD`,
+  `AI_LLM_SUBAGENT_RUNTIME_LAYERS`,
   `AI_LLM_SUBAGENT_RUN_ID`, `AI_LLM_SUBAGENT_ARTIFACT_DIR`,
   `AI_LLM_SUBAGENT_TIMEOUT_SEC`;
 - общий временный executor `app.agents.calls.llm_simulation`;
@@ -42,12 +48,15 @@
 Ограничение local simulation: симулятор возвращает контрактно-валидные
 эвристические ответы для проверки pipeline и report layer.
 
-Ограничение первого `subagent_runtime`: внешний runner уже проходит через
-настоящие validators/normalizers и fail-closed path, но поведение LLM-2
-субагента пока не откалибровано. Контрольный прогон Толегена за `2026-05-21`
-показал частые retry на LLM-2 и неполное закрытие readiness, поэтому следующий
-шаг — калибровать prompt/output wrapper субагента под approved contract без
-ослабления validators.
+Ограничение `subagent_runtime`: внешний runner уже проходит через настоящие
+validators/normalizers и fail-closed path, но качество зависит от того, какой
+runner используется.
+
+- `AI_LLM_SUBAGENT_COMMAND=<codex command>` — реальный Codex-agent runtime.
+  Именно это означает "Codex-subagents имитируют LLM-узлы" в задачах качества.
+- `AI_LLM_SUBAGENT_RUNNER_CMD=python /app/report_scripts/llm_subagent_contract_runner.py`
+  — deterministic contract runner для smoke-проверки wiring. Он не является
+  доказательством смыслового качества LLM2/LLM3.
 
 ## Главное требование
 
@@ -65,8 +74,15 @@
 
 ## Терминология
 
-В этом документе `субагент` означает временный testing executor, который
-имитирует поведение LLM-узла по текущим инструкциям и контрактам.
+В этом документе `субагент` означает runtime executor, который имитирует
+поведение LLM-узла по текущим инструкциям и контрактам.
+
+Если используется `AI_LLM_SUBAGENT_COMMAND=<codex command>`, это реальные
+Codex-agents: отдельные agent processes, которые получают input artifact,
+следуют prompt/contract и возвращают JSON вместо OpenAI-compatible model call.
+
+Если используется `AI_LLM_SUBAGENT_RUNNER_CMD=python /app/report_scripts/llm_subagent_contract_runner.py`,
+это не real agent, а deterministic contract runner для технической проверки.
 
 Это не меняет существующее проектное определение `agent` из `ARCHITECTURE.md`,
 где agent является детерминированным Python-модулем workflow.
@@ -208,6 +224,29 @@ AI_LLM_SUBAGENT_ARTIFACT_DIR=/tmp/asa_llm_subagent_runs
 runner находится в `core/report_scripts/llm_subagent_contract_runner.py`.
 Host-visible копия для локальных запусков находится в
 `scripts/llm_subagent_contract_runner.py`.
+
+Пример hybrid-профиля, где STT и LLM1 идут через API, а LLM2/LLM3 через
+subagents:
+
+```text
+AI_LLM_EXECUTION_MODE=openai_compatible
+AI_LLM_SUBAGENT_RUNTIME_ENABLED=false
+AI_LLM_SUBAGENT_RUNTIME_LAYERS=llm2,llm3
+AI_LLM_SIMULATION_ENABLED=false
+LLM3_ENABLED=true
+AI_LLM_SUBAGENT_COMMAND=<codex command>
+AI_LLM_SUBAGENT_RUN_ID=<run_id>
+AI_LLM_SUBAGENT_ARTIFACT_DIR=/tmp/asa_llm_subagent_runs
+AI_LLM_SUBAGENT_TIMEOUT_SEC=300
+```
+
+Для качественной проверки обязательно проверить:
+
+```text
+llm1_subagent=False
+llm2_subagent=True
+llm3_subagent=True
+```
 
 Базовый тестовый сценарий:
 - `preset=manager_daily`;

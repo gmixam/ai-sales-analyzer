@@ -34,6 +34,7 @@ docs/CONTEXT_INDEX.md -> порядок входа в контекст
 
 ```text
 /root/ai-sales-analyzer/docs/ACTIVE_WORK_STATE.md
+/root/ai-sales-analyzer/docs/RUNTIME_PROFILES.md
 /root/ai-sales-analyzer/docs/CONTEXT_INDEX.md
 /root/ai-sales-analyzer/docs/DECISIONS.md
 /root/ai-sales-analyzer/docs/PROGRESS.md
@@ -143,12 +144,14 @@ OPENAI_API_KEY_LLM3_MAIN=...
 3. В routing metadata отчета проверить `selected_execution_mode=openai_compatible`
    для LLM1/LLM2/LLM3 и отсутствие `codex_subagent_runtime`.
 
-## 2026-06-01: Max Quality модельный профиль для следующего теста
+## 2026-06-01: Реальные LLM-профили и текущий cost optimized runtime
 
-Пользователь выбрал проверить максимальное качество реальных LLM вместо
-Codex-subagent режима.
+После проверки max quality стало видно, что анализ получается дороговатым для
+ежедневной эксплуатации. Пользователь решил переключить активный runtime на
+экономный production-профиль, а max quality оставить как отдельный ручной режим
+для контрольных прогонов и спорных кейсов.
 
-Текущий runtime в `.env` и контейнере:
+Текущий активный runtime в `.env` должен быть:
 
 ```text
 AI_LLM_EXECUTION_MODE=openai_compatible
@@ -157,41 +160,126 @@ AI_LLM_SIMULATION_ENABLED=false
 LLM3_ENABLED=true
 ```
 
-Модели для следующего controlled run:
+Текущий активный профиль `cost_optimized`:
 
 ```text
+STT  -> whisper-1
+LLM1 -> gpt-5.4-nano
+LLM2 -> gpt-5.4-mini
+LLM3 -> gpt-5.4-mini
+```
+
+Роли:
+
+- `LLM1` (`gpt-5.4-nano`) — дешевый admission / classification / routing
+  слой. Он решает, стоит ли звонок вести дальше в анализ, и дает первичный
+  структурный снимок.
+- `LLM2` (`gpt-5.4-mini`) — основной per-call semantic analysis: суть звонка,
+  договоренности, отказ/перенос, доказательства, оценки, рекомендации.
+- `LLM3` (`gpt-5.4-mini`) — bounded report composition поверх LLM2-артефактов,
+  а не повторный анализ сырого STT.
+
+Ручной профиль `max_quality` для точечных сравнений качества:
+
+```text
+STT  -> whisper-1
 LLM1 -> gpt-5.4-mini
 LLM2 -> gpt-5.5
 LLM3 -> gpt-5.4
 ```
 
-Логика выбора:
+Подготовленный hybrid-профиль `stt_llm1_api_llm2_llm3_subagents`:
 
-- `LLM1` оставлен на сильной mini-модели: достаточно для admission /
-  classification, но меньше риск и стоимость, чем frontier full model.
-- `LLM2` поднят до `gpt-5.5`: это главный слой глубокого смысла, сцен,
-  доказательств, оценок и договоренностей.
-- `LLM3` поднят до `gpt-5.4`: качественная сборка управленческого отчета без
-  лишнего оверхеда `gpt-5.5`.
+```text
+STT  -> API provider route
+LLM1 -> OpenAI-compatible API provider route
+LLM2 -> Codex subagent runtime
+LLM3 -> Codex subagent runtime
+```
+
+Env для включения hybrid-профиля:
+
+```text
+AI_LLM_EXECUTION_MODE=openai_compatible
+AI_LLM_SUBAGENT_RUNTIME_ENABLED=false
+AI_LLM_SUBAGENT_RUNTIME_LAYERS=llm2,llm3
+AI_LLM_SIMULATION_ENABLED=false
+LLM3_ENABLED=true
+AI_LLM_SUBAGENT_RUNNER_CMD=<runner command>
+AI_LLM_SUBAGENT_RUN_ID=<run-id>
+AI_LLM_SUBAGENT_ARTIFACT_DIR=/tmp/asa_llm_subagent_runs
+AI_LLM_SUBAGENT_TIMEOUT_SEC=300
+```
+
+Runner options:
+
+- `AI_LLM_SUBAGENT_RUNNER_CMD=python /app/report_scripts/llm_subagent_contract_runner.py`
+  — контейнерный contract-runner для smoke-проверки wiring без реального Codex
+  CLI.
+- `AI_LLM_SUBAGENT_COMMAND=<codex command>` — generic Codex subagent CLI path,
+  если Codex доступен внутри runtime окружения.
+
+`AI_LLM_SUBAGENT_RUNTIME_LAYERS` — новый layer-scoped переключатель. Если он
+пустой, работает старое поведение: глобальный `subagent_runtime` перехватывает
+все LLM-слои. Если задан `llm2,llm3`, то LLM1 остается на API, а LLM2/LLM3
+выполняются через subagent runtime.
+
+Логика выбора профилей:
+
+- `cost_optimized` — профиль по умолчанию для ежедневного пилота и будущей
+  production-эксплуатации.
+- `max_quality` — не включать по умолчанию; использовать только для проверки
+  качества на выбранных днях/менеджерах или для разбора спорных результатов.
+- `stt_llm1_api_llm2_llm3_subagents` — использовать для гибридной проверки,
+  когда нужна реальная входная классификация LLM1, но смысловой слой LLM2 и
+  Report LLM3 должны имитироваться Codex-subagents.
 
 Что сделано:
 
 - `.env` обновлен: `AI_LLM1_PROVIDERS_JSON`, `AI_LLM2_PROVIDERS_JSON`,
-  `AI_LLM3_PROVIDERS_JSON`.
-- `api`, `worker`, `beat` пересозданы командой
-  `docker compose up -d --force-recreate api worker beat`, потому что Docker
-  читает env при старте контейнеров.
+  `AI_LLM3_PROVIDERS_JSON` на `cost_optimized`.
+- `.env` и `.env.example` получили `AI_LLM_SUBAGENT_RUNTIME_LAYERS`; в текущем
+  активном env он пустой, поэтому `cost_optimized` остается активным.
+- `.env` и `.env.example` также получили `AI_LLM_SUBAGENT_RUNNER_CMD`, чтобы
+  runner path можно было задавать явно для hybrid-профиля.
+- Technical smoke без pipeline выполнен с временным env override:
+  `AI_LLM_SUBAGENT_RUNTIME_LAYERS=llm2,llm3` и
+  `AI_LLM_SUBAGENT_RUNNER_CMD=python /app/report_scripts/llm_subagent_contract_runner.py`.
+  Результат: `llm1_subagent=False`, `llm2_subagent=True`,
+  `llm3_subagent=True`; LLM2 metadata получила
+  `selected_execution_mode=subagent_runtime`, LLM3 `_routing.provider`
+  получил `subagent_runtime`.
+- Kimi / Moonshot trial sources подготовлены как дополнительные provider
+  entries и активированы через `AI_LLM*_FIXED_ACCOUNT_ALIAS`:
+  `kimi_llm1_main`, `kimi_llm2_main`, `kimi_llm3_main`,
+  recommended trial models: `LLM1=moonshot-v1-8k`,
+  `LLM2=kimi-k2.6`, `LLM3=kimi-k2.6`,
+  `api_base=https://api.moonshot.ai/v1`,
+  `api_key_env=MOONSHOT_API_KEY`. Чтобы попробовать Kimi, сначала заполнить
+  `MOONSHOT_API_KEY`, затем переключить нужные `AI_LLM*_FIXED_ACCOUNT_ALIAS`
+  на Kimi alias, пересоздать `api/worker/beat` и выполнить route-plan check.
+  Без отдельного подтверждения пользователя pipeline не запускать.
+- `api`, `worker`, `beat` пересозданы командами
+  `docker compose up -d --force-recreate api worker` и
+  `docker compose up -d --force-recreate beat`, потому что Docker читает env
+  при старте контейнеров.
+- Тестовый pipeline / STT / LLM-анализ / Report Layer не запускались.
 
-Проверка внутри контейнера:
+Проверка внутри `api`, `worker` и `beat` контейнеров:
 
 ```text
-llm1: alias=llm1_main model=gpt-5.4-mini mode=openai_compatible timeout=120
-llm2: alias=llm2_main model=gpt-5.5 mode=openai_compatible timeout=300
-llm3: alias=llm3_main model=gpt-5.4 mode=openai_compatible timeout=300
+mode=openai_compatible
+subagent=False
+simulation=False
+llm3_enabled=True
+llm1: alias=llm1_main model=gpt-5.4-nano mode=openai_compatible timeout=120
+llm2: alias=llm2_main model=gpt-5.4-mini mode=openai_compatible timeout=300
+llm3: alias=llm3_main model=gpt-5.4-mini mode=openai_compatible timeout=300
 ```
 
-Следующий шаг: запускать controlled run уже на этом max quality профиле и в
-routing metadata проверить выбранные модели.
+Следующий шаг: когда пользователь отдельно разрешит тест, запускать controlled
+run уже на `cost_optimized` профиле и в routing metadata проверить выбранные
+модели. До отдельного разрешения не запускать STT/LLM/report pipeline.
 
 Статус на 2026-06-01:
 

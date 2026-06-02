@@ -21,10 +21,11 @@ Current known gap:
 
 For project context and working boundaries:
 1. [docs/CONTEXT_INDEX.md](docs/CONTEXT_INDEX.md)
-2. [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
-3. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-4. [docs/PROGRESS.md](docs/PROGRESS.md)
-5. [docs/MANUAL_REPORTING_PILOT.md](docs/MANUAL_REPORTING_PILOT.md)
+2. [docs/RUNTIME_PROFILES.md](docs/RUNTIME_PROFILES.md)
+3. [docs/CODER_WORKING_RULES.md](docs/CODER_WORKING_RULES.md)
+4. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+5. [docs/PROGRESS.md](docs/PROGRESS.md)
+6. [docs/MANUAL_REPORTING_PILOT.md](docs/MANUAL_REPORTING_PILOT.md)
 
 For developer onboarding:
 - [docs/DEV_ONBOARDING.md](docs/DEV_ONBOARDING.md)
