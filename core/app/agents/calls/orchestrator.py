@@ -28,6 +28,8 @@ from app.core_shared.db.models import Agreement, Analysis, Insight, Interaction
 from app.core_shared.exceptions import ASAError, DatabaseError, DeliveryError, LLMResponseError, SemanticAnalysisError
 
 ANALYSIS_FAILED_CONTRACT_REASON = "analysis_failed_contract"
+LEGACY_INSIGHT_QUOTE_MAX_LEN = 255
+LEGACY_INSIGHT_TOPIC_MAX_LEN = 255
 
 
 def analysis_contract_failure_reason(error: LLMResponseError) -> str:
@@ -45,7 +47,7 @@ def _normalize_insight_quote(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
-        return value.strip() or None
+        return _truncate_legacy_insight_text(value, max_len=LEGACY_INSIGHT_QUOTE_MAX_LEN)
     if isinstance(value, list):
         if not value:
             return None
@@ -59,16 +61,35 @@ def _normalize_insight_quote(value: Any) -> str | None:
                 text = str(item).strip()
             if text:
                 parts.append(text)
-        return " ".join(parts) or None
+        return _truncate_legacy_insight_text(
+            " ".join(parts),
+            max_len=LEGACY_INSIGHT_QUOTE_MAX_LEN,
+        )
     if isinstance(value, dict):
         text = str(value.get("text") or "").strip()
         if text:
-            return text
+            return _truncate_legacy_insight_text(text, max_len=LEGACY_INSIGHT_QUOTE_MAX_LEN)
         try:
-            return json.dumps(value, ensure_ascii=False)
+            return _truncate_legacy_insight_text(
+                json.dumps(value, ensure_ascii=False),
+                max_len=LEGACY_INSIGHT_QUOTE_MAX_LEN,
+            )
         except Exception:
-            return str(value)
-    return str(value).strip() or None
+            return _truncate_legacy_insight_text(
+                str(value),
+                max_len=LEGACY_INSIGHT_QUOTE_MAX_LEN,
+            )
+    return _truncate_legacy_insight_text(str(value), max_len=LEGACY_INSIGHT_QUOTE_MAX_LEN)
+
+
+def _truncate_legacy_insight_text(value: Any, *, max_len: int) -> str | None:
+    """Keep legacy insight mirror rows inside historical varchar limits."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
 
 
 @dataclass(slots=True)
@@ -526,7 +547,10 @@ class CallsManualPilotOrchestrator:
                     department_id=interaction.department_id,
                     interaction_id=interaction.id,
                     category="strength",
-                    topic=item.get("title"),
+                    topic=_truncate_legacy_insight_text(
+                        item.get("title"),
+                        max_len=LEGACY_INSIGHT_TOPIC_MAX_LEN,
+                    ),
                     quote=_normalize_insight_quote(item.get("evidence")),
                 )
             )
@@ -537,7 +561,10 @@ class CallsManualPilotOrchestrator:
                     department_id=interaction.department_id,
                     interaction_id=interaction.id,
                     category="gap",
-                    topic=item.get("title"),
+                    topic=_truncate_legacy_insight_text(
+                        item.get("title"),
+                        max_len=LEGACY_INSIGHT_TOPIC_MAX_LEN,
+                    ),
                     quote=_normalize_insight_quote(item.get("evidence")),
                 )
             )
@@ -547,8 +574,11 @@ class CallsManualPilotOrchestrator:
                     id=uuid4(),
                     department_id=interaction.department_id,
                     interaction_id=interaction.id,
-                    category=item.get("signal_type"),
-                    topic=item.get("topic"),
+                    category=_truncate_legacy_insight_text(item.get("signal_type"), max_len=50),
+                    topic=_truncate_legacy_insight_text(
+                        item.get("topic"),
+                        max_len=LEGACY_INSIGHT_TOPIC_MAX_LEN,
+                    ),
                     quote=_normalize_insight_quote(item.get("quote")),
                 )
             )

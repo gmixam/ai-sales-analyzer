@@ -16,6 +16,13 @@
   validators. **Verification:** `py_compile` passed; container
   `/app/tests/test_ai_provider_routing.py` passed `36/36`; pipeline и реальные
   model calls не запускались.
+- [x] 2026-06-02 — Report-layer LLM3 composer calls переведены на
+  OpenAI-compatible chat kwargs helper, чтобы Kimi/OpenAI-compatible модели не
+  ломались на неподдерживаемых параметрах вроде `temperature`. В persistence
+  добавлена обрезка legacy `Insight.topic/quote/category` до исторических DB
+  лимитов, чтобы длинные формулировки LLM2/LLM3 не роняли сохранение отчета.
+  **Verification:** покрыто тем же `py_compile` и routing regression pack;
+  pipeline и реальные model calls не запускались.
 - [x] 2026-06-01 — Выполнен post-review implementation pass A1-A8 после
   human review полного дня Толегена. **Agents:** Lovelace закрыл
   `LLM-2 call essence` + registry/router source consistency; Lorentz закрыл

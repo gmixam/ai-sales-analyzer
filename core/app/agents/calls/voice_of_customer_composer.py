@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+
 VOICE_OF_CUSTOMER_COMPOSER_VERSION = "voice_of_customer_composer_v2"
 VOICE_OF_CUSTOMER_PROMPT_VERSION = "voice_of_customer_composer_v2"
 VOICE_OF_CUSTOMER_SOURCE = "report_evidence.voice_of_customer_composer.v2"
@@ -881,14 +883,16 @@ def _request_llm3_voice_of_customer(payload: dict[str, Any]) -> dict[str, Any]:
     for _ in range(attempts_total):
         try:
             response = client.chat.completions.create(
-                model=candidate.model,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
+                **build_chat_completion_kwargs(
+                    model=candidate.model,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                )
             )
             break
         except Exception as exc:

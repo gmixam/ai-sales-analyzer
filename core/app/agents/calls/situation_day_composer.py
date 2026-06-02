@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+
 SITUATION_DAY_COMPOSER_VERSION = "situation_day_composer_v1"
 SITUATION_DAY_PROMPT_VERSION = "situation_day_composer_v1"
 
@@ -851,14 +853,16 @@ class LLM3SituationDayWriter:
         for _ in range(attempts_total):
             try:
                 response = client.chat.completions.create(
-                    model=candidate.model,
-                    response_format={"type": "json_object"},
-                    temperature=0.1,
-                    timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                    ],
+                    **build_chat_completion_kwargs(
+                        model=candidate.model,
+                        response_format={"type": "json_object"},
+                        temperature=0.1,
+                        timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                        messages=[
+                            {"role": "system", "content": prompt},
+                            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                        ],
+                    )
                 )
                 break
             except Exception as exc:

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
 
 SITUATION_DAY_DAILY_COMPOSER_VERSION = "situation_day_daily_composer_v2"
 SITUATION_DAY_DAILY_PROMPT_VERSION = "situation_day_daily_composer_v2"
@@ -673,14 +674,16 @@ def _request_llm3_daily_situation(payload: dict[str, Any]) -> dict[str, Any]:
     for _ in range(max(1, candidate.max_retries_for_this_provider + 1)):
         try:
             response = client.chat.completions.create(
-                model=candidate.model,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
+                **build_chat_completion_kwargs(
+                    model=candidate.model,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                )
             )
             break
         except Exception as exc:

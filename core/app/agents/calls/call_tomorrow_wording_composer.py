@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+
 CALL_TOMORROW_WORDING_VERSION = "call_tomorrow_wording_composer_v1"
 CALL_TOMORROW_WORDING_SOURCE = "report_evidence.call_tomorrow_wording_composer.v1"
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "call_tomorrow_wording_composer_v1.md"
@@ -223,14 +225,16 @@ def _request_llm3_call_tomorrow_wording(payload: dict[str, Any]) -> dict[str, An
     for _ in range(attempts_total):
         try:
             response = client.chat.completions.create(
-                model=candidate.model,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
+                **build_chat_completion_kwargs(
+                    model=candidate.model,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                )
             )
             break
         except Exception as exc:

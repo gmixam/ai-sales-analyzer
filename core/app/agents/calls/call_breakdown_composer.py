@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+
 CALL_BREAKDOWN_COMPOSER_VERSION = "call_breakdown_composer_v2"
 CALL_BREAKDOWN_PROMPT_VERSION = "call_breakdown_composer_v2"
 CALL_BREAKDOWN_SOURCE = "report_evidence.call_breakdown_composer.v2"
@@ -648,14 +650,16 @@ def _request_llm3_call_breakdown(payload: dict[str, Any]) -> dict[str, Any]:
     for _ in range(attempts_total):
         try:
             response = client.chat.completions.create(
-                model=candidate.model,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
+                **build_chat_completion_kwargs(
+                    model=candidate.model,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                )
             )
             break
         except Exception as exc:
