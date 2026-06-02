@@ -7,6 +7,15 @@
 **Последнее обновление:** 2026-06-01
 
 ## Что сделано
+- [x] 2026-06-02 — Добавлен layer-scoped runtime routing для смешанных режимов
+  LLM: `AI_LLM_SUBAGENT_RUNTIME_LAYERS` позволяет включать Codex-subagent
+  executor только для выбранных слоев, а остальные слои оставлять на
+  OpenAI-compatible API. Вызовы analyzer/LLM3 переведены на совместимый helper
+  chat-completion kwargs для reasoning/Kimi/OpenAI-compatible моделей.
+  Обновлены routing tests под текущий режим с отключенными blocking semantic
+  validators. **Verification:** `py_compile` passed; container
+  `/app/tests/test_ai_provider_routing.py` passed `36/36`; pipeline и реальные
+  model calls не запускались.
 - [x] 2026-06-01 — Выполнен post-review implementation pass A1-A8 после
   human review полного дня Толегена. **Agents:** Lovelace закрыл
   `LLM-2 call essence` + registry/router source consistency; Lorentz закрыл

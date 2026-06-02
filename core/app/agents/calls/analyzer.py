@@ -27,6 +27,7 @@ from app.agents.calls.llm_simulation import (
     simulation_enabled,
     subagent_runtime_enabled,
 )
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 MVP1_SOURCE_FILE_NAMES = {
@@ -1771,7 +1772,7 @@ class CallsAnalyzer:
                 request_kind=request_kind,
             )
             return content
-        if subagent_runtime_enabled():
+        if subagent_runtime_enabled(layer=layer):
             route_plan = self.ai_router.build_route_plan(
                 layer=layer,
                 subject_key=str(interaction.id),
@@ -1888,11 +1889,13 @@ class CallsAnalyzer:
                 for _ in range(attempts_total):
                     try:
                         response = client.chat.completions.create(
-                            model=candidate.model,
-                            response_format={"type": "json_object"},
-                            temperature=temperature,
-                            timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                            messages=messages,
+                            **build_chat_completion_kwargs(
+                                model=candidate.model,
+                                response_format={"type": "json_object"},
+                                temperature=temperature,
+                                timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                                messages=messages,
+                            )
                         )
                         break
                     except Exception as exc:

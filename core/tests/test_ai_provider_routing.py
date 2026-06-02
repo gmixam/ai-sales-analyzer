@@ -134,6 +134,7 @@ def _subagent_env(artifact_dir: str) -> dict[str, str]:
         "AI_LLM_SIMULATION_ENABLED": "false",
         "AI_LLM_EXECUTION_MODE": "subagent_runtime",
         "AI_LLM_SUBAGENT_RUNTIME_ENABLED": "false",
+        "AI_LLM_SUBAGENT_RUNTIME_LAYERS": "",
         "AI_LLM_SUBAGENT_COMMAND": "",
         "AI_LLM_SUBAGENT_RUN_ID": "routing-subagent-test-run",
         "AI_LLM_SUBAGENT_ARTIFACT_DIR": artifact_dir,
@@ -141,6 +142,23 @@ def _subagent_env(artifact_dir: str) -> dict[str, str]:
 
 
 class AIProviderRoutingTests(unittest.TestCase):
+    def test_layer_scoped_subagent_runtime_keeps_llm1_on_api(self) -> None:
+        from app.agents.calls.llm_simulation import subagent_runtime_enabled
+
+        with patch.dict(
+            os.environ,
+            {
+                "AI_LLM_EXECUTION_MODE": "openai_compatible",
+                "AI_LLM_SUBAGENT_RUNTIME_ENABLED": "false",
+                "AI_LLM_SUBAGENT_RUNTIME_LAYERS": "llm2,llm3",
+            },
+            clear=False,
+        ):
+            self.assertFalse(subagent_runtime_enabled(layer="llm1"))
+            self.assertTrue(subagent_runtime_enabled(layer="llm2"))
+            self.assertTrue(subagent_runtime_enabled(layer="llm3"))
+            self.assertTrue(subagent_runtime_enabled())
+
     def test_analyzer_prompt_context_includes_report_evidence_contract(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
         interaction = SimpleNamespace(
@@ -880,7 +898,7 @@ class AIProviderRoutingTests(unittest.TestCase):
         forensics = analyzer.consume_analysis_forensics(interaction)
         self.assertEqual(forensics["failure_reason"], "llm2_layered_validation_failed")
         self.assertIn("llm2a_facts_scenes returned invalid JSON", forensics["raw_llm_response"])
-        self.assertIsNone(forensics["normalized_result"])
+        self.assertEqual(forensics["normalized_result"], {})
 
     def test_llm1_subagent_runtime_bypasses_openai_and_persists_artifacts(self) -> None:
         settings = _build_settings(
@@ -1224,7 +1242,7 @@ class AIProviderRoutingTests(unittest.TestCase):
             "Очень длинное описан",
         )
 
-    def test_semantically_empty_contract_is_rejected_after_shape_validation(self) -> None:
+    def test_semantically_empty_contract_is_preserved_when_semantic_validation_disabled(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
         interaction = SimpleNamespace(
             id=uuid4(),
@@ -1242,33 +1260,32 @@ class AIProviderRoutingTests(unittest.TestCase):
             },
         )
 
-        with self.assertRaises(SemanticAnalysisError) as ctx:
-            analyzer._validate_and_normalize_contract(
-                raw_contract={
-                    "classification": {
-                        "call_type": "sales_primary",
-                        "scenario_type": "repeat_contact",
-                    },
-                    "summary": {
-                        "short_summary": "Короткий звонок без содержательного анализа.",
-                    },
-                    "score_by_stage": [],
-                    "strengths": [],
-                    "gaps": [],
-                    "recommendations": [],
-                    "follow_up": {
-                        "next_step_fixed": False,
-                        "reason_not_fixed": "не определено",
-                    },
+        normalized = analyzer._validate_and_normalize_contract(
+            raw_contract={
+                "classification": {
+                    "call_type": "sales_primary",
+                    "scenario_type": "repeat_contact",
                 },
-                interaction=interaction,
-                instruction_version="edo_sales_mvp1_call_analysis_v1",
-            )
+                "summary": {
+                    "short_summary": "Короткий звонок без содержательного анализа.",
+                },
+                "score_by_stage": [],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "follow_up": {
+                    "next_step_fixed": False,
+                    "reason_not_fixed": "не определено",
+                },
+            },
+            interaction=interaction,
+            instruction_version="edo_sales_mvp1_call_analysis_v1",
+        )
 
-        self.assertEqual(ctx.exception.reason_code, "semantically_empty_analysis")
-        self.assertEqual(ctx.exception.normalized_result["score"]["checklist_score"]["score_percent"], 0.0)
-        self.assertEqual(ctx.exception.normalized_result["score_by_stage"], [])
-        self.assertIn('"score_by_stage": []', ctx.exception.raw_response)
+        self.assertEqual(normalized["classification"]["call_type"], "sales_primary")
+        self.assertNotIn("analysis_eligibility", normalized["classification"])
+        self.assertEqual(normalized["score"]["checklist_score"]["score_percent"], 0.0)
+        self.assertEqual(normalized["score_by_stage"], [])
 
     def test_analyzer_repairs_max_score_and_enriches_reporting_fields(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
@@ -1420,7 +1437,7 @@ class AIProviderRoutingTests(unittest.TestCase):
         )
         self.assertEqual(normalized["score"]["checklist_score"]["score_percent"], 75.0)
 
-    def test_analyzer_guardrail_keeps_support_not_eligible_without_score(self) -> None:
+    def test_analyzer_guardrail_preserves_support_not_eligible_when_semantic_validation_disabled(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
         interaction = SimpleNamespace(
             id=uuid4(),
@@ -1438,30 +1455,27 @@ class AIProviderRoutingTests(unittest.TestCase):
             },
         )
 
-        with self.assertRaises(SemanticAnalysisError) as ctx:
-            analyzer._validate_and_normalize_contract(
-                raw_contract={
-                    "classification": {
-                        "call_type": "support",
-                        "scenario_type": "hot_incoming_contact",
-                        "analysis_eligibility": "not_eligible",
-                        "eligibility_reason": "support_only_interaction",
-                    },
-                    "summary": {"short_summary": "Технический вопрос клиента."},
-                    "score_by_stage": [],
-                    "strengths": [],
-                    "gaps": [],
-                    "recommendations": [],
-                    "evidence_fragments": [],
+        normalized = analyzer._validate_and_normalize_contract(
+            raw_contract={
+                "classification": {
+                    "call_type": "support",
+                    "scenario_type": "hot_incoming_contact",
+                    "analysis_eligibility": "not_eligible",
+                    "eligibility_reason": "support_only_interaction",
                 },
-                interaction=interaction,
-                instruction_version="edo_sales_mvp1_call_analysis_v1",
-            )
+                "summary": {"short_summary": "Технический вопрос клиента."},
+                "score_by_stage": [],
+                "strengths": [],
+                "gaps": [],
+                "recommendations": [],
+                "evidence_fragments": [],
+            },
+            interaction=interaction,
+            instruction_version="edo_sales_mvp1_call_analysis_v1",
+        )
 
-        normalized = ctx.exception.normalized_result
         self.assertEqual(normalized["classification"]["analysis_eligibility"], "not_eligible")
         self.assertEqual(normalized["score"]["checklist_score"]["score_percent"], 0.0)
-        self.assertEqual(ctx.exception.reason_code, "not_coachable_or_reportable")
 
     def test_analyzer_guardrail_repairs_duration_ge_reason_for_short_call(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)

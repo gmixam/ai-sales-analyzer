@@ -17,6 +17,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
+from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
 from app.core_shared.config.settings import settings
 
 _ARTIFACT_COUNTER = count(1)
@@ -48,7 +49,7 @@ def simulation_enabled() -> bool:
 
 def is_llm_simulation_enabled(layer: str | None = None) -> bool:
     """Return whether the shared LLM test/runtime executor should intercept a call."""
-    if (layer or "").strip().lower() == "llm3" and subagent_runtime_enabled():
+    if (layer or "").strip().lower() == "llm3" and subagent_runtime_enabled(layer=layer):
         return True
     return simulation_enabled()
 
@@ -67,8 +68,28 @@ def llm_execution_mode() -> str:
     ).strip().lower()
 
 
-def subagent_runtime_enabled() -> bool:
+def _configured_subagent_runtime_layers() -> set[str]:
+    raw = (
+        os.getenv("AI_LLM_SUBAGENT_RUNTIME_LAYERS")
+        or getattr(settings, "ai_llm_subagent_runtime_layers", "")
+        or ""
+    )
+    return {
+        token.strip().lower()
+        for token in re.split(r"[,;\s]+", str(raw))
+        if token.strip()
+    }
+
+
+def subagent_runtime_enabled(layer: str | None = None) -> bool:
     """Return whether LLM calls must be executed by an external subagent runner."""
+    configured_layers = _configured_subagent_runtime_layers()
+    normalized_layer = (layer or "").strip().lower()
+    if configured_layers:
+        if normalized_layer:
+            return normalized_layer in configured_layers
+        return True
+
     raw = os.getenv("AI_LLM_SUBAGENT_RUNTIME_ENABLED")
     explicit = (
         raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -167,7 +188,7 @@ def request_llm3_composer(**kwargs: Any) -> dict[str, Any]:
     prompt = kwargs.get("prompt") or kwargs.get("system_prompt")
     subject_key = str(kwargs.get("subject_key") or "llm3")
     messages = kwargs.get("messages")
-    if subagent_runtime_enabled():
+    if subagent_runtime_enabled(layer="llm3"):
         return request_subagent_llm3_json(
             request_kind=request_kind,
             payload=payload,
@@ -232,11 +253,13 @@ def request_openai_compatible_llm3_json(
             for _ in range(attempts_total):
                 try:
                     response = client.chat.completions.create(
-                        model=candidate.model,
-                        response_format={"type": "json_object"},
-                        temperature=0.1,
-                        timeout=candidate.timeout_sec or settings.openai_timeout_sec,
-                        messages=request_messages,
+                        **build_chat_completion_kwargs(
+                            model=candidate.model,
+                            response_format={"type": "json_object"},
+                            temperature=0.1,
+                            timeout=candidate.timeout_sec or settings.openai_timeout_sec,
+                            messages=request_messages,
+                        )
                     )
                     break
                 except Exception as exc:
@@ -417,7 +440,7 @@ def simulated_routing_metadata(
     subject_key: str,
 ) -> dict[str, Any]:
     """Build analyzer-compatible routing metadata for simulated calls."""
-    if subagent_runtime_enabled():
+    if subagent_runtime_enabled(layer=layer):
         return _subagent_routing_metadata(
             layer=layer,
             request_kind=request_kind,
@@ -1588,12 +1611,18 @@ def _subagent_routing_metadata(
 ) -> dict[str, Any]:
     run_dir = Path(_subagent_artifact_dir()) / _safe_token(_subagent_run_id())
     artifact_counts = count_subagent_artifacts(run_dir)
+    configured_layers = sorted(_configured_subagent_runtime_layers())
+    force_reason = (
+        "ai_llm_subagent_runtime_layers=" + ",".join(configured_layers)
+        if configured_layers
+        else "ai_llm_execution_mode=subagent_runtime"
+    )
     return {
         "layer": layer,
         "policy": "manual_force",
         "requested_policy": "manual_force",
         "forced_override": True,
-        "force_reason": "ai_llm_execution_mode=subagent_runtime",
+        "force_reason": force_reason,
         "provider": "subagent_runtime",
         "simulation": False,
         "subject_key": subject_key,
