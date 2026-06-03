@@ -2,11 +2,30 @@
 
 ## Текущий статус
 **Этап:** Веха 6.5 — Business-ready Report Pack
-**Статус фазы:** Веха 6.5 — post-review call-list context pass
+**Статус фазы:** Веха 6.5 — audit/fix pass принят, готовность к следующему тесту
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-01
+**Последнее обновление:** 2026-06-03
 
 ## Что сделано
+- [x] 2026-06-03 — Закрыт audit/fix pass по механизмам `LLM2` и Report Layer
+  после проверки пользователем. **LLM2:** общий runtime prompt вынесен в
+  `llm2_common_runtime.md`; `LLM2A`/`LLM2B` input упрощен без технического
+  ограничения модели; `LLM2C`/`LLM2D` добавлены в рабочий план оптимизации;
+  для смысловых дефектов создан `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md`, чтобы
+  собирать классы проблем и предложения системных правил. **Report Layer:**
+  внедрены `RL-T2/RL-T6/RL-T7/RL-T8`, добавлен rich context для `Суть звонка`,
+  убрана короткая обрезка `220` символов в compact call-list, сохранена
+  доказательная граница: Report Layer не придумывает новые факты, а выбирает и
+  оформляет допущенный материал. **Runtime hardening:** persist layer принимает
+  строковые `agreements`, reporting layer игнорирует не-dict элементы в
+  агрегируемых списках вместо падения. **Verification:** focused pytest для
+  routing/reporting/report-template checks passed; `py_compile` и
+  `node --check scripts/generate_docx_report.js` OK. **Test deliveries:**
+  Тимур `2026-06-01` full-stack OpenAI preview доставлен в Telegram
+  `message_id=368`; ready-data-only LLM3 report `message_id=369`; call-list
+  essence fix rerender `message_id=370`. **Status:** задачи текущего pass
+  закрыты; следующий тест должен запускаться отдельным пользовательским
+  решением и не считается частью этого commit.
 - [x] 2026-06-02 — Добавлен layer-scoped runtime routing для смешанных режимов
   LLM: `AI_LLM_SUBAGENT_RUNTIME_LAYERS` позволяет включать Codex-subagent
   executor только для выбранных слоев, а остальные слои оставлять на
@@ -485,6 +504,7 @@
 - На 2026-06-02 создан верхнеуровневый handoff-документ `docs/RUNTIME_PROFILES.md` для режимов запуска: `cost_optimized`, `max_quality`, `hybrid API + Codex-subagents`, `full Codex-subagent runtime` и `local simulation`. В документе явно закреплено, что "имитировать LLM" в качественной проверке означает замену только runtime executor LLM-узла реальными Codex-agents через `AI_LLM_SUBAGENT_COMMAND=<codex command>`, а contract runner `python /app/report_scripts/llm_subagent_contract_runner.py` является только deterministic smoke/wiring проверкой. Ссылки добавлены в `README.md`, `AGENTS.md`, `docs/CONTEXT_INDEX.md`, `docs/ACTIVE_WORK_STATE.md`; решение закреплено как `ADR-091`.
 - На 2026-06-02 подготовлены дополнительные Kimi / Moonshot provider sources для `LLM1`, `LLM2`, `LLM3`: aliases `kimi_llm1_main`, `kimi_llm2_main`, `kimi_llm3_main`, model `kimi-k2.6`, `api_base=https://api.moonshot.ai/v1`, `api_key_env=MOONSHOT_API_KEY`. Entries добавлены как дополнительные источники в provider pools, но активные fixed aliases оставлены на текущем `cost_optimized` OpenAI-профиле, чтобы контур не переключился без отдельного решения. Для Kimi trial нужно заполнить `MOONSHOT_API_KEY`, переключить нужные `AI_LLM*_FIXED_ACCOUNT_ALIAS`, пересоздать контейнеры и выполнить route-plan check до запуска pipeline.
 - На 2026-06-02 по решению пользователя активирован рекомендуемый Kimi/Moonshot trial profile без запуска pipeline: `LLM1 -> kimi_llm1_main / moonshot-v1-8k`, `LLM2 -> kimi_llm2_main / kimi-k2.6`, `LLM3 -> kimi_llm3_main / kimi-k2.6`. `MOONSHOT_API_KEY` уже применен в `api/worker/beat`; после переключения aliases контейнеры нужно пересоздать и проверить route plan. Реальные Kimi-вызовы и report pipeline запускать только отдельной командой пользователя.
+- На 2026-06-02 выполнен controlled Kimi K2.6 rerun по готовым STT Толегена за `2026-06-01`, но прогон остановлен по просьбе пользователя до отчета. Route-plan подтвердил `LLM2=kimi_llm2_main/kimi-k2.6` и `LLM3=kimi_llm3_main/kimi-k2.6`; однако текущий layered `LLM2A/B/C/D` contract для K2.6 показал блокер: при `8192` completion tokens `LLM2A` ломал JSON или возвращал пустой ответ, при `16384` / `32768` запросы становились слишком долгими, а единственный сохраненный analysis имел `score=0.0`, `stages=0`, `criteria=0`. Отчет через `LLM3` не строился и в Telegram не отправлялся. Итог закреплен в `docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md` и `ADR-093`: Kimi K2.6 не принимать как `LLM2` runtime для полного дня без отдельного упрощения layered contract.
 
 ## Стек решений
 | Компонент | Решение | Статус |

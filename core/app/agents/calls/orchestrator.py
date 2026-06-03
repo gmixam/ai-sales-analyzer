@@ -494,7 +494,10 @@ class CallsManualPilotOrchestrator:
             .filter(Agreement.interaction_id == interaction.id)
             .delete(synchronize_session=False)
         )
-        for item in agreements:
+        for raw_item in agreements:
+            item = self._normalize_agreement_item(raw_item)
+            if item is None:
+                continue
             self.db.add(
                 Agreement(
                     id=uuid4(),
@@ -508,6 +511,30 @@ class CallsManualPilotOrchestrator:
                     status=item.get("status_initial") or "open",
                 )
             )
+
+    @staticmethod
+    def _normalize_agreement_item(item: Any) -> dict[str, Any] | None:
+        """Accept legacy/string agreement items before mirroring them to the DB."""
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            normalized = dict(item)
+            text = (
+                normalized.get("agreement_text")
+                or normalized.get("action")
+                or normalized.get("agreement")
+                or normalized.get("summary")
+                or normalized.get("description")
+            )
+            if text is not None:
+                normalized["agreement_text"] = str(text).strip()
+            if str(normalized.get("agreement_text") or "").strip():
+                return normalized
+            return None
+        text = str(item).strip()
+        if not text:
+            return None
+        return {"agreement_text": text}
 
     @staticmethod
     def _normalize_agreement_deadline(item: dict[str, Any]) -> str | None:

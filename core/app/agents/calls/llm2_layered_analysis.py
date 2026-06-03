@@ -133,9 +133,9 @@ def normalize_llm2_layered_analysis(
     accepted_proof_cards = _accepted_proof_cards_by_id(proof_cards)
 
     criteria_results = _as_list(
-        final_from_2d.get("criteria_results")
+        llm2b.get("criteria_results")
+        or final_from_2d.get("criteria_results")
         or scores_detail.get("criteria_results")
-        or llm2b.get("criteria_results")
     )
     scores_detail["criteria_results"] = _normalized_criteria_results(
         criteria_results=criteria_results,
@@ -145,11 +145,11 @@ def normalize_llm2_layered_analysis(
         scores_detail["criteria_results"]
     )
     scores_detail["strengths"] = _normalized_strengths(
-        _as_list(final_from_2d.get("strengths") or llm2b.get("strength_claims")),
+        _as_list(llm2b.get("strength_claims") or final_from_2d.get("strengths")),
         evidence_by_id=evidence_by_id,
     )
     scores_detail["gaps"] = _normalized_gaps(
-        gap_claims=_as_list(final_from_2d.get("gaps") or llm2b.get("gap_claims")),
+        gap_claims=_as_list(llm2b.get("gap_claims") or final_from_2d.get("gaps")),
         proof_cards_by_claim_id=_accepted_proof_cards_by_claim_id(proof_cards),
         evidence_by_id=evidence_by_id,
     )
@@ -178,6 +178,9 @@ def normalize_llm2_layered_analysis(
         proof_cards=proof_cards,
     )
     _populate_checklist_score(scores_detail)
+    _repair_vague_availability_follow_up(scores_detail)
+    _repair_recommendation_like_follow_up(scores_detail)
+    _attach_semantic_diagnostics(scores_detail)
 
     validation_result = (
         validate_report_evidence(scores_detail, transcript) if validate_evidence else None
@@ -1047,6 +1050,275 @@ def _populate_checklist_score(scores_detail: dict[str, Any]) -> None:
         }
     )
     scores_detail["score"] = {"checklist_score": checklist_score}
+
+
+def _repair_vague_availability_follow_up(scores_detail: dict[str, Any]) -> None:
+    """Remove vague availability from callback/agreement fields without rejecting analysis."""
+
+    summary = _as_dict(scores_detail.get("summary"))
+    follow_up = _as_dict(scores_detail.get("follow_up"))
+    agreements = _as_list(scores_detail.get("agreements"))
+    report_evidence = _as_dict(scores_detail.get("report_evidence"))
+    call_essence = _as_dict(report_evidence.get("call_essence"))
+    candidate_texts = [
+        summary.get("outcome_code"),
+        summary.get("outcome_text"),
+        summary.get("next_step_text"),
+        follow_up.get("next_step"),
+        follow_up.get("next_step_text"),
+        follow_up.get("due_date_text"),
+        call_essence.get("agreement"),
+        call_essence.get("next_step"),
+    ]
+    for agreement in agreements:
+        item = _as_dict(agreement)
+        candidate_texts.extend(
+            [
+                item.get("action"),
+                item.get("agreement"),
+                item.get("summary"),
+                item.get("description"),
+                item.get("timing"),
+                item.get("owner"),
+            ]
+        )
+    joined = " ".join(str(item or "") for item in candidate_texts)
+    if not _is_vague_availability_text(joined) or _has_concrete_next_step_signal(joined):
+        return
+
+    repairs: list[dict[str, Any]] = []
+    outcome_code = _lower_str(summary.get("outcome_code"))
+    if outcome_code in {"callback_planned", "agreement", "rescheduled"}:
+        repairs.append(
+            {
+                "code": "vague_availability_not_callback",
+                "field": "summary.outcome_code",
+                "original": summary.get("outcome_code"),
+                "replacement": "open",
+            }
+        )
+        summary["outcome_code"] = "open"
+        summary["outcome_text"] = "Конкретный следующий шаг не зафиксирован"
+        if _is_vague_availability_text(summary.get("next_step_text")):
+            summary["next_step_text"] = None
+
+    if _is_vague_availability_text(json_like_text(follow_up)):
+        repairs.append(
+            {
+                "code": "vague_availability_removed_from_follow_up",
+                "field": "follow_up",
+                "original": deepcopy(follow_up),
+            }
+        )
+        follow_up = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "vague_availability_not_concrete_next_step",
+        }
+
+    kept_agreements = []
+    removed_agreements = []
+    for agreement in agreements:
+        if _is_vague_availability_text(json_like_text(agreement)):
+            removed_agreements.append(agreement)
+        else:
+            kept_agreements.append(agreement)
+    if removed_agreements:
+        repairs.append(
+            {
+                "code": "vague_availability_removed_from_agreements",
+                "field": "agreements",
+                "removed_count": len(removed_agreements),
+            }
+        )
+
+    if _is_vague_availability_text(call_essence.get("agreement")):
+        call_essence.pop("agreement", None)
+    if _is_vague_availability_text(call_essence.get("next_step")):
+        call_essence.pop("next_step", None)
+
+    scores_detail["summary"] = summary
+    scores_detail["follow_up"] = follow_up
+    scores_detail["agreements"] = kept_agreements
+    if call_essence:
+        report_evidence["call_essence"] = call_essence
+        scores_detail["report_evidence"] = report_evidence
+    if repairs:
+        diagnostics = _as_dict(scores_detail.get("diagnostics"))
+        diagnostics.setdefault("semantic_repairs", []).extend(repairs)
+        scores_detail["diagnostics"] = diagnostics
+
+
+def _repair_recommendation_like_follow_up(scores_detail: dict[str, Any]) -> None:
+    """Keep coaching recommendations out of factual follow-up fields."""
+
+    summary = _as_dict(scores_detail.get("summary"))
+    follow_up = _as_dict(scores_detail.get("follow_up"))
+    report_evidence = _as_dict(scores_detail.get("report_evidence"))
+    call_essence = _as_dict(report_evidence.get("call_essence"))
+    candidate_texts = [
+        summary.get("next_step_text"),
+        follow_up.get("next_step"),
+        follow_up.get("next_step_text"),
+        follow_up.get("action"),
+        call_essence.get("next_step"),
+    ]
+    joined = " ".join(str(item or "") for item in candidate_texts)
+    if not _is_recommendation_like_follow_up(joined):
+        return
+
+    repairs: list[dict[str, Any]] = []
+    if _is_recommendation_like_follow_up(summary.get("next_step_text")):
+        repairs.append(
+            {
+                "code": "recommendation_like_next_step_removed",
+                "field": "summary.next_step_text",
+                "original": summary.get("next_step_text"),
+            }
+        )
+        summary["next_step_text"] = None
+    if _is_recommendation_like_follow_up(json_like_text(follow_up)):
+        repairs.append(
+            {
+                "code": "recommendation_like_follow_up_removed",
+                "field": "follow_up",
+                "original": deepcopy(follow_up),
+            }
+        )
+        follow_up = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "recommendation_not_factual_follow_up",
+        }
+    if _is_recommendation_like_follow_up(call_essence.get("next_step")):
+        repairs.append(
+            {
+                "code": "recommendation_like_call_essence_next_step_removed",
+                "field": "report_evidence.call_essence.next_step",
+                "original": call_essence.get("next_step"),
+            }
+        )
+        call_essence.pop("next_step", None)
+
+    scores_detail["summary"] = summary
+    scores_detail["follow_up"] = follow_up
+    if call_essence:
+        report_evidence["call_essence"] = call_essence
+        scores_detail["report_evidence"] = report_evidence
+    if repairs:
+        diagnostics = _as_dict(scores_detail.get("diagnostics"))
+        diagnostics.setdefault("semantic_repairs", []).extend(repairs)
+        scores_detail["diagnostics"] = diagnostics
+
+
+def _attach_semantic_diagnostics(scores_detail: dict[str, Any]) -> None:
+    diagnostics = _as_dict(scores_detail.get("diagnostics"))
+    warnings = list(diagnostics.get("semantic_warnings") or [])
+    criteria = _as_list(scores_detail.get("criteria_results"))
+    empty_evidence_count = sum(
+        1 for item in criteria if not _str_or_none(_as_dict(item).get("evidence"))
+    )
+    if criteria and empty_evidence_count:
+        warnings.append(
+            {
+                "code": "criteria_evidence_empty",
+                "empty_count": empty_evidence_count,
+                "total_count": len(criteria),
+            }
+        )
+    if _is_vague_availability_text(json_like_text(scores_detail.get("follow_up"))) or any(
+        _is_vague_availability_text(json_like_text(item))
+        for item in _as_list(scores_detail.get("agreements"))
+    ):
+        warnings.append({"code": "vague_availability_present_after_repair"})
+    if _is_recommendation_like_follow_up(json_like_text(scores_detail.get("follow_up"))):
+        warnings.append({"code": "recommendation_like_follow_up_present_after_repair"})
+    if warnings:
+        diagnostics["semantic_warnings"] = warnings
+        scores_detail["diagnostics"] = diagnostics
+
+
+def _is_vague_availability_text(value: Any) -> bool:
+    text = _lower_str(value).replace("ё", "е")
+    if not text:
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "можете обращаться",
+            "можете обратиться",
+            "можно обращаться",
+            "можно обратиться",
+            "обращайтесь",
+            "если будут вопросы",
+            "если возникнут вопросы",
+            "в случае возникновения вопросов",
+            "при возникновении вопросов",
+            "буду подробнее рассказать",
+            "буду подробнее рассказать, помочь",
+            "помочь если будут вопросы",
+            "reach out if",
+            "contact us if",
+            "if you have questions",
+        )
+    )
+
+
+def _has_concrete_next_step_signal(value: Any) -> bool:
+    text = _lower_str(value).replace("ё", "е")
+    if not text:
+        return False
+    if any(
+        marker in text
+        for marker in (
+            "завтра",
+            "сегодня",
+            "послезавтра",
+            "понедельник",
+            "вторник",
+            "среду",
+            "среда",
+            "четверг",
+            "пятницу",
+            "пятница",
+            "созвон",
+            "перезвон",
+            "презентац",
+            "демо",
+            "отправлю",
+            "пришлю",
+        )
+    ):
+        return True
+    return any(ch.isdigit() for ch in text)
+
+
+def _is_recommendation_like_follow_up(value: Any) -> bool:
+    text = _lower_str(value).replace("ё", "е")
+    if not text:
+        return False
+    recommendation_markers = (
+        "обратитесь к клиент",
+        "свяжитесь с клиент",
+        "уточните у клиент",
+        "предложите клиент",
+        "объясните клиент",
+        "зафиксируйте",
+        "добавьте конкрет",
+        "рекомендуется",
+        "следует",
+        "нужно",
+        "надо",
+        "coach",
+        "recommend",
+    )
+    return any(marker in text for marker in recommendation_markers)
+
+
+def json_like_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(json_like_text(item) for item in value.values())
+    if isinstance(value, list):
+        return " ".join(json_like_text(item) for item in value)
+    return str(value or "")
 
 
 def _score_level(percent: float) -> str:

@@ -39,6 +39,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     MEANINGFUL_NO_TRANSCRIPT_MIN_DURATION_SEC,
     ReportArtifact,
     ReportRunFilters,
+    _apply_call_breakdown_quality_gate,
     _build_meaningful_call_list,
     _build_call_tomorrow,
     _apply_additional_situations_quality_gate,
@@ -47,6 +48,7 @@ from app.agents.calls.reporting import (  # noqa: E402
     _semantic_case_block_rejection_reason,
     _call_tomorrow_rejection_reason,
     _classify_meaningful_call,
+    _compact_call_list_visible_context,
     _select_stable_analysis_for_reporting,
     _validated_report_block_candidates,
     classify_provider_error,
@@ -1035,6 +1037,43 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["stage_score_scope"]["scored_calls_total"], 3)
         self.assertEqual(payload["stage_score_scope"]["meaningful_calls_total"], 3)
         self.assertIn("Посчитано по 3 разобранным звонкам из 3", payload["stage_score_scope"]["note"])
+
+    def test_manager_daily_stage_scores_ignore_non_dict_score_items(self) -> None:
+        artifact = _artifact(70.0, "basic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            "неструктурная строка этапа",
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "stage_score": 1,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    "неструктурная строка критерия",
+                    {
+                        "criterion_code": "cs_permission",
+                        "criterion_name": "Проверка уместности",
+                        "score": 1,
+                        "max_score": 2,
+                    },
+                ],
+            },
+        ]
+        artifact.analysis.scores_detail["gaps"] = ["неструктурная строка gap"]
+        artifact.analysis.scores_detail["evidence_fragments"] = ["неструктурная строка evidence"]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        stage = next(item for item in payload["score_by_stage"] if item["stage_code"] == "contact_start")
+        self.assertEqual(stage["score"], 5.0)
+        self.assertEqual(stage["calls_count"], 1)
 
     def test_manager_daily_stage_scores_expose_low_coverage_scope(self) -> None:
         scored = _artifact(70.0, "basic")
@@ -3225,9 +3264,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(row["call_list_context_source"], "deterministic_context_quality_gate")
         self.assertIn("Клиент отказался", row["call_list_context"])
         self.assertNotIn("да…", rendered_context)
-        self.assertTrue(
-            any(item["reason"] == "truncated_context" for item in row["call_list_context_rejected"])
-        )
+        self.assertEqual(row["call_list_context_rejected"], [])
 
     def test_sfb5_call_list_prefers_manager_visible_summary_over_truncated_short_context(self) -> None:
         artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:30:00")
@@ -3281,9 +3318,70 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(payload["call_list_context_quality"]["compacted_context_count"], 1)
         self.assertIn("покажет их коллегам", row["call_list_context"])
         self.assertIn("Дата возврата", row["call_list_context_rich"])
-        self.assertNotIn("Дата возврата", rendered_context)
-        self.assertLessEqual(len(rendered_context), 150)
+        self.assertLessEqual(len(row["call_list_context"]), 220)
         self.assertNotIn("кол…", rendered_context)
+
+    def test_call_list_visible_context_preserves_final_outcome_when_compacted(self) -> None:
+        context = (
+            "Клиент попросил отправить материалы в WhatsApp и сказал, что покажет их коллегам. "
+            "Менеджер отправляет материалы после звонка и оставляет контакт открытым. "
+            "Дата возврата к обсуждению в звонке не закреплена, поэтому следующий шаг нужно согласовать отдельно."
+        )
+
+        compact = _compact_call_list_visible_context(context)
+
+        self.assertLessEqual(len(compact), 220)
+        self.assertIn("покажет их коллегам", compact)
+        self.assertIn("Дата возврата", compact)
+        self.assertNotIn("...", compact)
+        self.assertNotIn("…", compact)
+
+    def test_call_list_prefers_structured_outcome_over_generic_short_context(self) -> None:
+        artifact = _artifact(64.0, "basic", call_date="2026-05-04 09:30:00")
+        artifact.interaction.text = (
+            "Менеджер представился и предложил обсудить ЭДО. "
+            "Клиент попросил отправить материалы и вернуться после внутреннего согласования."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["follow_up"] = {
+            "next_step_fixed": False,
+            "reason_not_fixed": "Клиент попросил вернуться после внутреннего согласования.",
+            "due_date_text": "завтра",
+        }
+        detail.update(_valid_report_evidence_detail())
+        detail["report_evidence"]["business_outcome"] = {
+            "status": "open",
+            "confidence": "high",
+            "reason": "Клиент попросил отправить материалы и вернуться после внутреннего согласования.",
+            "evidence_quote": "вернуться после внутреннего согласования",
+            "evidence_speaker": "client",
+            "needs_human_review": False,
+        }
+        detail["report_evidence"]["call_report_summary"]["short_topic"] = "Материалы по ЭДО"
+        detail["report_evidence"]["call_report_summary"]["short_context"] = (
+            "Менеджер представился и кратко рассказал о компании."
+        )
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-05-04", "date_to": "2026-05-04"},
+            filters=ReportRunFilters(date_from="2026-05-04", date_to="2026-05-04"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        row = payload["call_list"][0]
+        self.assertEqual(row["call_list_context_source"], "report_evidence.business_outcome.call_essence")
+        self.assertIn("Материалы по ЭДО", row["call_list_context"])
+        self.assertIn("внутреннего согласования", row["call_list_context"])
+        self.assertNotIn("кратко рассказал о компании", row["call_list_context"])
 
     def test_step8ah11e_call_list_context_fallbacks_avoid_bare_dash_for_sales_rows(self) -> None:
         agreed = _artifact(64.0, "basic", call_date="2026-05-04 09:00:00")
@@ -4508,10 +4606,58 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertGreaterEqual(payload["call_breakdown_quality"]["filtered_rows_count"], 1)
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
         self.assertEqual(sections["call_breakdown"]["rows"], [])
+        self.assertIn("Недостаточно подтверждённых фрагментов", payload["call_breakdown"]["summary_line"])
         rendered = render_report_email(payload)["text"]
-        self.assertIn("Недостаточно подтверждённых фрагментов", rendered)
         self.assertNotIn("Нет подтверждающего фрагмента в сохранённых данных", rendered)
         self.assertNotIn("Фрагмент: —", rendered)
+
+    def test_call_breakdown_quality_gate_trims_extra_rows_with_diagnostics(self) -> None:
+        rows = [
+            [
+                f"Момент {index}",
+                "Менеджер не закрепил следующий шаг по обсуждению ЭДО.",
+                "Клиент обсуждает документы и электронный документооборот, но финальный срок следующего контакта не звучит.",
+                "Зафиксировать дату и ответственного за следующий шаг.",
+            ]
+            for index in range(1, 6)
+        ]
+
+        result, quality = _apply_call_breakdown_quality_gate(
+            call_breakdown={
+                "call_breakdown_source": "report_evidence.call_breakdown_composer.v2",
+                "stage_code": "completion_next_step",
+                "rows": rows,
+            },
+            daily_focus={"stage_code": "completion_next_step"},
+        )
+
+        self.assertEqual(len(result["rows"]), 4)
+        self.assertEqual(quality["status"], "warning")
+        self.assertEqual(quality["extra_rows_trimmed_count"], 1)
+        self.assertEqual(quality["filtered_reasons"]["extra_rows_trimmed"], 1)
+        self.assertGreaterEqual(quality["issue_class_counts"]["format_issue"], 1)
+
+    def test_call_breakdown_quality_gate_pads_short_row_with_format_diagnostic(self) -> None:
+        result, quality = _apply_call_breakdown_quality_gate(
+            call_breakdown={
+                "call_breakdown_source": "report_evidence.call_breakdown_composer.v2",
+                "stage_code": "qualification_primary",
+                "rows": [
+                    [
+                        "Момент 1",
+                        "Менеджер не уточнил текущий процесс клиента.",
+                        "Клиент говорит про документы и электронный документооборот, но текущий процесс не раскрыт.",
+                    ]
+                ],
+            },
+            daily_focus={"stage_code": "qualification_primary"},
+        )
+
+        self.assertEqual(quality["status"], "warning")
+        self.assertEqual(quality["format_normalized_rows_count"], 1)
+        self.assertEqual(quality["issue_class_counts"]["format_issue"], 1)
+        self.assertEqual(len(result["rows"][0]), 4)
+        self.assertEqual(result["rows"][0][3], "")
 
     def test_step8ah11h_call_breakdown_filters_positive_recommendation_for_problem_row(self) -> None:
         artifact = _artifact(42.0, "problematic")
@@ -4783,12 +4929,17 @@ class ManualReportingPayloadTests(unittest.TestCase):
         sm = payload["selection_model"]
         required_counters = [
             "raw_calls_total",
+            "transcript_calls_total",
+            "no_transcript_calls_total",
             "meaningful_calls_total",
             "service_calls_total",
             "coaching_candidate_calls_total",
             "analyzed_calls_total",
             "included_in_report_total",
             "exclusion_reasons",
+            "meaningful_policy",
+            "excluded_calls_total",
+            "excluded_call_samples",
         ]
         for field in required_counters:
             self.assertIn(field, sm, f"selection_model missing field: {field}")
@@ -4803,6 +4954,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
         ]
         for code in required_reasons:
             self.assertIn(code, reasons, f"exclusion_reasons missing code: {code}")
+        self.assertTrue(sm["meaningful_policy"]["transcript_overrides_duration"])
+        self.assertTrue(sm["meaningful_policy"]["duration_filters_apply_only_without_transcript"])
 
     def test_build_manager_daily_payload_selection_model_counts_correctly(self) -> None:
         """SM-1: selection_model counters are consistent with provided artifacts."""
@@ -5085,8 +5238,36 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertEqual(counters["raw_calls_total"], 2)
         self.assertEqual(counters["meaningful_calls_total"], 1)
+        self.assertEqual(counters["transcript_calls_total"], 1)
+        self.assertEqual(counters["no_transcript_calls_total"], 1)
         self.assertEqual(counters["exclusion_reasons"]["too_short_or_no_speech"], 1)
         self.assertEqual(counters["exclusion_reasons"]["ivr_or_autoanswer"], 0)
+        self.assertEqual(counters["excluded_calls_total"], 1)
+        self.assertEqual(counters["excluded_call_samples"][0]["reason"], "too_short_or_no_speech")
+        self.assertFalse(counters["excluded_call_samples"][0]["has_transcript"])
+
+    def test_build_selection_model_counters_short_transcript_not_excluded(self) -> None:
+        short_with_transcript = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                duration_sec=5,
+                text="Клиент попросил отправить материалы.",
+                metadata_={},
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=None,
+        )
+
+        counters = _build_selection_model_counters(
+            window_artifacts=[short_with_transcript],
+            usable_artifacts=[],
+        )
+
+        self.assertEqual(counters["meaningful_calls_total"], 1)
+        self.assertEqual(counters["transcript_calls_total"], 1)
+        self.assertEqual(counters["excluded_calls_total"], 0)
+        self.assertEqual(counters["excluded_call_samples"], [])
 
     def test_build_selection_model_counters_sm2_ivr_counted(self) -> None:
         """SM-2: ivr_or_autoanswer exclusion reason is populated from real classification."""

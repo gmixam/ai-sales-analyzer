@@ -166,12 +166,36 @@ class SituationDayTemplateTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(rows[0][0], "Договорённость")
-        self.assertEqual(rows[0][1], "Да")
-        self.assertEqual(rows[0][2], "10:00")
-        self.assertIn("Алия · 10:00", rows[0][3])
-        self.assertIn("Клиент попросил КП", rows[0][3])
-        self.assertIn("Договорились отправить КП в WhatsApp", rows[0][3])
+        self.assertEqual(rows[0][0], "Договорённость · Низкий")
+        self.assertEqual(rows[0][1], "Алия · 10:00")
+        self.assertIn("Клиент попросил КП", rows[0][2])
+        self.assertIn("Договорились отправить КП в WhatsApp", rows[0][2])
+        self.assertIn("конкретном следующем шаге", rows[0][3])
+
+    def test_call_list_compact_rows_use_rich_context_without_220_char_truncation(self) -> None:
+        report_templates = _load_report_templates_module()
+        rich_context = (
+            "Менеджер обозначил тему звонка и уточнил статус рассмотрения предложения. "
+            "Клиент сообщил, что вопрос еще обсуждают внутри с отделами и юристами. "
+            "Финального решения нет; стороны договорились вернуться к обсуждению на следующей неделе "
+            "после внутренних согласований."
+        )
+
+        rows = report_templates._build_call_list_compact_rows(
+            call_list_raw=[
+                {
+                    "interaction_id": "call-1",
+                    "client_call_reference": "Алия · 10:00",
+                    "call_list_status": "open",
+                    "call_list_context": rich_context[:170],
+                    "call_list_context_rich": rich_context,
+                }
+            ],
+            call_tomorrow_contacts=[],
+        )
+
+        self.assertIn("после внутренних согласований", rows[0][2])
+        self.assertNotIn("...", rows[0][2])
 
     def test_manager_daily_pdf_insufficient_situation_day_hides_detail_rows(self) -> None:
         report_templates = _load_report_templates_module()

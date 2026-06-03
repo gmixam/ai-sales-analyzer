@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     ai_llm_subagent_run_id: str = Field(default="")
     ai_llm_subagent_artifact_dir: str = Field(default="/tmp/asa_llm_subagent_runs")
     ai_llm_subagent_timeout_sec: int = Field(default=300, ge=1)
+    ai_llm2_input_profile: str = Field(default="full")
     ai_llm2_report_evidence_validation_enabled: bool = Field(default=False)
     ai_llm2_semantic_validation_enabled: bool = Field(default=False)
 

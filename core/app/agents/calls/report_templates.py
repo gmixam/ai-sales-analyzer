@@ -5046,7 +5046,8 @@ def _call_list_essence_label(row: dict[str, Any], *, include_contact: bool = Tru
         "",
     )
     context = _manager_reader_value(
-        row.get("call_list_context")
+        row.get("call_list_context_rich")
+        or row.get("call_list_context")
         or _call_context_label(
             str(
                 (
@@ -5069,10 +5070,8 @@ def _call_list_essence_label(row: dict[str, Any], *, include_contact: bool = Tru
         parts.append(topic)
     if context and context != "—":
         parts.append(context)
-    return _call_list_trim_cell(
-        ". ".join(part.strip().rstrip(".") for part in parts if part and part.strip()).strip(),
-        limit=220,
-    ) or "—"
+    text = ". ".join(part.strip().rstrip(".") for part in parts if part and part.strip()).strip()
+    return _call_list_trim_cell(text, limit=700) or "—"
 
 
 def _call_list_trim_cell(value: Any, *, limit: int) -> str:

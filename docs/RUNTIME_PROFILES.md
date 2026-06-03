@@ -184,12 +184,23 @@ AI_LLM_SUBAGENT_RUN_ID is unique for the run
 Назначение: попробовать Kimi как дополнительный OpenAI-compatible источник для
 `LLM1`, `LLM2` и/или `LLM3` без удаления текущих OpenAI entries.
 
-Текущий рекомендуемый Kimi/Moonshot trial:
+Текущий статус на 2026-06-02: `LLM2=kimi-k2.6` не принят для текущего layered
+`LLM2A/B/C/D` контракта. Подробный handoff:
+
+```text
+docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md
+```
+
+Не запускать полный день через `LLM2=kimi-k2.6` без отдельного упрощения
+`LLM2` contract и one-call smoke. Kimi K2.6 можно оставлять как trial source или
+использовать для `LLM3` только после отдельной проверки report composer.
+
+Текущий рекомендуемый Kimi/Moonshot trial на 2026-06-03:
 
 ```text
 LLM1 -> alias kimi_llm1_main -> model moonshot-v1-8k
-LLM2 -> alias kimi_llm2_main -> model kimi-k2.6
-LLM3 -> alias kimi_llm3_main -> model kimi-k2.6
+LLM2 -> alias kimi_llm2_main -> model moonshot-v1-128k
+LLM3 -> alias kimi_llm3_main -> model moonshot-v1-128k
 ```
 
 Важно: в `AI_LLM*_PROVIDERS_JSON` поле `provider` остается `openai`, потому что
@@ -199,7 +210,7 @@ LLM3 -> alias kimi_llm3_main -> model kimi-k2.6
 ```text
 api_base=https://api.moonshot.ai/v1
 api_key_env=MOONSHOT_API_KEY
-model=moonshot-v1-8k or kimi-k2.6
+model=moonshot-v1-8k, moonshot-v1-128k, or kimi-k2.6
 ```
 
 Env для ключа:
@@ -235,8 +246,8 @@ LLM3_ENABLED=true
 
 ```text
 llm1_route=kimi_llm1_main:moonshot-v1-8k
-llm2_route=kimi_llm2_main:kimi-k2.6
-llm3_route=kimi_llm3_main:kimi-k2.6
+llm2_route=kimi_llm2_main:moonshot-v1-128k
+llm3_route=kimi_llm3_main:moonshot-v1-128k
 ```
 
 Не запускать Kimi trial без заполненного `MOONSHOT_API_KEY`.

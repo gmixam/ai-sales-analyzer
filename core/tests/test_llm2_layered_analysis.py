@@ -222,6 +222,117 @@ class LLM2LayeredAnalysisTests(unittest.TestCase):
         self.assertEqual(layered_metadata["proof_card_counts"]["proven"], 1)
         self.assertEqual(layered_metadata["proof_card_counts"]["accepted"], 1)
 
+    def test_llm2b_scoring_is_source_of_truth_when_llm2d_omits_evidence(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2d_artifact"]["final_normalized_analysis"]["criteria_results"] = [
+            {
+                "criterion_code": "sf_next_step_clarity",
+                "criterion_name": "Следующий шаг понятен обеим сторонам",
+                "stage_code": "completion_next_step",
+                "applicable": True,
+                "score": 2,
+                "max_score": 2,
+                "comment": "",
+                "evidence": "",
+                "scene_ids": [],
+                "evidence_ids": [],
+            }
+        ]
+
+        result = normalize_llm2_layered_analysis(artifact, transcript=TRANSCRIPT)
+
+        self.assertTrue(result.is_valid)
+        criterion = result.scores_detail["criteria_results"][0]
+        self.assertEqual(criterion["score"], 1)
+        self.assertEqual(criterion["evidence_ids"], ["ev_001", "ev_002"])
+        self.assertIn("Please send the materials", criterion["evidence"])
+        self.assertIn(
+            "Sure, I will send the information",
+            result.scores_detail["score_by_stage"][0]["criteria_results"][0]["evidence"],
+        )
+
+    def test_vague_availability_is_not_callback_or_agreement(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2d_artifact"]["final_normalized_analysis"].update(
+            {
+                "summary": {
+                    "outcome_code": "callback_planned",
+                    "outcome_text": "Обратный звонок запланирован",
+                    "next_step_text": "Обратитесь в случае возникновения вопросов",
+                },
+                "follow_up": {
+                    "next_step": "Обратитесь в случае возникновения вопросов",
+                },
+                "agreements": [
+                    {
+                        "action": "обратиться в случае возникновения вопросов",
+                        "owner": "client",
+                        "timing": "не определено",
+                    }
+                ],
+            }
+        )
+
+        result = normalize_llm2_layered_analysis(
+            artifact,
+            transcript=TRANSCRIPT,
+            validate_evidence=False,
+        )
+
+        detail = result.scores_detail
+        self.assertEqual(detail["summary"]["outcome_code"], "open")
+        self.assertEqual(detail["follow_up"]["next_step_fixed"], False)
+        self.assertEqual(
+            detail["follow_up"]["reason_not_fixed"],
+            "vague_availability_not_concrete_next_step",
+        )
+        self.assertEqual(detail["agreements"], [])
+        repair_codes = {
+            item["code"]
+            for item in detail["diagnostics"].get("semantic_repairs", [])
+        }
+        self.assertIn("vague_availability_not_callback", repair_codes)
+        self.assertIn("vague_availability_removed_from_agreements", repair_codes)
+
+    def test_recommendation_like_follow_up_is_not_persisted_as_fact(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2d_artifact"]["final_normalized_analysis"].update(
+            {
+                "summary": {
+                    "outcome_code": "open",
+                    "outcome_text": "Клиент пока не зафиксировал следующий шаг",
+                    "next_step_text": (
+                        "Обратитесь к клиенту с подробным объяснением преимущества ЭДО."
+                    ),
+                },
+                "follow_up": {
+                    "next_step": (
+                        "Обратитесь к клиенту с подробным объяснением преимущества ЭДО."
+                    ),
+                },
+            }
+        )
+
+        result = normalize_llm2_layered_analysis(
+            artifact,
+            transcript=TRANSCRIPT,
+            validate_evidence=False,
+        )
+
+        detail = result.scores_detail
+        self.assertIsNone(detail["summary"].get("next_step_text"))
+        self.assertEqual(detail["follow_up"]["next_step_fixed"], False)
+        self.assertEqual(
+            detail["follow_up"]["reason_not_fixed"],
+            "recommendation_not_factual_follow_up",
+        )
+        repair_codes = {
+            item["code"]
+            for item in detail["diagnostics"].get("semantic_repairs", [])
+        }
+        self.assertIn("recommendation_like_follow_up_removed", repair_codes)
+        self.assertIn("recommendation_like_next_step_removed", repair_codes)
+
     def test_rejected_proof_card_stays_in_audit_but_not_manager_facing_guidance(self) -> None:
         artifact = _layered_artifact()
         proof_card = artifact["llm2c_artifact"]["proof_cards"][0]

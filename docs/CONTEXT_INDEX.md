@@ -22,7 +22,66 @@ pending approval gates и то, что нужно от пользователя.
 `status: waiting_for_user`, агент не должен продолжать реализацию до ответа
 пользователя.
 
-## Текущая рабочая рамка на 2026-05-27
+## Текущая рабочая рамка на 2026-06-03
+
+### Актуализация 2026-06-03: audit/fix pass закрыт
+
+Текущий pass по аудиту и исправлениям механизма принят пользователем после
+визуальной проверки отчета. Следующий агент должен считать эти изменения
+базовой точкой, а новый прогон начинать только как отдельную задачу.
+
+Что важно открыть перед новым тестом:
+
+```text
+/root/ai-sales-analyzer/docs/ACTIVE_WORK_STATE.md
+/root/ai-sales-analyzer/docs/PROGRESS.md
+/root/ai-sales-analyzer/docs/DECISIONS.md
+/root/ai-sales-analyzer/docs/RUNTIME_PROFILES.md
+/root/ai-sales-analyzer/TMP_REPORT_LAYER_AUDIT.md
+/root/ai-sales-analyzer/TMP_LLM2_INPUT_OPTIMIZATION_TASKS.md
+/root/ai-sales-analyzer/TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md
+```
+
+Короткий итог закрытого pass:
+
+- `LLM2A/LLM2B/common prompt` переработаны для более компактного input без
+  provider-specific условий;
+- `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md` является новым рабочим документом для
+  формирования предложений по системным правилам и классам смысловых дефектов;
+- Report Layer audit tasks `RL-T2/RL-T6/RL-T7/RL-T8` внедрены;
+- `Все звонки дня -> Суть звонка` теперь использует rich context и не режется
+  прежним коротким лимитом;
+- Тимур `2026-06-01` проверен через OpenAI-compatible preview, но полный
+  manager-facing отчет по дню не считается готовым из-за неполного coverage.
+
+### Актуализация 2026-06-02: LLM2 compact input и semantic defect registry
+
+Текущая активная работа сместилась к оптимизации и калибровке `LLM-2`:
+
+- compact input profile для `LLM2A/B/C/D`;
+- фактическое измерение size/tokens/time/repair по pass-ам;
+- сбор смысловых дефектов LLM2 в отдельный registry;
+- вывод системных правил вместо точечных prompt-хаков.
+
+Дополнительные текущие рабочие файлы:
+
+```text
+/root/ai-sales-analyzer/TMP_LLM2_INPUT_OPTIMIZATION_TASKS.md
+/root/ai-sales-analyzer/TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md
+/root/ai-sales-analyzer/docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md
+```
+
+`TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md` фиксирует смысловые классы проблем
+вроде false callback/follow-up из фразы "можете обращаться", утечки
+recommendation в factual follow_up, score inflation и ownership
+`LLM2B`/`LLM2D`/adapter. Следующий агент должен смотреть туда перед новыми
+точечными исправлениями качества `LLM-2`.
+
+`docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md` фиксирует итог Kimi K2.6 trial:
+`LLM2` и `LLM3` маршрутизируются на `kimi-k2.6`, но текущий layered `LLM2`
+contract для K2.6 пока blocked из-за невалидного/пустого JSON, медленных
+ответов и пустых `stage_scores`. Не запускать полный день K2.6 без отдельной
+contract simplification задачи.
 
 Сейчас активная задача: возврат к исходной точке аудита всего механизма анализа,
 а не продолжение локальных Gate 5 block fixes. Проверяется цепочка

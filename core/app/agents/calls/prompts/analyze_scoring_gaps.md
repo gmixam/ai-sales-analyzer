@@ -38,14 +38,18 @@ The input is one JSON object:
 ```json
 {
   "call_id": "string",
-  "llm2a_artifact": {},
-  "checklist_definition": {},
-  "mvp1_contract_shape": {}
+  "llm2_admission_gate": {},
+  "scenes": [],
+  "evidence_ledger": [],
+  "business_outcome_signal": {},
+  "compact_scoring_rubric": [],
+  "task_contract": {}
 }
 ```
 
-Use only `llm2a_artifact`, `checklist_definition`, and explicitly supplied
-contract shape. Do not use outside knowledge to fill missing scenes or evidence.
+Use only the supplied scenes, evidence ledger, business outcome signal, compact
+scoring rubric, admission gate, and task contract. Do not use outside knowledge
+to fill missing scenes or evidence.
 
 ## Global Rules
 
@@ -67,6 +71,28 @@ contract shape. Do not use outside knowledge to fill missing scenes or evidence.
 - Do not select, name, fit, route, or prepare report blocks.
 - Do not emit `semantic_case`, `block_candidates`, `report_block_fit`, or
   legacy report-routing arrays.
+
+## Scoring Guidance
+
+The compact scoring rubric intentionally does not repeat detailed `score_rules`
+for every criterion. Apply these general scoring principles to each criterion:
+
+- `0`: the expected behavior is absent, contradicted by the call, or not
+  supported by scenes/evidence.
+- Partial score: the expected behavior is present, but incomplete, weak, vague,
+  late, not clearly confirmed by the client, or only partially supported by
+  scenes/evidence.
+- Maximum score: the expected behavior is clearly present and supported by
+  concrete scenes/evidence.
+- `applicable=false` only when the stage or criterion genuinely did not occur
+  in the call context. Do not use applicability to hide a weak observed
+  behavior.
+- Absence-based scoring must cite relevant `scene_ids`/`evidence_ids` when the
+  absence can be inferred from the observed dialogue, or explain
+  `missing_evidence_reason` when the input is insufficient.
+- Vague availability such as "можете обращаться" is not a fixed next step,
+  callback, commitment, owner, or deadline unless the dialogue also contains a
+  concrete action, agreed timing, owner, or agreed condition.
 
 ## Output
 

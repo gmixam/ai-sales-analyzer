@@ -38,16 +38,24 @@ The input is one JSON object:
 {
   "call_id": "string",
   "metadata": {},
-  "transcript": "string",
-  "segments": [],
+  "dialogue": [
+    {
+      "turn_id": "turn_001",
+      "speaker": "manager|client|unknown",
+      "text": "string"
+    }
+  ],
   "llm1_first_pass": {},
-  "checklist_observation_frame": {}
+  "llm2_admission_gate": {},
+  "task_contract": {}
 }
 ```
 
-Use only the transcript, segments, metadata, LLM-1 first pass, and checklist
-observation frame. The checklist may help you notice relevant moments, but it
-must not cause scoring or coaching claims in this pass.
+Use only the dialogue turns, metadata, LLM-1 first pass, admission gate, and
+task contract. Treat `dialogue` as the complete call text for this pass. LLM-1
+is prior context, not proof; the dialogue is the source of truth. The task
+contract may help you notice relevant moments, but it must not cause scoring or
+coaching claims in this pass.
 
 ## Global Rules
 
@@ -57,8 +65,10 @@ must not cause scoring or coaching claims in this pass.
   ids, field names, and exact transcript quotes unchanged.
 - Use stable ids: `scene_001`, `scene_002`, `ev_001`, `ev_002`.
 - Use `unknown` when speaker attribution is unreliable.
-- Direct quotes must be exact substrings from the transcript.
+- Direct quotes must be exact substrings from the provided dialogue text.
 - Do not invent facts, names, timestamps, commitments, quotes, or speaker roles.
+- Do not invent or rely on millisecond timestamps. If no explicit source span
+  is available, use the relevant `turn_id` or `null`.
 - Do not score checklist items.
 - Do not write strengths, gaps, coaching claims, or recommendations.
 - Do not select, name, fit, route, or prepare report blocks.

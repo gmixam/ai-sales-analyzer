@@ -12,7 +12,7 @@ pack using only proven or safely softened proof cards from LLM-2C.
 
 ## Input
 
-The input is one JSON object:
+The input is one JSON object. It may be the legacy full profile:
 
 ```json
 {
@@ -25,9 +25,36 @@ The input is one JSON object:
 }
 ```
 
-Use only the supplied artifacts and contracts. The output may include
-compatibility views required by the contract shape, but those views must be
-derived from scenes, evidence, claims, and proof cards.
+or the compact profile:
+
+```json
+{
+  "input_profile": "compact",
+  "call_id": "string",
+  "business_outcome_signal": {},
+  "outcome_facts": {
+    "business_outcome": {},
+    "follow_up": {}
+  },
+  "scoring_context": {
+    "stage_scores": [],
+    "weak_stage_counts": [],
+    "weak_examples_by_stage": [],
+    "priority_hints": []
+  },
+  "recommendation_sources": {
+    "gap_claims": [],
+    "strength_claims": [],
+    "accepted_proof_cards": []
+  },
+  "evidence_ledger": []
+}
+```
+
+Use only the supplied artifacts, contracts, compact sources, and compact
+evidence. The output may include compatibility views required by the contract
+shape, but those views must be derived from scenes, evidence, claims, proof
+cards, and explicit outcome facts.
 
 ## Global Rules
 
@@ -47,6 +74,9 @@ derived from scenes, evidence, claims, and proof cards.
 - Do not emit `block_candidates`, `report_block_fit`, or report section names
   such as `situation_day`, `call_breakdown`, `voice_of_customer`, or
   `tomorrow_follow_up`.
+- In compact input, treat `recommendation_sources.accepted_proof_cards` as the
+  full set of usable proof cards. Ignore any claim that is not linked to one of
+  those proof cards.
 
 ## Output
 
@@ -112,12 +142,20 @@ Return this JSON shape:
 - `universal_evidence_pack.proof_cards` must come from LLM-2C.
 - `quote_bank` may include only exact transcript quotes from LLM-2A evidence.
 - `criteria_results` and `score_by_stage` must derive from LLM-2B scoring.
+  In compact input, use only `scoring_context.stage_scores` and do not invent
+  missing criterion-level scoring.
 - `strengths` may use proven or softened `strong_practice` proof cards.
 - `gaps` may use only proven or softened manager-gap proof cards.
 - `recommendations` in `final_normalized_analysis` must match the top-level
   `recommendations` list.
 - `agreements` and `follow_up` must derive from LLM-2A scenes and evidence,
   not from recommendation intent.
+- In compact input, fill factual `agreements` and `follow_up` only from
+  `outcome_facts` plus linked `evidence_ledger` quotes. If `outcome_facts`
+  has no concrete follow-up action, return an empty factual `follow_up`; keep
+  coaching actions only in `recommendations`.
+- Do not convert vague availability such as "можете обращаться" into a
+  callback, agreement, or follow-up.
 
 ## Fail-Closed Behavior
 

@@ -918,3 +918,47 @@
 - **Причина:** Проект теперь поддерживает несколько runtime-профилей, и без единого handoff-документа новый агент может перепутать real API run, max quality run, local simulation, contract runner и реальные Codex-subagents. Особенно рискованно смешивать "имитацию LLM" как настоящую работу Codex-agents с технической заглушкой contract runner.
 - **Scope:** project-wide operating rule and documentation source-of-truth for runtime/test/production mode selection. Это не меняет analyzer contract, STT, LLM prompts, report renderer, delivery semantics или scheduler само по себе.
 - **Дата:** 2026-06-02
+
+## ADR-092: Смысловые дефекты LLM2 ведутся как registry классов, а не точечные баги
+- **Решение:** Для смысловых ошибок `LLM-2` вводится рабочий registry `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md`.
+- **Решение:** Каждый новый смысловой дефект фиксируется как класс проблемы: source phrase/evidence, wrong LLM output, correct interpretation, affected layers, systemic rule, fix strategy и tests.
+- **Решение:** Исправления должны выводить универсальные инварианты (`Concrete Next Step`, `Recommendation Is Not Fact`, `Scoring Needs Grounded Evidence`, `LLM2D Does Not Re-score`), а не добавлять provider/model-specific хаки.
+- **Решение:** Основной механизм закрытия классов дефектов: prompt/contract clarification, deterministic semantic normalization, non-blocking diagnostics/warnings и regression tests. Blocking validators не являются основным способом улучшения качества.
+- **Решение:** Перед точечной правкой качества `LLM-2` агент должен проверить registry и либо обновить существующий defect class, либо завести новый.
+- **Причина:** Compact smoke по Толегену `2026-06-01` показал, что технически корректный `LLM-2` runtime может стабильно ошибаться в смысле: фразу "можете обращаться" модель трактовала как `callback_planned`, fixed next step и agreement. Такие ошибки будут повторяться в разных формулировках, поэтому их нужно закрывать системными правилами.
+- **Scope:** operating rule for LLM2 quality calibration. Это решение само по себе не меняет runtime behavior, prompts, analyzer, adapter, renderer или delivery; конкретные реализации фиксируются отдельными changesets и tests.
+- **Дата:** 2026-06-02
+
+## ADR-093: Kimi K2.6 не принимается как LLM2 runtime без упрощения layered contract
+- **Решение:** `kimi-k2.6` может оставаться подключенным Kimi/Moonshot provider source, но не считается готовым runtime для полного `LLM2` прогона в текущем layered `LLM2A/B/C/D` контракте.
+- **Решение:** Не запускать полный день через `LLM2=kimi-k2.6` и не строить manager-facing отчеты из K2.6 artifacts, если `score_by_stage=[]`, `criteria_results=[]`, `stages=0` или результат был получен только через repair без доказательной структуры.
+- **Решение:** Если Kimi K2.6 нужно продолжать исследовать для `LLM2`, сначала завести отдельную Kimi-specific contract simplification задачу: сократить `LLM2A` output, ограничить scenes/evidence, усилить fail-closed для пустого `LLM2B.stage_scores`, затем тестировать один звонок.
+- **Решение:** `AI_LLM2_OUTPUT_MAX_TOKENS` и `AI_LLM2_LOCAL_JSON_REPAIR_ENABLED` являются техническими controls для controlled experiments, а не production-quality решением проблемы качества Kimi.
+- **Причина:** Контрольные K2.6 reruns по готовым STT Толегена за `2026-06-01` показали: при `8192` tokens `LLM2A` ломал JSON или возвращал пустой ответ; при `16384` / `32768` запросы зависали или становились слишком медленными; единственный сохраненный analysis имел `score=0.0`, `stages=0`, `criteria=0`.
+- **Scope:** runtime/profile and testing guardrail for Kimi/Moonshot trial. Это решение не отключает Kimi entries автоматически и не запрещает отдельные one-call experiments, но запрещает считать текущий K2.6 `LLM2` профиль готовым для полного дня или manager-facing отчетов.
+- **Дата:** 2026-06-02
+
+## ADR-094: Audit/fix pass закрывается только после preview и документации
+- **Решение:** Audit/fix pass по `LLM2`/Report Layer считается закрытым после
+  трех условий: изменения внедрены, выполнена focused verification, пользователь
+  визуально подтвердил preview-отчет.
+- **Решение:** Закрытый pass фиксируется в `docs/PROGRESS.md`,
+  `docs/ACTIVE_WORK_STATE.md`, `docs/CONTEXT_INDEX.md` и при необходимости в
+  рабочих `TMP_*` документах. Следующий агент должен начинать с этих файлов, а
+  не реконструировать статус из логов.
+- **Решение:** Operator/test Telegram preview не равен manager-facing complete
+  report. Если coverage дня неполный или runner вернул `review_required`,
+  preview можно использовать для проверки слоя отчета, но нельзя считать
+  боевой доставкой менеджеру.
+- **Решение:** `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md` остается рабочим
+  документом для новых предложений по системным правилам качества `LLM2`.
+  Новые смысловые баги сначала классифицируются там, затем превращаются в
+  bounded prompt/normalization/diagnostic/test задачи.
+- **Причина:** Последний цикл показал, что технически доставленный PDF может
+  быть полезным для проверки конкретных исправлений, но при неполном coverage
+  он не закрывает весь день. Нужна явная граница между accepted mechanism fix,
+  preview report и полноценным manager-facing отчетом.
+- **Scope:** process/documentation and acceptance rule for current mechanism
+  work. Это не меняет runtime behavior, prompts, provider routing, renderer,
+  delivery recipients или scheduler само по себе.
+- **Дата:** 2026-06-03

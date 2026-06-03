@@ -1,8 +1,8 @@
 # Активное состояние работ
 
-Дата обновления: 2026-06-01
+Дата обновления: 2026-06-03
 
-Статус: `ready_for_review`
+Статус: `completed`
 
 ## Назначение
 
@@ -78,7 +78,301 @@ paused
 
 ## Текущая задача
 
-Тема: post-review доработка full-day отчета после Codex-subagent run.
+Тема: Report Layer audit fixes and full-stack Timur 2026-06-01 OpenAI run.
+
+Текущий audit/fix pass закрыт пользователем после визуальной проверки отчета.
+Следующий запуск/тест должен стартовать только как новая задача.
+
+## 2026-06-03: Report Layer правки + полный прогон Тимура 2026-06-01
+
+Контекст:
+
+- пользователь попросил доработать механизм отчета и затем сразу запустить
+  полный день Тимура за `2026-06-01` вместе со STT;
+- режим запуска: реальные OpenAI-compatible маршруты, без Codex subagents и
+  без local simulation;
+- доставка: `telegram_test_only`, только оператору/пользователю.
+
+Что внедрено перед прогоном:
+
+- `RL-T2`: диагностика meaningful/selection model теперь явно показывает
+  transcript-priority policy и excluded call samples.
+- `RL-T6`: `Все звонки дня -> Суть звонка` теперь берет outcome/follow-up
+  essence выше generic summary, увеличен visible context limit, trim старается
+  сохранить итог/договоренность.
+- `RL-T7`: добавлен класс доказательности `call_list_essence` и отдельная
+  evidence policy для справочной сути звонка.
+- `RL-T8`: call breakdown diagnostics теперь различают смысловые proof issues
+  и format issues; небольшие format issues нормализуются/диагностируются
+  вместо полного немого провала.
+
+Runtime hardening во время прогона:
+
+- `core/app/agents/calls/orchestrator.py`: `agreements` в виде списка строк
+  теперь нормализуются перед DB mirror и не валят persist analysis.
+- `core/app/agents/calls/reporting.py`: Report Layer пропускает не-dict элементы
+  в `score_by_stage`, `criteria_results`, `gaps`, `recommendations`,
+  `evidence_fragments`, `product_signals` при агрегациях отчета.
+
+Проверки:
+
+- `python3 -m py_compile core/app/agents/calls/reporting.py core/app/agents/calls/orchestrator.py ...` -> OK.
+- `docker compose exec -T api python -m pytest -q /app/tests/test_ai_provider_routing.py -k "string_agreement_items or raw_llm_response"` -> `2 passed`.
+- `docker compose exec -T api python -m pytest -q /app/tests/test_manual_reporting.py -k "stage_scores_ignore_non_dict or stage_scores_use_all_ready_meaningful_day_analyses"` -> `2 passed`.
+- До запуска Тимура также проходили focused Report Layer checks:
+  `call_list_context`, `sfb5`, `a2_a3`, `selection_model`,
+  `meaningful_call`, `call_breakdown_quality_gate`, `call_list`.
+
+Команда последнего успешного запуска:
+
+```bash
+docker compose exec -T \
+  -e AI_LLM_EXECUTION_MODE=openai_compatible \
+  -e AI_LLM_SUBAGENT_RUNTIME_ENABLED=false \
+  -e AI_LLM_SUBAGENT_RUNTIME_LAYERS= \
+  -e AI_LLM_SIMULATION_ENABLED=false \
+  -e LLM3_ENABLED=true \
+  -e AI_LLM2_ANALYSIS_MODE=layered \
+  -e AI_LLM2_INPUT_PROFILE=full \
+  -e AI_STT_FIXED_ACCOUNT_ALIAS=stt_main \
+  -e AI_LLM1_FIXED_ACCOUNT_ALIAS=llm1_main \
+  -e AI_LLM2_FIXED_ACCOUNT_ALIAS=llm2_main \
+  -e AI_LLM3_FIXED_ACCOUNT_ALIAS=llm3_main \
+  api python -m app.agents.calls.manual_reporting_runner \
+  --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 \
+  --preset manager_daily \
+  --mode build_missing_and_report \
+  --date-from 2026-06-01 \
+  --date-to 2026-06-01 \
+  --manager-id 656abe58-7c23-476a-a9f6-d76305cf42e0 \
+  --analysis-instruction-version timur_20260601_report_layer_fullstack_v1 \
+  --delivery-mode telegram_test_only
+```
+
+Результат прогона:
+
+- PDF доставлен в Telegram test-only: `message_id=368`.
+- Artifact: `Ежедневный отчет - Тимур Жуматаев - 1 июня 2026.pdf`.
+- Email delivery skipped, как и требовалось.
+- STT route: `stt_main / whisper-1`.
+- LLM1 route: `llm1_main / gpt-5.4-nano`.
+- LLM2 route: `llm2_main / gpt-5.4-mini`.
+- В observability последнего результата LLM3 route не появился:
+  `report_composer.enabled=false`, отчет построен deterministic/template layer,
+  а не LLM3-composer output.
+
+Статус результата:
+
+- Runner status: `blocked`.
+- Report status: `review_required`.
+- Readiness: `signal_report`.
+- Причина: `incomplete_day_call_processing`.
+- Relevant calls for report day: `34`.
+- Ready analyses used in report: `13`.
+- Analysis coverage: `38.2%`.
+- Manager-facing completeness blocked by `analysis_error=7`.
+- В errors также есть 8 случаев
+  `Analyzer did not admit call into layered LLM-2`; это нужно отдельно
+  разобрать, потому что часть звонков не дошла до LLM2 не из-за Report Layer.
+
+Следующий практический шаг:
+
+1. Не считать этот отчет полноценным manager-facing отчетом; это operator
+   preview / incomplete report.
+2. Разобрать `analysis_build_failed:*:Analyzer did not admit call into layered
+   LLM-2` по 7-8 звонкам Тимура за `2026-06-01`.
+3. Проверить, это корректное LLM1 admission decision или слишком жесткое
+   правило допуска к layered LLM2.
+4. Если нужно проверить именно LLM3-composer, включить/проверить Report
+   Composer path отдельно: в последнем успешном delivery LLM3 фактически не
+   исполнялся, несмотря на `LLM3_ENABLED=true`.
+
+### 2026-06-03: Ready-data-only отчет с реальным LLM3
+
+После уточнения пользователя выполнен отдельный запуск только формирования
+отчета на уже сохраненных данных:
+
+```bash
+docker compose exec -T \
+  -e AI_LLM_EXECUTION_MODE=openai_compatible \
+  -e AI_LLM_SUBAGENT_RUNTIME_ENABLED=false \
+  -e AI_LLM_SIMULATION_ENABLED=false \
+  -e LLM3_ENABLED=true \
+  -e AI_LLM3_FIXED_ACCOUNT_ALIAS=llm3_main \
+  api python -m app.agents.calls.manual_reporting_runner \
+  --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 \
+  --preset manager_daily \
+  --mode report_from_ready_data_only \
+  --date-from 2026-06-01 \
+  --date-to 2026-06-01 \
+  --manager-id 656abe58-7c23-476a-a9f6-d76305cf42e0 \
+  --analysis-instruction-version timur_20260601_report_layer_fullstack_v1 \
+  --delivery-mode telegram_test_only
+```
+
+Лог:
+
+```text
+review_packages/timur_20260601_llm3_report_only_20260603/run.log
+```
+
+Результат:
+
+- STT/LLM1/LLM2 не строились заново:
+  `transcripts_built=0`, `analyses_built=0`.
+- PDF доставлен в Telegram test-only:
+  `Ежедневный отчет - Тимур Жуматаев - 1 июня 2026.pdf`,
+  `message_id=369`.
+- Реальный LLM3 подтвержден diagnostics:
+  - `situation_day_daily_composer_v2`: `llm3_used=true`,
+    route `llm3_main / gpt-5.4-mini`, `execution_status=executed`,
+    `request_kind=situation_day_daily_composer`;
+  - `call_breakdown_composer`: `llm3_used=true`,
+    route `llm3_main / gpt-5.4-mini`, `execution_status=executed`,
+    `request_kind=call_breakdown_composer`;
+  - `call_tomorrow_wording_composer_v1` был вызван, но результат отклонен
+    quality gate: `llm3_used=false`,
+    `llm3_rejection_reason=...unsupported_claim:кп`.
+
+Статус отчета остался `blocked / review_required`, потому что это тот же
+неполный набор готовых анализов:
+
+- `ready_analyses=13`;
+- `analysis_coverage=38.2%`;
+- report readiness: `signal_report`;
+- причина: неполная обработка дня / часть анализов отсутствует или не подходит
+  под текущую instruction_version.
+
+### 2026-06-03: Call-list essence fix и закрытие pass
+
+После review пользователь подтвердил, что исправления видны. Последняя проблема
+в этом pass была в блоке `Все звонки дня -> Суть звонка`: текст выглядел как
+обрезанный и не всегда показывал, чем закончился звонок.
+
+Что исправлено:
+
+- `core/app/agents/calls/report_templates.py`: compact call-list теперь
+  использует `call_list_context_rich` выше короткого `call_list_context`.
+- Лимит отображения сути звонка увеличен с `220` до `700` символов.
+- Значения не пересочиняются в Report Layer: берется уже подготовленный смысл,
+  а renderer только сохраняет его в более читаемом объеме.
+- Добавлен regression test:
+  `test_call_list_compact_rows_use_rich_context_without_220_char_truncation`.
+
+Проверки:
+
+- `python3 -m py_compile core/app/agents/calls/report_templates.py core/tests/test_report_templates_situation_day.py` -> OK.
+- `docker compose exec -T api python -m pytest -q /app/tests/test_report_templates_situation_day.py -k "call_list_compact_rows"` -> `2 passed, 5 deselected`.
+- `node --check scripts/generate_docx_report.js` -> OK.
+
+Контрольный rerender только отчета:
+
+```text
+review_packages/timur_20260601_llm3_report_only_call_essence_fix_20260603/run.log
+```
+
+Результат:
+
+- STT/LLM1/LLM2 не строились заново:
+  `transcripts_built=0`, `analyses_built=0`.
+- PDF доставлен в Telegram test-only:
+  `Ежедневный отчет - Тимур Жуматаев - 1 июня 2026.pdf`,
+  `message_id=370`.
+- Compact rows теперь используют длинный rich context: проверенные значения
+  `Суть звонка` были примерно `337-538` символов вместо прежнего короткого
+  trim.
+
+Финальный статус pass:
+
+- `RL-T2`, `RL-T6`, `RL-T7`, `RL-T8` закрыты.
+- LLM2 input optimization / semantic defect registry / Report Layer audit
+  задокументированы.
+- Полный день Тимура остается operator preview, не manager-facing complete
+  report, потому что покрытие анализов дня неполное (`ready_analyses=13`,
+  `analysis_coverage=38.2%`).
+- Новый тест/прогон нужно запускать отдельным следующим шагом.
+
+## 2026-06-02: Kimi K2.6 trial остановлен на LLM2
+
+Короткий handoff:
+
+```text
+/root/ai-sales-analyzer/docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md
+```
+
+Факт текущего Kimi runtime после перенастройки 2026-06-03:
+
+- `LLM2` route: `kimi_llm2_main / moonshot-v1-128k`;
+- `LLM3` route: `kimi_llm3_main / moonshot-v1-128k`;
+- `AI_LLM_EXECUTION_MODE=openai_compatible`;
+- `AI_LLM_SUBAGENT_RUNTIME_ENABLED=false`;
+- `AI_LLM_SIMULATION_ENABLED=false`.
+
+Что проверено:
+
+- route-plan в контейнере подтверждал `kimi-k2.6` для `LLM2` и `LLM3`;
+- targeted routing tests прошли;
+- Kimi K2.6 rerun по готовым STT Толегена за `2026-06-01` остановлен по
+  просьбе пользователя;
+- Telegram report по K2.6 rerun не формировался и не отправлялся.
+
+Почему остановлено:
+
+- `LLM2A` Kimi K2.6 часто возвращал пустой/невалидный JSON;
+- при `AI_LLM2_OUTPUT_MAX_TOKENS=8192` ответ упирался в лимит и ломал JSON;
+- при `16384` / `32768` запросы становились слишком долгими и зависали;
+- единственный формально сохраненный K2.6 analysis имел
+  `score=0.0`, `stages=0`, `criteria=0`, то есть непригоден для отчета.
+
+Текущая безопасная точка:
+
+- активного `llm2_ready_stt_layered_runner` процесса нет;
+- не запускать полный день через `LLM2=kimi-k2.6` без упрощения LLM2 contract;
+- не строить manager-facing отчет из K2.6 artifacts с `stages=0` /
+  `criteria=0`;
+- для ближайшего качественного тестирования вернуться к Codex-subagent или
+  OpenAI max-quality для `LLM2`, либо отдельно сделать Kimi-specific contract
+  simplification.
+
+## 2026-06-02: Semantic defect registry для LLM2
+
+Текущая рабочая рамка:
+
+- `LLM2` compact input profile внедрен и проверяется на контрольном звонке
+  Толегена `2026-06-01`, interaction
+  `9b71f8fa-6f94-4079-8987-32f9a9d36061`.
+- Технические проблемы compact runtime частично закрыты: pass diagnostics,
+  evidence hydration from LLM2B, lighter LLM2D payload.
+- Оставшийся blocker качества — смысловая калибровка: false
+  `callback_planned/follow_up` из vague availability, recommendation leakage
+  into follow_up, score inflation на `cn_fixed_next_step`.
+
+Текущие рабочие файлы:
+
+```text
+/root/ai-sales-analyzer/TMP_LLM2_INPUT_OPTIMIZATION_TASKS.md
+/root/ai-sales-analyzer/TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md
+```
+
+Правило для следующего агента:
+
+- не чинить смысловые ошибки LLM2 как одиночные prompt patches;
+- сначала зафиксировать/обновить defect class в
+  `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md`;
+- затем закрывать класс через systemic rule, deterministic normalization,
+  diagnostics и regression tests.
+
+Следующий практический шаг:
+
+1. Закрыть `SD-001`, `SD-002`, `SD-003` из semantic defect registry:
+   - `callback_planned` требует concrete callback evidence;
+   - recommendation text не должен попадать в factual `follow_up`;
+   - `cn_fixed_next_step` не может быть `2/2` на "можете обращаться".
+2. Закрыть `SD-006`:
+   - absence-based criteria должны иметь scene/evidence context или
+     missing-evidence explanation, а не пустой evidence.
+3. Запустить тот же one-call compact smoke.
+4. Только после приемлемого качества переходить к small quality set.
 
 ## 2026-06-01: Подключение реального LLM3 в OpenAI-compatible режиме
 
@@ -253,7 +547,7 @@ Runner options:
   entries и активированы через `AI_LLM*_FIXED_ACCOUNT_ALIAS`:
   `kimi_llm1_main`, `kimi_llm2_main`, `kimi_llm3_main`,
   recommended trial models: `LLM1=moonshot-v1-8k`,
-  `LLM2=kimi-k2.6`, `LLM3=kimi-k2.6`,
+  `LLM2=moonshot-v1-128k`, `LLM3=moonshot-v1-128k`,
   `api_base=https://api.moonshot.ai/v1`,
   `api_key_env=MOONSHOT_API_KEY`. Чтобы попробовать Kimi, сначала заполнить
   `MOONSHOT_API_KEY`, затем переключить нужные `AI_LLM*_FIXED_ACCOUNT_ALIAS`
@@ -1859,6 +2153,96 @@ and diff checks passed.
 
 Следующее действие: wait for user acceptance or corrections on Block 3 before
 moving to the next Report Layer block.
+
+## 2026-06-03 — Report Layer audit: planned next refinements only
+
+Пользователь попросил вернуться к Report Layer и сначала разобрать технические
+ограничители по узлам. Аудит зафиксирован в:
+
+```text
+TMP_REPORT_LAYER_AUDIT.md
+```
+
+Текущий статус: задачи внедрены локально и готовы к full-stack проверке на
+другом менеджере. Пользователь разрешил после внедрения сразу запустить полный
+прогон Тимура за `2026-06-01` со STT и Telegram test-only доставкой.
+
+Статусы задач:
+
+1. `RL-T2 Meaningful-call diagnostics` — `implemented / focused_tests_passed`
+   - логику отбора не менять;
+   - подтвердить, что звонок с готовым STT не отсекается по длительности;
+   - добавить прозрачные diagnostics: всего звонков, со STT, meaningful,
+     исключены как short/no speech.
+   - сделано: `selection_model` дополнен `transcript_calls_total`,
+     `no_transcript_calls_total`, `meaningful_policy`, `excluded_calls_total`,
+     `excluded_call_samples`.
+
+2. `RL-T6 Call List: доработать существующий call_list_context` —
+   `implemented / focused_tests_passed`
+   - не создавать новый смысловой слой;
+   - доработать существующее поле `call_list_context`;
+   - источники: `call_essence`, `business_outcome`, `call_report_summary`,
+     `follow_up`, `call_list_context_rich`;
+   - видимая "Суть звонка" должна отвечать: тема -> реакция/позиция клиента
+     -> итог звонка;
+   - убрать слепую схему "первая фраза + 150 символов";
+   - учитывать все статусы: договоренность, перенос, отказ, открыт,
+     тех/сервис, без разбора.
+   - сделано: visible context limit поднят до `220`, compact сохраняет
+     outcome-фразу по маркерам, structured `business_outcome/follow_up`
+     выбирается раньше generic `short_context`.
+
+3. `RL-T7 Разделить gates по назначению блока` —
+   `implemented / focused_tests_passed`
+   - строгие gates оставить для `Ситуации дня`, `Разбора звонка` и
+     управленческих claims;
+   - для `Все звонки дня` применять более мягкий factual essence mode;
+   - не придумывать новые факты, брать только уже существующий анализ;
+   - различать `business_report_claim`, `call_list_essence`,
+     `operator_diagnostic`.
+   - сделано: `call_list_context_quality` маркируется как
+     `call_list_essence`, `call_breakdown_quality` как
+     `business_report_claim / strict_proof_gate`.
+
+4. `RL-T8 Call Breakdown: нормализация формы + диагностика` —
+   `implemented / focused_tests_passed`
+   - доказательность не ослаблять;
+   - не терять хороший смысл только из-за небольшой ошибки формы;
+   - если больше 4 моментов, выбрать лучшие 2-4;
+   - если строка неполная, нормализовать до 4 колонок без добавления фактов;
+   - если fragment короче 90 символов, проверять информативность, а не только
+     длину;
+   - diagnostics должны показывать: слабый смысл, нет доказательств или
+     проблема формата.
+   - сделано: quality gate режет rendered rows до 4, padding коротких rows
+     фиксируется как `format_issue`, filtered rows имеют `issue_class`.
+
+Проверки:
+
+```text
+python3 -m py_compile core/app/agents/calls/reporting.py core/tests/test_manual_reporting.py tests/test_manual_reporting.py -> OK
+docker compose exec -T api python -m pytest -q /app/tests/test_manual_reporting.py -k "call_list_context or sfb5 or a2_a3 or selection_model or meaningful_call or call_breakdown_quality_gate" -> 27 passed
+docker compose exec -T api python -m pytest -q /app/tests/test_report_templates_situation_day.py -k "call_list" -> 2 passed
+docker compose exec -T api python -m pytest -q /app/tests/test_report_block_router.py /app/tests/test_call_breakdown_composer.py -k "call_breakdown" -> 14 passed
+```
+
+Примечание: широкий ad-hoc запуск `test_manual_reporting.py -k call_breakdown`
+цепляет старые legacy fallback expectations и на текущем рабочем дереве дает
+несколько unrelated failures; это не блокирует текущие RL-T2/RL-T6/RL-T7/RL-T8
+focused contracts.
+
+Следующий запуск:
+
+```text
+manager: Тимур Жуматаев
+manager_id: 656abe58-7c23-476a-a9f6-d76305cf42e0
+department_id: 472cda28-ce71-494c-9068-25d3ffbf7399
+date: 2026-06-01
+mode: build_missing_and_report
+delivery: telegram_test_only
+runtime: openai_compatible, no subagent runtime, no simulation
+```
 
 ## Инструкция для нового чата
 

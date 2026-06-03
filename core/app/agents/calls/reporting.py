@@ -4236,14 +4236,35 @@ def _build_selection_model_counters(
     ivr_count = 0
     meaningful_calls: list[ReportArtifact] = []
     service_calls_total = 0
+    transcript_calls_total = 0
+    no_transcript_calls_total = 0
+    excluded_samples: list[dict[str, Any]] = []
 
     for artifact in window_artifacts:
+        if getattr(artifact.interaction, "text", None):
+            transcript_calls_total += 1
+        else:
+            no_transcript_calls_total += 1
         is_meaningful, reason = _classify_meaningful_call(artifact)
         if not is_meaningful:
             if reason == "too_short_or_no_speech":
                 too_short_count += 1
             elif reason == "ivr_or_autoanswer":
                 ivr_count += 1
+            if len(excluded_samples) < 20:
+                metadata = dict(getattr(artifact.interaction, "metadata_", None) or {})
+                excluded_samples.append(
+                    {
+                        "interaction_id": str(getattr(artifact.interaction, "id", "") or ""),
+                        "client_call_reference": None,
+                        "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
+                        "duration_sec": getattr(artifact.interaction, "duration_sec", None),
+                        "has_transcript": bool(getattr(artifact.interaction, "text", None)),
+                        "reason": reason,
+                        "source_status": metadata.get("source_status"),
+                        "direction": metadata.get("direction"),
+                    }
+                )
             continue
         meaningful_calls.append(artifact)
         if artifact.analysis is not None:
@@ -4269,6 +4290,8 @@ def _build_selection_model_counters(
 
     return {
         "raw_calls_total": raw_calls_total,
+        "transcript_calls_total": transcript_calls_total,
+        "no_transcript_calls_total": no_transcript_calls_total,
         "meaningful_calls_total": meaningful_calls_total,
         "service_calls_total": service_calls_total,
         "coaching_candidate_calls_total": coaching_candidate_calls_total,
@@ -4281,13 +4304,23 @@ def _build_selection_model_counters(
             "not_enough_analysis": without_analysis + failed_analysis,
             "not_selected_for_core_review": 0,
         },
+        "meaningful_policy": {
+            "transcript_overrides_duration": True,
+            "duration_filters_apply_only_without_transcript": True,
+            "short_or_no_speech_reason": "too_short_or_no_speech",
+        },
+        "excluded_calls_total": too_short_count + ivr_count,
+        "excluded_call_samples": excluded_samples,
     }
 
 
 def _analysis_has_scored_stage_scores(analysis: Analysis | None) -> bool:
     """Return whether an analysis has numeric stage scores usable for aggregation."""
     detail = dict(getattr(analysis, "scores_detail", None) or {})
-    for stage in detail.get("score_by_stage") or []:
+    for stage_raw in detail.get("score_by_stage") or []:
+        if not isinstance(stage_raw, dict):
+            continue
+        stage = stage_raw
         if stage.get("stage_score") is None:
             continue
         try:
@@ -6669,13 +6702,19 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
     stage_problem_candidates: dict[str, list[dict[str, Any]]] = {}
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-        for stage in detail.get("score_by_stage") or []:
+        for stage_raw in detail.get("score_by_stage") or []:
+            if not isinstance(stage_raw, dict):
+                continue
+            stage = stage_raw
             code = str(stage.get("stage_code") or "")
             stage_score = int(stage.get("stage_score") or 0)
             max_score = int(stage.get("max_stage_score") or 0)
             if max_score > 0:
                 stage_buckets.setdefault(code, []).append(round(stage_score / max_score * 10, 1))
-            for crit in stage.get("criteria_results") or []:
+            for crit_raw in stage.get("criteria_results") or []:
+                if not isinstance(crit_raw, dict):
+                    continue
+                crit = crit_raw
                 ccode = str(crit.get("criterion_code") or "").strip()
                 cname = str(crit.get("criterion_name") or ccode).strip()
                 cscore = int(crit.get("score") or 0)
@@ -6703,7 +6742,10 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                                 "criterion_name": cname,
                             }
                         )
-        for item in detail.get("gaps") or []:
+        for item_raw in detail.get("gaps") or []:
+            if not isinstance(item_raw, dict):
+                continue
+            item = item_raw
             item_code = str(item.get("criterion_code") or "").strip()
             stage_code = _stage_code_from_criterion_code(item_code)
             normalized_problem = _stage_problem_text_from_issue(
@@ -6725,7 +6767,10 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                         "criterion_name": str(item.get("criterion_name") or item.get("title") or "").strip(),
                     }
                 )
-        for item in detail.get("evidence_fragments") or []:
+        for item_raw in detail.get("evidence_fragments") or []:
+            if not isinstance(item_raw, dict):
+                continue
+            item = item_raw
             item_code = str(item.get("criterion_code") or "").strip()
             stage_code = _stage_code_from_criterion_code(item_code)
             normalized_problem = _stage_problem_text_from_issue(
@@ -9171,7 +9216,9 @@ def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> li
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for item in detail.get(key) or []:
-            raw_item = dict(item or {})
+            if not isinstance(item, dict):
+                continue
+            raw_item = dict(item)
             label = _finding_item_label(raw_item)
             if key == "gaps":
                 stage_code = _stage_code_from_criterion_code(str(raw_item.get("criterion_code") or ""))
@@ -9186,7 +9233,7 @@ def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> li
                     raw_item = dict(raw_item)
                     raw_item["problem_normalized_from"] = normalized.get("source_text")
                     raw_item["problem_wording_warnings"] = list(normalized.get("warnings") or [])
-            grouped.setdefault(label, []).append(item)
+            grouped.setdefault(label, []).append(raw_item)
     result: list[dict[str, Any]] = []
     for label, items in sorted(grouped.items(), key=lambda pair: len(pair[1]), reverse=True)[:5]:
         first = items[0]
@@ -9219,6 +9266,8 @@ def _aggregate_recommendation_cards(*, artifacts: list[ReportArtifact]) -> list[
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         for item in detail.get("recommendations") or []:
+            if not isinstance(item, dict):
+                continue
             title = str(item.get("criterion_name") or item.get("criterion_code") or "Рекомендация")
             better_phrase = str(
                 item.get("better_phrase")
@@ -9401,7 +9450,7 @@ CALL_LIST_CONTEXT_GENERIC_PATTERNS = (
     "следующий шаг нужно подтвердить",
     "следующий шаг не зафиксирован",
 )
-CALL_LIST_VISIBLE_CONTEXT_LIMIT = 150
+CALL_LIST_VISIBLE_CONTEXT_LIMIT = 220
 CALL_LIST_RELATIVE_PERIOD_PREFIXES = (
     "после ",
     "на этой ",
@@ -9412,6 +9461,26 @@ CALL_LIST_RELATIVE_PERIOD_PREFIXES = (
     "в ближайш",
     "через ",
     "позже",
+)
+CALL_LIST_OUTCOME_SENTENCE_MARKERS = (
+    "договор",
+    "отказ",
+    "отказался",
+    "отказалась",
+    "перенос",
+    "перенесли",
+    "вернуться",
+    "перезвон",
+    "дата возврата",
+    "не закреп",
+    "не зафикс",
+    "срок",
+    "когда",
+    "контакт открыт",
+    "сервисный вопрос",
+    "решить проблему",
+    "следующий шаг",
+    "дальше",
 )
 
 
@@ -9497,13 +9566,80 @@ def _call_list_context_paragraph(value: Any, *, limit: int = 420) -> str | None:
 
 def _compact_call_list_visible_context(value: Any) -> str:
     """Return one compact sentence for the manager-facing call-list table."""
-    text = _summary_text(value, limit=CALL_LIST_VISIBLE_CONTEXT_LIMIT)
-    if text and not _call_list_context_reject_reason(text):
-        return text
-    fallback = _summary_text(value, limit=110)
+    text = _summary_paragraph_text(value, limit=900)
+    if text:
+        compact = _compact_call_list_context_preserving_outcome(
+            text,
+            limit=CALL_LIST_VISIBLE_CONTEXT_LIMIT,
+        )
+        if compact and not _call_list_context_reject_reason(compact):
+            return compact
+    fallback = _summary_text(value, limit=CALL_LIST_VISIBLE_CONTEXT_LIMIT)
     if fallback and not _call_list_context_reject_reason(fallback):
         return fallback
     return "Контекст звонка требует уточнения по сохранённым данным."
+
+
+def _compact_call_list_context_preserving_outcome(value: Any, *, limit: int) -> str | None:
+    """Compact call-list essence without cutting away the final call outcome."""
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", text)
+        if item and item.strip()
+    ]
+    if len(sentences) >= 2:
+        first = sentences[0].strip()
+        outcome = _select_call_list_outcome_sentence(sentences) or sentences[-1].strip()
+        if _summary_norm(first) == _summary_norm(outcome):
+            return _call_list_word_boundary_trim(first, limit=limit)
+        combined = f"{first} {outcome}".strip()
+        if len(combined) <= limit:
+            return combined
+        # Preserve the ending first: it usually contains the agreement, refusal,
+        # missing next step, or service resolution that managers need in the table.
+        reserved = min(len(outcome), max(90, limit // 2))
+        head_limit = max(40, limit - reserved - 1)
+        head = _call_list_word_boundary_trim(first, limit=head_limit, add_ellipsis=False)
+        tail = _call_list_word_boundary_trim_from_end(outcome, limit=limit - len(head) - 1)
+        combined = f"{head} {tail}".strip()
+        if combined:
+            return combined
+    return _call_list_word_boundary_trim(text, limit=limit, add_ellipsis=False)
+
+
+def _select_call_list_outcome_sentence(sentences: list[str]) -> str | None:
+    """Return the sentence most likely to contain the final call state."""
+    for sentence in reversed(sentences):
+        normalized = _summary_norm(sentence)
+        if any(marker in normalized for marker in CALL_LIST_OUTCOME_SENTENCE_MARKERS):
+            return sentence.strip()
+    return None
+
+
+def _call_list_word_boundary_trim(value: Any, *, limit: int, add_ellipsis: bool = False) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    trimmed = text[: max(0, limit - (1 if add_ellipsis else 0))].rstrip()
+    if " " in trimmed:
+        trimmed = trimmed.rsplit(" ", 1)[0].rstrip(" ,;:")
+    trimmed = trimmed.rstrip(".")
+    return f"{trimmed}…" if add_ellipsis and trimmed else trimmed
+
+
+def _call_list_word_boundary_trim_from_end(value: Any, *, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:].strip()
+    if " " in tail:
+        tail = tail.split(" ", 1)[1].strip(" ,;:")
+    return tail
 
 
 def _call_list_context_from_block_candidate(report_evidence: dict[str, Any] | None) -> dict[str, str] | None:
@@ -9899,6 +10035,31 @@ def _select_call_list_context(
                 "bare_context_retained": False,
             }
 
+    outcome_context = _call_list_outcome_essence_context(
+        status=status,
+        call_type=call_type,
+        scenario_type=scenario_type,
+        deadline=deadline,
+        next_step=next_step,
+        reason=reason,
+        signal_text=signal_text,
+        summary_topic=summary_topic,
+        outcome_reason=outcome_reason,
+        outcome_evidence=outcome_evidence,
+        evidence_follow_up_reason=evidence_follow_up_reason,
+    )
+    if outcome_context and not reject(outcome_context["source"], outcome_context["context"]):
+        return {
+            "context": outcome_context["context"],
+            "source": outcome_context["source"],
+            "priority": 35,
+            "selected_reason": "outcome_essence_selected",
+            "rejected": rejected,
+            "fallback_generated": False,
+            "bare_context_retained": False,
+            "diagnostics": outcome_context["diagnostics"],
+        }
+
     if summary_context and _call_summary_context_usable(summary_context) and not reject(
         "report_evidence.call_report_summary.short_context",
         summary_context,
@@ -9923,31 +10084,6 @@ def _select_call_list_context(
             "fallback_generated": False,
             "bare_context_retained": False,
             "diagnostics": call_essence_context["diagnostics"],
-        }
-
-    outcome_context = _call_list_outcome_essence_context(
-        status=status,
-        call_type=call_type,
-        scenario_type=scenario_type,
-        deadline=deadline,
-        next_step=next_step,
-        reason=reason,
-        signal_text=signal_text,
-        summary_topic=summary_topic,
-        outcome_reason=outcome_reason,
-        outcome_evidence=outcome_evidence,
-        evidence_follow_up_reason=evidence_follow_up_reason,
-    )
-    if outcome_context and not reject(outcome_context["source"], outcome_context["context"]):
-        return {
-            "context": outcome_context["context"],
-            "source": outcome_context["source"],
-            "priority": 35,
-            "selected_reason": "outcome_essence_selected",
-            "rejected": rejected,
-            "fallback_generated": False,
-            "bare_context_retained": False,
-            "diagnostics": outcome_context["diagnostics"],
         }
 
     if summary_topic and _call_summary_topic_usable(summary_topic) and not reject(
@@ -10079,6 +10215,19 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
             )
     return {
         "status": "warning" if final_failures or bare_retained or weak_rows else "passed",
+        "evidence_class": "call_list_essence",
+        "evidence_policy": {
+            "class": "call_list_essence",
+            "threshold": "medium_fact_essence",
+            "allowed_sources": [
+                "report_evidence.call_essence",
+                "report_evidence.business_outcome",
+                "report_evidence.call_report_summary",
+                "report_evidence.follow_up_candidates",
+                "deterministic_fallback",
+            ],
+            "rule": "Use existing factual analysis for the daily call list; do not create coaching claims.",
+        },
         "calls_count": len(call_list),
         "manager_visible_summary_count": source_counts.get("report_evidence.call_report_summary.manager_visible_summary", 0),
         "block_candidate_rich_context_count": sum(
@@ -10630,6 +10779,8 @@ def _build_daily_call_row(
         "call_list_topic_source": "report_evidence.call_report_summary.short_topic" if topic_used else "deterministic_fallback",
         "call_list_context_source": context_selection["source"],
         "call_list_context_quality": {
+            "evidence_class": "call_list_essence",
+            "evidence_policy": "medium_fact_essence_existing_analysis_only",
             "source": context_selection["source"],
             "priority": context_selection["priority"],
             "selected_reason": context_selection["selected_reason"],
@@ -10973,6 +11124,8 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
         for artifact in artifacts:
             detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
             for frag in (detail.get("evidence_fragments") or []):
+                if not isinstance(frag, dict):
+                    continue
                 if frag_type_priority and str(frag.get("fragment_type") or "") != frag_type_priority:
                     continue
                 client_text = str(frag.get("client_text") or "").strip()
@@ -11013,6 +11166,8 @@ def _build_voice_of_customer(*, artifacts: list[ReportArtifact]) -> dict[str, An
             detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
             ref = _client_meta(artifact)
             for sig in (detail.get("product_signals") or []):
+                if not isinstance(sig, dict):
+                    continue
                 quote = str(sig.get("quote") or "").strip()
                 if len(quote) < 10 or quote in seen:
                     continue
@@ -13604,6 +13759,16 @@ def _call_breakdown_quality_fallback(
     return result, quality
 
 
+def _call_breakdown_quality_issue_class(reason: str) -> str:
+    if reason in {"missing_evidence", "no_confirming_fragment", "low_information"}:
+        return "missing_or_ungrounded_proof"
+    if reason in {"stage_mismatch", "recommendation_polarity_mismatch", "duplicate_problem_wording"}:
+        return "semantic_weakness"
+    if reason in {"row_shape_normalized", "extra_rows_trimmed"}:
+        return "format_issue"
+    return "other"
+
+
 def _apply_call_breakdown_quality_gate(
     *,
     call_breakdown: dict[str, Any] | None,
@@ -13619,12 +13784,21 @@ def _apply_call_breakdown_quality_gate(
     quality: dict[str, Any] = {
         "status": "passed",
         "source": source or "unknown",
+        "evidence_class": "business_report_claim",
+        "evidence_policy": {
+            "class": "business_report_claim",
+            "threshold": "strict_proof_gate",
+            "rule": "Call Breakdown must remain proof-backed; format normalization cannot add facts.",
+        },
         "input_rows_count": len(rows),
         "rendered_rows_count": 0,
         "filtered_rows_count": 0,
         "filtered_reasons": {},
+        "issue_class_counts": {},
         "filtered_rows": [],
         "rendered_rows": [],
+        "format_normalized_rows_count": 0,
+        "extra_rows_trimmed_count": 0,
     }
     if not call_breakdown:
         quality["status"] = "insufficient_evidence"
@@ -13675,10 +13849,14 @@ def _apply_call_breakdown_quality_gate(
         quality["filtered_rows_count"] += 1
         reasons = quality["filtered_reasons"]
         reasons[reason] = int(reasons.get(reason) or 0) + 1
+        issue_class = _call_breakdown_quality_issue_class(reason)
+        issue_counts = quality["issue_class_counts"]
+        issue_counts[issue_class] = int(issue_counts.get(issue_class) or 0) + 1
         quality["filtered_rows"].append(
             {
                 "index": index,
                 "reason": reason,
+                "issue_class": issue_class,
                 "what": _first_sentence(str(row[1] if len(row) > 1 else ""), limit=180),
                 "fragment": _first_sentence(str(row[2] if len(row) > 2 else ""), limit=120),
                 "recommendation": _first_sentence(str(row[3] if len(row) > 3 else ""), limit=180),
@@ -13694,6 +13872,10 @@ def _apply_call_breakdown_quality_gate(
         ):
             reject(index, "stage_mismatch", row)
             continue
+        if len(row) != 4:
+            quality["format_normalized_rows_count"] += 1
+            issue_counts = quality["issue_class_counts"]
+            issue_counts["format_issue"] = int(issue_counts.get("format_issue") or 0) + 1
         padded = [*row, "", "", "", ""][:4]
         moment, what, fragment, recommendation = [
             _clean_call_breakdown_cell(item)
@@ -13730,12 +13912,34 @@ def _apply_call_breakdown_quality_gate(
             }
         )
 
+    if len(rendered) > 4:
+        trimmed_count = len(rendered) - 4
+        quality["extra_rows_trimmed_count"] = trimmed_count
+        reasons = quality["filtered_reasons"]
+        reasons["extra_rows_trimmed"] = int(reasons.get("extra_rows_trimmed") or 0) + trimmed_count
+        issue_counts = quality["issue_class_counts"]
+        issue_counts["format_issue"] = int(issue_counts.get("format_issue") or 0) + trimmed_count
+        quality["filtered_rows_count"] += trimmed_count
+        quality["filtered_rows"].extend(
+            {
+                "index": index,
+                "reason": "extra_rows_trimmed",
+                "issue_class": "format_issue",
+                "what": _first_sentence(str(row[1] if len(row) > 1 else ""), limit=180),
+                "fragment": _first_sentence(str(row[2] if len(row) > 2 else ""), limit=120),
+                "recommendation": _first_sentence(str(row[3] if len(row) > 3 else ""), limit=180),
+            }
+            for index, row in enumerate(rendered[4:], start=5)
+        )
+        rendered = rendered[:4]
+        quality["rendered_rows"] = quality["rendered_rows"][:4]
+
     quality["rendered_rows_count"] = len(rendered)
     if not rendered:
         quality["status"] = "insufficient_evidence"
         return _call_breakdown_quality_fallback(call_breakdown=call_breakdown, quality=quality)
 
-    if quality["filtered_rows_count"]:
+    if quality["filtered_rows_count"] or quality["format_normalized_rows_count"]:
         quality["status"] = "warning"
     result = dict(call_breakdown)
     result["rows"] = rendered
@@ -16987,8 +17191,9 @@ def _select_evidence_fragment(artifacts: list[ReportArtifact]) -> dict[str, Any]
     ):
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
         fragments = detail.get("evidence_fragments") or []
-        if fragments:
-            return dict(fragments[0])
+        for fragment in fragments:
+            if isinstance(fragment, dict):
+                return dict(fragment)
     return None
 
 

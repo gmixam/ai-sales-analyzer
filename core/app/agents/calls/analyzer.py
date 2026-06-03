@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -576,6 +578,29 @@ class CallsAnalyzer:
         )
         return str(mode).strip().lower() in LAYERED_LLM2_ANALYSIS_MODES
 
+    @staticmethod
+    def _llm2_input_profile() -> str:
+        """Return the active LLM-2 payload profile."""
+        profile = (
+            os.getenv("AI_LLM2_INPUT_PROFILE")
+            or getattr(settings, "ai_llm2_input_profile", "")
+            or "full"
+        )
+        normalized = str(profile).strip().lower()
+        return normalized if normalized in {"full", "compact"} else "full"
+
+    @staticmethod
+    def _llm2_output_max_tokens() -> int:
+        """Return the bounded LLM-2 response token limit."""
+        raw_value = os.getenv("AI_LLM2_OUTPUT_MAX_TOKENS", "").strip()
+        if not raw_value:
+            return 8192
+        try:
+            value = int(raw_value)
+        except ValueError:
+            return 8192
+        return min(max(value, 1024), 32768)
+
     def _resolve_source_file(self, key: str) -> Path | None:
         """Resolve one approved MVP-1 source file across known runtime locations."""
         filename = MVP1_SOURCE_FILE_NAMES[key]
@@ -1057,6 +1082,7 @@ class CallsAnalyzer:
         prompt_assets = self.get_prompt_assets(instruction_version=instruction_version)
         artifacts: dict[str, Any] = {}
         pass_metadata: dict[str, Any] = {}
+        pass_diagnostics: dict[str, Any] = {}
         pass_plan = [
             ("llm2a", "llm2a_facts_scenes", prompt_assets.analyze_facts_scenes, ()),
             ("llm2b", "llm2b_scoring_gaps", prompt_assets.analyze_scoring_gaps, ("llm2a",)),
@@ -1113,6 +1139,9 @@ class CallsAnalyzer:
                     interaction=interaction,
                     layer="llm2",
                 )
+                pass_diagnostics[artifact_key] = deepcopy(
+                    artifacts[artifact_key].get("_runtime_input_diagnostics") or {}
+                )
             layered_artifact.update(artifacts)
 
             from app.agents.calls.llm2_layered_analysis import (
@@ -1132,6 +1161,7 @@ class CallsAnalyzer:
                 "manager_claims_require_proof_cards": True,
                 "pass_artifact_keys": list(artifacts),
                 "pass_metadata": deepcopy(pass_metadata),
+                "pass_diagnostics": deepcopy(pass_diagnostics),
                 "validation_valid": normalized.is_valid,
                 "report_evidence_validation_enabled": settings.ai_llm2_report_evidence_validation_enabled,
                 "semantic_validation_enabled": settings.ai_llm2_semantic_validation_enabled,
@@ -1381,10 +1411,188 @@ class CallsAnalyzer:
     ) -> dict[str, Any]:
         """Request and parse one LLM-2 layered pass artifact."""
 
+        input_profile = self._llm2_input_profile()
+        user_payload = self._build_llm2_layered_user_payload(
+            interaction=interaction,
+            request_kind=request_kind,
+            prompt_context=prompt_context,
+            previous_artifacts=previous_artifacts,
+            admission_gate=admission_gate,
+            input_profile=input_profile,
+        )
+        payload_diagnostics = self._llm2_payload_diagnostics(
+            request_kind=request_kind,
+            input_profile=input_profile,
+            user_payload=user_payload,
+        )
+        payload_diagnostics["repair_used"] = False
+        payload_diagnostics["repair_count"] = 0
+        payload_diagnostics["output_chars"] = 0
+        user_payload_json = json.dumps(user_payload, ensure_ascii=False, indent=2)
+        payload_diagnostics["payload_chars"] = len(user_payload_json)
+        self.logger.info(
+            "analyzer.llm2_layered_payload",
+            request_kind=request_kind,
+            input_profile=input_profile,
+            payload_chars=payload_diagnostics["payload_chars"],
+            payload_keys=payload_diagnostics["payload_keys"],
+        )
+        if self._should_bypass_compact_llm2c_no_claims(
+            request_kind=request_kind,
+            input_profile=input_profile,
+            user_payload=user_payload,
+        ):
+            payload_diagnostics["bypass_used"] = True
+            payload_diagnostics["bypass_reason"] = "no_claims"
+            payload_diagnostics["wall_time_sec"] = 0.0
+            artifact = self._build_llm2c_no_claims_artifact(call_id=str(interaction.id))
+            payload_diagnostics["output_chars"] = len(
+                json.dumps(artifact, ensure_ascii=False)
+            )
+            artifact["_runtime_input_profile"] = input_profile
+            artifact["_runtime_input_diagnostics"] = payload_diagnostics
+            self.logger.info(
+                "analyzer.llm2c_no_claims_bypass",
+                request_kind=request_kind,
+                input_profile=input_profile,
+                payload_chars=payload_diagnostics["payload_chars"],
+            )
+            return artifact
+        started_at = time.perf_counter()
+        output_max_tokens = self._llm2_output_max_tokens()
+        content = self._request_llm_content(
+            interaction=interaction,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"{self._get_prompt('llm2_common_runtime').rstrip()}\n\n"
+                        f"{system_prompt.strip()}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": user_payload_json,
+                },
+            ],
+            instruction_version=instruction_version,
+            layer="llm2",
+            request_kind=request_kind,
+            executor_label="LLM-2 OpenAI-compatible executor",
+            temperature=0.1,
+            max_tokens=output_max_tokens,
+        )
+        payload_diagnostics["wall_time_sec"] = round(time.perf_counter() - started_at, 3)
+        primary_routing_metadata = self._current_ai_routing_metadata(
+            interaction=interaction,
+            layer="llm2",
+        )
+        payload_diagnostics["provider"] = primary_routing_metadata.get("selected_provider")
+        payload_diagnostics["account_alias"] = primary_routing_metadata.get(
+            "selected_account_alias"
+        )
+        payload_diagnostics["model"] = primary_routing_metadata.get("selected_model")
+        payload_diagnostics["usage"] = deepcopy(primary_routing_metadata.get("usage"))
+        try:
+            artifact = json.loads(content)
+        except json.JSONDecodeError as exc:
+            payload_diagnostics["repair_used"] = True
+            payload_diagnostics["repair_count"] = 1
+            repair_started_at = time.perf_counter()
+            locally_repaired_content = self._locally_repair_llm2_layered_pass_json(content)
+            if locally_repaired_content is not None:
+                content = locally_repaired_content
+                payload_diagnostics["repair_strategy"] = "local_truncated_json_closure"
+            else:
+                content = self._repair_llm2_layered_pass_json(
+                    interaction=interaction,
+                    instruction_version=instruction_version,
+                    request_kind=request_kind,
+                    broken_content=content,
+                    parse_error=str(exc),
+                )
+                payload_diagnostics["repair_strategy"] = "llm_json_repair"
+            payload_diagnostics["repair_wall_time_sec"] = round(
+                time.perf_counter() - repair_started_at,
+                3,
+            )
+            repair_routing_metadata = self._current_ai_routing_metadata(
+                interaction=interaction,
+                layer="llm2",
+            )
+            payload_diagnostics["repair_usage"] = deepcopy(
+                repair_routing_metadata.get("usage")
+            )
+            payload_diagnostics["repair_model"] = repair_routing_metadata.get(
+                "selected_model"
+            )
+            try:
+                artifact = json.loads(content)
+            except json.JSONDecodeError as retry_exc:
+                raise LLMResponseError(
+                    f"{request_kind} returned invalid JSON",
+                    interaction_id=str(interaction.id),
+                    raw_response=content,
+                ) from retry_exc
+        if not isinstance(artifact, dict):
+            raise LLMResponseError(
+                f"{request_kind} must return a JSON object",
+                interaction_id=str(interaction.id),
+                raw_response=content,
+            )
+        payload_diagnostics["output_chars"] = len(content)
+        artifact.setdefault("call_id", str(interaction.id))
+        artifact.setdefault("_runtime_input_profile", input_profile)
+        artifact.setdefault("_runtime_input_diagnostics", payload_diagnostics)
+        if str(artifact.get("status") or "").strip().lower() in {"failed", "error"}:
+            raise LLMResponseError(
+                f"{request_kind} returned failed status",
+                interaction_id=str(interaction.id),
+                raw_response=content,
+            )
+        return artifact
+
+    def _build_llm2_layered_user_payload(
+        self,
+        *,
+        interaction: Interaction,
+        request_kind: str,
+        prompt_context: dict[str, Any],
+        previous_artifacts: dict[str, Any],
+        admission_gate: dict[str, Any] | None,
+        input_profile: str,
+    ) -> dict[str, Any]:
+        """Build the user payload for one layered LLM-2 pass."""
+        if input_profile == "compact":
+            return self._build_compact_llm2_layered_user_payload(
+                interaction=interaction,
+                request_kind=request_kind,
+                prompt_context=prompt_context,
+                previous_artifacts=previous_artifacts,
+                admission_gate=admission_gate,
+            )
+        return self._build_full_llm2_layered_user_payload(
+            interaction=interaction,
+            request_kind=request_kind,
+            prompt_context=prompt_context,
+            previous_artifacts=previous_artifacts,
+            admission_gate=admission_gate,
+        )
+
+    def _build_full_llm2_layered_user_payload(
+        self,
+        *,
+        interaction: Interaction,
+        request_kind: str,
+        prompt_context: dict[str, Any],
+        previous_artifacts: dict[str, Any],
+        admission_gate: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build the legacy full payload for one layered LLM-2 pass."""
         call_id = str(interaction.id)
         if request_kind == "llm2a_facts_scenes":
             metadata = dict(interaction.metadata_ or {})
-            user_payload = {
+            return {
                 "call_id": call_id,
                 "metadata": metadata,
                 "transcript": interaction.text or "",
@@ -1396,23 +1604,23 @@ class CallsAnalyzer:
                 "llm2_admission_gate": admission_gate or {},
                 "checklist_observation_frame": prompt_context["checklist_definition"],
             }
-        elif request_kind == "llm2b_scoring_gaps":
-            user_payload = {
+        if request_kind == "llm2b_scoring_gaps":
+            return {
                 "call_id": call_id,
                 "llm2a_artifact": previous_artifacts.get("llm2a") or {},
                 "llm2_admission_gate": admission_gate or {},
                 "checklist_definition": prompt_context["checklist_definition"],
                 "mvp1_contract_shape": prompt_context["analysis_result_contract_template"],
             }
-        elif request_kind == "llm2c_claim_proof":
-            user_payload = {
+        if request_kind == "llm2c_claim_proof":
+            return {
                 "call_id": call_id,
                 "llm2a_artifact": previous_artifacts.get("llm2a") or {},
                 "llm2b_artifact": previous_artifacts.get("llm2b") or {},
                 "llm2_admission_gate": admission_gate or {},
             }
-        elif request_kind == "llm2d_recommendations":
-            user_payload = {
+        if request_kind == "llm2d_recommendations":
+            return {
                 "call_id": call_id,
                 "llm2a_artifact": previous_artifacts.get("llm2a") or {},
                 "llm2b_artifact": previous_artifacts.get("llm2b") or {},
@@ -1424,60 +1632,912 @@ class CallsAnalyzer:
                     "",
                 ),
             }
-        else:
-            user_payload = {
-                "request_kind": request_kind,
-                "interaction": prompt_context["interaction"],
-                "checklist_definition": prompt_context["checklist_definition"],
-                "analysis_result_contract_template": prompt_context[
-                    "analysis_result_contract_template"
-                ],
-                "llm1_first_pass": prompt_context.get("llm1_first_pass"),
-                "previous_artifacts": previous_artifacts,
+        return {
+            "request_kind": request_kind,
+            "interaction": prompt_context["interaction"],
+            "checklist_definition": prompt_context["checklist_definition"],
+            "analysis_result_contract_template": prompt_context[
+                "analysis_result_contract_template"
+            ],
+            "llm1_first_pass": prompt_context.get("llm1_first_pass"),
+            "previous_artifacts": previous_artifacts,
+        }
+
+    def _build_compact_llm2_layered_user_payload(
+        self,
+        *,
+        interaction: Interaction,
+        request_kind: str,
+        prompt_context: dict[str, Any],
+        previous_artifacts: dict[str, Any],
+        admission_gate: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build a compact universal payload without truncating transcript/evidence."""
+        call_id = str(interaction.id)
+        llm2a = dict(previous_artifacts.get("llm2a") or {})
+        llm2b = dict(previous_artifacts.get("llm2b") or {})
+        llm2c = dict(previous_artifacts.get("llm2c") or {})
+        if request_kind == "llm2a_facts_scenes":
+            return {
+                "input_profile": "compact",
+                "call_id": call_id,
+                "metadata": self._compact_call_metadata(interaction),
+                "dialogue": self._compact_dialogue_turns(interaction),
+                "llm1_first_pass": self._compact_llm1_first_pass(
+                    prompt_context.get("llm1_first_pass") or {}
+                ),
+                "llm2_admission_gate": admission_gate or {},
+                "task_contract": {
+                    "return": [
+                        "scenes",
+                        "evidence_ledger",
+                        "business_outcome_signal",
+                        "language_notes",
+                        "transcript_quality_notes",
+                        "fail_closed",
+                    ],
+                    "do_not_return": [
+                        "scores",
+                        "criteria_results",
+                        "recommendations",
+                        "final_normalized_analysis",
+                    ],
+                    "quality_rules": self._universal_llm2_quality_rules(),
+                },
             }
-        content = self._request_llm_content(
+        if request_kind == "llm2b_scoring_gaps":
+            return {
+                "input_profile": "compact",
+                "call_id": call_id,
+                "llm2_admission_gate": admission_gate or {},
+                "scenes": llm2a.get("scenes") or [],
+                "evidence_ledger": llm2a.get("evidence_ledger") or [],
+                "business_outcome_signal": llm2a.get("business_outcome_signal") or {},
+                "compact_scoring_rubric": self._compact_checklist_rubric(),
+                "task_contract": {
+                    "return": [
+                        "criteria_results",
+                        "stage_scores",
+                        "strength_claims",
+                        "gap_claims",
+                        "outcome_follow_up_flags",
+                    ],
+                    "quality_rules": self._universal_llm2_quality_rules(),
+                },
+            }
+        if request_kind == "llm2c_claim_proof":
+            claims = self._compact_claim_proof_claims(llm2b)
+            scene_ids = self._claim_reference_ids(claims=claims, key="scene_ids")
+            evidence_ids = self._claim_reference_ids(claims=claims, key="evidence_ids")
+            return {
+                "input_profile": "compact",
+                "call_id": call_id,
+                "claims": claims,
+                "scene_index": self._compact_scene_index(
+                    llm2a.get("scenes") or [],
+                    scene_ids=scene_ids,
+                ),
+                "evidence_ledger": self._compact_evidence_ledger(
+                    llm2a.get("evidence_ledger") or [],
+                    evidence_ids=evidence_ids,
+                ),
+                "task_contract": {
+                    "return": ["proof_cards", "claim_audit", "fail_closed"],
+                },
+            }
+        if request_kind == "llm2d_recommendations":
+            return {
+                "input_profile": "compact",
+                "call_id": call_id,
+                "business_outcome_signal": llm2a.get("business_outcome_signal") or {},
+                "outcome_facts": self._compact_outcome_facts(llm2a=llm2a, llm2b=llm2b),
+                "scoring_context": self._compact_stage_score_summary(llm2b, llm2c),
+                "recommendation_sources": self._compact_recommendation_sources(
+                    llm2a=llm2a,
+                    llm2b=llm2b,
+                    llm2c=llm2c,
+                ),
+                "evidence_ledger": self._evidence_for_referenced_claims(
+                    llm2a=llm2a,
+                    llm2b=llm2b,
+                    llm2c=llm2c,
+                ),
+            }
+        return self._build_full_llm2_layered_user_payload(
+            interaction=interaction,
+            request_kind=request_kind,
+            prompt_context=prompt_context,
+            previous_artifacts=previous_artifacts,
+            admission_gate=admission_gate,
+        )
+
+    def _compact_call_metadata(self, interaction: Interaction) -> dict[str, Any]:
+        metadata = dict(interaction.metadata_ or {})
+        return {
+            "manager_name": metadata.get("manager_name"),
+            "call_started_at": metadata.get("call_date")
+            or metadata.get("call_started_at")
+            or metadata.get("started_at"),
+            "duration_sec": getattr(interaction, "duration_sec", None),
+            "direction": metadata.get("direction"),
+            "contact_phone": metadata.get("contact_phone") or metadata.get("phone"),
+            "external_call_code": metadata.get("external_call_code")
+            or getattr(interaction, "external_id", None),
+        }
+
+    @staticmethod
+    def _compact_llm1_first_pass(llm1_first_pass: dict[str, Any]) -> dict[str, Any]:
+        classification = dict(llm1_first_pass.get("classification") or {})
+        summary = dict(llm1_first_pass.get("summary") or {})
+        follow_up = dict(llm1_first_pass.get("follow_up") or {})
+        data_quality = dict(llm1_first_pass.get("data_quality") or {})
+        return {
+            "classification": {
+                key: classification.get(key)
+                for key in (
+                    "call_type",
+                    "scenario_type",
+                    "analysis_eligibility",
+                    "eligibility_reason",
+                    "analysis_confidence",
+                )
+                if classification.get(key) is not None
+            },
+            "summary": {
+                key: summary.get(key)
+                for key in (
+                    "short_summary",
+                    "call_goal",
+                    "outcome_code",
+                    "outcome_text",
+                    "next_step_text",
+                )
+                if summary.get(key) is not None
+            },
+            "follow_up": {
+                key: follow_up.get(key)
+                for key in (
+                    "next_step_fixed",
+                    "next_step_type",
+                    "next_step_text",
+                    "owner",
+                    "due_date_text",
+                    "reason_not_fixed",
+                )
+                if follow_up.get(key) is not None
+            },
+            "data_quality": {
+                key: data_quality.get(key)
+                for key in (
+                    "transcript_quality",
+                    "classification_quality",
+                    "analysis_quality",
+                    "needs_manual_review",
+                )
+                if data_quality.get(key) is not None
+            },
+            "analysis_focus": list(llm1_first_pass.get("analysis_focus") or []),
+        }
+
+    @staticmethod
+    def _compact_checklist_rubric() -> list[dict[str, Any]]:
+        return [
+            {
+                "stage_code": stage.get("stage_code"),
+                "stage_name": stage.get("stage_name"),
+                "applicability_rule": stage.get("applicability_rule"),
+                "criteria": [
+                    {
+                        "criterion_code": criterion.get("criterion_code"),
+                        "criterion_name": criterion.get("criterion_name"),
+                        "max_score": criterion.get("max_score") or 2,
+                    }
+                    for criterion in stage.get("criteria", [])
+                ],
+            }
+            for stage in CHECKLIST_DEFINITION.get("stages", [])
+        ]
+
+    @staticmethod
+    def _compact_claim_proof_claims(llm2b: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        def compact_claim(claim: dict[str, Any]) -> dict[str, Any]:
+            return {
+                key: claim.get(key)
+                for key in (
+                    "claim_id",
+                    "claim",
+                    "stage_code",
+                    "claim_scope",
+                    "claim_type",
+                    "scene_ids",
+                    "evidence_ids",
+                )
+                if claim.get(key) not in (None, "", [])
+            }
+
+        return {
+            "strength_claims": [
+                compact_claim(claim)
+                for claim in (llm2b.get("strength_claims") or [])
+                if isinstance(claim, dict)
+            ],
+            "gap_claims": [
+                compact_claim(claim)
+                for claim in (llm2b.get("gap_claims") or [])
+                if isinstance(claim, dict)
+            ],
+        }
+
+    @staticmethod
+    def _claim_reference_ids(*, claims: dict[str, list[dict[str, Any]]], key: str) -> set[str]:
+        ids: set[str] = set()
+        for collection in (claims.get("strength_claims") or [], claims.get("gap_claims") or []):
+            for claim in collection:
+                if not isinstance(claim, dict):
+                    continue
+                for item in claim.get(key) or []:
+                    if item not in (None, ""):
+                        ids.add(str(item))
+        return ids
+
+    @staticmethod
+    def _compact_scene_index(
+        scenes: list[dict[str, Any]],
+        *,
+        scene_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "scene_id": scene.get("scene_id"),
+                "order": scene.get("order"),
+                "stage_hint": scene.get("stage_hint"),
+                "what_happened": scene.get("what_happened"),
+                "evidence_ids": scene.get("evidence_ids") or [],
+            }
+            for scene in scenes
+            if isinstance(scene, dict)
+            and (scene_ids is None or str(scene.get("scene_id") or "") in scene_ids)
+        ]
+
+    @staticmethod
+    def _compact_evidence_ledger(
+        evidence_ledger: list[dict[str, Any]],
+        *,
+        evidence_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in evidence_ledger
+            if isinstance(item, dict)
+            and (evidence_ids is None or str(item.get("evidence_id") or "") in evidence_ids)
+        ]
+
+    @staticmethod
+    def _compact_recommendation_sources(
+        *,
+        llm2a: dict[str, Any],
+        llm2b: dict[str, Any],
+        llm2c: dict[str, Any],
+    ) -> dict[str, Any]:
+        proof_cards = CallsAnalyzer._accepted_llm2d_proof_cards(llm2c)
+        accepted_claim_ids = {
+            str(card.get("claim_id"))
+            for card in proof_cards
+            if card.get("claim_id") not in (None, "")
+        }
+        evidence_texts = {
+            str(item.get("text") or "").strip()
+            for item in (llm2a.get("evidence_ledger") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        }
+
+        def compact_claim(claim: dict[str, Any]) -> dict[str, Any]:
+            return {
+                key: claim.get(key)
+                for key in (
+                    "claim_id",
+                    "claim",
+                    "stage_code",
+                    "claim_type",
+                    "scene_ids",
+                    "evidence_ids",
+                )
+                if claim.get(key) not in (None, "", [])
+            }
+
+        def compact_proof(card: dict[str, Any]) -> dict[str, Any]:
+            compact = {
+                key: card.get(key)
+                for key in (
+                    "proof_id",
+                    "claim_id",
+                    "stage_code",
+                    "claim",
+                    "softened_claim",
+                    "proof_status",
+                    "proof_type",
+                    "gap_proven",
+                    "supporting_evidence_ids",
+                    "counter_evidence_ids",
+                    "proof_explanation",
+                )
+                if card.get(key) not in (None, "", [])
+            }
+            evidence_quote = str(card.get("evidence_quote") or "").strip()
+            if evidence_quote and evidence_quote not in evidence_texts:
+                compact["evidence_quote"] = card.get("evidence_quote")
+            explanation = str(compact.get("proof_explanation") or "").strip()
+            claim_text = str(compact.get("claim") or compact.get("softened_claim") or "").strip()
+            if explanation and claim_text and explanation == claim_text:
+                compact.pop("proof_explanation", None)
+            elif explanation:
+                compact["proof_explanation"] = CallsAnalyzer._clip_compact_text(explanation, 220)
+            return compact
+
+        return {
+            "gap_claims": [
+                compact_claim(claim)
+                for claim in (llm2b.get("gap_claims") or [])
+                if isinstance(claim, dict)
+                and str(claim.get("claim_id") or "") in accepted_claim_ids
+            ],
+            "strength_claims": [
+                compact_claim(claim)
+                for claim in (llm2b.get("strength_claims") or [])
+                if isinstance(claim, dict)
+                and str(claim.get("claim_id") or "") in accepted_claim_ids
+            ],
+            "accepted_proof_cards": [compact_proof(card) for card in proof_cards],
+        }
+
+    @staticmethod
+    def _compact_stage_score_summary(
+        llm2b: dict[str, Any],
+        llm2c: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        stage_scores = [
+            {
+                key: stage.get(key)
+                for key in ("stage_code", "stage_name", "stage_score", "max_stage_score", "score")
+                if stage.get(key) is not None
+            }
+            for stage in (llm2b.get("stage_scores") or [])
+            if isinstance(stage, dict)
+        ]
+        weak_stage_counts: dict[str, int] = {}
+        weak_examples_by_stage: dict[str, list[dict[str, Any]]] = {}
+        for criterion in llm2b.get("criteria_results") or []:
+            if not isinstance(criterion, dict):
+                continue
+            score = criterion.get("score")
+            max_score = criterion.get("max_score")
+            try:
+                is_weak = int(score or 0) < int(max_score if max_score is not None else 2)
+            except (TypeError, ValueError):
+                is_weak = False
+            if not is_weak:
+                continue
+            stage_code = str(criterion.get("stage_code") or "unknown")
+            weak_stage_counts[stage_code] = weak_stage_counts.get(stage_code, 0) + 1
+            examples = weak_examples_by_stage.setdefault(stage_code, [])
+            if len(examples) >= 2:
+                continue
+            example = {
+                key: criterion.get(key)
+                for key in ("criterion_code", "stage_code", "score", "max_score")
+                if criterion.get(key) not in (None, "", [])
+            }
+            criterion_name = CallsAnalyzer._clip_compact_text(
+                criterion.get("criterion_name"),
+                90,
+            )
+            if criterion_name:
+                example["criterion_name"] = criterion_name
+            examples.append(example)
+        return {
+            "stage_scores": stage_scores,
+            "weak_stage_counts": [
+                {"stage_code": stage_code, "weak_count": count}
+                for stage_code, count in sorted(weak_stage_counts.items())
+            ],
+            "weak_examples_by_stage": [
+                {"stage_code": stage_code, "examples": examples}
+                for stage_code, examples in sorted(weak_examples_by_stage.items())
+            ],
+            "priority_hints": CallsAnalyzer._compact_priority_hints(llm2c or {}),
+        }
+
+    @staticmethod
+    def _evidence_for_referenced_claims(
+        *,
+        llm2a: dict[str, Any],
+        llm2b: dict[str, Any],
+        llm2c: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        referenced_ids: set[str] = set()
+        proof_cards = CallsAnalyzer._accepted_llm2d_proof_cards(llm2c)
+        accepted_claim_ids = {
+            str(card.get("claim_id"))
+            for card in proof_cards
+            if card.get("claim_id") not in (None, "")
+        }
+        for card in proof_cards:
+            for key in ("supporting_evidence_ids", "counter_evidence_ids"):
+                referenced_ids.update(str(item) for item in (card.get(key) or []) if item)
+        for collection in (llm2b.get("strength_claims") or [], llm2b.get("gap_claims") or []):
+            for claim in collection:
+                if not isinstance(claim, dict):
+                    continue
+                if str(claim.get("claim_id") or "") not in accepted_claim_ids:
+                    continue
+                referenced_ids.update(str(item) for item in (claim.get("evidence_ids") or []) if item)
+        raw_business_outcome = llm2a.get("business_outcome_signal") or {}
+        business_outcome = raw_business_outcome if isinstance(raw_business_outcome, dict) else {}
+        outcome_status = str(business_outcome.get("status") or "").strip().lower()
+        outcome_confidence = str(business_outcome.get("confidence") or "").strip().lower()
+        if outcome_status and outcome_status != "insufficient" and outcome_confidence != "low":
+            for item in business_outcome.get("evidence_ids") or []:
+                referenced_ids.add(str(item))
+        referenced_ids.update(
+            CallsAnalyzer._reliable_outcome_follow_up_evidence_ids(
+                llm2b.get("outcome_follow_up_flags") or {}
+            )
+        )
+        evidence = []
+        seen_evidence_ids: set[str] = set()
+        for item in llm2a.get("evidence_ledger") or []:
+            if not isinstance(item, dict):
+                continue
+            evidence_id = str(item.get("evidence_id") or "")
+            if evidence_id in referenced_ids and evidence_id not in seen_evidence_ids:
+                seen_evidence_ids.add(evidence_id)
+                evidence.append(item)
+        return evidence
+
+    @staticmethod
+    def _accepted_llm2d_proof_cards(llm2c: dict[str, Any]) -> list[dict[str, Any]]:
+        accepted_statuses = {"proven", "verified", "soften", "softened"}
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for card in llm2c.get("proof_cards") or []:
+            if not isinstance(card, dict):
+                continue
+            proof_status = str(card.get("proof_status") or "").strip().lower()
+            if proof_status not in accepted_statuses:
+                continue
+            dedupe_key = (
+                str(card.get("proof_id") or ""),
+                str(card.get("claim_id") or ""),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            deduped.append(card)
+        return deduped
+
+    @staticmethod
+    def _compact_priority_hints(llm2c: dict[str, Any]) -> list[dict[str, Any]]:
+        hints: list[dict[str, Any]] = []
+        for card in CallsAnalyzer._accepted_llm2d_proof_cards(llm2c):
+            claim_type = str(card.get("claim_type") or "").strip().lower()
+            if not card.get("gap_proven") and "gap" not in claim_type:
+                continue
+            hint = {
+                key: card.get(key)
+                for key in ("proof_id", "claim_id", "stage_code", "proof_status")
+                if card.get(key) not in (None, "", [])
+            }
+            softened_claim = CallsAnalyzer._clip_compact_text(card.get("softened_claim"), 180)
+            claim = CallsAnalyzer._clip_compact_text(card.get("claim"), 180)
+            if softened_claim:
+                hint["priority_reason"] = softened_claim
+            elif claim:
+                hint["priority_reason"] = claim
+            if card.get("supporting_evidence_ids"):
+                hint["supporting_evidence_ids"] = card.get("supporting_evidence_ids")
+            hints.append(hint)
+        return hints[:3]
+
+    @staticmethod
+    def _compact_outcome_facts(
+        *,
+        llm2a: dict[str, Any],
+        llm2b: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_business_outcome = llm2a.get("business_outcome_signal") or {}
+        business_outcome = raw_business_outcome if isinstance(raw_business_outcome, dict) else {}
+        outcome_evidence_ids = [
+            str(item)
+            for item in (business_outcome.get("evidence_ids") or [])
+            if item
+        ]
+        compact: dict[str, Any] = {"business_outcome": {}, "follow_up": {}}
+        status = str(business_outcome.get("status") or "").strip().lower()
+        confidence = str(business_outcome.get("confidence") or "").strip().lower()
+        if (
+            status
+            and status != "insufficient"
+            and outcome_evidence_ids
+            and confidence != "low"
+        ):
+            compact["business_outcome"] = {
+                key: business_outcome.get(key)
+                for key in ("status", "confidence", "reason")
+                if business_outcome.get(key) not in (None, "", [])
+            }
+            compact["business_outcome"]["evidence_ids"] = outcome_evidence_ids
+
+        raw_follow_up_flags = llm2b.get("outcome_follow_up_flags") or {}
+        follow_up_flags = raw_follow_up_flags if isinstance(raw_follow_up_flags, dict) else {}
+        follow_up_evidence_ids = CallsAnalyzer._reliable_outcome_follow_up_evidence_ids(
+            follow_up_flags
+        )
+        if follow_up_evidence_ids:
+            follow_up_fact = {
+                key: follow_up_flags.get(key)
+                for key in (
+                    "concrete_action",
+                    "action",
+                    "next_step",
+                    "next_step_text",
+                    "owner",
+                    "side",
+                    "timing",
+                    "condition",
+                    "confidence",
+                )
+                if follow_up_flags.get(key) not in (None, "", [])
+            }
+            if any(
+                follow_up_fact.get(key)
+                for key in ("concrete_action", "action", "next_step", "next_step_text")
+            ):
+                follow_up_fact["evidence_ids"] = sorted(follow_up_evidence_ids)
+                compact["follow_up"] = follow_up_fact
+        return compact
+
+    @staticmethod
+    def _reliable_outcome_follow_up_evidence_ids(flags: dict[str, Any]) -> set[str]:
+        if not isinstance(flags, dict):
+            return set()
+        confidence = str(flags.get("confidence") or "").strip().lower()
+        if confidence == "low":
+            return set()
+        raw_evidence_ids = (
+            flags.get("evidence_ids")
+            or flags.get("source_evidence_ids")
+            or flags.get("supporting_evidence_ids")
+            or []
+        )
+        evidence_ids = {str(item) for item in raw_evidence_ids if item}
+        if not evidence_ids:
+            return set()
+        has_action = any(
+            flags.get(key)
+            for key in ("concrete_action", "action", "next_step", "next_step_text")
+        )
+        return evidence_ids if has_action else set()
+
+    @staticmethod
+    def _clip_compact_text(value: Any, max_chars: int) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
+
+    @staticmethod
+    def _compact_final_analysis_contract() -> dict[str, Any]:
+        return {
+            "return": {
+                "summary": [
+                    "short_summary",
+                    "context",
+                    "call_goal",
+                    "outcome_code",
+                    "outcome_text",
+                    "next_step_text",
+                ],
+                "recommendations": "max 3, linked to accepted proof_id",
+                "agreements": "only concrete action + owner/side + timing/condition",
+                "follow_up": "only concrete next step from evidence",
+                "final_normalized_analysis": [
+                    "classification",
+                    "summary",
+                    "agreements",
+                    "follow_up",
+                ],
+            },
+            "do_not_return": [
+                "score_by_stage",
+                "criteria_results",
+                "strengths",
+                "gaps",
+                "full scenes",
+                "full quote_bank",
+                "duplicated input artifacts",
+            ],
+        }
+
+    @staticmethod
+    def _universal_llm2_quality_rules() -> list[str]:
+        return [
+            "Use Russian for manager-facing text.",
+            "Keep evidence quotes as exact transcript substrings.",
+            "Do not treat vague availability like 'можете обращаться' as a callback or agreement.",
+            "Do not infer owner, deadline, or commitment unless it is spoken.",
+            "Every score or claim must cite scene_ids/evidence_ids.",
+            "Do not add stop-conditions for calls admitted into LLM2.",
+            "Return compact JSON only; do not duplicate input artifacts.",
+        ]
+
+    @staticmethod
+    def _compact_dialogue_turns(interaction: Interaction) -> list[dict[str, Any]]:
+        """Return one compact dialogue representation without segment timestamps."""
+        metadata = dict(getattr(interaction, "metadata_", None) or {})
+        raw_segments = (
+            metadata.get("segments")
+            or metadata.get("transcript_segments")
+            or metadata.get("utterances")
+            or []
+        )
+        turns: list[dict[str, Any]] = []
+        if isinstance(raw_segments, list):
+            compact_index = 1
+            current_speaker: str | None = None
+            current_parts: list[str] = []
+
+            def flush_current() -> None:
+                nonlocal compact_index, current_speaker, current_parts
+                text = " ".join(part for part in current_parts if part).strip()
+                if text:
+                    turns.append(
+                        {
+                            "turn_id": f"turn_{compact_index:03d}",
+                            "speaker": current_speaker or "unknown",
+                            "text": text,
+                        }
+                    )
+                    compact_index += 1
+                current_speaker = None
+                current_parts = []
+
+            for segment in raw_segments:
+                if not isinstance(segment, dict):
+                    continue
+                text = str(segment.get("text") or segment.get("utterance") or "").strip()
+                if not text:
+                    continue
+                speaker = CallsAnalyzer._compact_dialogue_speaker(
+                    segment.get("speaker") or segment.get("role")
+                )
+                projected_text = " ".join([*current_parts, text]).strip()
+                if (
+                    current_parts
+                    and current_speaker == speaker
+                    and len(projected_text) <= 900
+                ):
+                    current_parts.append(text)
+                    continue
+                flush_current()
+                current_speaker = speaker
+                current_parts = [text]
+            flush_current()
+        if turns:
+            return turns
+        transcript = str(getattr(interaction, "text", None) or "").strip()
+        if not transcript:
+            return []
+        return [
+            {
+                "turn_id": "turn_001",
+                "speaker": "unknown",
+                "text": transcript,
+            }
+        ]
+
+    @staticmethod
+    def _compact_dialogue_speaker(raw_speaker: Any) -> str:
+        speaker = str(raw_speaker or "").strip().lower()
+        if speaker in {"manager", "менеджер", "agent", "operator", "sales"}:
+            return "manager"
+        if speaker in {"client", "клиент", "customer", "lead"}:
+            return "client"
+        return "unknown"
+
+    @staticmethod
+    def _llm2_payload_diagnostics(
+        *,
+        request_kind: str,
+        input_profile: str,
+        user_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "request_kind": request_kind,
+            "input_profile": input_profile,
+            "payload_keys": sorted(user_payload.keys()),
+            "payload_chars": 0,
+            "wall_time_sec": None,
+            "output_chars": 0,
+            "provider": None,
+            "account_alias": None,
+            "model": None,
+            "usage": None,
+            "repair_used": False,
+            "repair_count": 0,
+            "repair_wall_time_sec": None,
+            "repair_usage": None,
+            "repair_model": None,
+            "bypass_used": False,
+            "bypass_reason": None,
+            "contains_transcript": "transcript" in user_payload,
+            "contains_segments": "segments" in user_payload,
+            "contains_full_contract": any(
+                key in user_payload
+                for key in (
+                    "mvp1_contract_shape",
+                    "analysis_result_contract_template",
+                    "report_evidence_contract_v1",
+                )
+            ),
+            "contains_full_checklist": any(
+                key in user_payload
+                for key in ("checklist_definition", "checklist_observation_frame")
+            ),
+        }
+
+    @staticmethod
+    def _should_bypass_compact_llm2c_no_claims(
+        *,
+        request_kind: str,
+        input_profile: str,
+        user_payload: dict[str, Any],
+    ) -> bool:
+        if request_kind != "llm2c_claim_proof" or input_profile != "compact":
+            return False
+        claims = user_payload.get("claims")
+        if not isinstance(claims, dict):
+            return False
+        strength_claims = claims.get("strength_claims")
+        gap_claims = claims.get("gap_claims")
+        return (
+            isinstance(strength_claims, list)
+            and isinstance(gap_claims, list)
+            and len(strength_claims) == 0
+            and len(gap_claims) == 0
+        )
+
+    @staticmethod
+    def _build_llm2c_no_claims_artifact(*, call_id: str) -> dict[str, Any]:
+        return {
+            "pass": "LLM-2C",
+            "artifact_version": "llm2_pass_2c_v1",
+            "call_id": call_id,
+            "proof_cards": [],
+            "claim_audit": {
+                "input_claim_count": 0,
+                "proven_count": 0,
+                "softened_count": 0,
+                "rejected_count": 0,
+                "insufficient_count": 0,
+            },
+            "counter_evidence_notes": [],
+            "quote_grounding_notes": [],
+            "absence_proof_notes": [],
+            "notes": [],
+            "fail_closed": {
+                "unmatched_claim_ids": [],
+                "reject_reasons": [],
+            },
+        }
+
+    def _repair_llm2_layered_pass_json(
+        self,
+        *,
+        interaction: Interaction,
+        instruction_version: str,
+        request_kind: str,
+        broken_content: str,
+        parse_error: str,
+    ) -> str:
+        """Run one bounded JSON repair retry for OpenAI-compatible LLM2 passes."""
+        self.logger.warning(
+            "analyzer.llm2_layered_json_repair",
+            interaction_id=str(interaction.id),
+            instruction_version=instruction_version,
+            request_kind=request_kind,
+            parse_error=parse_error,
+        )
+        return self._request_llm_content(
             interaction=interaction,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        f"{self._get_prompt('llm2_pass_contracts').rstrip()}\n\n"
-                        f"{system_prompt.strip()}"
+                        "You repair malformed JSON for an LLM-2 layered analysis pass. "
+                        "Return exactly one valid JSON object and no markdown. "
+                        "Keep the same artifact contract and call_id. "
+                        "If the input is truncated, close open strings/objects or remove only "
+                        "the incomplete trailing item; do not invent new analysis claims."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(user_payload, ensure_ascii=False, indent=2),
+                    "content": json.dumps(
+                        {
+                            "request_kind": request_kind,
+                            "parse_error": parse_error,
+                            "malformed_json": broken_content,
+                        },
+                        ensure_ascii=False,
+                    ),
                 },
             ],
             instruction_version=instruction_version,
             layer="llm2",
-            request_kind=request_kind,
-            executor_label="LLM-2 OpenAI-compatible executor",
-            temperature=0.1,
+            request_kind=f"{request_kind}_json_repair",
+            executor_label="LLM-2 JSON repair executor",
+            temperature=0.0,
+            max_tokens=CallsAnalyzer._llm2_output_max_tokens(),
         )
+
+    @staticmethod
+    def _locally_repair_llm2_layered_pass_json(content: str) -> str | None:
+        """Best-effort local closure for truncated JSON, enabled only for controlled runs."""
+        raw_flag = os.getenv("AI_LLM2_LOCAL_JSON_REPAIR_ENABLED", "")
+        if raw_flag.strip().lower() not in {"1", "true", "yes", "on"}:
+            return None
+        repaired = CallsAnalyzer._close_truncated_json(content)
+        if repaired is None:
+            return None
         try:
-            artifact = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise LLMResponseError(
-                f"{request_kind} returned invalid JSON",
-                interaction_id=str(interaction.id),
-                raw_response=content,
-            ) from exc
-        if not isinstance(artifact, dict):
-            raise LLMResponseError(
-                f"{request_kind} must return a JSON object",
-                interaction_id=str(interaction.id),
-                raw_response=content,
-            )
-        artifact.setdefault("call_id", str(interaction.id))
-        if str(artifact.get("status") or "").strip().lower() in {"failed", "error"}:
-            raise LLMResponseError(
-                f"{request_kind} returned failed status",
-                interaction_id=str(interaction.id),
-                raw_response=content,
-            )
-        return artifact
+            json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+        return repaired
+
+    @staticmethod
+    def _close_truncated_json(content: str) -> str | None:
+        """Close a likely truncated JSON object without inventing new keys or values."""
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text).strip()
+        start = text.find("{")
+        if start < 0:
+            return None
+        text = text[start:]
+
+        stack: list[str] = []
+        in_string = False
+        escape = False
+        for char in text:
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                stack.append("}")
+            elif char == "[":
+                stack.append("]")
+            elif char in {"}", "]"}:
+                if stack and stack[-1] == char:
+                    stack.pop()
+
+        suffix = ""
+        if in_string:
+            suffix += '"'
+        suffix += "".join(reversed(stack))
+        candidate = text + suffix
+        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+        return candidate
 
     @staticmethod
     def _should_mark_not_coachable(
@@ -1716,6 +2776,7 @@ class CallsAnalyzer:
         request_kind: str,
         executor_label: str,
         temperature: float,
+        max_tokens: int | None = None,
     ) -> str:
         """Request one routed JSON response from an LLM layer."""
         layer_label = {
@@ -1893,6 +2954,7 @@ class CallsAnalyzer:
                                 model=candidate.model,
                                 response_format={"type": "json_object"},
                                 temperature=temperature,
+                                max_tokens=max_tokens,
                                 timeout=candidate.timeout_sec or settings.openai_timeout_sec,
                                 messages=messages,
                             )
