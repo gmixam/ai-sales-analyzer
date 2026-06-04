@@ -65,6 +65,8 @@ audio_tmp/
 *.mp3
 *.tar
 *.log
+*.pdf
+*.docx
 tmp/
 artifacts/
 generated/
@@ -72,4 +74,12 @@ storage/
 uploads/
 downloads/
 data/
+review_packages/
+core/review_packages/
+selection_debug_exports/
+verification_*.json
+core/verification_*.json
+verification_*.pdf
+core/verification_*.pdf
+core/celerybeat-schedule
 infra/nginx/ssl/*.pem

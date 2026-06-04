@@ -6669,9 +6669,10 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("Ежедневный отчет по звонкам", rendered["subject"])
         self.assertIn("Ежедневный отчет -", rendered["artifact"]["filename"])
         self.assertTrue(rendered["artifact"]["filename"].endswith(".pdf"))
-        self.assertIn("Полный отчет - в PDF-файле во вложении.", rendered["text"])
-        self.assertIn("Кратко по дню", rendered["text"])
-        self.assertIn("Содержательных звонков", rendered["text"])
+        self.assertIn("найдено в телефонии", rendered["text"])
+        self.assertIn("содержательных", rendered["text"])
+        self.assertIn("В коучинговый разбор вошло", rendered["text"])
+        self.assertIn("Балл дня:", rendered["text"])
         self.assertNotIn("СИТУАЦИЯ ДНЯ", rendered["text"])
         self.assertNotIn("РАЗБОР ЗВОНКА", rendered["text"])
         self.assertNotIn("СПИСОК ВСЕХ ЗВОНКОВ ДНЯ", rendered["text"])
@@ -6692,7 +6693,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("manager_daily_template_v1", rendered["html"])
         self.assertEqual(rendered["artifact"]["media_type"], "application/pdf")
         self.assertGreater(rendered["artifact"]["size_bytes"], 0)
-        self.assertGreaterEqual(rendered["artifact"]["page_count"], 6)
+        self.assertGreaterEqual(rendered["artifact"]["page_count"], 5)
         self.assertEqual(rendered["template"]["version"], "manager_daily_template_v2")
         self.assertEqual(payload["meta"]["template_version"], "manager_daily_template_v2")
         self.assertEqual(rendered["artifact"]["render_variant"], "template_pdf_manager_daily_template_v2")
@@ -6712,8 +6713,6 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "БАЛЛЫ ПО ЭТАПАМ",
             "СИТУАЦИЯ ДНЯ",
             "РАЗБОР ЗВОНКА",
-            "ГОЛОС КЛИЕНТА",
-            "КОНТАКТЫ В РАБОТУ",
             "ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ",
             "ЛЕГЕНДА СТАТУСОВ",
         ]

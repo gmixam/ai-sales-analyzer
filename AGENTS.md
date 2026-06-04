@@ -5,11 +5,13 @@
 Основные канонические правила находятся здесь:
 - `docs/CODER_WORKING_RULES.md`
 - `docs/TASK_PROMPT_TEMPLATE.md`
+- `docs/PILOT_OPERATIONS.md`
 
 Перед началом любой задачи:
 1. Прочитай `docs/CODER_WORKING_RULES.md`.
 2. Если задача связана с запуском STT/LLM/report pipeline, тестового режима,
-   Codex-subagents или business delivery, прочитай `docs/RUNTIME_PROFILES.md`.
+   Codex-subagents или business delivery, прочитай `docs/PILOT_OPERATIONS.md`
+   и `docs/RUNTIME_PROFILES.md`.
 3. Если запрос пользователя не оформлен в формате проектной задачи, сначала нормализуй его.
 4. Используй документацию репозитория как основной source of truth.
 5. Держи scope ограниченным.

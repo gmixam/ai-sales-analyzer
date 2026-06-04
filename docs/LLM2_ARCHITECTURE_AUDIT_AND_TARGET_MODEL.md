@@ -15,7 +15,7 @@ docs/ACTIVE_WORK_STATE.md
 docs/GATE5_AUTONOMOUS_EXECUTION_STATUS.md
 docs/PROGRESS.md
 docs/DECISIONS.md
-docs/TMP_LLM_NODES_ARTIFACTS_MAP.md
+docs/archive/handoff-history/TMP_LLM_NODES_ARTIFACTS_MAP.md
 docs/LLM_SUBAGENT_TESTING_MODE.md
 docs/REPORT_LAYER_LLM3_STRUCTURE_AUDIT_2026-05-27.md
 docs/LLM2_CLAIM_EVIDENCE_FIT_AUDIT_2026-05-27.md
@@ -652,7 +652,7 @@ core/app/agents/calls/prompts/llm2_pass_contracts.md
 core/app/agents/calls/analyzer.py
 core/app/agents/calls/prompts/analyze.md
 core/app/agents/calls/prompts/analyze_v17_universal_evidence.md
-docs/TMP_LLM_NODES_ARTIFACTS_MAP.md
+docs/archive/handoff-history/TMP_LLM_NODES_ARTIFACTS_MAP.md
 docs/LLM_SUBAGENT_TESTING_MODE.md
 ```
 

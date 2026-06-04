@@ -292,9 +292,11 @@ layered `LLM2` contract:
 /root/ai-sales-analyzer/docs/ACTIVE_WORK_STATE.md
 /root/ai-sales-analyzer/docs/RUNTIME_PROFILES.md
 /root/ai-sales-analyzer/docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md
-/root/ai-sales-analyzer/TMP_LLM2_INPUT_OPTIMIZATION_TASKS.md
-/root/ai-sales-analyzer/TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md
 ```
+
+Исторические материалы по LLM2 input optimization и semantic defect classes
+лежат в `docs/archive/2026-05-llm2-report-layer-buildout/`. Они не являются
+текущей точкой входа в пилот.
 
 Проверить активные процессы:
 

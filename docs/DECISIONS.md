@@ -920,7 +920,7 @@
 - **Дата:** 2026-06-02
 
 ## ADR-092: Смысловые дефекты LLM2 ведутся как registry классов, а не точечные баги
-- **Решение:** Для смысловых ошибок `LLM-2` вводится рабочий registry `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md`.
+- **Решение:** Для смысловых ошибок `LLM-2` используется подход registry классов дефектов. Исторический рабочий registry перенесен в `docs/archive/2026-05-llm2-report-layer-buildout/TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md`; текущее правило остается в этом ADR и пилотных handoff-документах.
 - **Решение:** Каждый новый смысловой дефект фиксируется как класс проблемы: source phrase/evidence, wrong LLM output, correct interpretation, affected layers, systemic rule, fix strategy и tests.
 - **Решение:** Исправления должны выводить универсальные инварианты (`Concrete Next Step`, `Recommendation Is Not Fact`, `Scoring Needs Grounded Evidence`, `LLM2D Does Not Re-score`), а не добавлять provider/model-specific хаки.
 - **Решение:** Основной механизм закрытия классов дефектов: prompt/contract clarification, deterministic semantic normalization, non-blocking diagnostics/warnings и regression tests. Blocking validators не являются основным способом улучшения качества.
@@ -943,17 +943,16 @@
   трех условий: изменения внедрены, выполнена focused verification, пользователь
   визуально подтвердил preview-отчет.
 - **Решение:** Закрытый pass фиксируется в `docs/PROGRESS.md`,
-  `docs/ACTIVE_WORK_STATE.md`, `docs/CONTEXT_INDEX.md` и при необходимости в
-  рабочих `TMP_*` документах. Следующий агент должен начинать с этих файлов, а
-  не реконструировать статус из логов.
+  `docs/ACTIVE_WORK_STATE.md`, `docs/CONTEXT_INDEX.md` и актуальных pilot/docs
+  source-of-truth. Следующий агент должен начинать с этих файлов, а не
+  реконструировать статус из логов или исторических архивов.
 - **Решение:** Operator/test Telegram preview не равен manager-facing complete
   report. Если coverage дня неполный или runner вернул `review_required`,
   preview можно использовать для проверки слоя отчета, но нельзя считать
   боевой доставкой менеджеру.
-- **Решение:** `TMP_LLM2_SEMANTIC_DEFECT_REGISTRY.md` остается рабочим
-  документом для новых предложений по системным правилам качества `LLM2`.
-  Новые смысловые баги сначала классифицируются там, затем превращаются в
-  bounded prompt/normalization/diagnostic/test задачи.
+- **Решение:** Новые смысловые баги `LLM2` сначала классифицируются как defect
+  class в актуальном handoff/progress документе или отдельной новой task card,
+  затем превращаются в bounded prompt/normalization/diagnostic/test задачи.
 - **Причина:** Последний цикл показал, что технически доставленный PDF может
   быть полезным для проверки конкретных исправлений, но при неполном coverage
   он не закрывает весь день. Нужна явная граница между accepted mechanism fix,
@@ -962,3 +961,21 @@
   work. Это не меняет runtime behavior, prompts, provider routing, renderer,
   delivery recipients или scheduler само по себе.
 - **Дата:** 2026-06-03
+
+## ADR-095: Перед пилотом исторические рабочие материалы архивируются
+- **Решение:** На старте пилотирования repo должен вести нового агента в
+  `ACTIVE_WORK_STATE`, `CONTEXT_INDEX`, `PILOT_OPERATIONS`,
+  `RUNTIME_PROFILES`, `MVP1_PILOT_METRICS_MEASUREMENTS`, `PROGRESS` и
+  `DECISIONS`, а не в временные рабочие файлы.
+- **Решение:** Исторические `TMP_*` / `TEMP_*` документы, длинные аудиты и
+  handoff-черновики переносятся в `docs/archive/` и сохраняются только для
+  расследований.
+- **Решение:** Runtime artifacts (`review_packages`, generated PDFs/DOCX/logs,
+  caches, selection debug exports) не являются source of truth и должны
+  игнорироваться/удаляться локально после фиксации важных итогов в docs.
+- **Причина:** Пилот требует ежедневного операционного цикла без шума:
+  актуальные инструкции, KPI и delivery gates должны быть видны сразу, а
+  исторические материалы не должны сбивать нового агента.
+- **Scope:** repo hygiene and documentation routing. Это не меняет runtime,
+  analyzer, prompts, renderer, delivery semantics или scheduler.
+- **Дата:** 2026-06-04

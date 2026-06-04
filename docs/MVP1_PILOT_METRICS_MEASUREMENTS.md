@@ -192,8 +192,8 @@ NO-GO: останавливаемся или возвращаемся к дор�
 | --- | --- |
 | Последний рабочий контекст | `docs/ACTIVE_WORK_STATE.md` |
 | Правила ручного пилота | `docs/MANUAL_REPORTING_PILOT.md` |
-| Report Layer аудит | `TMP_REPORT_LAYER_AUDIT.md` |
-| Run packages | `review_packages/`, `core/review_packages/` |
+| Report Layer / feedback history | `docs/MANAGER_REPORT_FEEDBACK.md`, `docs/PROGRESS.md` |
+| Run packages | локальные `review_packages/`, `core/review_packages/` только для текущего расследования |
 | Звонки | PostgreSQL table `interactions` |
 | Анализы | PostgreSQL table `analyses` |
 | Scheduled run observability | PostgreSQL table `scheduled_report_batches.observability` |
