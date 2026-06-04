@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+from app.agents.calls.openai_usage import extract_openai_usage_metadata
 
 VOICE_OF_CUSTOMER_COMPOSER_VERSION = "voice_of_customer_composer_v2"
 VOICE_OF_CUSTOMER_PROMPT_VERSION = "voice_of_customer_composer_v2"
@@ -905,6 +906,7 @@ def _request_llm3_voice_of_customer(payload: dict[str, Any]) -> dict[str, Any]:
     result = _as_dict(parsed)
     result["_routing"] = route_plan.to_metadata(
         request_kind="voice_of_customer_composer",
+        usage=extract_openai_usage_metadata(response),
         notes="LLM-3 Voice Of Customer composer completed.",
     )
     return result

@@ -30,6 +30,7 @@ from app.agents.calls.llm_simulation import (
     subagent_runtime_enabled,
 )
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+from app.agents.calls.openai_usage import extract_openai_usage_metadata
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 MVP1_SOURCE_FILE_NAMES = {
@@ -3369,24 +3370,7 @@ class CallsAnalyzer:
     @staticmethod
     def _extract_usage_metadata(response: Any) -> dict[str, Any] | None:
         """Extract token usage from an OpenAI-compatible response when available."""
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return None
-        if isinstance(usage, dict):
-            prompt_tokens = usage.get("prompt_tokens")
-            completion_tokens = usage.get("completion_tokens")
-            total_tokens = usage.get("total_tokens")
-        else:
-            prompt_tokens = getattr(usage, "prompt_tokens", None)
-            completion_tokens = getattr(usage, "completion_tokens", None)
-            total_tokens = getattr(usage, "total_tokens", None)
-        if prompt_tokens is None and completion_tokens is None and total_tokens is None:
-            return None
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+        return extract_openai_usage_metadata(response)
 
     @staticmethod
     def _store_analysis_forensics(
@@ -3427,6 +3411,30 @@ class CallsAnalyzer:
         layer = str(layer_metadata.get("layer") or "").strip()
         if layer:
             ai_routing[layer] = layer_metadata
+            if layer in {"llm1", "llm2", "llm3"} and layer_metadata.get("executed") is not False:
+                history_key = f"{layer}_history"
+                history = list(ai_routing.get(history_key) or [])
+                history_key_tuple = (
+                    layer_metadata.get("request_kind"),
+                    layer_metadata.get("subject_key"),
+                    layer_metadata.get("provider_request_id"),
+                    layer_metadata.get("execution_status"),
+                    len(history) + 1 if not layer_metadata.get("provider_request_id") else None,
+                )
+                seen = {
+                    (
+                        item.get("request_kind"),
+                        item.get("subject_key"),
+                        item.get("provider_request_id"),
+                        item.get("execution_status"),
+                        None if item.get("provider_request_id") else index + 1,
+                    )
+                    for index, item in enumerate(history)
+                    if isinstance(item, dict)
+                }
+                if history_key_tuple not in seen:
+                    history.append(layer_metadata)
+                    ai_routing[history_key] = history[-20:]
             metadata["ai_routing"] = ai_routing
             interaction.metadata_ = metadata
 

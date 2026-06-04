@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+from app.agents.calls.openai_usage import extract_openai_usage_metadata
 
 CALL_BREAKDOWN_COMPOSER_VERSION = "call_breakdown_composer_v2"
 CALL_BREAKDOWN_PROMPT_VERSION = "call_breakdown_composer_v2"
@@ -672,6 +673,7 @@ def _request_llm3_call_breakdown(payload: dict[str, Any]) -> dict[str, Any]:
     result = _as_dict(parsed)
     result["_routing"] = route_plan.to_metadata(
         request_kind="call_breakdown_composer",
+        usage=extract_openai_usage_metadata(response),
         notes="LLM-3 Call Breakdown composer completed.",
     )
     return result

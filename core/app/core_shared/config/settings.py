@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     ai_llm2_input_profile: str = Field(default="full")
     ai_llm2_report_evidence_validation_enabled: bool = Field(default=False)
     ai_llm2_semantic_validation_enabled: bool = Field(default=False)
+    ai_cost_manager_day_budget_usdt: float = Field(default=0.0, ge=0)
+    ai_cost_warning_threshold_ratio: float = Field(default=0.8, ge=0)
+    ai_cost_over_budget_threshold_ratio: float = Field(default=1.0, ge=0)
 
     # OnlinePBX
     onlinepbx_domain: str

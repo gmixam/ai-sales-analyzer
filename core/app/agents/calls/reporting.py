@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.agents.calls.analysis_purpose import is_controlled_analysis
+from app.agents.calls.ai_costs import estimate_run_ai_costs
 from app.agents.calls.analyzer import (
     APPROVED_CHECKLIST_VERSION,
     CallsAnalyzer,
@@ -1911,7 +1912,15 @@ class CallsManualReportingOrchestrator:
             reports=reports,
             delivery_options=delivery_options,
         )
-        ai_costs = self._build_ai_costs(build_summary=build_summary, reports=reports)
+        ai_costs = estimate_run_ai_costs(
+            build_summary=build_summary,
+            artifacts=artifacts or [],
+            reports=reports,
+            selected_interactions_count=selected_interactions_count,
+            manager_day_budget_usdt=settings.ai_cost_manager_day_budget_usdt,
+            warning_threshold_ratio=settings.ai_cost_warning_threshold_ratio,
+            over_budget_threshold_ratio=settings.ai_cost_over_budget_threshold_ratio,
+        )
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=all_errors)
         return {
             "run_state": self._map_run_state(overall_status),
@@ -2956,47 +2965,6 @@ class CallsManualReportingOrchestrator:
                 deduped.append(item)
         return deduped
 
-    def _build_ai_costs(
-        self,
-        *,
-        build_summary: dict[str, int],
-        reports: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Return AI node cost blocks with exact metadata when available."""
-        ai_costs: list[dict[str, Any]] = []
-        if build_summary.get("transcripts_built", 0) > 0:
-            ai_costs.append(
-                self._make_ai_cost_entry(
-                    node="stt",
-                    used_count=build_summary.get("transcripts_built", 0),
-                    metadata_candidates=[],
-                    summary="Speech-to-text ran for missing transcripts in this run.",
-                )
-            )
-        if build_summary.get("analyses_built", 0) > 0:
-            metadata_candidates = [
-                report.get("payload", {})
-                for report in reports
-                if report.get("payload")
-            ]
-            ai_costs.append(
-                self._make_ai_cost_entry(
-                    node="llm1",
-                    used_count=build_summary.get("analyses_built", 0),
-                    metadata_candidates=metadata_candidates,
-                    summary="LLM-1 first-pass analysis ran for rebuilt analyses in this run.",
-                )
-            )
-            ai_costs.append(
-                self._make_ai_cost_entry(
-                    node="llm2",
-                    used_count=build_summary.get("analyses_built", 0),
-                    metadata_candidates=metadata_candidates,
-                    summary="LLM-2 approved-contract generation ran for rebuilt analyses in this run.",
-                )
-            )
-        return ai_costs
-
     def _build_ai_layer_summary(
         self,
         *,
@@ -3123,85 +3091,6 @@ class CallsManualReportingOrchestrator:
             seen.add(key)
             routes.append(route)
         return routes
-
-    def _make_ai_cost_entry(
-        self,
-        *,
-        node: str,
-        used_count: int,
-        metadata_candidates: list[dict[str, Any]],
-        summary: str,
-    ) -> dict[str, Any]:
-        """Normalize one AI cost entry with safe fallbacks."""
-        exact_cost = self._extract_known_cost_metadata(metadata_candidates)
-        if exact_cost is None:
-            return {
-                "node": node,
-                "used": True,
-                "used_count": used_count,
-                "cost_status": "not_available",
-                "cost_usd": None,
-                "tokens": None,
-                "summary": f"{summary} Exact cost metadata is not available in current runtime payloads.",
-            }
-        return {
-            "node": node,
-            "used": True,
-            "used_count": used_count,
-            "cost_status": "available",
-            "cost_usd": exact_cost.get("cost_usd"),
-            "tokens": exact_cost.get("tokens"),
-            "summary": summary,
-        }
-
-    @classmethod
-    def _extract_known_cost_metadata(cls, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-        """Scan nested payloads for known cost/token metadata without inventing values."""
-        for candidate in candidates:
-            found = cls._search_cost_metadata(candidate)
-            if found is not None:
-                return found
-        return None
-
-    @classmethod
-    def _search_cost_metadata(cls, value: Any) -> dict[str, Any] | None:
-        """Recursively search one nested payload for cost-like metadata."""
-        if isinstance(value, dict):
-            cost_usd = None
-            for key in ("cost_usd", "usd_cost", "price_usd", "estimated_cost_usd"):
-                if value.get(key) is not None:
-                    cost_usd = value.get(key)
-                    break
-            tokens = None
-            for key in ("total_tokens", "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens"):
-                if value.get(key) is not None:
-                    tokens = {
-                        token_key: value.get(token_key)
-                        for token_key in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens")
-                        if value.get(token_key) is not None
-                    } or None
-                    break
-            if cost_usd is not None or tokens is not None:
-                return {
-                    "cost_usd": cost_usd,
-                    "tokens": tokens,
-                }
-            for child in value.values():
-                found = cls._search_cost_metadata(child)
-                if found is not None:
-                    return found
-        if isinstance(value, list):
-            for item in value:
-                found = cls._search_cost_metadata(item)
-                if found is not None:
-                    return found
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-            except ValueError:
-                return None
-            return cls._search_cost_metadata(parsed)
-        return None
 
     def _load_latest_analyses_by_interaction(
         self,

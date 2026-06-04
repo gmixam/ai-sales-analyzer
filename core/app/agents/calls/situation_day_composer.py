@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
+from app.agents.calls.openai_usage import extract_openai_usage_metadata
 
 SITUATION_DAY_COMPOSER_VERSION = "situation_day_composer_v1"
 SITUATION_DAY_PROMPT_VERSION = "situation_day_composer_v1"
@@ -876,6 +877,7 @@ class LLM3SituationDayWriter:
         result = _as_dict(parsed)
         result["_routing"] = route_plan.to_metadata(
             request_kind="situation_day_composer",
+            usage=extract_openai_usage_metadata(response),
             notes="LLM-3 Situation Day composer completed.",
         )
         return result

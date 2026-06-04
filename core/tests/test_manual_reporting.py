@@ -7791,7 +7791,9 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(observability["summary"]["generator_path"], "app.agents.calls.report_templates.render_report_artifact")
         self.assertEqual(observability["stages"][-1]["status"], "completed")
         self.assertEqual(observability["stages"][0]["code"], "source-discovery")
-        self.assertEqual(observability["ai_costs"][0]["cost_status"], "not_available")
+        self.assertEqual(observability["ai_costs"]["cost_status"], "usage_missing")
+        self.assertEqual(observability["ai_costs"]["currency"], "USDT")
+        self.assertEqual(observability["ai_costs"]["budget_status"], "no_budget_configured")
 
     def test_build_run_observability_marks_no_data_as_blocked_selection(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)

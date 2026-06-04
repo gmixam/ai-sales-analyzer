@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 import tarfile
 from pathlib import Path
 from statistics import mean
@@ -168,6 +169,12 @@ class CallsExtractor:
                     notes="STT runtime request completed.",
                     executed_endpoint_path=execution_details.get("executed_endpoint_path"),
                     provider_request_id=execution_details.get("provider_request_id"),
+                    usage={
+                        "duration_sec": result.duration_sec,
+                        "billable_minutes": math.ceil(result.duration_sec / 60)
+                        if result.duration_sec
+                        else None,
+                    },
                 )
             except ExtractionError as exc:
                 can_fallback = route_plan.mark_attempt_failure(str(exc))
