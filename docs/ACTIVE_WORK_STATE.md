@@ -1,6 +1,6 @@
 # Активное состояние работ
 
-Дата обновления: 2026-06-03
+Дата обновления: 2026-06-04
 
 Статус: `completed`
 
@@ -78,10 +78,33 @@ paused
 
 ## Текущая задача
 
-Тема: Report Layer audit fixes and full-stack Timur 2026-06-01 OpenAI run.
+Тема: MVP-1 pilot reruns with compact LLM2 input as default.
 
 Текущий audit/fix pass закрыт пользователем после визуальной проверки отчета.
-Следующий запуск/тест должен стартовать только как новая задача.
+Новый runtime default: `AI_LLM2_INPUT_PROFILE=compact`.
+
+## 2026-06-04: LLM2 compact input принят как default
+
+Решение пользователя:
+
+- для будущих прогонов использовать `AI_LLM2_INPUT_PROFILE=compact`;
+- compact больше не должен быть только тестовым override;
+- full profile остается только как legacy/debug fallback до отдельного решения
+  о физическом удалении.
+
+Что должно быть перед прогоном 3 менеджеров за `2026-06-03`:
+
+- пересоздать runtime containers после изменения дефолта;
+- подтвердить в `api` container:
+  `CallsAnalyzer._llm2_input_profile() == "compact"`;
+- подтвердить, что:
+  `AI_LLM_EXECUTION_MODE=openai_compatible`,
+  `AI_LLM_SUBAGENT_RUNTIME_ENABLED=false`,
+  `AI_LLM_SIMULATION_ENABLED=false`,
+  `AI_LLM2_FIXED_ACCOUNT_ALIAS=llm2_main`,
+  `AI_LLM3_FIXED_ACCOUNT_ALIAS=llm3_main`;
+- запускать только `telegram_test_only`, без business delivery менеджерам;
+- после каждого manager-day фиксировать KPI и `observability.ai_costs` в USDT.
 
 ## 2026-06-03: Report Layer правки + полный прогон Тимура 2026-06-01
 

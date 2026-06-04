@@ -66,9 +66,12 @@
   - provider usage snapshot copied from `interaction.metadata_.ai_routing.llm2`
     immediately after each pass.
 - `core/app/core_shared/config/settings.py`
-  - setting `ai_llm2_input_profile`.
-- `.env.example`
-  - documented `AI_LLM2_INPUT_PROFILE=full`.
+  - setting `ai_llm2_input_profile`;
+  - 2026-06-04: default changed to `compact`.
+- Runtime default:
+  - `AI_LLM2_INPUT_PROFILE=compact`;
+  - `full` remains only as explicit legacy/debug override for temporary
+    comparison, not as the normal pilot path.
 - `core/tests/test_ai_provider_routing.py` and `tests/test_ai_provider_routing.py`
   - tests for compact payload reduction, non-secret diagnostics, JSON repair
     diagnostics and provider usage capture.
@@ -1136,10 +1139,10 @@ Pass criteria:
 
 ## Open Questions
 
-1. Should `AI_LLM2_INPUT_PROFILE=compact` become default after the first
-   successful small quality set, or remain opt-in until full-day regression?
-2. Should compact profile be used for all providers immediately, or first only
-   in controlled runs?
+1. RESOLVED 2026-06-04: `AI_LLM2_INPUT_PROFILE=compact` is the default runtime
+   profile for future pilot runs.
+2. RESOLVED 2026-06-04: compact profile is used for all providers unless an
+   explicit legacy/debug override is set.
 3. Should LLM2D remain an LLM pass, or should part of final assembly move to
    deterministic adapter to reduce output size further?
 4. Should LLM1 input also be compacted in the same pass, since LLM1 exceeded

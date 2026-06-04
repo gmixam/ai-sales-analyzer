@@ -585,10 +585,10 @@ class CallsAnalyzer:
         profile = (
             os.getenv("AI_LLM2_INPUT_PROFILE")
             or getattr(settings, "ai_llm2_input_profile", "")
-            or "full"
+            or "compact"
         )
         normalized = str(profile).strip().lower()
-        return normalized if normalized in {"full", "compact"} else "full"
+        return normalized if normalized in {"full", "compact"} else "compact"
 
     @staticmethod
     def _llm2_output_max_tokens() -> int:
