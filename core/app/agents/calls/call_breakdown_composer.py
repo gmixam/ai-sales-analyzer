@@ -16,6 +16,7 @@ from typing import Any, Iterable
 
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
 from app.agents.calls.openai_usage import extract_openai_usage_metadata
+from app.agents.calls.report_time import as_report_timezone, report_date_label_iso
 
 CALL_BREAKDOWN_COMPOSER_VERSION = "call_breakdown_composer_v2"
 CALL_BREAKDOWN_PROMPT_VERSION = "call_breakdown_composer_v2"
@@ -1943,22 +1944,23 @@ def _call_reference(
         client_phone,
         "Клиент",
     )
+    report_started_at = as_report_timezone(started_at)
     date_label = _first_text(
+        report_date_label_iso(report_started_at),
         packet_excerpt.get("date_label"),
-        started_at.date().isoformat() if started_at is not None else None,
     )
     time_label = _first_text(
+        report_started_at.strftime("%H:%M") if report_started_at is not None else None,
         packet_excerpt.get("time_label"),
-        started_at.strftime("%H:%M") if started_at is not None else None,
         "—",
     )
     reference = _first_text(
-        packet_excerpt.get("client_call_reference"),
         _build_client_call_reference(
             client_label=client_label,
             client_phone=client_phone,
             started_at=started_at,
         ),
+        packet_excerpt.get("client_call_reference"),
     )
     return {
         "call_id": call_id,
@@ -1981,7 +1983,8 @@ def _build_client_call_reference(
     if label:
         parts.append(label)
     if started_at is not None:
-        parts.append(started_at.strftime("%Y-%m-%d %H:%M"))
+        report_started_at = as_report_timezone(started_at)
+        parts.append(report_started_at.strftime("%Y-%m-%d %H:%M") if report_started_at else started_at.strftime("%Y-%m-%d %H:%M"))
     return ", ".join(parts) or None
 
 

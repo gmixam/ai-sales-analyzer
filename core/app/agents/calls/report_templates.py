@@ -247,40 +247,98 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
     selection = dict(payload.get("selection_model") or {})
     manager_name = str(header.get("manager_name") or "менеджер").strip()
     date_label = _format_report_period_ru(period) or str(header.get("report_date") or "").strip()
-    total_calls = selection.get("meaningful_calls_total") or (payload.get("kpi_overview") or {}).get("calls_count") or 0
-    contacts_count = len(((payload.get("call_tomorrow") or {}).get("contacts") or []))
-    focus = _manager_daily_focus_summary(report)
+    meaningful_calls = (
+        selection.get("meaningful_calls_total")
+        or (payload.get("kpi_overview") or {}).get("calls_count")
+        or 0
+    )
+    raw_calls = selection.get("raw_calls_total")
+    if raw_calls is None:
+        raw_calls = meaningful_calls
+    excluded_calls = selection.get("excluded_calls_total")
+    if excluded_calls is None:
+        try:
+            excluded_calls = max(0, int(raw_calls) - int(meaningful_calls))
+        except (TypeError, ValueError):
+            excluded_calls = 0
+    included_in_report = (
+        selection.get("included_in_report_total")
+        or selection.get("analyzed_calls_total")
+        or (payload.get("kpi_overview") or {}).get("calls_count")
+        or meaningful_calls
+    )
+    day_score = _manager_reader_value(_resolve_manager_day_score(payload=payload), "Нет базы")
     subject = f"Ежедневный отчет по звонкам - {manager_name} - {date_label}"
     greeting_name = manager_name.split()[0] if manager_name else ""
     greeting = f"Добрый день, {greeting_name}." if greeting_name else "Добрый день."
-    bullets = [
-        f"Содержательных звонков: {total_calls}",
-        f"Договоренности: {_manager_reader_value(outcomes.get('agreed_count'), '0')}",
-        f"Переносы: {_manager_reader_value(outcomes.get('rescheduled_count'), '0')}",
-        f"Отказы: {_manager_reader_value(outcomes.get('refusal_count'), '0')}",
-        f"Открытые контакты: {_manager_reader_value(outcomes.get('open_count'), '0')}",
-        f"Фокус: {focus}",
-        f"На завтра: {contacts_count} клиентов в работу",
+    funnel_lines = [
+        f"1) найдено в телефонии — {_manager_reader_value(raw_calls, '0')};",
+        f"2) содержательных — {_manager_reader_value(meaningful_calls, '0')};",
+        f"3) исключено из списка дня — {_manager_reader_value(excluded_calls, '0')}.",
+    ]
+    status_lines = [
+        f"{_manager_reader_value(outcomes.get('agreed_count'), '0')} ДОГОВОРЁННОСТЬ",
+        f"{_manager_reader_value(outcomes.get('rescheduled_count'), '0')} ПЕРЕНОС",
+        f"{_manager_reader_value(outcomes.get('refusal_count'), '0')} ОТКАЗ",
+        f"{_manager_reader_value(outcomes.get('open_count'), '0')} ОТКРЫТ",
+        f"{_manager_reader_value(outcomes.get('tech_service_count'), '0')} ТЕХ/СЕРВИС",
     ]
     text = "\n".join(
         [
             greeting,
             "",
-            f"Во вложении ежедневный отчет по звонкам за {date_label}.",
+            f"Во вложении ежедневный отчет по звонкам за {date_label}:",
+            *funnel_lines,
             "",
-            "Кратко по дню:",
-            *[f"- {item}" for item in bullets],
+            (
+                "В коучинговый разбор вошло "
+                f"{_manager_reader_value(included_in_report, '0')} из "
+                f"{_manager_reader_value(meaningful_calls, '0')} звонков дня."
+            ),
             "",
-            "Полный отчет - в PDF-файле во вложении.",
+            *status_lines,
+            "",
+            f"Балл дня: {day_score} / 5",
         ]
     )
-    html_body = _simple_email_html(
+    html_body = _manager_daily_email_html(
         subject="Ежедневный отчет по звонкам",
-        paragraphs=[greeting, f"Во вложении ежедневный отчет по звонкам за {date_label}."],
-        bullets=bullets,
-        closing="Полный отчет - в PDF-файле во вложении.",
+        greeting=greeting,
+        intro=f"Во вложении ежедневный отчет по звонкам за {date_label}:",
+        funnel_lines=funnel_lines,
+        coaching_line=(
+            "В коучинговый разбор вошло "
+            f"{_manager_reader_value(included_in_report, '0')} из "
+            f"{_manager_reader_value(meaningful_calls, '0')} звонков дня."
+        ),
+        status_lines=status_lines,
+        day_score=f"Балл дня: {day_score} / 5",
     )
     return {"subject": subject, "text": text, "html": html_body}
+
+
+def _manager_daily_email_html(
+    *,
+    subject: str,
+    greeting: str,
+    intro: str,
+    funnel_lines: list[str],
+    coaching_line: str,
+    status_lines: list[str],
+    day_score: str,
+) -> str:
+    funnel_html = "<br>".join(html.escape(item) for item in funnel_lines if str(item).strip())
+    status_html = "<br>".join(html.escape(item) for item in status_lines if str(item).strip())
+    return (
+        "<html><head><meta charset=\"utf-8\"></head><body>"
+        f"<h2>{html.escape(subject)}</h2>"
+        f"<p>{html.escape(greeting)}</p>"
+        f"<p>{html.escape(intro)}<br>{funnel_html}</p>"
+        f"<p>{html.escape(coaching_line)}</p>"
+        f"<p>{status_html}</p>"
+        f"<p><strong>{html.escape(day_score)}</strong></p>"
+        "</body></html>"
+    )
 
 
 def _manager_daily_focus_summary(report: dict[str, Any]) -> str:

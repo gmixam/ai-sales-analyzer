@@ -78,10 +78,86 @@ paused
 
 ## Текущая задача
 
-Тема: MVP-1 pilot reruns with compact LLM2 input as default.
+Тема: MVP-1 pilot report delivery after report-layer fixes.
 
-Текущий audit/fix pass закрыт пользователем после визуальной проверки отчета.
+Текущий audit/fix pass закрыт пользователем после визуальной проверки отчетов
+за `2026-06-03` и фактической business-email доставки менеджерам.
 Новый runtime default: `AI_LLM2_INPUT_PROFILE=compact`.
+
+Новых веток, runtime-профилей или delivery-режимов для последних исправлений
+не создавалось. Работа выполнена в существующей ветке
+`feature/llm2-block-ready-v15`; для доставки использован уже существующий
+режим `business_email_only`.
+
+## 2026-06-04: отчеты 2026-06-03 отправлены менеджерам
+
+Контекст:
+
+- пользователь проверил Telegram test delivery отчетов за `2026-06-03` по
+  Алишеру, Тимуру и Толегену;
+- были замечания к `Ситуации дня`, пустому `Голосу клиента`, времени, статусам
+  и тексту письма;
+- после исправлений отчеты отправлены менеджерам на бизнес-почту.
+
+Что внедрено:
+
+- `Ситуация дня`: LLM3 daily composer больше не откатывается в короткую
+  proof-card карточку, если нет exact-stage candidate по дневному фокусу.
+  При отсутствии exact-stage candidate разрешен strongest evidence-backed
+  related manager-gap candidate с честным объяснением связи с фокусом.
+- `Ситуация дня`: если LLM3 меняет `stage_code`, `proof_type` или
+  `proof_strength` как label, хороший narrative сохраняется, но канонические
+  значения остаются из исходного проверенного кандидата.
+- `Голос клиента`: пустой блок скрывается из PDF вместо заголовка с
+  placeholder-комментарием.
+- Время в report-facing call references приведено к `UTC+5` через
+  `core/app/agents/calls/report_time.py`.
+- `БАЛЛЫ ПО ЭТАПАМ`: колонка `Звонков` переименована в `Оценено`.
+- `sale_processing` и `sale_final` получили русские stage labels.
+- Support/internal/not eligible calls больше не должны выглядеть как
+  manager-facing `Ошибка анализа`.
+- Текст manager_daily email summary заменен на верхний блок отчета:
+  найдено в телефонии, содержательных, исключено, вошло в коучинговый разбор,
+  статусы и `Балл дня`.
+
+Фактическая business-email доставка:
+
+- Алишер: `g.alisher@dogovor24.kz`, CC `sales@dogovor24.kz`,
+  `email_status=delivered`.
+- Тимур: `zh.timur@dogovor24.kz`, CC `sales@dogovor24.kz`,
+  `email_status=delivered`.
+- Толеген: `zh.tolegen@dogovor24.kz`, CC `sales@dogovor24.kz`,
+  `email_status=delivered`.
+
+Команда delivery была report-only:
+
+```bash
+docker compose exec -T api python -m app.agents.calls.manual_reporting_runner \
+  --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 \
+  --preset manager_daily \
+  --mode report_from_ready_data_only \
+  --date-from 2026-06-03 \
+  --date-to 2026-06-03 \
+  --manager-id d42e8246-772e-4a04-bbe7-2b88f45db695 \
+  --manager-id 656abe58-7c23-476a-a9f6-d76305cf42e0 \
+  --manager-id 5638c619-8732-435c-9664-a7188f13effd \
+  --analysis-instruction-version pilot_20260603_compact_v1 \
+  --delivery-mode business_email_only \
+  --send-business-email
+```
+
+Верхний runner status может быть `partial` из-за исторических
+`analysis_reuse_rejected:*:instruction_version_mismatch`, но по трем отчетам
+delivery status был `delivered`.
+
+Следующий практический шаг:
+
+1. При новом полном прогоне использовать compact default и реальные
+   OpenAI-compatible маршруты, если пользователь не попросит иной профиль.
+2. После каждого полного дневного прогона заполнять KPI/стоимость по
+   `docs/MVP1_PILOT_METRICS_MEASUREMENTS.md`.
+3. Business delivery менеджерам запускать только после operator review или
+   явного указания пользователя.
 
 ## 2026-06-04: LLM2 compact input принят как default
 

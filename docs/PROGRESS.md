@@ -4,9 +4,35 @@
 **Этап:** Веха 6.5 — Business-ready Report Pack
 **Статус фазы:** Веха 6.5 — audit/fix pass принят, готовность к следующему тесту
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-03
+**Последнее обновление:** 2026-06-04
 
 ## Что сделано
+- [x] 2026-06-04 — Закрыт report-layer/email pass по отчетам трех менеджеров
+  за `2026-06-03` после пользовательской проверки PDF и фактической
+  business-email доставки. **Scope:** только существующий механизм
+  `manager_daily`, без новых веток и без новых runtime/delivery режимов;
+  использованы уже существующие `report_from_ready_data_only` и
+  `business_email_only`. **Report Layer:** `Ситуация дня` теперь не падает в
+  короткий fallback, если нет доказанного кандидата строго в stage дневного
+  фокуса: при отсутствии exact-stage candidate LLM3 получает право выбрать
+  strongest evidence-backed related manager-gap candidate и честно объяснить
+  связь с дневным фокусом. Нормализация принимает хороший LLM3 narrative, но
+  оставляет `stage_code`, `proof_type`, `proof_strength` из исходного
+  проверенного кандидата. **Renderer/PDF:** пустой `ГОЛОС КЛИЕНТА` скрывается;
+  `БАЛЛЫ ПО ЭТАПАМ` переименовали колонку `Звонков` в `Оценено`; добавлены
+  stage labels для `sale_processing` / `sale_final`; статусы support/internal
+  больше не выглядят как `Ошибка анализа`; call references и report-facing
+  времена приведены к `UTC+5` через общий `report_time.py`. **Email:** текст
+  manager_daily письма заменен на верхний блок отчета: найдено в телефонии,
+  содержательных, исключено, сколько вошло в коучинговый разбор, статусы
+  `ДОГОВОРЁННОСТЬ/ПЕРЕНОС/ОТКАЗ/ОТКРЫТ/ТЕХ-СЕРВИС`, `Балл дня`. **Delivery:**
+  отчеты `2026-06-03` отправлены менеджерам: Алишер `g.alisher@dogovor24.kz`,
+  Тимур `zh.timur@dogovor24.kz`, Толеген `zh.tolegen@dogovor24.kz`, CC
+  `sales@dogovor24.kz`, все `email_status=delivered`. **Verification:**
+  `python3 -m py_compile` по измененным Python modules OK,
+  `node --check scripts/generate_docx_report.js` OK, `git diff --check` OK;
+  контрольный ready-only preview Тимура подтвердил новый текст письма и
+  `Балл дня: 2.4 / 5`.
 - [x] 2026-06-03 — Закрыт audit/fix pass по механизмам `LLM2` и Report Layer
   после проверки пользователем. **LLM2:** общий runtime prompt вынесен в
   `llm2_common_runtime.md`; `LLM2A`/`LLM2B` input упрощен без технического

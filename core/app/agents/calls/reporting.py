@@ -37,6 +37,12 @@ from app.agents.calls.report_evidence_registry import (
 )
 from app.agents.calls.report_evidence import validate_report_evidence
 from app.agents.calls.report_templates import get_active_template_version, render_report_artifact
+from app.agents.calls.report_time import (
+    as_report_timezone,
+    report_date_label_iso,
+    report_human_datetime_ru,
+    report_time_label,
+)
 from app.agents.calls.situation_day_composer import (
     SITUATION_DAY_COMPOSER_VERSION,
     compose_situation_day,
@@ -6396,6 +6402,8 @@ _STAGE_FUNNEL_ORDER: list[tuple[str, str, str]] = [
     ("presentation", "Э4", "Формирование предложения"),
     ("objection_handling", "Э5", "Работа с возражениями"),
     ("completion_next_step", "Э6", "Завершение и договорённости"),
+    ("sale_processing", "Э7", "Оформление продажи"),
+    ("sale_final", "Э8", "Продажа: финал"),
     ("cross_stage_transition", "Сквозной", "Сквозной критерий"),
 ]
 
@@ -8478,13 +8486,14 @@ def _artifact_client_call_reference(artifact: ReportArtifact) -> str | None:
 
 def _artifact_call_reference(artifact: ReportArtifact) -> dict[str, Any]:
     client_label = _artifact_client_label(artifact)
+    started_at = as_report_timezone(artifact.call_started_at)
     return {
         "call_id": str(artifact.interaction.id),
         "client_label": client_label,
         "client_name": _artifact_client_name(artifact),
         "client_phone": _artifact_client_phone(artifact),
-        "date_label": artifact.call_started_at.date().isoformat() if artifact.call_started_at else None,
-        "time_label": artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—",
+        "date_label": report_date_label_iso(started_at),
+        "time_label": started_at.strftime("%H:%M") if started_at else "—",
         "client_call_reference": _artifact_client_call_reference(artifact),
     }
 
@@ -8508,7 +8517,8 @@ def _find_call_breakdown_artifact(
     for artifact in artifacts:
         if client_label and _artifact_client_label(artifact) != client_label:
             continue
-        artifact_time = artifact.call_started_at.strftime("%H:%M") if artifact.call_started_at else "—"
+        artifact_started_at = as_report_timezone(artifact.call_started_at)
+        artifact_time = artifact_started_at.strftime("%H:%M") if artifact_started_at else "—"
         if time_label and artifact_time != time_label:
             continue
         return artifact
@@ -10301,6 +10311,21 @@ def _analysis_failure_text(analysis: Any, reuse_reason: str | None) -> str:
 def _classify_failed_analysis_reason(analysis: Any, reuse_reason: str | None) -> str:
     """Classify persisted failed analysis into manager/operator buckets."""
     text = _analysis_failure_text(analysis, reuse_reason).lower()
+    detail = getattr(analysis, "scores_detail", None)
+    classification = dict(detail.get("classification") or {}) if isinstance(detail, dict) else {}
+    call_type = str(classification.get("call_type") or "").strip().lower()
+    eligibility = str(classification.get("analysis_eligibility") or "").strip().lower()
+    eligibility_reason = str(classification.get("eligibility_reason") or "").strip().lower()
+    if call_type in {"support", "internal"}:
+        return "support_or_internal"
+    if (
+        eligibility in {"not_eligible", "not_coachable", "not_reportable", "not_coachable_or_reportable"}
+        or "llm2_admission_non_commercial_or_unusable" in text
+        or "llm2_admission_non_commercial_or_unusable" in eligibility_reason
+        or "non_commercial_or_unusable" in text
+        or "non_commercial_or_unusable" in eligibility_reason
+    ):
+        return "not_eligible"
     if any(
         token in text
         for token in (
@@ -10479,15 +10504,7 @@ def _build_manager_facing_completeness_gate(*, call_list: list[dict[str, Any]]) 
 
 def _short_time_label(value: Any) -> str | None:
     """Return HH:MM from an ISO datetime-ish value for diagnostics samples."""
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%H:%M")
-    except ValueError:
-        if len(raw) >= 16 and raw[10] in {"T", " "}:
-            return raw[11:16]
-        return raw
+    return report_time_label(value)
 
 
 def _build_daily_call_row(
@@ -17329,11 +17346,7 @@ def _safe_client_display_name(
 
 def _format_call_started_human(value: datetime | None) -> str | None:
     """Format call start as '4 мая 2026, 11:46' for unified call references."""
-    if value is None:
-        return None
-    month = value.month
-    month_label = _MONTH_FULL_RU_REP[month - 1] if 1 <= month <= 12 else str(month)
-    return f"{value.day} {month_label} {value.year}, {value.strftime('%H:%M')}"
+    return report_human_datetime_ru(value)
 
 
 def _build_client_call_reference(

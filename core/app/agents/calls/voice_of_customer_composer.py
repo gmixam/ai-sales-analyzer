@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
 from app.agents.calls.openai_usage import extract_openai_usage_metadata
+from app.agents.calls.report_time import as_report_timezone, report_date_label_iso
 
 VOICE_OF_CUSTOMER_COMPOSER_VERSION = "voice_of_customer_composer_v2"
 VOICE_OF_CUSTOMER_PROMPT_VERSION = "voice_of_customer_composer_v2"
@@ -525,8 +526,8 @@ class VoiceOfCustomerCandidateBuilder:
         base_score: float,
         speaker: str = "client",
     ) -> VoiceCustomerSignal:
-        started_at = call.call_started_at
-        date_label = started_at.date().isoformat() if started_at else None
+        started_at = as_report_timezone(call.call_started_at)
+        date_label = report_date_label_iso(started_at)
         time_label = started_at.strftime("%H:%M") if started_at else None
         reference = " • ".join(
             item

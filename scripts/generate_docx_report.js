@@ -794,30 +794,40 @@ function dataFromBundle(bundle) {
     open: "Открыт",
     tech_service: "Тех/сервис",
   };
-  const unclassifiedStatusMap = {
-    no_transcript: "Без транскрипта",
-    cdr_only_probable_live: "Без транскрипта",
-    no_analysis: "Без анализа",
-    analysis_failed: "Ошибка анализа",
-    analysis_not_reusable: "Не подходит для разбора",
-    not_coachable_or_reportable: "Не подходит для разбора",
-    not_eligible: "Не подходит для разбора",
-    no_follow_up_outcome: "Нет итога",
-    missing_classification: "Нет классификации",
-    unknown: "Без разбора",
-  };
-  const unclassifiedContextMap = {
-    no_transcript: "Транскрипт не построен",
-    cdr_only_probable_live: "Транскрипт не построен",
-    no_analysis: "Нет готового анализа",
-    analysis_failed: "Ошибка при анализе",
-    analysis_not_reusable: "Анализ не дал usable результата",
-    not_coachable_or_reportable: "Не подходит для разбора",
-    not_eligible: "Не подходит для разбора",
-    no_follow_up_outcome: "Нет результата follow-up",
-    missing_classification: "Нет классификации",
-    unknown: "Нет готового разбора",
-  };
+    const unclassifiedStatusMap = {
+      no_transcript: "Без транскрипта",
+      cdr_only_probable_live: "Без транскрипта",
+      no_analysis: "Без анализа",
+      analysis_failed: "Ошибка анализа",
+      analysis_failed_contract: "Ошибка анализа",
+      analysis_failed_provider: "Ошибка провайдера",
+      analysis_failed_unknown: "Ошибка анализа",
+      analysis_not_reusable: "Не подходит для разбора",
+      not_coachable_or_reportable: "Не подходит для разбора",
+      not_eligible: "Не подходит для разбора",
+      semantic_empty: "Не подходит для разбора",
+      no_follow_up_outcome: "Нет итога",
+      missing_classification: "Нет классификации",
+      support_or_internal: "Тех/сервис",
+      unknown: "Без разбора",
+    };
+    const unclassifiedContextMap = {
+      no_transcript: "Транскрипт не построен",
+      cdr_only_probable_live: "Транскрипт не построен",
+      no_analysis: "Нет готового анализа",
+      analysis_failed: "Ошибка при анализе",
+      analysis_failed_contract: "Ошибка контракта анализа",
+      analysis_failed_provider: "Ошибка провайдера",
+      analysis_failed_unknown: "Ошибка при анализе",
+      analysis_not_reusable: "Анализ не дал usable результата",
+      not_coachable_or_reportable: "Не подходит для разбора",
+      not_eligible: "Не подходит для разбора",
+      semantic_empty: "Не подходит для разбора",
+      no_follow_up_outcome: "Нет результата follow-up",
+      missing_classification: "Нет классификации",
+      support_or_internal: "Тех/сервис",
+      unknown: "Нет готового разбора",
+    };
   const callListRows = callList.compact_rows || callList.rows || [];
   const callListColumns = callList.compact_columns || callList.columns || [];
   const workContacts = payload.call_tomorrow?.contacts || [];
@@ -1031,7 +1041,7 @@ function dataFromBundle(bundle) {
       pattern_count_label: situation.pattern_count_label || "",
       client_need: situation.client_need || "",
       manager_task: situation.manager_task || "",
-      call_example: situation.call_example || {},
+      call_example: situation.call_example || payload.key_problem_of_day?.call_example || {},
       evidence_quote: payload.situation_evidence_quote || null,
       dialogue_excerpt: payload.situation_dialogue_excerpt || null,
       coaching_moment: payload.coaching_moment || payload.situation_coaching_moment || situation.coaching_moment || null,
@@ -1655,7 +1665,7 @@ function buildBally() {
       children: [
         headCell("Этап", { width: widths.stage }),
         headCell("Балл", { width: widths.score, align: AlignmentType.CENTER }),
-        headCell("Звонков", { width: widths.calls, align: AlignmentType.CENTER }),
+        headCell("Оценено", { width: widths.calls, align: AlignmentType.CENTER }),
         headCell("Статус", { width: widths.status, align: AlignmentType.CENTER }),
         headCell("Комментарий", { width: widths.comment }),
       ],
@@ -1716,6 +1726,64 @@ function buildBally() {
 function buildSituatsiya() {
   const s = DATA.situation;
   if (s.coaching_view?.situation_day_evidence_status === "insufficient") {
+    const dive = s.focus_stage_deep_dive || {};
+    const recommendation = s.focus_stage_recommendation || {};
+    const result = [
+      blockHeading("🎯", s.block_label || "СИТУАЦИЯ ДНЯ"),
+    ];
+    if (s.scope_note) {
+      result.push(bodyPara(s.scope_note, { color: COLORS.gray, size: SZ.meta }));
+    }
+    const stageMeta = buildSituationStageMeta(s);
+    if (stageMeta) {
+      result.push(subHeading("Фокусный этап"));
+      result.push(bodyPara(stageMeta.replace(/^Фокусный этап:\s*/i, ""), { size: SZ.cell }));
+    }
+    const fallbackText = firstNonEmpty(
+      DATA.key_problem?.title,
+      DATA.key_problem?.description,
+      s.body,
+      s.title,
+      dive.what_went_wrong,
+      recommendation.problem,
+    );
+    if (fallbackText || dive.what_went_wrong) {
+      result.push(subHeading("Что произошло"));
+      const lines = [
+        fallbackText,
+        dive.what_went_wrong && !sameMeaningText(dive.what_went_wrong, fallbackText)
+          ? dive.what_went_wrong
+          : "",
+      ].filter((item) => cleanText(item));
+      result.push(...buildSituationNarrativeParagraphs(lines.join(" ")));
+    }
+    const rawWhy = firstNonEmpty(dive.why_it_matters, s.coaching_view?.meaning);
+    const whyLooksLikeAction = /^(подтвердить|уточнить|отправить|зафиксировать|согласовать|проверить)(?:\s|$)/i.test(rawWhy);
+    const why = whyLooksLikeAction
+      ? "Без понятной потребности или причины сомнения менеджеру сложнее связать следующий шаг с реальной задачей клиента."
+      : rawWhy;
+    if (why && !/сомнительный вывод/i.test(why)) {
+      result.push(subHeading("Почему это важно"));
+      result.push(...buildSituationNarrativeParagraphs(why));
+    }
+    const action = firstNonEmpty(dive.what_to_fix, recommendation.recommendation, s.manager_task);
+    const minimum = cleanText(dive.minimum_for_tomorrow);
+    if (action || minimum) {
+      result.push(subHeading("Что сделать"));
+      result.push(...buildSituationNarrativeParagraphs([action, minimum].filter(Boolean).join(" ")));
+    }
+    const scripts = [
+      ...(s.coaching_view?.scripts || []),
+      ...(s.scripts || []),
+      ...(recommendation.checklist || []),
+    ].map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
+    if (scripts.length > 0) {
+      result.push(subHeading("Как сказать"));
+      scripts.forEach((item) => result.push(bodyPara(item, { size: SZ.cell })));
+    }
+    if (result.length > 1) {
+      return result;
+    }
     return [
       blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
       bodyPara("Нет надежно подтвержденной ситуации дня.", { color: COLORS.gray }),
@@ -2080,10 +2148,7 @@ function buildGolos() {
     return blocks;
   }
   if (!DATA.voice_of_customer || DATA.voice_of_customer.length === 0) {
-    return [
-      blockHeading("👤", "ГОЛОС КЛИЕНТА"),
-      bodyPara("Клиентские цитаты появятся после накопления материала по звонкам.", { color: COLORS.gray, size: SZ.meta }),
-    ];
+    return [];
   }
   const headerRow = new TableRow({
     children: [

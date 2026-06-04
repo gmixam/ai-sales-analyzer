@@ -67,6 +67,128 @@
 
 ## Записи обратной связи
 
+### FB-2026-06-04-01 — Отчеты 2026-06-03: Ситуация дня, статусы, время и email summary
+
+- Дата отчета: 2026-06-03
+- Дата получения обратной связи: 2026-06-04
+- Участник / роль: РОП / оператор human-review
+- Тип отчета: `manager_daily`
+- Канал: просмотр Telegram test delivery, затем business-email delivery
+- Статус: `закрыто`
+- Критичность: высокая
+- Затронутые блоки:
+  - `СИТУАЦИЯ ДНЯ`
+  - `ГОЛОС КЛИЕНТА`
+  - `БАЛЛЫ ПО ЭТАПАМ`
+  - `ВСЕ ЗВОНКИ ДНЯ`
+  - email summary / delivery preview
+  - report-facing time labels
+
+Исходные комментарии:
+
+```text
+1) Ситуация дня - блок вышел не полностью.
+2) Ошибка анализа - запустить аудит по этим звонкам.
+3) Ситуация дня до сих пор нет всей информации, которую мы выводили ранее:
+   нужен контекст, описание ситуации и фрагменты звонка как подтверждение.
+4) Голос клиента пока не формируем, но само название с комментарием
+   отображаются - нужно скрыть.
+5) Время нужно отражать в UTC+5.
+6) Текст письма нужно переделать: отразить верхний блок отчета
+   с найдено/содержательных/исключено, покрытием коучингового разбора,
+   статусами и баллом дня.
+```
+
+Проверка данных:
+
+- Для `2026-06-03` по трем менеджерам LLM3 мог сформировать содержательный
+  `Ситуация дня`, но часть результатов отклонялась нормализацией:
+  `status_not_verified`, `stage_code_changed`, `proof_type_changed`.
+- После отклонения renderer получал короткую proof-card fallback карточку,
+  поэтому визуально отчет почти не отличался от предыдущего.
+- Для Тимура good LLM3 narrative был отфильтрован по label mismatch, хотя
+  selected call id, цитаты и proof-backed сцена были допустимы.
+- Пустой `voice_of_customer` выводился как placeholder-блок, что создавало
+  ощущение незавершенного раздела.
+- Старые call reference/time labels показывали UTC-время, а не report-facing
+  `UTC+5`.
+- Email preview показывал старый блок `Кратко по дню` с фокусом и задачами на
+  завтра, а пользователь ожидал верхний блок отчета.
+
+Внедренное решение:
+
+- `core/app/agents/calls/situation_day_daily_composer.py` и prompt
+  `situation_day_daily_composer_v2.md`:
+  - если есть exact-stage manager-gap candidate, выбираем из exact-stage;
+  - если exact-stage candidate нет, выбираем strongest evidence-backed related
+    manager-gap candidate и честно объясняем связь с daily focus;
+  - хороший LLM3 narrative не отбрасывается из-за label mismatch
+    `stage_code` / `proof_type` / `proof_strength`; канонические значения
+    остаются из исходного проверенного кандидата.
+- `scripts/generate_docx_report.js`:
+  - пустой `ГОЛОС КЛИЕНТА` не рендерится;
+  - `БАЛЛЫ ПО ЭТАПАМ`: `Звонков` -> `Оценено`;
+  - insufficient/fallback `Ситуация дня` получает содержательный fallback
+    вместо пустого сообщения, если в payload есть focus/deep-dive материал.
+- `core/app/agents/calls/report_time.py` и потребители в reporting/composers:
+  report-facing дата/время нормализуются в `UTC+5`.
+- `core/app/agents/calls/reporting.py`:
+  - добавлены labels для `sale_processing` / `sale_final`;
+  - support/internal/not eligible анализы классифицируются отдельно и не
+    выглядят как обычная `Ошибка анализа`.
+- `core/app/agents/calls/report_templates.py`:
+  manager_daily email summary теперь повторяет верхний блок отчета:
+  найдено в телефонии, содержательных, исключено, сколько вошло в коучинговый
+  разбор, статусы и `Балл дня`.
+
+Проверка результата:
+
+- Контрольный ready-only preview Тимура за `2026-06-03` показал новый текст:
+
+```text
+Добрый день, Тимур.
+
+Во вложении ежедневный отчет по звонкам за 3 июня 2026:
+1) найдено в телефонии — 27;
+2) содержательных — 9;
+3) исключено из списка дня — 18.
+
+В коучинговый разбор вошло 8 из 9 звонков дня.
+
+1 ДОГОВОРЁННОСТЬ
+1 ПЕРЕНОС
+0 ОТКАЗ
+4 ОТКРЫТ
+3 ТЕХ/СЕРВИС
+
+Балл дня: 2.4 / 5
+```
+
+- Telegram test delivery после фикса:
+  - Алишер `message_id=391`;
+  - Тимур `message_id=392`;
+  - Толеген `message_id=393`.
+- Business-email delivery после фикса:
+  - Алишер `g.alisher@dogovor24.kz`, CC `sales@dogovor24.kz`,
+    `email_status=delivered`;
+  - Тимур `zh.timur@dogovor24.kz`, CC `sales@dogovor24.kz`,
+    `email_status=delivered`;
+  - Толеген `zh.tolegen@dogovor24.kz`, CC `sales@dogovor24.kz`,
+    `email_status=delivered`.
+
+Артефакты:
+
+- `review_packages/three_managers_20260603_situation_day_fixed_delivery_20260604/`
+- `review_packages/timur_20260603_email_text_preview_20260604/`
+- `review_packages/three_managers_20260603_business_email_delivery_20260604/`
+
+Решение / следующая задача:
+
+- Комментарии закрыты для текущего report-layer/email pass.
+- Новых runtime/delivery режимов или веток для исправления не создавалось.
+- Следующие бизнес-доставки запускать только после operator review или явного
+  указания пользователя.
+
 ### FB-2026-05-25-03 — Тимур 2026-05-22: rolling-window counts, слабая коучинговая ситуация и технические префиксы
 
 - Дата отчета: 2026-05-22

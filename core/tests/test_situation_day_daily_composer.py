@@ -210,7 +210,7 @@ class SituationDayDailyComposerTests(unittest.TestCase):
             {item["reason"] for item in result["rejected_candidates"]},
         )
 
-    def test_daily_focus_fails_closed_without_focus_stage_candidate(self) -> None:
+    def test_daily_focus_uses_related_verified_candidate_without_focus_stage_candidate(self) -> None:
         result = compose_daily_situation_day(
             {
                 "daily_focus": {
@@ -228,10 +228,13 @@ class SituationDayDailyComposerTests(unittest.TestCase):
             llm3_enabled=False,
         )
 
-        self.assertEqual(result["status"], "insufficient")
-        self.assertEqual(result["selection_reason"], "no_focus_stage_manager_gap_scene")
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["selected_call_id"], "call-qualification")
+        self.assertEqual(result["stage_code"], "qualification_primary")
+        self.assertEqual(result["selection_reason"], "best_verified_manager_gap_scene_when_focus_stage_missing")
         self.assertEqual(result["diagnostics"]["daily_focus"]["stage_code"], "needs_discovery")
-        self.assertEqual(result["rejected_candidates"][0]["reason"], "non_focus_stage_manager_gap")
+        self.assertEqual(result["diagnostics"]["focus_eligible_count"], 0)
+        self.assertTrue(result["diagnostics"]["focus_fallback_used"])
 
     def test_llm3_generic_next_step_rewrite_is_rejected_for_non_next_step_focus(self) -> None:
         original_request = situation_day_daily_composer._request_llm3_daily_situation
@@ -290,7 +293,7 @@ class SituationDayDailyComposerTests(unittest.TestCase):
             "llm3_output_replaced_focus_with_generic_next_step",
         )
 
-    def test_llm3_stage_or_proof_rewrite_is_rejected_to_selected_candidate(self) -> None:
+    def test_llm3_stage_or_proof_label_rewrite_is_corrected_to_selected_candidate(self) -> None:
         original_request = situation_day_daily_composer._request_llm3_daily_situation
 
         def fake_request(payload):
@@ -338,11 +341,14 @@ class SituationDayDailyComposerTests(unittest.TestCase):
             situation_day_daily_composer._request_llm3_daily_situation = original_request
 
         self.assertEqual(result["status"], "verified")
-        self.assertEqual(result["selection_reason"], "best_manager_gap_scene_by_score")
+        self.assertEqual(result["selection_reason"], "llm3_rewrote_stage_and_proof")
         self.assertEqual(result["stage_code"], "objection_handling")
         self.assertEqual(result["proof_type"], "sequence_inference")
         self.assertEqual(result["manager_error"], "Менеджер не уточнил, что именно смущает клиента в цене.")
-        self.assertEqual(result["diagnostics"]["llm3"]["llm3_rejection_reason"], "stage_code_changed")
+        self.assertTrue(result["diagnostics"]["stage_code_corrected_to_candidate"])
+        self.assertEqual(result["diagnostics"]["raw_stage_code"], "completion_next_step")
+        self.assertTrue(result["diagnostics"]["proof_type_corrected_to_candidate"])
+        self.assertEqual(result["diagnostics"]["raw_proof_type"], "direct_quote")
 
     def test_llm3_simulated_json_preserves_daily_normalizer_and_routing_diagnostics(self) -> None:
         original_request = situation_day_daily_composer._request_llm3_daily_situation

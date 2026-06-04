@@ -19,8 +19,11 @@ dates/deadlines, or selected call identity.
 
 You receive a bounded JSON payload with `daily_focus` and manager-gap
 candidates. `daily_focus.stage_code` is the report day's focus from
-`score_by_stage`; it is not optional guidance. Select a situation inside this
-stage only. The payload does not contain full transcripts or full call analysis,
+`score_by_stage`; prefer a situation inside this stage when such candidate is
+available. If the payload explicitly says that no exact manager-gap candidate
+exists inside `daily_focus.stage_code`, select the strongest evidence-backed
+related manager-gap candidate and explain its relation to the daily focus
+honestly. The payload does not contain full transcripts or full call analysis,
 but it may contain a wider scene pack: `evidence_scene`, `dialogue_turns`,
 `supporting_quote`, `moment_summary`, `manager_error`, `why_it_matters`, and
 `next_time_action`.
@@ -85,10 +88,12 @@ Return exactly one JSON object:
 - Copy `manager_error`, `stage_code`, `proof_type`, selected call id, evidence
   quotes, and any deadline/timing facts from the selected candidate. Do not
   strengthen proof or make a weak/partial claim sound proven.
-- Keep the selected `manager_error` aligned with `daily_focus.problem_statement`
-  and the selected candidate. Do not replace a qualification, discovery,
-  presentation, or objection issue with a generic "закрепить следующий шаг"
-  problem.
+- Keep the selected `manager_error` aligned with the selected candidate. When
+  the candidate is a fallback outside `daily_focus.stage_code`, explicitly
+  explain how it relates to `daily_focus.problem_statement` without changing
+  the candidate stage, facts, or claim. Do not replace a qualification,
+  discovery, presentation, or objection issue with a generic "закрепить
+  следующий шаг" problem.
 - `why_it_matters` must explain the sales consequence in 2-3 sentences.
 - `next_time_action` must be concrete: what to ask or say next time, not a
   generic instruction like "уточнить потребности клиента".
@@ -98,9 +103,12 @@ Return exactly one JSON object:
 
 - Select only a `manager_gap`, `manager_coaching_moment`, or `stage_gap`
   candidate.
-- Select only a candidate whose `stage_code` equals `daily_focus.stage_code`.
-- If there is no grounded candidate for `daily_focus.stage_code`, return
-  `status="insufficient"` instead of selecting another stage.
+- If at least one provided candidate has `stage_code` equal to
+  `daily_focus.stage_code`, select only from those candidates.
+- If there is no grounded candidate for `daily_focus.stage_code`, select the
+  strongest evidence-backed related manager-gap candidate from the payload.
+  Return `status="insufficient"` only when none of the provided candidates can
+  be explained honestly as a manager-facing situation.
 - Never select `customer_signal`, `service_issue`, `tech_service`, or
   `support_issue` as `manager_error`.
 - Do not recalculate scores.

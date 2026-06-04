@@ -130,35 +130,25 @@ def compose_daily_situation_day(
             },
         )
 
+    focus_fallback_used = False
+    focus_eligible_count: int | None = None
     if focus_stage_code:
         focus_eligible = [
             candidate for candidate in eligible if (candidate.stage_code or "").strip() == focus_stage_code
         ]
-        if not focus_eligible:
-            return _insufficient(
-                reason="no_focus_stage_manager_gap_scene",
-                rejected_candidates=rejected
-                + [
-                    item.to_rejected("non_focus_stage_manager_gap")
-                    for item in eligible
-                    if (item.stage_code or "").strip() != focus_stage_code
-                ],
-                diagnostics={
-                    "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
-                    "candidate_count": len(candidates),
-                    "eligible_count": len(eligible),
-                    "focus_eligible_count": 0,
-                    "daily_focus": daily_focus,
-                    "extraction": extraction_diagnostics,
-                    "llm3": llm3_diagnostics,
-                },
+        focus_eligible_count = len(focus_eligible)
+        if focus_eligible:
+            rejected.extend(
+                item.to_rejected("non_focus_stage_manager_gap")
+                for item in eligible
+                if (item.stage_code or "").strip() != focus_stage_code
             )
-        rejected.extend(
-            item.to_rejected("non_focus_stage_manager_gap")
-            for item in eligible
-            if (item.stage_code or "").strip() != focus_stage_code
-        )
-        eligible = focus_eligible
+            eligible = focus_eligible
+        else:
+            # Keep Situation Day evidence-rich instead of dropping to an empty
+            # block when the daily focus stage has no verified scene. The
+            # selected scene is still a verified manager-gap proof-card scene.
+            focus_fallback_used = True
 
     selected = eligible[0]
     if llm3_diagnostics["llm3_enabled"]:
@@ -179,7 +169,8 @@ def compose_daily_situation_day(
                 "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
                 "candidate_count": len(candidates),
                 "eligible_count": len(eligible),
-                "focus_eligible_count": len(eligible) if focus_stage_code else None,
+                "focus_eligible_count": focus_eligible_count,
+                "focus_fallback_used": focus_fallback_used,
                 "daily_focus": daily_focus,
                 "extraction": extraction_diagnostics,
                 "llm3": llm3_diagnostics,
@@ -196,12 +187,17 @@ def compose_daily_situation_day(
         rejected_candidates=rejected + [
             item.to_rejected("lower_ranked_manager_gap") for item in eligible[1:]
         ],
-        selection_reason="best_manager_gap_scene_by_score",
+        selection_reason=(
+            "best_verified_manager_gap_scene_when_focus_stage_missing"
+            if focus_fallback_used
+            else "best_manager_gap_scene_by_score"
+        ),
         diagnostics={
             "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
             "candidate_count": len(candidates),
             "eligible_count": len(eligible),
-            "focus_eligible_count": len(eligible) if focus_stage_code else None,
+            "focus_eligible_count": focus_eligible_count,
+            "focus_fallback_used": focus_fallback_used,
             "daily_focus": daily_focus,
             "extraction": extraction_diagnostics,
             "llm3": llm3_diagnostics,
@@ -225,19 +221,38 @@ def build_daily_situation_llm3_payload(daily_input: dict[str, Any]) -> dict[str,
 
     eligible = [candidate for candidate in candidates if _candidate_is_eligible(candidate)[0]]
     eligible.sort(key=_rank_key)
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
+    has_focus_stage_candidate = bool(
+        focus_stage_code
+        and any((candidate.stage_code or "").strip() == focus_stage_code for candidate in eligible)
+    )
+    instruction = (
+        "Choose one manager_gap candidate for Ситуация дня inside daily_focus.stage_code "
+        "or return insufficient."
+        if has_focus_stage_candidate
+        else (
+            "No exact manager_gap candidate exists inside daily_focus.stage_code. "
+            "Choose the strongest evidence-backed related manager_gap candidate, "
+            "explain how it illustrates the daily focus without changing facts, "
+            "or return insufficient if no candidate can be explained honestly."
+        )
+    )
     return {
         "contract_version": SITUATION_DAY_DAILY_PROMPT_VERSION,
         "daily_focus": daily_focus,
         "instruction": (
-            "Choose one manager_gap candidate for Ситуация дня inside daily_focus.stage_code "
-            "or return insufficient. "
+            f"{instruction} "
             "Explain the selected episode as a coherent manager-facing mini-brief. "
             "Use only provided candidate fields; never use or request raw call text."
         ),
         "forbidden": [
             "Do not recalculate scores.",
             "Do not perform full call analysis.",
-            "Do not change the daily focus stage or replace its problem with a generic next-step issue.",
+            (
+                "Do not replace the selected candidate problem with a generic next-step issue. "
+                "When no exact focus-stage candidate exists, keep the selected candidate stage and explain "
+                "its relation to the daily focus honestly."
+            ),
             "Do not invent facts, quotes, scenes, scripts, call ids, names, volumes, dates, or products.",
             "Do not select customer_signal or service_issue as manager_error.",
         ],
@@ -869,19 +884,26 @@ def _normalize_llm3_daily_situation(
     if selected is None:
         return None, "selected_call_id_not_in_payload"
     focus_stage_code = _daily_focus_stage_code(daily_focus)
-    if focus_stage_code and (selected.stage_code or "").strip() != focus_stage_code:
+    has_focus_stage_candidate = bool(
+        focus_stage_code
+        and any((candidate.stage_code or "").strip() == focus_stage_code for candidate in candidates)
+    )
+    if (
+        focus_stage_code
+        and has_focus_stage_candidate
+        and (selected.stage_code or "").strip() != focus_stage_code
+    ):
         return None, "selected_candidate_not_in_daily_focus_stage"
     if _llm3_claim_replaces_focus_with_next_step(raw, selected=selected, daily_focus=daily_focus):
         return None, "llm3_output_replaced_focus_with_generic_next_step"
     raw_stage_code = _first_text(raw.get("stage_code"))
-    if raw_stage_code and selected.stage_code and raw_stage_code != selected.stage_code:
-        return None, "stage_code_changed"
+    stage_code_changed = bool(raw_stage_code and selected.stage_code and raw_stage_code != selected.stage_code)
     raw_proof_type = _norm(_first_text(raw.get("proof_type")))
-    if raw_proof_type and selected.proof_type and raw_proof_type != selected.proof_type:
-        return None, "proof_type_changed"
+    proof_type_changed = bool(raw_proof_type and selected.proof_type and raw_proof_type != selected.proof_type)
     raw_proof_strength = _norm(_first_text(raw.get("proof_strength"), raw.get("confidence")))
-    if raw_proof_strength and selected.proof_strength and raw_proof_strength != selected.proof_strength:
-        return None, "proof_strength_changed"
+    proof_strength_changed = bool(
+        raw_proof_strength and selected.proof_strength and raw_proof_strength != selected.proof_strength
+    )
 
     scene = _first_text(raw.get("evidence_scene"))
     if not _is_grounded(scene, selected.evidence_scene, selected.supporting_quote):
@@ -920,13 +942,26 @@ def _normalize_llm3_daily_situation(
         return None, reason
     if len(rewritten.scripts) < 2:
         return None, "scripts_less_than_2"
+    diagnostics: dict[str, Any] = {"llm3_composed": True}
+    if stage_code_changed:
+        diagnostics["stage_code_corrected_to_candidate"] = True
+        diagnostics["raw_stage_code"] = raw_stage_code
+        diagnostics["candidate_stage_code"] = selected.stage_code
+    if proof_type_changed:
+        diagnostics["proof_type_corrected_to_candidate"] = True
+        diagnostics["raw_proof_type"] = raw_proof_type
+        diagnostics["candidate_proof_type"] = selected.proof_type
+    if proof_strength_changed:
+        diagnostics["proof_strength_corrected_to_candidate"] = True
+        diagnostics["raw_proof_strength"] = raw_proof_strength
+        diagnostics["candidate_proof_strength"] = selected.proof_strength
     return (
         _result_from_candidate(
             rewritten,
             rejected_candidates=[],
             selection_reason=_first_text(raw.get("selection_reason"), "llm3_daily_situation_selection")
             or "llm3_daily_situation_selection",
-            diagnostics={"llm3_composed": True},
+            diagnostics=diagnostics,
         ),
         "",
     )

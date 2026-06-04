@@ -10,8 +10,10 @@ from typing import Any, Iterable
 
 try:
     from app.agents.calls.report_evidence_registry import build_report_evidence_registry
+    from app.agents.calls.report_time import report_date_time_labels
 except ImportError:  # pragma: no cover - supports direct file imports in tests
     from report_evidence_registry import build_report_evidence_registry  # type: ignore
+    from report_time import report_date_time_labels  # type: ignore
 
 
 CONTRACT_VERSION = "situation_day_daily_input_v1"
@@ -579,19 +581,7 @@ def _is_verified_proof_pool_item(item: dict[str, Any]) -> bool:
 
 
 def _date_time_labels(value: str | None) -> tuple[str | None, str | None]:
-    if not value:
-        return None, None
-    if isinstance(value, (datetime, date)):
-        dt = value
-    else:
-        text = str(value).strip()
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return text[:10] or None, text[11:16] if len(text) >= 16 else None
-    if isinstance(dt, datetime):
-        return dt.date().isoformat(), dt.strftime("%H:%M")
-    return dt.isoformat(), None
+    return report_date_time_labels(value)
 
 
 def _path_get(value: Any, path: str) -> Any:
