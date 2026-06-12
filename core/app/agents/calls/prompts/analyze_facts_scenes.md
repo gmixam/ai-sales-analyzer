@@ -75,6 +75,30 @@ coaching claims in this pass.
 - Do not emit `semantic_case`, `block_candidates`, `report_block_fit`, or
   legacy report-routing arrays.
 
+## EDO Scope
+
+Create a compact `edo_scope` for every call. This is the final LLM-2
+qualification of whether sales-stage scoring for EDO applies. LLM-1 may be a
+hint, but the dialogue is the source of truth.
+
+`edo_scope` must not duplicate `business_outcome_signal`, future
+`business_outcome`, `status_details`, `analysis_eligibility`, full quotes, or
+the full `evidence_ledger`. Keep only scoring applicability, the reason,
+the applicable part when needed, the expected manager action, and evidence ids.
+
+Do not narrow the meaning of complex calls. Use `partial`, `other`, or
+`unclear` when a call is mixed, unusual, or not confidently classifiable.
+When `sales_scoring_scope="partial"`, describe exactly which part of the call
+can be evaluated by sales criteria in `applicable_part`.
+
+Allowed values:
+
+- `sales_scoring_scope`: `full|partial|none|unclear`
+- `scope_reason`:
+  `edo_sales|edo_service|legal_direction|tech_support|internal_or_wrong_call|mixed|insufficient_data|other`
+- `expected_manager_action`:
+  `sell|transfer|support|clarify|close_service_issue|keep_relationship|no_action|other`
+
 ## Output
 
 Return this JSON shape:
@@ -119,6 +143,13 @@ Return this JSON shape:
     "evidence_ids": ["ev_001"],
     "reason": "string"
   },
+  "edo_scope": {
+    "sales_scoring_scope": "full|partial|none|unclear",
+    "scope_reason": "edo_sales|edo_service|legal_direction|tech_support|internal_or_wrong_call|mixed|insufficient_data|other",
+    "applicable_part": "string|null",
+    "expected_manager_action": "sell|transfer|support|clarify|close_service_issue|keep_relationship|no_action|other",
+    "evidence_ids": ["ev_001"]
+  },
   "language_notes": [],
   "metadata_observations": [],
   "transcript_quality_notes": [],
@@ -144,3 +175,7 @@ Return this JSON shape:
   `fail_closed.speaker_roles_uncertain=true`.
 - If a business outcome is not grounded in evidence, set
   `business_outcome_signal.status="insufficient"` and use low confidence.
+- If EDO sales applicability is not grounded in evidence, set
+  `edo_scope.sales_scoring_scope="unclear"`,
+  `edo_scope.scope_reason="insufficient_data"`, and include only evidence ids
+  that actually support the uncertainty.

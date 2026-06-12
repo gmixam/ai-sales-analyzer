@@ -75,6 +75,24 @@ NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
 ANALYSIS_FORENSICS_ATTR = "_analysis_forensics"
 SALES_RELEVANT_CALL_TYPES = {"sales_primary", "sales_repeat", "mixed"}
 NON_COACHABLE_CALL_TYPES = {"support", "internal", "other"}
+CONTACT_NAME_METADATA_KEYS = {
+    "contact_label",
+    "contact_display_name",
+    "contact_fio",
+    "contact_full_name",
+    "contact_name",
+    "client_display_name",
+    "client_fio",
+    "client_full_name",
+    "client_label",
+    "client_name",
+    "customer_display_name",
+    "customer_fio",
+    "customer_full_name",
+    "customer_label",
+    "customer_name",
+    "fio",
+}
 
 CHECKLIST_DEFINITION: dict[str, Any] = {
     "document_code": "edo_sales_mvp1_checklist",
@@ -689,7 +707,7 @@ class CallsAnalyzer:
                 "call_started_at": self._to_iso_datetime(metadata.get("call_date")),
                 "duration_sec": interaction.duration_sec,
                 "direction": self._normalize_direction(metadata.get("direction")),
-                "contact_name": metadata.get("contact_name"),
+                "contact_name": None,
                 "contact_phone": metadata.get("phone"),
                 "contact_company": metadata.get("contact_company"),
                 "language": settings.assemblyai_language,
@@ -769,7 +787,7 @@ class CallsAnalyzer:
                 "source": interaction.source,
                 "duration_sec": interaction.duration_sec,
                 "text": interaction.text or "",
-                "metadata": interaction.metadata_ or {},
+                "metadata": self._metadata_without_contact_name_fields(interaction.metadata_),
             },
             "checklist_definition": self.build_checklist_definition(),
             "analysis_result_contract_template": self.build_contract_template(
@@ -856,7 +874,7 @@ class CallsAnalyzer:
                 "source": interaction.source,
                 "duration_sec": interaction.duration_sec,
                 "text": interaction.text or "",
-                "metadata": interaction.metadata_ or {},
+                "metadata": self._metadata_without_contact_name_fields(interaction.metadata_),
             },
             "checklist_definition": checklist_definition,
             "expected_output_shape": {
@@ -1375,6 +1393,16 @@ class CallsAnalyzer:
     def _llm2a_indicates_commercial_scoring_scope(artifact: dict[str, Any]) -> bool:
         """Return whether LLM-2A output describes a call that should be scored."""
 
+        raw_edo_scope = artifact.get("edo_scope")
+        edo_scope = raw_edo_scope if isinstance(raw_edo_scope, dict) else {}
+        sales_scoring_scope = str(
+            edo_scope.get("sales_scoring_scope") or ""
+        ).strip().lower().replace("-", "_")
+        if sales_scoring_scope in {"full", "partial"}:
+            return True
+        if sales_scoring_scope in {"none", "unclear"}:
+            return False
+
         business_outcome = dict(artifact.get("business_outcome_signal") or {})
         status = str(business_outcome.get("status") or "").strip().lower()
         if status == "tech_service" or status == "insufficient":
@@ -1621,12 +1649,20 @@ class CallsAnalyzer:
                 "llm2_admission_gate": admission_gate or {},
             }
         if request_kind == "llm2d_recommendations":
+            llm2a = previous_artifacts.get("llm2a") or {}
+            llm2b = previous_artifacts.get("llm2b") or {}
+            llm2c = previous_artifacts.get("llm2c") or {}
             return {
                 "call_id": call_id,
-                "llm2a_artifact": previous_artifacts.get("llm2a") or {},
-                "llm2b_artifact": previous_artifacts.get("llm2b") or {},
-                "llm2c_artifact": previous_artifacts.get("llm2c") or {},
+                "llm2a_artifact": llm2a,
+                "llm2b_artifact": llm2b,
+                "llm2c_artifact": llm2c,
                 "llm2_admission_gate": admission_gate or {},
+                "coaching_decision_context": self._coaching_decision_context(
+                    llm2a=llm2a,
+                    llm2b=llm2b,
+                    llm2c=llm2c,
+                ),
                 "mvp1_contract_shape": prompt_context["analysis_result_contract_template"],
                 "report_evidence_contract_v1": prompt_context["approved_sources"].get(
                     "report_evidence_contract_markdown",
@@ -1672,6 +1708,7 @@ class CallsAnalyzer:
                     "return": [
                         "scenes",
                         "evidence_ledger",
+                        "edo_scope",
                         "business_outcome_signal",
                         "language_notes",
                         "transcript_quality_notes",
@@ -1693,6 +1730,7 @@ class CallsAnalyzer:
                 "llm2_admission_gate": admission_gate or {},
                 "scenes": llm2a.get("scenes") or [],
                 "evidence_ledger": llm2a.get("evidence_ledger") or [],
+                "edo_scope": self._compact_edo_scope(llm2a.get("edo_scope")),
                 "business_outcome_signal": llm2a.get("business_outcome_signal") or {},
                 "compact_scoring_rubric": self._compact_checklist_rubric(),
                 "task_contract": {
@@ -1730,10 +1768,16 @@ class CallsAnalyzer:
             return {
                 "input_profile": "compact",
                 "call_id": call_id,
+                "edo_scope": self._compact_edo_scope(llm2a.get("edo_scope")),
                 "business_outcome_signal": llm2a.get("business_outcome_signal") or {},
                 "outcome_facts": self._compact_outcome_facts(llm2a=llm2a, llm2b=llm2b),
                 "scoring_context": self._compact_stage_score_summary(llm2b, llm2c),
                 "recommendation_sources": self._compact_recommendation_sources(
+                    llm2a=llm2a,
+                    llm2b=llm2b,
+                    llm2c=llm2c,
+                ),
+                "coaching_decision_context": self._coaching_decision_context(
                     llm2a=llm2a,
                     llm2b=llm2b,
                     llm2c=llm2c,
@@ -1743,6 +1787,7 @@ class CallsAnalyzer:
                     llm2b=llm2b,
                     llm2c=llm2c,
                 ),
+                "status_details_contract": self._compact_status_details_contract(),
             }
         return self._build_full_llm2_layered_user_payload(
             interaction=interaction,
@@ -1764,6 +1809,17 @@ class CallsAnalyzer:
             "contact_phone": metadata.get("contact_phone") or metadata.get("phone"),
             "external_call_code": metadata.get("external_call_code")
             or getattr(interaction, "external_id", None),
+        }
+
+    @staticmethod
+    def _metadata_without_contact_name_fields(metadata: Any) -> dict[str, Any]:
+        """Return metadata for LLM input without contact/client name hints."""
+        if not isinstance(metadata, dict):
+            return {}
+        return {
+            key: deepcopy(value)
+            for key, value in metadata.items()
+            if str(key).strip().lower() not in CONTACT_NAME_METADATA_KEYS
         }
 
     @staticmethod
@@ -1818,6 +1874,82 @@ class CallsAnalyzer:
                 if data_quality.get(key) is not None
             },
             "analysis_focus": list(llm1_first_pass.get("analysis_focus") or []),
+        }
+
+    @staticmethod
+    def _compact_edo_scope(value: Any) -> dict[str, Any]:
+        raw = value if isinstance(value, dict) else {}
+        if not raw:
+            return {}
+        compact = {
+            key: raw.get(key)
+            for key in (
+                "sales_scoring_scope",
+                "scope_reason",
+                "applicable_part",
+                "expected_manager_action",
+            )
+            if raw.get(key) not in (None, "", [])
+        }
+        evidence_ids = [
+            item
+            for item in raw.get("evidence_ids") or []
+            if isinstance(item, str) and item.strip()
+        ]
+        if evidence_ids:
+            compact["evidence_ids"] = evidence_ids
+        return compact
+
+    @staticmethod
+    def _compact_status_details_contract() -> dict[str, Any]:
+        return {
+            "source_status": "business_outcome_signal.status; map tech_service to service",
+            "rule": "fill only matching status structure; other structures must be null; unknown facts stay null",
+            "status_enum": ["agreement", "rescheduled", "refusal", "open", "service"],
+            "structures": {
+                "agreement": [
+                    "type",
+                    "what_agreed",
+                    "manager_commitment",
+                    "client_commitment",
+                    "owner",
+                    "deadline",
+                    "evidence",
+                ],
+                "rescheduled": [
+                    "reason",
+                    "return_when",
+                    "return_owner",
+                    "preparation_needed",
+                    "evidence",
+                ],
+                "refusal": [
+                    "type",
+                    "reason",
+                    "finality",
+                    "return_condition",
+                    "recommended_next_action",
+                    "evidence",
+                ],
+                "open": [
+                    "why_open",
+                    "missing_to_close",
+                    "next_action",
+                    "owner",
+                    "deadline",
+                    "evidence",
+                ],
+                "service": [
+                    "type",
+                    "request",
+                    "action_taken",
+                    "follow_up_needed",
+                    "follow_up_action",
+                    "owner",
+                    "sales_scoring_applicability",
+                    "evidence",
+                ],
+            },
         }
 
     @staticmethod
@@ -1989,6 +2121,107 @@ class CallsAnalyzer:
                 and str(claim.get("claim_id") or "") in accepted_claim_ids
             ],
             "accepted_proof_cards": [compact_proof(card) for card in proof_cards],
+        }
+
+    @staticmethod
+    def _coaching_decision_context(
+        *,
+        llm2a: dict[str, Any],
+        llm2b: dict[str, Any],
+        llm2c: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return bounded inputs LLM-2D needs for PILOT-18 coaching_decision."""
+
+        proof_cards = CallsAnalyzer._accepted_llm2d_proof_cards(llm2c)
+        accepted_claim_ids = {
+            str(card.get("claim_id"))
+            for card in proof_cards
+            if card.get("claim_id") not in (None, "")
+        }
+
+        def compact_claim(claim: dict[str, Any]) -> dict[str, Any]:
+            evidence_ids = [
+                str(item)
+                for item in (claim.get("evidence_ids") or [])
+                if item not in (None, "")
+            ]
+            compact = {
+                key: claim.get(key)
+                for key in (
+                    "claim_id",
+                    "claim",
+                    "stage_code",
+                    "claim_type",
+                    "criterion_code",
+                    "criterion_codes",
+                    "scene_ids",
+                    "confidence",
+                )
+                if claim.get(key) not in (None, "", [])
+            }
+            if evidence_ids:
+                compact["evidence_ids"] = evidence_ids
+            return compact
+
+        def compact_proof(card: dict[str, Any]) -> dict[str, Any]:
+            compact = {
+                key: card.get(key)
+                for key in (
+                    "proof_id",
+                    "claim_id",
+                    "stage_code",
+                    "claim_type",
+                    "proof_status",
+                    "proof_type",
+                    "gap_proven",
+                    "supporting_evidence_ids",
+                    "counter_evidence_ids",
+                )
+                if card.get(key) not in (None, "", [])
+            }
+            claim_text = CallsAnalyzer._clip_compact_text(
+                card.get("softened_claim") or card.get("claim"),
+                180,
+            )
+            if claim_text:
+                compact["claim"] = claim_text
+            return compact
+
+        return {
+            "decision_contract": {
+                "decision": "improve|maintain|no_comment",
+                "title": "Улучшить|Поддерживать|Корректно|null",
+                "based_on_refs": [
+                    "stage_code",
+                    "criterion_codes",
+                    "proof_ids",
+                    "evidence_ids",
+                ],
+            },
+            "edo_scope": CallsAnalyzer._compact_edo_scope(llm2a.get("edo_scope")),
+            "status_details": CallsAnalyzer._compact_outcome_facts(
+                llm2a=llm2a,
+                llm2b=llm2b,
+            ),
+            "score_stage_summary": CallsAnalyzer._compact_stage_score_summary(llm2b, llm2c),
+            "strengths": [
+                compact_claim(claim)
+                for claim in (llm2b.get("strength_claims") or [])
+                if isinstance(claim, dict)
+            ],
+            "gaps": [
+                compact_claim(claim)
+                for claim in (llm2b.get("gap_claims") or [])
+                if isinstance(claim, dict)
+            ],
+            "accepted_proof_cards": [compact_proof(card) for card in proof_cards],
+            "accepted_gap_claims": [
+                compact_claim(claim)
+                for claim in (llm2b.get("gap_claims") or [])
+                if isinstance(claim, dict)
+                and str(claim.get("claim_id") or "") in accepted_claim_ids
+            ],
+            "existing_recommendations": [],
         }
 
     @staticmethod
@@ -2241,11 +2474,13 @@ class CallsAnalyzer:
                     "next_step_text",
                 ],
                 "recommendations": "max 3, linked to accepted proof_id",
+                "coaching_decision": "single compact improve|maintain|no_comment decision",
                 "agreements": "only concrete action + owner/side + timing/condition",
                 "follow_up": "only concrete next step from evidence",
                 "final_normalized_analysis": [
                     "classification",
                     "summary",
+                    "coaching_decision",
                     "agreements",
                     "follow_up",
                 ],
@@ -2613,10 +2848,12 @@ class CallsAnalyzer:
                 "set `classification.analysis_eligibility` to `not_eligible` and provide a clear "
                 "`eligibility_reason`.\n\n"
                 "Preserve the additive `report_evidence_version=\"v1\"` and `report_evidence` package. "
-                "When enough transcript or metadata exists, include `report_evidence.call_report_summary` "
+                "When enough transcript or non-name metadata exists, include `report_evidence.call_report_summary` "
                 "with `short_topic`, `short_context`, `manager_visible_summary`, semantic `hotness` limited to `hot|warm|low`, "
                 "`manager_next_action`, and a manager-voiced `suggested_manager_phrase` that does not copy "
-                "client quotes. For business-meaningful calls with enough transcript content, include "
+                "client quotes. Fill `call.contact_name` and `call_report_summary.client_display_name` "
+                "only from an explicit client name in the STT transcript or STT segments; never use "
+                "metadata name fields, and use null when uncertain. For business-meaningful calls with enough transcript content, include "
                 "`report_evidence.semantic_case` with `case_title`, `case_type`, `core_meaning`, "
                 "`customer_signal`, `manager_behavior`, `coaching_diagnosis`, `recommended_next_action`, "
                 "optional grounded `best_dialogue_fragment`, and `report_block_fit` for `situation_day`, "

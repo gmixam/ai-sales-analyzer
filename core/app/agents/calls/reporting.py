@@ -183,6 +183,9 @@ UNCLASSIFIED_REASON_LABELS = {
     "cdr_only_probable_live": "CDR-only: вероятный живой разговор",
     "missing_classification": "Нет классификации в анализе",
     "support_or_internal": "Тех/сервис или внутренний звонок",
+    "llm_status_missing": "Статус не подтвержден LLM",
+    "invalid_llm_semantic_status": "Некорректный LLM-статус",
+    "agreement_missing_evidence": "Договоренность не подтверждена evidence",
     "unknown": "Причина не определена",
 }
 UNCLASSIFIED_MANAGER_STATUS_LABELS = {
@@ -200,6 +203,9 @@ UNCLASSIFIED_MANAGER_STATUS_LABELS = {
     "no_follow_up_outcome": "Нет итога",
     "missing_classification": "Нет классификации",
     "support_or_internal": "Тех/сервис",
+    "llm_status_missing": "Без подтвержденного статуса",
+    "invalid_llm_semantic_status": "Без подтвержденного статуса",
+    "agreement_missing_evidence": "Без подтвержденной договоренности",
     "unknown": "Без разбора",
 }
 UNCLASSIFIED_MANAGER_CONTEXT_LABELS = {
@@ -217,6 +223,9 @@ UNCLASSIFIED_MANAGER_CONTEXT_LABELS = {
     "no_follow_up_outcome": "Нет результата follow-up",
     "missing_classification": "Нет классификации",
     "support_or_internal": "Тех/сервис",
+    "llm_status_missing": "Суть не сформирована LLM",
+    "invalid_llm_semantic_status": "Суть не сформирована LLM",
+    "agreement_missing_evidence": "Договоренность не подтверждена LLM evidence",
     "unknown": "Нет готового разбора",
 }
 MANAGER_FACING_COMPLETENESS_BLOCKING_BUCKETS = {
@@ -1422,22 +1431,24 @@ class CallsManualReportingOrchestrator:
 
     @staticmethod
     def _build_manager_daily_windows(*, anchor_day: str) -> list[ManagerDailyWindow]:
-        """Return rolling 1/2/3-workday windows anchored at the requested day."""
+        """Return the strict report-day window for manager_daily.
+
+        Manager-facing daily reports must not borrow calls from previous
+        workdays. If the requested day has weak coverage, the readiness layer
+        should reflect that day as-is instead of expanding the visible period.
+        """
         anchor = date.fromisoformat(anchor_day)
-        windows: list[ManagerDailyWindow] = []
-        for workdays_used in range(1, MANAGER_DAILY_MAX_WINDOW_WORKDAYS + 1):
-            included_days = tuple(_last_workdays(anchor=anchor, count=workdays_used))
-            windows.append(
-                ManagerDailyWindow(
-                    workdays_used=workdays_used,
-                    period={
-                        "date_from": included_days[0],
-                        "date_to": included_days[-1],
-                    },
-                    included_days=included_days,
-                )
+        day = anchor.isoformat()
+        return [
+            ManagerDailyWindow(
+                workdays_used=1,
+                period={
+                    "date_from": day,
+                    "date_to": day,
+                },
+                included_days=(day,),
             )
-        return windows
+        ]
 
     def _select_interactions(
         self,
@@ -2323,6 +2334,11 @@ class CallsManualReportingOrchestrator:
                     "relevant_calls": readiness.get("relevant_calls"),
                     "ready_analyses": readiness.get("ready_analyses"),
                     "analysis_coverage": readiness.get("analysis_coverage"),
+                    "raw_analysis_coverage": readiness.get("raw_analysis_coverage"),
+                    "manager_day_analysis_coverage": readiness.get("manager_day_analysis_coverage"),
+                    "meaningful_calls_total": readiness.get("meaningful_calls_total"),
+                    "meaningful_ready_analysis_total": readiness.get("meaningful_ready_analysis_total"),
+                    "excluded_calls_total": readiness.get("excluded_calls_total"),
                     "content_blocks": dict(readiness.get("content_blocks") or {}),
                 }
             )
@@ -3247,9 +3263,16 @@ class CallsManualReportingOrchestrator:
             relevant_calls=0,
             ready_analyses=0,
             analysis_coverage=0.0,
+            raw_analysis_coverage=0.0,
+            manager_day_analysis_coverage=0.0,
+            meaningful_calls_total=0,
+            meaningful_ready_analysis_total=0,
+            excluded_calls_total=0,
             content_blocks={},
             content_signals={},
         )
+        last_window_artifacts: list[ReportArtifact] = []
+        last_missing: list[str] = []
         for window in windows:
             window_artifacts = [
                 item
@@ -3278,6 +3301,8 @@ class CallsManualReportingOrchestrator:
                 window=window,
             )
             last_readiness = readiness
+            last_window_artifacts = window_artifacts
+            last_missing = missing
             if readiness["readiness_outcome"] in {"full_report", "signal_report"} and payload is not None:
                 readiness["total_group_calls"] = len(artifacts)
                 return self._render_and_deliver_report_result(
@@ -3287,10 +3312,11 @@ class CallsManualReportingOrchestrator:
                     delivery_options=delivery_options,
                     missing=missing,
                     readiness=readiness,
+                    report_day=filters.date_from or source_period.get("date_from"),
                 )
         return self._build_manager_daily_empty_state_result(
             status="skip_accumulate",
-            artifacts=artifacts,
+            artifacts=last_window_artifacts,
             period=last_readiness["effective_period"],
             filters=filters,
             mode=mode,
@@ -3300,7 +3326,7 @@ class CallsManualReportingOrchestrator:
             relevant_calls=last_readiness["relevant_calls"],
             ready_analyses=last_readiness["ready_analyses"],
             analysis_coverage=last_readiness["analysis_coverage"],
-            missing=[],
+            missing=last_missing,
             readiness=last_readiness,
         )
 
@@ -3383,6 +3409,7 @@ class CallsManualReportingOrchestrator:
             delivery_options=delivery_options,
             missing=missing,
             readiness=None,
+            report_day=filters.date_from or period.get("date_from"),
         )
 
     @staticmethod
@@ -3421,6 +3448,7 @@ class CallsManualReportingOrchestrator:
         delivery_options: ReportDeliveryOptions,
         missing: list[str],
         readiness: dict[str, Any] | None,
+        report_day: str | None = None,
     ) -> dict[str, Any]:
         """Render one ready payload and run split delivery."""
         if readiness is not None:
@@ -3433,6 +3461,11 @@ class CallsManualReportingOrchestrator:
             manager_gate = _build_manager_facing_completeness_gate(
                 call_list=list(payload.get("call_list") or [])
             )
+            strict_report_day_gate = _build_manager_daily_strict_report_day_gate(
+                payload=payload,
+                readiness=readiness,
+                report_day=report_day,
+            )
             payload["manager_facing_completeness"] = manager_gate
             payload.setdefault("meta", {})["manager_facing_completeness"] = {
                 "status": manager_gate["status"],
@@ -3440,7 +3473,11 @@ class CallsManualReportingOrchestrator:
                 "manager_report_allowed": manager_gate["manager_report_allowed"],
                 "blocking_counts": dict(manager_gate["blocking_counts"]),
             }
-            gate_failed = not bool(manager_gate["manager_report_allowed"])
+            payload.setdefault("meta", {})["strict_report_day_gate"] = strict_report_day_gate
+            gate_failed = (
+                not bool(manager_gate["manager_report_allowed"])
+                or not bool(strict_report_day_gate["manager_report_allowed"])
+            )
             if gate_failed:
                 effective_send_email = False
                 header = payload.setdefault("header", {})
@@ -3468,7 +3505,13 @@ class CallsManualReportingOrchestrator:
             "status": "review_required" if gate_failed else "ready",
             "preset": preset.code,
             "group_key": payload["meta"]["group_key"],
-            "errors": [*missing, "manager_facing_gate_failed:incomplete_day_call_processing"] if gate_failed else missing,
+            "errors": _manager_daily_gate_errors(
+                missing=missing,
+                manager_gate=manager_gate,
+                strict_report_day_gate=payload.get("meta", {}).get("strict_report_day_gate"),
+            )
+            if gate_failed
+            else missing,
             "payload": payload,
             "preview": preview,
             "artifact": rendered.get("artifact"),
@@ -3482,6 +3525,7 @@ class CallsManualReportingOrchestrator:
         }
         if manager_gate is not None:
             result["manager_facing_completeness"] = manager_gate
+            result["strict_report_day_gate"] = payload.get("meta", {}).get("strict_report_day_gate")
         if readiness is not None:
             result.update(
                 {
@@ -3493,6 +3537,11 @@ class CallsManualReportingOrchestrator:
                     "relevant_calls": readiness["relevant_calls"],
                     "ready_analyses": readiness["ready_analyses"],
                     "analysis_coverage": readiness["analysis_coverage"],
+                    "raw_analysis_coverage": readiness["raw_analysis_coverage"],
+                    "manager_day_analysis_coverage": readiness["manager_day_analysis_coverage"],
+                    "meaningful_calls_total": readiness["meaningful_calls_total"],
+                    "meaningful_ready_analysis_total": readiness["meaningful_ready_analysis_total"],
+                    "excluded_calls_total": readiness["excluded_calls_total"],
                     "content_blocks": dict(readiness["content_blocks"]),
                     "readiness": readiness,
                 }
@@ -3546,7 +3595,15 @@ class CallsManualReportingOrchestrator:
             if error
         ]
         if delivery_errors:
-            base_errors = [*missing, "manager_facing_gate_failed:incomplete_day_call_processing"] if gate_failed else list(missing)
+            base_errors = (
+                _manager_daily_gate_errors(
+                    missing=missing,
+                    manager_gate=manager_gate,
+                    strict_report_day_gate=payload.get("meta", {}).get("strict_report_day_gate"),
+                )
+                if gate_failed
+                else list(missing)
+            )
             result["errors"] = [*base_errors, *delivery_errors]
         return result
 
@@ -3618,6 +3675,11 @@ class CallsManualReportingOrchestrator:
             "relevant_calls": relevant_calls,
             "ready_analyses": ready_analyses,
             "analysis_coverage": analysis_coverage,
+            "raw_analysis_coverage": (readiness or {}).get("raw_analysis_coverage"),
+            "manager_day_analysis_coverage": (readiness or {}).get("manager_day_analysis_coverage"),
+            "meaningful_calls_total": (readiness or {}).get("meaningful_calls_total"),
+            "meaningful_ready_analysis_total": (readiness or {}).get("meaningful_ready_analysis_total"),
+            "excluded_calls_total": (readiness or {}).get("excluded_calls_total"),
             "content_blocks": dict((readiness or {}).get("content_blocks") or {}),
             "readiness": readiness,
         }
@@ -3668,6 +3730,14 @@ class CallsManualReportingOrchestrator:
                 "Это preview shell для оператора. Persisted звонки найдены, но ready transcript/analysis "
                 "недостаточны для сборки обычного daily report."
             )
+        _empty_missing, empty_usable = self._split_usable_artifacts(
+            artifacts,
+            require_coaching_core_eligible=True,
+        )
+        selection_model = _build_selection_model_counters(
+            window_artifacts=artifacts,
+            usable_artifacts=empty_usable,
+        )
 
         payload = {
             "meta": _build_base_meta(
@@ -3726,6 +3796,7 @@ class CallsManualReportingOrchestrator:
                 "source": "preview_shell",
                 "model_dependent": False,
             },
+            "selection_model": selection_model,
             "signal_of_day": {
                 "call_time": None,
                 "client_or_phone_mask": "Preview shell",
@@ -4042,6 +4113,11 @@ def _build_manager_daily_readiness_result(
     relevant_calls: int,
     ready_analyses: int,
     analysis_coverage: float,
+    raw_analysis_coverage: float,
+    manager_day_analysis_coverage: float,
+    meaningful_calls_total: int,
+    meaningful_ready_analysis_total: int,
+    excluded_calls_total: int,
     content_blocks: dict[str, bool],
     content_signals: dict[str, Any],
 ) -> dict[str, Any]:
@@ -4058,6 +4134,11 @@ def _build_manager_daily_readiness_result(
         "relevant_calls": relevant_calls,
         "ready_analyses": ready_analyses,
         "analysis_coverage": analysis_coverage,
+        "raw_analysis_coverage": raw_analysis_coverage,
+        "manager_day_analysis_coverage": manager_day_analysis_coverage,
+        "meaningful_calls_total": meaningful_calls_total,
+        "meaningful_ready_analysis_total": meaningful_ready_analysis_total,
+        "excluded_calls_total": excluded_calls_total,
         "content_blocks": content_blocks,
         "content_signals": content_signals,
     }
@@ -4133,6 +4214,9 @@ def _build_selection_model_counters(
     service_calls_total = 0
     transcript_calls_total = 0
     no_transcript_calls_total = 0
+    meaningful_transcript_calls_total = 0
+    meaningful_ready_analysis_total = 0
+    meaningful_non_service_ready_analysis_total = 0
     excluded_samples: list[dict[str, Any]] = []
 
     for artifact in window_artifacts:
@@ -4162,11 +4246,17 @@ def _build_selection_model_counters(
                 )
             continue
         meaningful_calls.append(artifact)
+        if getattr(artifact.interaction, "text", None):
+            meaningful_transcript_calls_total += 1
         if artifact.analysis is not None:
             detail = dict(artifact.analysis.scores_detail or {})
             call_type = str((detail.get("classification") or {}).get("call_type") or "").lower()
             if call_type in {"support", "internal"}:
                 service_calls_total += 1
+            if not bool(getattr(artifact.analysis, "is_failed", False)):
+                meaningful_ready_analysis_total += 1
+                if call_type not in {"support", "internal"}:
+                    meaningful_non_service_ready_analysis_total += 1
 
     meaningful_calls_total = len(meaningful_calls)
 
@@ -4177,9 +4267,9 @@ def _build_selection_model_counters(
         if call_type not in {"support", "internal"}:
             coaching_candidate_calls_total += 1
 
-    without_analysis = sum(1 for a in window_artifacts if a.analysis is None)
+    without_analysis = sum(1 for a in meaningful_calls if a.analysis is None)
     failed_analysis = sum(
-        1 for a in window_artifacts
+        1 for a in meaningful_calls
         if a.analysis is not None and bool(getattr(a.analysis, "is_failed", False))
     )
 
@@ -4187,6 +4277,8 @@ def _build_selection_model_counters(
         "raw_calls_total": raw_calls_total,
         "transcript_calls_total": transcript_calls_total,
         "no_transcript_calls_total": no_transcript_calls_total,
+        "meaningful_transcript_calls_total": meaningful_transcript_calls_total,
+        "meaningful_ready_analysis_total": meaningful_ready_analysis_total,
         "meaningful_calls_total": meaningful_calls_total,
         "service_calls_total": service_calls_total,
         "coaching_candidate_calls_total": coaching_candidate_calls_total,
@@ -4199,6 +4291,24 @@ def _build_selection_model_counters(
             "not_enough_analysis": without_analysis + failed_analysis,
             "not_selected_for_core_review": 0,
         },
+        "day_exclusion_reasons": {
+            "too_short_or_no_speech": too_short_count,
+            "ivr_or_autoanswer": ivr_count,
+        },
+        "processing_reasons": {
+            "support_internal": service_calls_total,
+            "not_enough_analysis": without_analysis + failed_analysis,
+            "not_selected_for_core_review": max(
+                0,
+                meaningful_non_service_ready_analysis_total - len(usable_artifacts),
+            ),
+        },
+        "processing_summary": {
+            "calls_with_stt_total": transcript_calls_total,
+            "meaningful_with_stt_total": meaningful_transcript_calls_total,
+            "meaningful_with_ready_analysis_total": meaningful_ready_analysis_total,
+            "coaching_review_total": len(usable_artifacts),
+        },
         "meaningful_policy": {
             "transcript_overrides_duration": True,
             "duration_filters_apply_only_without_transcript": True,
@@ -4209,20 +4319,50 @@ def _build_selection_model_counters(
     }
 
 
+def _criterion_is_applicable_for_stage_score(criterion: dict[str, Any]) -> bool:
+    value = criterion.get("applicable", True)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    return str(value).strip().lower() not in {"false", "0", "no", "n", "нет"}
+
+
+def _structured_stage_criteria(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in stage.get("criteria_results") or [] if isinstance(item, dict)]
+
+
+def _stage_score_components(stage: dict[str, Any]) -> tuple[int, int, list[dict[str, Any]]] | None:
+    """Return score/max/applicable criteria for one report-stage row."""
+    criteria = _structured_stage_criteria(stage)
+    if criteria:
+        applicable = [item for item in criteria if _criterion_is_applicable_for_stage_score(item)]
+        if not applicable:
+            return None
+        stage_score = sum(int(item.get("score") or 0) for item in applicable)
+        max_score = sum(int(item.get("max_score") or 0) for item in applicable)
+        return stage_score, max_score, applicable
+
+    if stage.get("stage_score") is None:
+        return None
+    try:
+        stage_score = int(stage.get("stage_score") or 0)
+        max_score = int(stage.get("max_stage_score") or 0)
+    except (TypeError, ValueError):
+        return None
+    return stage_score, max_score, []
+
+
 def _analysis_has_scored_stage_scores(analysis: Analysis | None) -> bool:
-    """Return whether an analysis has numeric stage scores usable for aggregation."""
+    """Return whether an analysis has numeric applicable stage scores usable for aggregation."""
     detail = dict(getattr(analysis, "scores_detail", None) or {})
     for stage_raw in detail.get("score_by_stage") or []:
         if not isinstance(stage_raw, dict):
             continue
-        stage = stage_raw
-        if stage.get("stage_score") is None:
+        components = _stage_score_components(stage_raw)
+        if components is None:
             continue
-        try:
-            max_score = int(stage.get("max_stage_score") or 0)
-            stage_score = int(stage.get("stage_score") or 0)
-        except (TypeError, ValueError):
-            continue
+        stage_score, max_score, _criteria = components
         if max_score > 0 and stage_score >= 0:
             return True
     return False
@@ -4245,6 +4385,9 @@ def _filter_stage_score_artifacts(*, artifacts: list[ReportArtifact]) -> list[Re
         if not reusable:
             continue
         detail = dict(getattr(artifact.analysis, "scores_detail", None) or {})
+        edo_scope = _extract_edo_scope(detail)
+        if edo_scope and edo_scope.get("sales_scoring_scope") in {"none", "unclear"}:
+            continue
         call_type = str((detail.get("classification") or {}).get("call_type") or "").strip().lower()
         if call_type in {"support", "internal"}:
             continue
@@ -4259,6 +4402,7 @@ def _build_stage_score_scope(
     stage_score_artifacts: list[ReportArtifact],
     selection_model: dict[str, Any],
     included_artifacts: list[ReportArtifact],
+    edo_scope_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the data scope behind `БАЛЛЫ ПО ЭТАПАМ` for manager-facing honesty."""
     meaningful_total = int(selection_model.get("meaningful_calls_total") or 0)
@@ -4280,6 +4424,9 @@ def _build_stage_score_scope(
         )
         if low_coverage:
             note += " Покрытие низкое: это срез по доступным разборам, а не полная оценка дня."
+    edo_note = _edo_scope_stage_score_note(edo_scope_summary)
+    if edo_note:
+        note = f"{note} {edo_note}"
     return {
         "scope": "report_day_ready_meaningful_stage_scores",
         "meaningful_calls_total": meaningful_total,
@@ -4288,6 +4435,7 @@ def _build_stage_score_scope(
         "coverage_pct": coverage_pct,
         "low_coverage": low_coverage,
         "note": note,
+        "edo_scope_summary": dict(edo_scope_summary or {}),
     }
 
 
@@ -4301,7 +4449,22 @@ def _evaluate_manager_daily_readiness(
     """Choose full_report, signal_report, or skip_accumulate for one manager_daily window."""
     relevant_calls = len(artifacts)
     ready_analyses = len(usable_artifacts)
-    analysis_coverage = _pct(ready_analyses, relevant_calls) if relevant_calls else 0.0
+    raw_analysis_coverage = _pct(ready_analyses, relevant_calls) if relevant_calls else 0.0
+    selection_model = dict((payload or {}).get("selection_model") or {})
+    if not selection_model:
+        selection_model = _build_selection_model_counters(
+            window_artifacts=artifacts,
+            usable_artifacts=usable_artifacts,
+        )
+    meaningful_calls_total = int(selection_model.get("meaningful_calls_total") or 0)
+    meaningful_ready_analysis_total = int(selection_model.get("meaningful_ready_analysis_total") or 0)
+    excluded_calls_total = int(selection_model.get("excluded_calls_total") or 0)
+    manager_day_analysis_coverage = (
+        _pct(meaningful_ready_analysis_total, meaningful_calls_total)
+        if meaningful_calls_total
+        else 0.0
+    )
+    analysis_coverage = manager_day_analysis_coverage
 
     worked_items = list((payload or {}).get("analysis_worked") or [])
     improve_items = list((payload or {}).get("analysis_improve") or [])
@@ -4348,7 +4511,7 @@ def _evaluate_manager_daily_readiness(
         full_reasons.append("relevant_calls_below_full_threshold")
     if ready_analyses < MANAGER_DAILY_FULL_REPORT_MIN_READY_ANALYSES:
         full_reasons.append("ready_analyses_below_full_threshold")
-    if analysis_coverage < MANAGER_DAILY_FULL_REPORT_MIN_ANALYSIS_COVERAGE:
+    if manager_day_analysis_coverage < MANAGER_DAILY_FULL_REPORT_MIN_ANALYSIS_COVERAGE:
         full_reasons.append("analysis_coverage_below_full_threshold")
     if not content_blocks["day_summary_ready"]:
         full_reasons.append("content_block_day_summary_missing")
@@ -4374,6 +4537,11 @@ def _evaluate_manager_daily_readiness(
             relevant_calls=relevant_calls,
             ready_analyses=ready_analyses,
             analysis_coverage=analysis_coverage,
+            raw_analysis_coverage=raw_analysis_coverage,
+            manager_day_analysis_coverage=manager_day_analysis_coverage,
+            meaningful_calls_total=meaningful_calls_total,
+            meaningful_ready_analysis_total=meaningful_ready_analysis_total,
+            excluded_calls_total=excluded_calls_total,
             content_blocks=content_blocks,
             content_signals=content_signals,
         )
@@ -4402,6 +4570,11 @@ def _evaluate_manager_daily_readiness(
             relevant_calls=relevant_calls,
             ready_analyses=ready_analyses,
             analysis_coverage=analysis_coverage,
+            raw_analysis_coverage=raw_analysis_coverage,
+            manager_day_analysis_coverage=manager_day_analysis_coverage,
+            meaningful_calls_total=meaningful_calls_total,
+            meaningful_ready_analysis_total=meaningful_ready_analysis_total,
+            excluded_calls_total=excluded_calls_total,
             content_blocks=content_blocks,
             content_signals=content_signals,
         )
@@ -4417,6 +4590,11 @@ def _evaluate_manager_daily_readiness(
         relevant_calls=relevant_calls,
         ready_analyses=ready_analyses,
         analysis_coverage=analysis_coverage,
+        raw_analysis_coverage=raw_analysis_coverage,
+        manager_day_analysis_coverage=manager_day_analysis_coverage,
+        meaningful_calls_total=meaningful_calls_total,
+        meaningful_ready_analysis_total=meaningful_ready_analysis_total,
+        excluded_calls_total=excluded_calls_total,
         content_blocks=content_blocks,
         content_signals=content_signals,
     )
@@ -4520,7 +4698,7 @@ def _build_daily_coaching_focus(
     normalized_focus_problem = _normalize_problem_statement(
         problem_statement,
         stage_code=stage_code,
-        fallback=_stage_problem_fallback(stage_code),
+        fallback=LLM_COMMENT_MISSING_TEXT,
     )
     problem_statement = str(normalized_focus_problem.get("text") or problem_statement).strip()
 
@@ -5408,6 +5586,7 @@ def build_manager_daily_payload(
         window_artifacts=operational_day_artifacts,
         usable_artifacts=artifacts,
     )
+    edo_scope_summary = _build_edo_scope_summary(artifacts=operational_meaningful_artifacts)
     coaching_content_artifacts = _filter_coaching_artifacts_by_final_outcome(
         artifacts=artifacts,
         call_list_by_interaction_id=call_list_by_interaction_id,
@@ -5417,6 +5596,7 @@ def build_manager_daily_payload(
         stage_score_artifacts=stage_score_artifacts,
         selection_model=selection_model,
         included_artifacts=coaching_content_artifacts,
+        edo_scope_summary=edo_scope_summary,
     )
     report_evidence_registry_items = build_report_evidence_registry(coaching_content_artifacts)
     report_bounds = _report_day_bounds(period=period, filters=filters)
@@ -5658,28 +5838,25 @@ def build_manager_daily_payload(
         ):
             call_breakdown = composer_breakdown
         elif situation_call_id_for_breakdown not in situation_rejected_call_ids:
-            situation_packet_breakdown = _build_call_breakdown_from_situation_day_packet(
-                situation_day_evidence_packet=situation_day_evidence_packet,
-                situation_day_coaching_view=situation_day_coaching_view,
-            )
-            if situation_packet_breakdown is not None:
-                call_breakdown = situation_packet_breakdown
+            call_breakdown = None
     if call_breakdown is None:
         call_breakdown = _build_call_breakdown_from_evidence_registry_route(
             artifacts=coaching_content_artifacts,
             routed_items=report_block_routes.get("call_breakdown") or [],
             score_by_stage=score_by_stage,
         )
-    if call_breakdown is None and no_verified_situation_day:
+    if call_breakdown is None:
         call_breakdown = _build_call_breakdown(
             improve_items=[],
             artifacts=[],
             daily_focus=daily_coaching_focus,
         )
-        call_breakdown["selection_diagnostics"] = {
-            "selection_mode": "blocked_without_verified_situation_day",
-            "reason": "situation_day_not_verified",
-        }
+        if no_verified_situation_day:
+            call_breakdown["selection_diagnostics"] = {
+                "selection_mode": "blocked_without_verified_situation_day",
+                "reason": "situation_day_not_verified",
+                "llm_only_semantic_reporting": True,
+            }
     call_breakdown = _apply_next_step_claim_safety_to_call_breakdown(
         call_breakdown=call_breakdown,
         diagnostics=next_step_claim_safety,
@@ -5841,7 +6018,10 @@ def build_manager_daily_payload(
         "call_list_context_quality": call_list_context_quality,
         "call_list_status_quality": call_list_status_quality,
         "agreement_outcome_diagnostics": agreement_outcome_diagnostics,
+        "semantic_source_policy": "llm_only_v1",
+        "business_outcome_resolver_visible_usage_count": 0,
         "manager_facing_completeness": manager_facing_completeness,
+        "edo_scope_summary": edo_scope_summary,
         "score_by_stage": score_by_stage,
         "stage_score_scope": stage_score_scope,
         "situation_evidence_quote": situation_evidence_quote,
@@ -6430,6 +6610,8 @@ POSITIVE_PROBLEM_WORDING_MARKERS = (
     "понятно обозначил причину",
 )
 
+LLM_COMMENT_MISSING_TEXT = "Комментарий LLM не сформирован"
+
 
 def _stage_problem_fallback(stage_code: str | None, criterion_code: str | None = None) -> str:
     code = str(stage_code or "").strip()
@@ -6457,6 +6639,7 @@ def _specific_problem_rewrite(
     stage_code: str | None = None,
     criterion_code: str | None = None,
     criterion_name: str | None = None,
+    fallback: str | None = None,
 ) -> str | None:
     normalized = _summary_norm(text)
     criterion_text = _summary_norm(f"{criterion_code or ''} {criterion_name or ''}")
@@ -6471,7 +6654,7 @@ def _specific_problem_rewrite(
     if "понятно обозначил" in normalized and "причин" in normalized:
         return "Причина звонка не была связана с задачей клиента."
     if "презентац" in criterion_text and "рано" in criterion_text:
-        return _stage_problem_fallback(stage_code, criterion_code)
+        return fallback or _stage_problem_fallback(stage_code, criterion_code)
     return None
 
 
@@ -6519,6 +6702,7 @@ def _normalize_problem_statement(
         stage_code=stage_code,
         criterion_code=criterion_code,
         criterion_name=criterion_name,
+        fallback=fallback,
     )
     warnings: list[str] = []
     if replacement:
@@ -6572,9 +6756,10 @@ def _stage_problem_text_from_issue(
     stage_code: str | None = None,
     criterion_code: str | None = None,
     criterion_name: str | None = None,
+    fallback: str | None = None,
 ) -> dict[str, Any]:
     """Build one bounded stage problem sentence from already persisted analysis data."""
-    for key in ("comment", "interpretation", "impact", "evidence", "title", "criterion_name"):
+    for key in ("comment", "interpretation", "impact", "evidence", "title"):
         text = _first_sentence(str(issue.get(key) or ""))
         if text:
             return _normalize_problem_statement(
@@ -6582,7 +6767,14 @@ def _stage_problem_text_from_issue(
                 stage_code=stage_code,
                 criterion_code=criterion_code,
                 criterion_name=criterion_name,
+                fallback=fallback,
             )
+    if fallback:
+        return {
+            "text": fallback,
+            "source_text": None,
+            "warnings": ["missing_llm_stage_comment"],
+        }
     return {"text": "", "source_text": None, "warnings": []}
 
 
@@ -6604,14 +6796,15 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                 continue
             stage = stage_raw
             code = str(stage.get("stage_code") or "")
-            stage_score = int(stage.get("stage_score") or 0)
-            max_score = int(stage.get("max_stage_score") or 0)
+            if not code:
+                continue
+            components = _stage_score_components(stage)
+            if components is None:
+                continue
+            stage_score, max_score, applicable_criteria = components
             if max_score > 0:
                 stage_buckets.setdefault(code, []).append(round(stage_score / max_score * 10, 1))
-            for crit_raw in stage.get("criteria_results") or []:
-                if not isinstance(crit_raw, dict):
-                    continue
-                crit = crit_raw
+            for crit in applicable_criteria:
                 ccode = str(crit.get("criterion_code") or "").strip()
                 cname = str(crit.get("criterion_name") or ccode).strip()
                 cscore = int(crit.get("score") or 0)
@@ -6625,6 +6818,7 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                         stage_code=code,
                         criterion_code=ccode,
                         criterion_name=cname,
+                        fallback=LLM_COMMENT_MISSING_TEXT,
                     )
                     candidate_text = str(normalized_problem.get("text") or "").strip()
                     if candidate_text:
@@ -6650,6 +6844,7 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                 stage_code=stage_code,
                 criterion_code=item_code,
                 criterion_name=str(item.get("criterion_name") or item.get("title") or ""),
+                fallback=LLM_COMMENT_MISSING_TEXT,
             )
             candidate_text = str(normalized_problem.get("text") or "").strip()
             if stage_code and candidate_text:
@@ -6674,6 +6869,7 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                 dict(item),
                 stage_code=stage_code,
                 criterion_code=item_code,
+                fallback=LLM_COMMENT_MISSING_TEXT,
             )
             candidate_text = str(normalized_problem.get("text") or "").strip()
             if stage_code and candidate_text:
@@ -7101,13 +7297,10 @@ def _build_situation_day_insufficient_view(
         "stage_code": stage_code,
         "stage_label": stage_label,
         "stage_score_label": stage_score_label,
-        "what_happened": (
-            "Механизм не нашел достаточно сильную мини-сцену из транскрипта, "
-            "которая доказывает одну проблему дня."
-        ),
+        "what_happened": None,
         "moment_summary": None,
         "supporting_quote": None,
-        "meaning": "Лучше не показывать менеджеру сомнительный вывод без контекста.",
+        "meaning": None,
         "what_was_missing": None,
         "next_time_action": None,
         "scripts": [],
@@ -7380,10 +7573,24 @@ def _merge_missing_call_reference_fields(
     block: dict[str, Any],
     reference: dict[str, Any],
 ) -> dict[str, Any]:
-    """Fill missing call reference fields without overwriting richer block data."""
+    """Apply report-layer call reference fields to composer output.
+
+    Composer outputs may carry older display labels. The report layer owns the
+    final safe contact reference, so these fields are normalized from the
+    persisted analysis artifact rather than kept from composer metadata.
+    """
     updated = dict(block)
     for key, value in reference.items():
-        if updated.get(key) in (None, "", "—"):
+        if key in {
+            "client_label",
+            "client_name",
+            "client_phone",
+            "date_label",
+            "time_label",
+            "client_call_reference",
+        }:
+            updated[key] = value
+        elif updated.get(key) in (None, "", "—"):
             updated[key] = value
     return updated
 
@@ -8411,7 +8618,12 @@ def _artifact_scores_detail(artifact: ReportArtifact) -> dict[str, Any]:
 
 
 def _artifact_call_metadata(artifact: ReportArtifact) -> dict[str, Any]:
-    """Return merged call metadata with analysis fields taking priority."""
+    """Return contact metadata without report-layer name extraction.
+
+    Client names are owned by LLM1/analysis (`scores_detail.call.*`). Report
+    Layer may still use persisted phone metadata for display, but must not infer
+    names from Bitrix/telephony metadata or STT text.
+    """
     detail = _artifact_scores_detail(artifact)
     call_meta = dict(detail.get("call") or {})
     interaction_meta = dict(artifact.interaction.metadata_ or {})
@@ -8427,11 +8639,6 @@ def _artifact_call_metadata(artifact: ReportArtifact) -> dict[str, Any]:
         call_meta.get("contact_name"),
         call_meta.get("client_name"),
         call_meta.get("name"),
-        interaction_meta.get("contact_name"),
-        interaction_meta.get("client_name"),
-        interaction_meta.get("contact_label"),
-        interaction_meta.get("customer_name"),
-        _safe_persisted_transcript_contact_name(artifact),
     )
     safe_name = next(
         (
@@ -8991,7 +9198,7 @@ def _build_situation_day_coaching_view(
     focus_stage_deep_dive: dict[str, Any] | None,
     focus_stage_recommendation: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Build a reference-style coaching view for Situation Day from existing deterministic fields."""
+    """Fail closed when Situation Day has no verified LLM/report_evidence candidate."""
     if not focus_stage_deep_dive:
         return None
 
@@ -9000,54 +9207,27 @@ def _build_situation_day_coaching_view(
     if not stage_code and not stage_name:
         return None
 
-    client_text = str((situation_evidence_quote or {}).get("client_text") or "").strip()
-    has_grounded_evidence = bool(client_text or (situation_dialogue_excerpt or {}).get("turns"))
-    what_went_wrong = _first_sentence(str(focus_stage_deep_dive.get("what_went_wrong") or ""), limit=220)
-    meaning = _first_sentence(str(focus_stage_deep_dive.get("why_it_matters") or ""), limit=260)
-    what_was_missing = _coaching_missing_text(what_went_wrong, stage_code)
-    next_time_action = _first_sentence(str(focus_stage_deep_dive.get("what_to_fix") or ""), limit=240)
-
-    fact = _situation_fact_from_quote(client_text)
-    if not has_grounded_evidence:
-        what_happened = "Недостаточно evidence для показа ситуации по фокусному этапу."
-    elif fact and what_was_missing:
-        what_happened = f"{fact} В разговоре не хватило квалификации: {what_was_missing}"
-    elif what_was_missing:
-        what_happened = f"В звонке проявилась проблема фокусного этапа: {what_was_missing}"
-    else:
-        what_happened = ""
-
-    scripts = _SITUATION_STAGE_SCRIPT_FALLBACKS.get(stage_code)
-    if scripts is None and focus_stage_recommendation:
-        scripts = list(focus_stage_recommendation.get("checklist") or [])
-    if scripts is None:
-        scripts = [
-            "Уточните, кто принимает решение и какой процесс у клиента сейчас.",
-            "Свяжите предложение с тем, что клиент уже сказал в разговоре.",
-            "Зафиксируйте конкретный следующий шаг и срок.",
-        ]
-
     return {
-        "pattern_title": (
-            "Недостаточно evidence по фокусному этапу"
-            if not has_grounded_evidence
-            else _situation_pattern_title(
-                stage_code=stage_code,
-                stage_name=stage_name,
-                what_went_wrong=what_went_wrong,
-                client_text=client_text,
-            )
-        ),
+        "pattern_title": "Ситуация дня не сформирована LLM",
         "stage_code": stage_code,
         "stage_label": stage_name,
         "stage_score_label": _stage_score_label(score_by_stage, stage_code),
-        "what_happened": what_happened,
-        "meaning": meaning,
-        "what_was_missing": what_was_missing,
-        "next_time_action": next_time_action,
-        "scripts": scripts[:3],
-        "source": "deterministic_assembly",
+        "what_happened": None,
+        "meaning": None,
+        "what_was_missing": None,
+        "next_time_action": None,
+        "scripts": [],
+        "source": "deterministic_assembly_missing_llm",
+        "proof_strength": "insufficient",
+        "situation_day_evidence_status": "insufficient",
+        "insufficiency_reason": "situation_day_missing_llm",
         "dialogue_is_partial": bool((situation_dialogue_excerpt or {}).get("is_partial")),
+        "selection_diagnostics": {
+            "block": "situation_day",
+            "selection_mode": "deterministic_assembly_disabled",
+            "reason": "situation_day_missing_llm",
+            "llm_only_semantic_reporting": True,
+        },
     }
 
 
@@ -9144,7 +9324,7 @@ def _aggregate_finding_items(*, artifacts: list[ReportArtifact], key: str) -> li
                 stage_code=first_stage_code,
                 criterion_code=str(first.get("criterion_code") or ""),
                 criterion_name=str(first.get("criterion_name") or first.get("title") or ""),
-                fallback=_stage_problem_fallback(first_stage_code, str(first.get("criterion_code") or "")),
+                fallback=LLM_COMMENT_MISSING_TEXT,
             )
             interpretation = str(normalized_interpretation.get("text") or interpretation).strip()
         result.append(
@@ -9164,6 +9344,32 @@ def _aggregate_recommendation_cards(*, artifacts: list[ReportArtifact]) -> list[
     seen: set[str] = set()
     for artifact in artifacts:
         detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
+        classification = dict(detail.get("classification") or {})
+        edo_scope = _extract_edo_scope(detail)
+        applicability = _sales_scoring_applicability_from_edo_scope(edo_scope) or _sales_scoring_applicability(classification)
+        limited = applicability != "full"
+        coaching = _select_call_feedback_coaching_decision(detail, limited=limited)
+        if coaching and coaching.get("decision") in {"improve", "maintain"}:
+            title = str(coaching.get("label") or "Рекомендация").strip()
+            better_phrase = str(coaching.get("text") or "").strip()
+            key = f"coaching_decision:{title}:{better_phrase}"
+            if better_phrase and key not in seen:
+                seen.add(key)
+                cards.append(
+                    {
+                        "priority_tag": "Сделай завтра" if len(cards) < 2 else "На неделе",
+                        "title": title,
+                        "reason": str((detail.get("coaching_decision") or {}).get("reason") or "Готовое coaching-решение LLM2D."),
+                        "how_it_sounded": str((detail.get("coaching_decision") or {}).get("evidence") or "—"),
+                        "better_phrasing": better_phrase,
+                        "why_this_works": "Сохраняет смысл готового LLM2D coaching-решения без новой рекомендации.",
+                        "source": "scores_detail.coaching_decision",
+                    }
+                )
+                if len(cards) >= 5:
+                    return cards
+        if coaching:
+            continue
         for item in detail.get("recommendations") or []:
             if not isinstance(item, dict):
                 continue
@@ -9171,9 +9377,12 @@ def _aggregate_recommendation_cards(*, artifacts: list[ReportArtifact]) -> list[
             better_phrase = str(
                 item.get("better_phrase")
                 or item.get("recommendation")
-                or item.get("problem")
-                or "Уточнить формулировку и закрепить следующий шаг."
+                or ""
             )
+            if not better_phrase.strip():
+                continue
+            if limited and _contains_sales_push(better_phrase):
+                continue
             key = f"{title}:{better_phrase}"
             if key in seen:
                 continue
@@ -9186,21 +9395,11 @@ def _aggregate_recommendation_cards(*, artifacts: list[ReportArtifact]) -> list[
                     "how_it_sounded": str(item.get("evidence") or "Нужен более точный пример из разговора."),
                     "better_phrasing": better_phrase,
                     "why_this_works": "Помогает сделать следующий шаг понятным и управляемым.",
+                    "source": "scores_detail.recommendations",
                 }
             )
             if len(cards) >= 5:
                 return cards
-    if not cards:
-        cards.append(
-            {
-                "priority_tag": "На неделе",
-                "title": "Пока недостаточно рекомендаций",
-                "reason": "Для этой выборки не найдено устойчивых рекомендаций в persisted payload.",
-                "how_it_sounded": "—",
-                "better_phrasing": "Проверить полноту анализов и повторить запуск при необходимости.",
-                "why_this_works": "Поможет закрыть пробел в данных без полного rerun.",
-            }
-        )
     return cards
 
 
@@ -9272,6 +9471,14 @@ CALL_LIST_STATUS_SORT_ORDER = {
     "tech_service": 4,
 }
 
+CALL_LIST_STATUS_LABELS = {
+    "agreed": "Договорённость",
+    "rescheduled": "Перенос",
+    "refusal": "Отказ",
+    "open": "Открыт",
+    "tech_service": "Тех/сервис",
+}
+
 CALL_LIST_UNCLASSIFIED_SORT_ORDER = {
     "Тех/сервис": 4,
     "Не подходит для разбора": 5,
@@ -9306,6 +9513,11 @@ def _final_manager_status_from_call_row(row: dict[str, Any]) -> Any:
     if "call_list_status" in row:
         return row.get("call_list_status")
     return row.get("status")
+
+
+def _manager_status_label(status: Any) -> str:
+    """Return manager-facing label for a confirmed LLM semantic status."""
+    return CALL_LIST_STATUS_LABELS.get(str(status or "").strip(), "Статус не подтвержден")
 
 
 def _build_meaningful_call_list(
@@ -9729,54 +9941,7 @@ def _call_list_context_from_call_essence(
                 "source": source_name,
             },
         }
-    topic = _call_list_sentence(essence.get("topic"), limit=160)
-    outcome_reason = _call_list_sentence(
-        essence.get("outcome_reason") or essence.get("refusal_or_interest_reason"),
-        limit=220,
-    )
-    agreement = _call_list_sentence(essence.get("agreement"), limit=220)
-    next_step = _call_list_sentence(essence.get("next_step"), limit=220)
-    service_request = _call_list_sentence(essence.get("service_request"), limit=220)
-    deadline_phrase = _call_list_deadline_phrase(essence.get("deadline") or deadline)
-    parts: list[str] = []
-    if status_text == "refusal":
-        refusal_reason = outcome_reason or agreement
-        if not refusal_reason:
-            return None
-        _append_unique_call_list_part(parts, f"Клиент отказался: {refusal_reason}")
-    elif status_text == "tech_service":
-        issue = service_request or outcome_reason or agreement
-        if not issue:
-            return None
-        _append_unique_call_list_part(parts, f"Сервисный вопрос: {issue}")
-    else:
-        if topic:
-            _append_unique_call_list_part(parts, f"Тема: {topic}")
-        if agreement or outcome_reason:
-            label = "Договорённость" if status_text in {"agreement", "agreed"} else "Итог"
-            deadline_suffix = f"; когда: {deadline_phrase}" if deadline_phrase else ""
-            _append_unique_call_list_part(parts, f"{label}: {agreement or outcome_reason}{deadline_suffix}")
-        if next_step:
-            _append_unique_call_list_part(parts, f"Дальше: {next_step}")
-        if deadline_phrase and not (agreement or outcome_reason):
-            _append_unique_call_list_part(parts, f"Когда: {deadline_phrase}")
-    context = _call_list_context_paragraph(" ".join(parts), limit=640)
-    if not context or _call_list_context_generic_reason(context, status=status_text):
-        return None
-    return {
-        "context": context,
-        "source": "report_evidence.call_essence",
-        "explicit": explicit,
-        "diagnostics": {
-            "status": "passed",
-            "explicit": explicit,
-            "source": source_name,
-            "has_topic": bool(topic),
-            "has_agreement": bool(agreement),
-            "has_next_step": bool(next_step),
-            "has_deadline": bool(deadline_phrase),
-        },
-    }
+    return None
 
 
 def _call_list_status_fallback_context(
@@ -9934,31 +10099,6 @@ def _select_call_list_context(
                 "bare_context_retained": False,
             }
 
-    outcome_context = _call_list_outcome_essence_context(
-        status=status,
-        call_type=call_type,
-        scenario_type=scenario_type,
-        deadline=deadline,
-        next_step=next_step,
-        reason=reason,
-        signal_text=signal_text,
-        summary_topic=summary_topic,
-        outcome_reason=outcome_reason,
-        outcome_evidence=outcome_evidence,
-        evidence_follow_up_reason=evidence_follow_up_reason,
-    )
-    if outcome_context and not reject(outcome_context["source"], outcome_context["context"]):
-        return {
-            "context": outcome_context["context"],
-            "source": outcome_context["source"],
-            "priority": 35,
-            "selected_reason": "outcome_essence_selected",
-            "rejected": rejected,
-            "fallback_generated": False,
-            "bare_context_retained": False,
-            "diagnostics": outcome_context["diagnostics"],
-        }
-
     if summary_context and _call_summary_context_usable(summary_context) and not reject(
         "report_evidence.call_report_summary.short_context",
         summary_context,
@@ -9971,18 +10111,6 @@ def _select_call_list_context(
             "rejected": rejected,
             "fallback_generated": False,
             "bare_context_retained": False,
-        }
-
-    if call_essence_context and not reject(call_essence_context["source"], call_essence_context["context"]):
-        return {
-            "context": call_essence_context["context"],
-            "source": call_essence_context["source"],
-            "priority": 45,
-            "selected_reason": "derived_call_essence_selected",
-            "rejected": rejected,
-            "fallback_generated": False,
-            "bare_context_retained": False,
-            "diagnostics": call_essence_context["diagnostics"],
         }
 
     if summary_topic and _call_summary_topic_usable(summary_topic) and not reject(
@@ -10000,32 +10128,18 @@ def _select_call_list_context(
             "bare_context_retained": False,
         }
 
-    fallback = _call_list_status_fallback_context(
-        status=status,
-        call_type=call_type,
-        scenario_type=scenario_type,
-        deadline=deadline,
-        next_step=next_step,
-        reason=reason,
-        signal_text=signal_text,
-        unclassified_status_label=unclassified_status_label,
-        unclassified_context_label=unclassified_context_label,
-    )
-    reject_reason = reject("deterministic_fallback", fallback)
-    if reject_reason:
-        fallback = "Контекст звонка требует уточнения по сохранённым данным."
-    final_weak_reason = _call_list_context_generic_reason(fallback, status=status)
     return {
-        "context": fallback,
-        "source": "deterministic_context_quality_gate",
+        "context": "Суть не сформирована LLM",
+        "source": "missing_llm_call_context",
         "priority": 90,
-        "selected_reason": "deterministic_fallback_selected",
+        "selected_reason": "llm_context_missing",
         "rejected": rejected,
-        "fallback_generated": True,
+        "fallback_generated": False,
         "bare_context_retained": False,
         "diagnostics": {
-            "status": "weak" if reject_reason or final_weak_reason else "passed",
-            "weak_reason": reject_reason or final_weak_reason,
+            "status": "missing",
+            "llm_context_missing": True,
+            "missing_reason": "missing_llm_call_context",
         },
     }
 
@@ -10044,7 +10158,7 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
         final_status = _final_manager_status_from_call_row(row)
         source = str(row.get("call_list_context_source") or "unknown")
         source_counts[source] = source_counts.get(source, 0) + 1
-        if source == "deterministic_context_quality_gate":
+        if row.get("call_list_context_fallback_generated"):
             fallback_generated_count += 1
         if row.get("call_list_context_compacted"):
             compacted_count += 1
@@ -10076,7 +10190,11 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
                 "resolver_status": row.get("resolver_status") or row.get("status"),
                 "source": source,
                 "priority": row_quality.get("priority"),
-                "quality": "warning" if weak_reason or final_reason else "passed",
+                "quality": (
+                    "warning"
+                    if weak_reason or final_reason or context_diagnostics.get("llm_context_missing")
+                    else "passed"
+                ),
                 "selected_reason": row_quality.get("selected_reason"),
                 "weak_reason": weak_reason or None,
                 "fallback_generated": bool(row_quality.get("fallback_generated")),
@@ -10123,9 +10241,9 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
                 "report_evidence.business_outcome",
                 "report_evidence.call_report_summary",
                 "report_evidence.follow_up_candidates",
-                "deterministic_fallback",
+                "missing_llm_call_context",
             ],
-            "rule": "Use existing factual analysis for the daily call list; do not create coaching claims.",
+            "rule": "Use validated LLM semantic context for the daily call list; do not generate deterministic semantic fallback.",
         },
         "calls_count": len(call_list),
         "manager_visible_summary_count": source_counts.get("report_evidence.call_report_summary.manager_visible_summary", 0),
@@ -10143,6 +10261,7 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
         "call_report_summary_context_count": source_counts.get("report_evidence.call_report_summary.short_context", 0),
         "call_report_summary_topic_count": source_counts.get("report_evidence.call_report_summary.short_topic", 0),
         "fallback_generated_count": fallback_generated_count,
+        "llm_context_missing_count": source_counts.get("missing_llm_call_context", 0),
         "compacted_context_count": compacted_count,
         "visible_context_limit": CALL_LIST_VISIBLE_CONTEXT_LIMIT,
         "max_visible_context_length": max_visible_context_length,
@@ -10162,13 +10281,39 @@ def _build_call_list_context_quality_diagnostics(call_list: list[dict[str, Any]]
 def _build_call_list_status_quality_diagnostics(call_list: list[dict[str, Any]]) -> dict[str, Any]:
     source_counts: dict[str, int] = {}
     fallback_reasons: dict[str, int] = {}
+    quality_counts: dict[str, int] = {}
     conflicts: list[dict[str, Any]] = []
+    status_not_confirmed_count = 0
+    status_not_confirmed_with_analysis_count = 0
+    status_not_confirmed_missing_llm_count = 0
+    status_not_confirmed_rejected_evidence_count = 0
+    analysis_error_count = 0
     for row in call_list:
         source = str(row.get("call_list_status_source") or "unknown")
         source_counts[source] = source_counts.get(source, 0) + 1
         fallback_reason = str(row.get("call_list_status_fallback_reason") or "").strip()
         if fallback_reason:
             fallback_reasons[fallback_reason] = fallback_reasons.get(fallback_reason, 0) + 1
+        quality = str(row.get("semantic_status_quality") or "unknown").strip() or "unknown"
+        quality_counts[quality] = quality_counts.get(quality, 0) + 1
+        display_status = str(row.get("call_list_display_status") or "").strip()
+        is_status_not_confirmed = (
+            display_status == "status_not_confirmed"
+            or source in {"missing_llm_semantic_status", "llm_semantic_status_rejected"}
+        )
+        if is_status_not_confirmed:
+            status_not_confirmed_count += 1
+            if row.get("call_list_analysis_ready"):
+                status_not_confirmed_with_analysis_count += 1
+            missing_reason = str(row.get("semantic_status_missing_reason") or fallback_reason or "").strip()
+            if missing_reason == "agreement_missing_evidence":
+                status_not_confirmed_rejected_evidence_count += 1
+            else:
+                status_not_confirmed_missing_llm_count += 1
+        if row.get("call_list_analysis_failed") or str(
+            row.get("call_list_unclassified_reason_code") or ""
+        ).startswith("analysis_failed"):
+            analysis_error_count += 1
         if row.get("call_list_status_conflict_with_resolver"):
             conflicts.append(
                 {
@@ -10184,13 +10329,30 @@ def _build_call_list_status_quality_diagnostics(call_list: list[dict[str, Any]])
     return {
         "status": "warning" if fallback_reasons or conflicts else "passed",
         "calls_count": len(call_list),
+        "status_details_used_count": source_counts.get("scores_detail.status_details.status", 0),
         "llm2_status_used_count": source_counts.get("report_evidence.business_outcome", 0),
-        "resolver_fallback_count": source_counts.get("business_outcome_resolver", 0),
+        "missing_llm_semantic_status_count": source_counts.get("missing_llm_semantic_status", 0),
+        "llm_semantic_status_available_count": (
+            source_counts.get("scores_detail.status_details.status", 0)
+            + source_counts.get("report_evidence.business_outcome", 0)
+        ),
+        "llm_semantic_status_missing_count": status_not_confirmed_count,
+        "llm_semantic_status_confirmed_count": quality_counts.get("confirmed", 0),
+        "llm_semantic_status_weak_count": quality_counts.get("weak", 0),
+        "status_not_confirmed_count": status_not_confirmed_count,
+        "status_not_confirmed_with_analysis_count": status_not_confirmed_with_analysis_count,
+        "status_not_confirmed_missing_llm_count": status_not_confirmed_missing_llm_count,
+        "status_not_confirmed_rejected_evidence_count": status_not_confirmed_rejected_evidence_count,
+        "analysis_error_count": analysis_error_count,
+        "resolver_fallback_count": 0,
+        "business_outcome_resolver_visible_usage_count": 0,
         "source_counts": source_counts,
+        "quality_counts": quality_counts,
         "fallback_reasons": fallback_reasons,
         "conflict_count": len(conflicts),
         "conflicts": conflicts[:20],
-        "source_policy": "call_list_display_status_uses_valid_llm2_business_outcome_else_resolver_fallback",
+        "semantic_source_policy": "llm_only_v1",
+        "source_policy": "call_list_display_status_uses_valid_llm_semantic_status_else_none",
     }
 
 
@@ -10216,7 +10378,7 @@ def _build_agreement_outcome_diagnostics(call_list: list[dict[str, Any]]) -> dic
             continue
         if len({str(item) for item in (resolver_status, llm2_status, display_status) if item}) > 1:
             mismatch_count += 1
-        if fallback_reason == "llm2_agreement_without_explicit_commercial_step":
+        if fallback_reason == "agreement_missing_evidence":
             downgraded_llm2_agreement_count += 1
         if display_status == "agreed" and not extraction["has_explicit_agreement"]:
             display_agreed_without_extraction_count += 1
@@ -10226,6 +10388,7 @@ def _build_agreement_outcome_diagnostics(call_list: list[dict[str, Any]]) -> dic
                 "client_call_reference": row.get("client_call_reference"),
                 "resolver_status": resolver_status,
                 "resolver_reason_code": row.get("resolver_reason_code"),
+                "status_details_status": row.get("status_details_status"),
                 "llm2_business_outcome_status": llm2_status,
                 "llm2_business_outcome_confidence": row.get("llm2_business_outcome_confidence"),
                 "call_list_status": display_status,
@@ -10250,8 +10413,8 @@ def _build_agreement_outcome_diagnostics(call_list: list[dict[str, Any]]) -> dic
         "llm2_agreement_count": sum(1 for row in call_list if row.get("llm2_business_outcome_status") == "agreement"),
         "rows": rows[:50],
         "source_policy": (
-            "manager_facing_agreement_requires_explicit_commercial_step; "
-            "weak_llm2_agreement_falls_back_to_resolver"
+            "manager_facing_agreement_requires_valid_llm_semantic_status_and_evidence; "
+            "weak_llm2_agreement_is_hidden_from_visible_status"
         ),
     }
 
@@ -10449,6 +10612,106 @@ def _build_unclassified_breakdown(*, artifacts: list[ReportArtifact]) -> dict[st
     }
 
 
+def _optional_int(value: Any) -> int | None:
+    """Return an int when the value is numeric enough for gate checks."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_manager_daily_strict_report_day_gate(
+    *,
+    payload: dict[str, Any],
+    readiness: dict[str, Any] | None,
+    report_day: str | None = None,
+) -> dict[str, Any]:
+    """Return whether manager_daily is safe to send as one report-day email."""
+    reason_codes: list[str] = []
+    meta = dict(payload.get("meta") or {})
+    period = dict(meta.get("period") or {})
+    date_from = str(period.get("date_from") or "").strip()
+    date_to = str(period.get("date_to") or "").strip()
+    normalized_report_day = str(report_day or "").strip()
+    if not normalized_report_day and date_from and date_from == date_to:
+        normalized_report_day = date_from
+
+    if not date_from or not date_to or date_from != date_to:
+        reason_codes.append("period_is_not_single_day")
+    if not normalized_report_day:
+        reason_codes.append("report_day_missing")
+    elif date_from != normalized_report_day or date_to != normalized_report_day:
+        reason_codes.append("period_does_not_match_report_day")
+
+    if readiness is not None:
+        window_days_used = _optional_int(readiness.get("window_days_used"))
+        if window_days_used != 1:
+            reason_codes.append("window_is_not_single_day")
+
+        window_start = str(readiness.get("window_start") or "").strip()
+        window_end = str(readiness.get("window_end") or "").strip()
+        if normalized_report_day and (
+            window_start != normalized_report_day or window_end != normalized_report_day
+        ):
+            reason_codes.append("window_dates_do_not_match_report_day")
+
+        effective_period = dict(readiness.get("effective_period") or {})
+        effective_from = str(effective_period.get("date_from") or "").strip()
+        effective_to = str(effective_period.get("date_to") or "").strip()
+        if normalized_report_day and (
+            (effective_from and effective_from != normalized_report_day)
+            or (effective_to and effective_to != normalized_report_day)
+        ):
+            reason_codes.append("effective_period_does_not_match_report_day")
+
+    selection_model = dict(payload.get("selection_model") or {})
+    meaningful_total = _optional_int(selection_model.get("meaningful_calls_total"))
+    included_total = _optional_int(selection_model.get("included_in_report_total"))
+    if meaningful_total is not None and included_total is not None and included_total > meaningful_total:
+        reason_codes.append("included_exceeds_meaningful")
+
+    deduped_reason_codes = list(dict.fromkeys(reason_codes))
+    passed = not deduped_reason_codes
+    return {
+        "status": "passed" if passed else "review_required",
+        "manager_report_allowed": passed,
+        "reason": None if passed else "strict_report_day_violation",
+        "reason_codes": deduped_reason_codes,
+        "operator_only": not passed,
+        "report_day": normalized_report_day or None,
+        "period": {"date_from": date_from or None, "date_to": date_to or None},
+        "readiness_window": {
+            "window_days_used": (readiness or {}).get("window_days_used"),
+            "window_start": (readiness or {}).get("window_start"),
+            "window_end": (readiness or {}).get("window_end"),
+        },
+        "selection_math": {
+            "meaningful_calls_total": meaningful_total,
+            "included_in_report_total": included_total,
+        },
+    }
+
+
+def _manager_daily_gate_errors(
+    *,
+    missing: list[str],
+    manager_gate: dict[str, Any] | None,
+    strict_report_day_gate: dict[str, Any] | None,
+) -> list[str]:
+    """Return stable error tokens for manager_daily operator review gates."""
+    errors = list(missing)
+    if manager_gate is not None and not bool(manager_gate.get("manager_report_allowed")):
+        errors.append("manager_facing_gate_failed:incomplete_day_call_processing")
+    if strict_report_day_gate is not None and not bool(strict_report_day_gate.get("manager_report_allowed")):
+        reason_codes = list(strict_report_day_gate.get("reason_codes") or [])
+        if not reason_codes:
+            reason_codes = ["strict_report_day_violation"]
+        errors.extend([f"manager_daily_strict_report_day_failed:{code}" for code in reason_codes])
+    return errors
+
+
 def _build_manager_facing_completeness_gate(*, call_list: list[dict[str, Any]]) -> dict[str, Any]:
     """Return whether a manager_daily call list is ready for business delivery."""
     blocking_counts = {
@@ -10507,6 +10770,682 @@ def _short_time_label(value: Any) -> str | None:
     return report_time_label(value)
 
 
+LIMITED_SALES_SCORING_CALL_TYPES = {
+    "support",
+    "internal",
+    "tech_service",
+    "service",
+}
+LIMITED_SALES_SCORING_ELIGIBILITY = {
+    "not_eligible",
+    "not_coachable",
+    "not_reportable",
+    "support_or_internal",
+}
+LIMITED_SALES_SCORING_SCENARIO_MARKERS = (
+    "support",
+    "service",
+    "tech",
+    "technical",
+    "legal",
+    "jur",
+    "юрид",
+    "тех",
+    "сервис",
+    "поддерж",
+)
+SALES_PUSH_TERMS = (
+    "не продал",
+    "не продала",
+    "продаж",
+    "продать",
+    "допрод",
+    "закрыть на оплат",
+    "счет на оплат",
+    "счёт на оплат",
+)
+CALL_FEEDBACK_STATUS_DETAIL_ALIASES = {
+    "agreed": "agreement",
+    "agreement": "agreement",
+    "deal": "agreement",
+    "rescheduled": "rescheduled",
+    "postponed": "rescheduled",
+    "callback": "rescheduled",
+    "refusal": "refusal",
+    "declined": "refusal",
+    "rejected": "refusal",
+    "open": "open",
+    "tech_service": "service",
+    "support": "service",
+    "service": "service",
+}
+CALL_FEEDBACK_OWNER_LABELS = {
+    "manager": "менеджер",
+    "client": "клиент",
+    "both": "обе стороны",
+    "support": "поддержка",
+    "legal": "юристы",
+    "other": "другой ответственный",
+}
+CALL_FEEDBACK_DETAIL_TYPE_LABELS = {
+    "invoice": "счет",
+    "payment": "оплата",
+    "presentation": "презентация",
+    "demo": "демо",
+    "cp": "КП",
+    "contract": "договор",
+    "no_need": "нет потребности",
+    "already_has_solution": "уже есть решение",
+    "too_expensive": "дорого",
+    "not_relevant": "неактуально",
+    "support": "поддержка",
+    "legal": "юридический вопрос",
+    "technical": "технический вопрос",
+}
+EDO_SCOPE_SALES_SCORING_VALUES = {"full", "partial", "none", "unclear"}
+EDO_SCOPE_SCORED_VALUES = {"full", "partial"}
+EDO_SCOPE_NOT_SCORED_VALUES = {"none", "unclear"}
+EDO_SCOPE_REASON_LABELS = {
+    "edo_sales": "продажная задача ЭДО",
+    "edo_service": "сервис ЭДО",
+    "legal_direction": "юр-направление",
+    "tech_support": "техподдержка",
+    "internal_or_wrong_call": "внутренний или ошибочный звонок",
+    "mixed": "смешанный звонок",
+    "insufficient_data": "недостаточно данных",
+    "other": "другая причина",
+}
+EDO_SCOPE_ACTION_LABELS = {
+    "transfer": "передать ответственным",
+    "support": "помочь с сервисным вопросом",
+    "clarify": "уточнить контекст",
+    "close_service_issue": "подтвердить решение сервисного вопроса",
+    "keep_relationship": "поддержать контакт",
+    "no_action": "действие не требуется",
+    "other": "другое действие",
+}
+
+
+def _extract_edo_scope(detail: dict[str, Any]) -> dict[str, Any] | None:
+    """Return LLM2-provided EDO scope when it has a valid scoring-scope enum."""
+    raw = detail.get("edo_scope")
+    if not isinstance(raw, dict):
+        return None
+    sales_scoring_scope = str(raw.get("sales_scoring_scope") or "").strip().lower()
+    if sales_scoring_scope not in EDO_SCOPE_SALES_SCORING_VALUES:
+        return None
+    result = {"sales_scoring_scope": sales_scoring_scope}
+    for key in ("scope_reason", "applicable_part", "expected_manager_action"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            result[key] = value
+    evidence_ids = [
+        str(item).strip()
+        for item in raw.get("evidence_ids") or []
+        if str(item).strip()
+    ] if isinstance(raw.get("evidence_ids"), list) else []
+    if evidence_ids:
+        result["evidence_ids"] = evidence_ids
+    return result
+
+
+def _edo_scope_reason_label(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return EDO_SCOPE_REASON_LABELS.get(text, text)
+
+
+def _edo_scope_action_label(value: Any, *, sales_scoring_scope: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if sales_scoring_scope in EDO_SCOPE_NOT_SCORED_VALUES and text == "sell":
+        return None
+    if text == "sell":
+        return "работать с продажной частью"
+    return EDO_SCOPE_ACTION_LABELS.get(text, text)
+
+
+def _sales_scoring_applicability_from_edo_scope(edo_scope: dict[str, Any] | None) -> str | None:
+    sales_scoring_scope = str((edo_scope or {}).get("sales_scoring_scope") or "").strip().lower()
+    if sales_scoring_scope == "full":
+        return "full"
+    if sales_scoring_scope == "partial":
+        return "limited"
+    if sales_scoring_scope in {"none", "unclear"}:
+        return "not_applicable"
+    return None
+
+
+def _edo_scope_feedback_text(edo_scope: dict[str, Any] | None) -> str | None:
+    if not edo_scope:
+        return None
+    sales_scoring_scope = str(edo_scope.get("sales_scoring_scope") or "").strip().lower()
+    reason = _edo_scope_reason_label(edo_scope.get("scope_reason"))
+    applicable_part = _summary_paragraph_text(edo_scope.get("applicable_part"), limit=180)
+    action = _edo_scope_action_label(
+        edo_scope.get("expected_manager_action"),
+        sales_scoring_scope=sales_scoring_scope,
+    )
+    parts: list[str] = []
+    if sales_scoring_scope == "none":
+        parts.append("Продажная оценка не применяется")
+        if reason:
+            parts.append(f"причина по LLM2: {reason}")
+        if action:
+            parts.append(f"корректное действие: {action}")
+    elif sales_scoring_scope == "partial":
+        parts.append("Продажная оценка применима только к части звонка")
+        if applicable_part:
+            parts.append(f"применимая часть: {applicable_part}")
+        parts.append("непродажная часть не штрафуется за отсутствие продажи")
+    elif sales_scoring_scope == "unclear":
+        parts.append("Продажная оценка не применялась без подтверждённого scope")
+        if reason:
+            parts.append(f"причина по LLM2: {reason}")
+        if action:
+            parts.append(f"корректное действие: {action}")
+    if not parts:
+        return None
+    return _ensure_sentence("; ".join(parts))
+
+
+def _build_edo_scope_summary(*, artifacts: list[ReportArtifact]) -> dict[str, Any]:
+    """Count LLM2-provided EDO scope values without inferring missing scope."""
+    by_scope = {key: 0 for key in sorted(EDO_SCOPE_SALES_SCORING_VALUES)}
+    by_reason: dict[str, int] = {}
+    examples: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        detail = dict(getattr(artifact.analysis, "scores_detail", None) or {}) if artifact.analysis else {}
+        edo_scope = _extract_edo_scope(detail)
+        if not edo_scope:
+            continue
+        sales_scoring_scope = str(edo_scope.get("sales_scoring_scope") or "")
+        by_scope[sales_scoring_scope] = by_scope.get(sales_scoring_scope, 0) + 1
+        reason = str(edo_scope.get("scope_reason") or "").strip()
+        if reason:
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+        if len(examples) < 20:
+            examples.append({
+                **_artifact_call_reference(artifact),
+                "edo_scope": edo_scope,
+            })
+    scoped_total = sum(by_scope.values())
+    if scoped_total <= 0:
+        return {}
+    sales_scored_total = sum(by_scope.get(key, 0) for key in EDO_SCOPE_SCORED_VALUES)
+    not_sales_scored_total = sum(by_scope.get(key, 0) for key in EDO_SCOPE_NOT_SCORED_VALUES)
+    reason_labels = [
+        _edo_scope_reason_label(reason)
+        for reason, count in sorted(by_reason.items(), key=lambda item: (-item[1], item[0]))
+        if count > 0
+    ]
+    reason_text = " / ".join(label for label in reason_labels if label)
+    summary_line = (
+        f"Оценено по продажным этапам — {sales_scored_total} звонков. "
+        f"Не оценивались по продажным этапам — {not_sales_scored_total}"
+        f"{': ' + reason_text if reason_text else ''}."
+    )
+    return {
+        "available": True,
+        "source": "scores_detail.edo_scope",
+        "calls_with_edo_scope_total": scoped_total,
+        "sales_scored_calls_total": sales_scored_total,
+        "not_sales_scored_calls_total": not_sales_scored_total,
+        "by_sales_scoring_scope": by_scope,
+        "by_scope_reason": by_reason,
+        "scope_reason_labels": reason_labels,
+        "summary_line": summary_line,
+        "examples": examples,
+    }
+
+
+def _edo_scope_stage_score_note(edo_scope_summary: dict[str, Any] | None) -> str | None:
+    if not (edo_scope_summary or {}).get("available"):
+        return None
+    summary_line = str((edo_scope_summary or {}).get("summary_line") or "").strip()
+    base = (
+        "Баллы считаются только по звонкам и этапам, где продажная оценка применима. "
+        "Сервисные обращения и звонки вне продажной задачи не штрафуются за отсутствие продажи."
+    )
+    return f"{summary_line} {base}" if summary_line else base
+
+
+def _build_call_feedback_summary(
+    *,
+    detail: dict[str, Any],
+    score_percent: float,
+    status: Any,
+    next_step: Any,
+    deadline: Any,
+    reason: Any,
+    outcome_reason: Any,
+    outcome_evidence: Any,
+    analysis_ready: bool,
+) -> dict[str, Any] | None:
+    """Derive compact manager-facing score feedback from persisted LLM2 output."""
+    if not analysis_ready:
+        return None
+    classification = dict(detail.get("classification") or {})
+    edo_scope = _extract_edo_scope(detail)
+    edo_scope_note = _edo_scope_feedback_text(edo_scope)
+    applicability = _sales_scoring_applicability_from_edo_scope(edo_scope) or _sales_scoring_applicability(classification)
+    positive = _select_call_feedback_positive(detail, limited=applicability != "full")
+    coaching = _select_call_feedback_coaching_decision(detail, limited=applicability != "full")
+    source_policy = "scores_detail.coaching_decision"
+    improve = coaching["text"] if coaching and coaching.get("decision") == "improve" else None
+    maintain = coaching["text"] if coaching and coaching.get("decision") == "maintain" else None
+    maintain_label = str((coaching or {}).get("label") or "Поддерживать").strip() or "Поддерживать"
+    recommendation = None
+    if coaching is None:
+        source_policy = "legacy_existing_llm2_scores_detail_only"
+        improve = _select_call_feedback_improve(detail, limited=applicability != "full")
+        recommendation = _select_call_feedback_recommendation(detail, limited=applicability != "full")
+        if recommendation and (applicability != "full" or not improve or len(recommendation) < len(improve)):
+            improve = recommendation
+        if str((edo_scope or {}).get("sales_scoring_scope") or "") in {"none", "unclear"}:
+            improve = None
+
+    status_details_outcome = _call_feedback_outcome_from_status_details(
+        detail.get("status_details"),
+        status=status,
+    )
+    outcome = _call_feedback_outcome(
+        status=status,
+        next_step=next_step,
+        deadline=deadline,
+        reason=reason,
+        outcome_reason=outcome_reason,
+        outcome_evidence=outcome_evidence,
+        limited=applicability != "full",
+    ) if not status_details_outcome else status_details_outcome
+    missing_fields: list[str] = []
+    if not outcome:
+        missing_fields.append("outcome")
+    if not positive:
+        missing_fields.append("positive")
+    if not improve:
+        missing_fields.append("improve")
+    neutral = "Нет LLM-комментария"
+    score_value = round(float(score_percent or 0.0) / 20.0, 1)
+    score_label = f"{score_value:.1f}/5"
+    if applicability == "full":
+        score_line = f"Оценка: {score_label}."
+    elif applicability == "limited":
+        score_line = "Оценка продажной воронки: ограниченно."
+    else:
+        score_line = "Оценка продажной воронки: не применялась."
+    coaching_line = None
+    if improve:
+        coaching_line = f"Улучшить: {improve}"
+    elif maintain:
+        coaching_line = f"{maintain_label}: {maintain}"
+    lines = [
+        f"Итог: {outcome or neutral}",
+        score_line,
+        edo_scope_note,
+        f"Сильное: {positive or neutral}",
+        coaching_line,
+    ]
+    render_text = "\n".join(_ensure_sentence(line) for line in lines if line).strip()
+    return {
+        "outcome": outcome,
+        "score_label": score_label,
+        "sales_scoring_applicability": applicability,
+        "edo_scope": edo_scope,
+        "edo_scope_note": edo_scope_note,
+        "positive": positive,
+        "improve": improve,
+        "maintain": maintain,
+        "coaching_decision": coaching,
+        "recommendation": recommendation,
+        "render_text": render_text,
+        "source_policy": source_policy,
+        "call_feedback_missing_fields": missing_fields,
+    }
+
+
+def _sales_scoring_applicability(classification: dict[str, Any]) -> str:
+    """Return whether sales scoring should be presented as full/limited/not applicable."""
+    call_type = str(classification.get("call_type") or "").strip().lower()
+    scenario_type = str(classification.get("scenario_type") or "").strip().lower()
+    eligibility = str(classification.get("analysis_eligibility") or "").strip().lower()
+    if call_type in {"internal"}:
+        return "not_applicable"
+    if call_type in LIMITED_SALES_SCORING_CALL_TYPES or eligibility in LIMITED_SALES_SCORING_ELIGIBILITY:
+        return "limited"
+    if any(marker in scenario_type for marker in LIMITED_SALES_SCORING_SCENARIO_MARKERS):
+        return "limited"
+    return "full"
+
+
+def _select_call_feedback_positive(detail: dict[str, Any], *, limited: bool) -> str | None:
+    for item in detail.get("strengths") or []:
+        text = _call_feedback_item_text(item, fields=("comment", "title", "criterion_name"))
+        if text and not (limited and _contains_sales_push(text)):
+            return text
+    criterion = _best_call_feedback_criterion(detail, prefer="strong")
+    if criterion:
+        text = _call_feedback_item_text(criterion, fields=("comment", "evidence", "criterion_name"))
+        if text and not (limited and _contains_sales_push(text)):
+            return text
+    return None
+
+
+def _select_call_feedback_coaching_decision(detail: dict[str, Any], *, limited: bool) -> dict[str, str] | None:
+    raw = detail.get("coaching_decision")
+    if not isinstance(raw, dict):
+        return None
+    decision = str(raw.get("decision") or "").strip().lower()
+    if decision not in {"improve", "maintain", "no_comment"}:
+        return None
+    if decision == "no_comment":
+        return {"decision": decision, "label": "", "text": ""}
+    text = _clean_call_feedback_text(raw.get("text"))
+    if not text:
+        return {"decision": "no_comment", "label": "", "text": ""}
+    if limited and decision == "improve" and _contains_sales_push(text):
+        return {"decision": "no_comment", "label": "", "text": ""}
+    title = _clean_call_feedback_title(raw.get("title"))
+    label = "Улучшить" if decision == "improve" else _call_feedback_maintain_label(title, text)
+    return {
+        "decision": decision,
+        "label": label,
+        "text": _strip_call_feedback_label(
+            text,
+            labels=("Улучшить", "Поддерживать", "Корректно"),
+        ).rstrip(".!?"),
+    }
+
+
+def _clean_call_feedback_title(value: Any) -> str | None:
+    text = _clean_call_feedback_text(value)
+    if not text:
+        return None
+    return text.rstrip(".")
+
+
+def _call_feedback_maintain_label(title: str | None, text: str) -> str:
+    source = f"{title or ''} {text}".strip().lower()
+    if source.startswith("корректно") or "корректно" in source[:40]:
+        return "Корректно"
+    return "Поддерживать"
+
+
+def _strip_call_feedback_label(value: str, *, labels: tuple[str, ...]) -> str:
+    text = str(value or "").strip()
+    for label in labels:
+        text = re.sub(rf"^\s*{re.escape(label)}\s*[:—-]\s*", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _select_call_feedback_improve(detail: dict[str, Any], *, limited: bool) -> str | None:
+    for item in detail.get("gaps") or []:
+        text = _call_feedback_item_text(item, fields=("comment", "problem", "recommendation", "title", "criterion_name"))
+        if text and not (limited and _contains_sales_push(text)):
+            return text
+    criterion = _best_call_feedback_criterion(detail, prefer="weak")
+    if criterion:
+        text = _call_feedback_item_text(criterion, fields=("comment", "problem", "recommendation", "criterion_name"))
+        if text and not (limited and _contains_sales_push(text)):
+            return text
+    return None
+
+
+def _select_call_feedback_recommendation(detail: dict[str, Any], *, limited: bool) -> str | None:
+    for item in detail.get("recommendations") or []:
+        text = _call_feedback_item_text(item, fields=("recommendation", "comment", "problem", "title", "criterion_name"))
+        if text and not (limited and _contains_sales_push(text)):
+            return text
+    return None
+
+
+def _best_call_feedback_criterion(detail: dict[str, Any], *, prefer: str) -> dict[str, Any] | None:
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for stage in detail.get("score_by_stage") or []:
+        if not isinstance(stage, dict):
+            continue
+        for criterion in stage.get("criteria_results") or []:
+            if not isinstance(criterion, dict) or not _criterion_is_applicable_for_stage_score(criterion):
+                continue
+            max_score = float(criterion.get("max_score") or 0)
+            if max_score <= 0:
+                continue
+            score = float(criterion.get("score") or 0) / max_score
+            candidates.append((score, criterion))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=prefer == "strong")
+    return candidates[0][1]
+
+
+def _call_feedback_item_text(item: Any, *, fields: tuple[str, ...]) -> str | None:
+    if isinstance(item, str):
+        return _clean_call_feedback_text(item)
+    if not isinstance(item, dict):
+        return None
+    for field in fields:
+        text = _clean_call_feedback_text(item.get(field))
+        if text:
+            return text
+    return None
+
+
+def _clean_call_feedback_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"`[^`]+`", "", text)
+    text = re.sub(r"\b(?:criterion|stage|score|call|scenario|analysis)_[a-z0-9_]+\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b[a-z]{2,}_[a-z0-9_]+\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" -–—:;")
+    if not text or text.lower() in {"n/a", "none", "null", "not available"}:
+        return None
+    if re.fullmatch(r"[a-z0-9_.:-]+", text, flags=re.IGNORECASE):
+        return None
+    return _summary_paragraph_text(text, limit=150)
+
+
+def _contains_sales_push(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(term in text for term in SALES_PUSH_TERMS)
+
+
+def _call_feedback_outcome(
+    *,
+    status: Any,
+    next_step: Any,
+    deadline: Any,
+    reason: Any,
+    outcome_reason: Any,
+    outcome_evidence: Any,
+    limited: bool,
+) -> str | None:
+    """Return a short status confirmation, not a duplicate of the call essence."""
+    status_text = str(status or "").strip().lower()
+    next_step_text = _call_feedback_short_phrase(next_step, limit=95)
+    reason_text = _call_feedback_short_phrase(reason, limit=95)
+    outcome_reason_text = _call_feedback_short_phrase(outcome_reason, limit=95)
+    evidence_text = _call_feedback_short_phrase(outcome_evidence, limit=95)
+    deadline_text = _call_feedback_short_phrase(deadline, limit=60)
+    if status_text == "agreed":
+        detail_text = next_step_text or outcome_reason_text or evidence_text
+        if not detail_text:
+            return None
+        base = f"договоренность: {detail_text}"
+    elif status_text == "rescheduled":
+        detail_text = deadline_text or reason_text or outcome_reason_text
+        if not detail_text:
+            return None
+        base = f"перенос: {detail_text}"
+    elif status_text == "refusal":
+        detail_text = outcome_reason_text or evidence_text or reason_text
+        if not detail_text:
+            return None
+        base = f"отказ: {detail_text}"
+    elif status_text == "open":
+        detail_text = next_step_text or reason_text or outcome_reason_text
+        if not detail_text:
+            return None
+        base = f"открыт: {detail_text}"
+    elif status_text == "tech_service" or limited:
+        detail_text = next_step_text or reason_text or outcome_reason_text or evidence_text
+        if not detail_text:
+            return None
+        base = f"тех/сервис: {detail_text}"
+    else:
+        base = outcome_reason_text or reason_text or next_step_text
+        if not base:
+            return None
+    if deadline_text and status_text not in {"rescheduled"} and deadline_text.lower() not in base.lower():
+        base = f"{base}; срок: {deadline_text}"
+    return _ensure_sentence(base)
+
+
+def _call_feedback_outcome_from_status_details(
+    status_details: Any,
+    *,
+    status: Any,
+) -> str | None:
+    """Return manager-facing outcome from LLM2D status_details when it matches row status."""
+    details = dict(status_details or {}) if isinstance(status_details, dict) else {}
+    detail_status = _call_feedback_status_detail_key(details.get("status"))
+    row_status = _call_feedback_status_detail_key(status)
+    if not detail_status or not row_status or detail_status != row_status:
+        return None
+    active = dict(details.get(detail_status) or {}) if isinstance(details.get(detail_status), dict) else {}
+    if not active:
+        return None
+    if detail_status == "agreement":
+        main = _call_feedback_detail_phrase(
+            active.get("what_agreed")
+            or active.get("manager_commitment")
+            or active.get("client_commitment"),
+            limit=120,
+        )
+        if not main:
+            return None
+        return _call_feedback_join_status_detail(
+            "договорились",
+            main,
+            (
+                ("срок", active.get("deadline"), 80),
+                ("ответственный", _call_feedback_owner_label(active.get("owner")), 40),
+            ),
+        )
+    if detail_status == "rescheduled":
+        main = _call_feedback_detail_phrase(active.get("return_when") or active.get("reason"), limit=100)
+        if not main:
+            return None
+        return _call_feedback_join_status_detail(
+            "перенос",
+            main,
+            (
+                ("причина", active.get("reason"), 100),
+                ("ответственный", _call_feedback_owner_label(active.get("return_owner")), 40),
+            ),
+        )
+    if detail_status == "refusal":
+        main = _call_feedback_detail_phrase(active.get("reason"), limit=120)
+        if not main:
+            return None
+        return _call_feedback_join_status_detail(
+            "отказ",
+            main,
+            (
+                ("тип", _call_feedback_type_label(active.get("type")), 80),
+                ("возврат", active.get("return_condition"), 120),
+            ),
+        )
+    if detail_status == "open":
+        main = _call_feedback_detail_phrase(active.get("why_open") or active.get("missing_to_close"), limit=120)
+        if not main:
+            return None
+        return _call_feedback_join_status_detail(
+            "открыт",
+            main,
+            (
+                ("следующий шаг", active.get("next_action"), 120),
+                ("ответственный", _call_feedback_owner_label(active.get("owner")), 40),
+                ("срок", active.get("deadline"), 80),
+            ),
+        )
+    if detail_status == "service":
+        main = _call_feedback_detail_phrase(active.get("request") or active.get("type"), limit=120)
+        if not main:
+            return None
+        return _call_feedback_join_status_detail(
+            "сервис",
+            main,
+            (
+                ("сделано", active.get("action_taken"), 120),
+                ("дальше", active.get("follow_up_action"), 120),
+            ),
+        )
+    return None
+
+
+def _call_feedback_status_detail_key(value: Any) -> str | None:
+    text = str(value or "").strip().lower().replace("-", "_")
+    return CALL_FEEDBACK_STATUS_DETAIL_ALIASES.get(text)
+
+
+def _call_feedback_join_status_detail(
+    label: str,
+    main: str,
+    segments: tuple[tuple[str, Any, int], ...],
+) -> str:
+    parts = [f"{label} — {main}"]
+    for segment_label, raw_value, limit in segments:
+        value = _call_feedback_detail_phrase(raw_value, limit=limit)
+        if value and value.lower() not in {"unknown", "null", "none", "не указан"}:
+            parts.append(f"{segment_label}: {value}")
+    return _ensure_sentence("; ".join(parts))
+
+
+def _call_feedback_detail_phrase(value: Any, *, limit: int) -> str | None:
+    text = _call_feedback_short_phrase(value, limit=limit)
+    if not text:
+        return None
+    return text.strip(" .;:-") or None
+
+
+def _call_feedback_owner_label(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text or text in {"unknown", "none", "null"}:
+        return None
+    return CALL_FEEDBACK_OWNER_LABELS.get(text, _call_feedback_detail_phrase(value, limit=40))
+
+
+def _call_feedback_type_label(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text or text in {"unknown", "none", "null"}:
+        return None
+    return CALL_FEEDBACK_DETAIL_TYPE_LABELS.get(text, _call_feedback_detail_phrase(value, limit=80))
+
+
+def _call_feedback_short_phrase(value: Any, *, limit: int) -> str | None:
+    text = _summary_paragraph_text(value, limit=limit)
+    if not text:
+        return None
+    text = re.sub(
+        r"^(контакт открыт|клиент отказался|перенос|договор[ёе]нность|итог|тех/сервис|сервисный вопрос)\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = text.strip(" .;:-")
+    return text or None
+
+
+def _ensure_sentence(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text[-1] in ".!?" else f"{text}."
+
+
 def _build_daily_call_row(
     artifact: ReportArtifact,
     *,
@@ -10515,6 +11454,7 @@ def _build_daily_call_row(
     """Build one short daily call row."""
     source_analysis = artifact.analysis or artifact.original_analysis
     detail = dict((getattr(source_analysis, "scores_detail", None) or {}) if source_analysis is not None else {})
+    edo_scope = _extract_edo_scope(detail)
     call = dict(detail.get("call") or {})
     follow_up = dict(detail.get("follow_up") or {})
     classification = dict(detail.get("classification") or {})
@@ -10541,24 +11481,62 @@ def _build_daily_call_row(
     signal_text = _summary_text(getattr(artifact.interaction, "text", None), limit=500)
     call_list_status_selection = _call_list_status_from_llm2_business_outcome(
         llm2_business_outcome,
+        status_details=dict(detail.get("status_details") or {}) if isinstance(detail.get("status_details"), dict) else None,
         resolver_outcome=outcome,
         follow_up=follow_up,
         signal_text=signal_text,
         deadline=deadline,
     )
-    call_list_status = (
-        call_list_status_selection["status"]
-        if call_list_status_selection["source"] == "report_evidence.business_outcome"
-        else status
+    call_list_analysis_ready = artifact.analysis is not None and not bool(
+        getattr(artifact.analysis, "is_failed", False)
     )
+    if not call_list_analysis_ready:
+        call_list_status_selection = {
+            "status": None,
+            "unclassified_reason_code": unclassified_reason_code,
+            "source": "analysis_not_ready",
+            "raw_status": None,
+            "fallback_reason": unclassified_reason_code,
+            "semantic_status_missing_reason": None,
+            "semantic_status_quality": "not_applicable",
+        }
+    call_list_status = call_list_status_selection["status"]
     call_list_unclassified_reason_code = (
         call_list_status_selection["unclassified_reason_code"]
-        if call_list_status_selection["source"] == "report_evidence.business_outcome"
-        else unclassified_reason_code
+        if call_list_status is None
+        else None
     )
     call_list_unclassified_reason_label = _reason_label(call_list_unclassified_reason_code)
-    call_list_unclassified_status_label = _manager_unclassified_status(call_list_unclassified_reason_code)
-    call_list_unclassified_context_label = _manager_unclassified_context(call_list_unclassified_reason_code)
+    semantic_status_missing_reason = call_list_status_selection.get("semantic_status_missing_reason")
+    semantic_status_quality = str(
+        call_list_status_selection.get("semantic_status_quality")
+        or ("missing" if call_list_status is None else "weak")
+    ).strip() or ("missing" if call_list_status is None else "weak")
+    call_list_semantic_status_missing = call_list_analysis_ready and call_list_status is None
+    call_list_display_status = (
+        call_list_status
+        if call_list_status is not None
+        else "status_not_confirmed"
+        if call_list_semantic_status_missing
+        else None
+    )
+    call_list_display_status_label = (
+        "Статус не подтвержден"
+        if call_list_semantic_status_missing
+        else _manager_status_label(call_list_status)
+        if call_list_status is not None
+        else _manager_unclassified_status(call_list_unclassified_reason_code)
+    )
+    call_list_unclassified_status_label = (
+        "Без подтвержденного статуса"
+        if call_list_semantic_status_missing
+        else _manager_unclassified_status(call_list_unclassified_reason_code)
+    )
+    call_list_unclassified_context_label = (
+        "Суть не сформирована LLM"
+        if call_list_semantic_status_missing
+        else _manager_unclassified_context(call_list_unclassified_reason_code)
+    )
     summary_topic_raw = _summary_text((summary or {}).get("short_topic"), limit=120) if summary else None
     summary_topic = summary_topic_raw.rstrip(".") if summary_topic_raw else None
     summary_context = _summary_text((summary or {}).get("short_context"), limit=280) if summary else None
@@ -10621,14 +11599,36 @@ def _build_daily_call_row(
     if not context_diagnostics:
         context_diagnostics = {"status": "passed"}
     call_list_status_conflict = (
-        call_list_status_selection["source"] == "report_evidence.business_outcome"
+        call_list_status_selection["source"] in {
+            "scores_detail.status_details.status",
+            "report_evidence.business_outcome",
+        }
         and call_list_status != status
     )
     final_manager_status = call_list_status
+    score_percent = _extract_score_percent(artifact.analysis)
+    call_feedback_summary = _build_call_feedback_summary(
+        detail=detail,
+        score_percent=score_percent,
+        status=call_list_status,
+        next_step=context_next_step,
+        deadline=context_deadline,
+        reason=reason,
+        outcome_reason=llm2_outcome_reason,
+        outcome_evidence=llm2_outcome_evidence,
+        analysis_ready=call_list_analysis_ready,
+    )
     return {
         "interaction_id": str(artifact.interaction.id),
         "time": artifact.call_started_at.isoformat() if artifact.call_started_at else None,
-        "client_or_phone": call.get("contact_name") or call.get("contact_phone") or (artifact.interaction.metadata_ or {}).get("contact_phone"),
+        "call_list_analysis_ready": call_list_analysis_ready,
+        "call_list_analysis_failed": artifact.analysis is not None and not call_list_analysis_ready,
+        "client_or_phone": (
+            ref.get("client_name")
+            or ref.get("client_phone")
+            or ref.get("client_call_reference")
+            or "Клиент"
+        ),
         "client_name": ref.get("client_name"),
         "client_phone": ref.get("client_phone"),
         "client_call_reference": ref.get("client_call_reference"),
@@ -10638,17 +11638,26 @@ def _build_daily_call_row(
         "call_signal_text": signal_text,
         "call_type": call_type,
         "scenario_type": scenario_type,
-        "status": status,
+        "status": call_list_status,
         "resolver_status": status,
         "resolver_reason_code": outcome.reason_code,
         "resolver_confidence": outcome.confidence,
+        "resolver_status_diagnostic": status,
+        "resolver_reason_code_diagnostic": outcome.reason_code,
+        "resolver_confidence_diagnostic": outcome.confidence,
+        "status_details_status": (dict(detail.get("status_details") or {}).get("status") if isinstance(detail.get("status_details"), dict) else None),
+        "semantic_status_missing_reason": semantic_status_missing_reason,
+        "semantic_status_quality": semantic_status_quality,
+        "call_list_display_status": call_list_display_status,
+        "call_list_display_status_label": call_list_display_status_label,
         "call_list_status": call_list_status,
         "final_manager_status": final_manager_status,
         "final_manager_status_source": call_list_status_selection["source"],
         "call_list_status_source": call_list_status_selection["source"],
         "call_list_status_fallback_reason": call_list_status_selection["fallback_reason"],
         "call_list_status_conflict_with_resolver": call_list_status_conflict,
-        "llm2_business_outcome_status": call_list_status_selection["raw_status"],
+        "llm2_business_outcome_status": str((llm2_business_outcome or {}).get("status") or "").strip() or None,
+        "call_list_selected_semantic_status": call_list_status_selection["raw_status"],
         "llm2_business_outcome_reason": llm2_outcome_reason,
         "llm2_business_outcome_evidence": llm2_outcome_evidence,
         "llm2_business_outcome_confidence": (llm2_business_outcome or {}).get("confidence"),
@@ -10657,11 +11666,22 @@ def _build_daily_call_row(
         "deadline": deadline,
         "call_list_deadline": context_deadline,
         "reason": reason,
-        "score_percent": _extract_score_percent(artifact.analysis),
-        "unclassified_reason_code": unclassified_reason_code,
-        "unclassified_reason_label": unclassified_reason_label,
-        "unclassified_status_label": unclassified_status_label,
-        "unclassified_context_label": unclassified_context_label,
+        "score_percent": score_percent,
+        "edo_scope": edo_scope,
+        "sales_scoring_scope": (edo_scope or {}).get("sales_scoring_scope"),
+        "sales_scoring_scope_reason": (edo_scope or {}).get("scope_reason"),
+        "sales_scoring_applicable_part": (edo_scope or {}).get("applicable_part"),
+        "sales_scoring_expected_manager_action": (edo_scope or {}).get("expected_manager_action"),
+        "call_feedback_summary": call_feedback_summary,
+        "call_feedback_missing_fields": (
+            list(call_feedback_summary.get("call_feedback_missing_fields") or [])
+            if isinstance(call_feedback_summary, dict)
+            else []
+        ),
+        "unclassified_reason_code": call_list_unclassified_reason_code,
+        "unclassified_reason_label": call_list_unclassified_reason_label,
+        "unclassified_status_label": call_list_unclassified_status_label,
+        "unclassified_context_label": call_list_unclassified_context_label,
         "call_list_unclassified_reason_code": call_list_unclassified_reason_code,
         "call_list_unclassified_reason_label": call_list_unclassified_reason_label,
         "call_list_unclassified_status_label": call_list_unclassified_status_label,
@@ -10690,7 +11710,12 @@ def _build_daily_call_row(
             "source": context_selection["source"],
             "priority": context_selection["priority"],
             "selected_reason": context_selection["selected_reason"],
-            "quality": "warning" if context_diagnostics.get("status") == "weak" else "passed",
+            "quality": (
+                "warning"
+                if context_diagnostics.get("status") in {"weak", "missing"}
+                or context_diagnostics.get("llm_context_missing")
+                else "passed"
+            ),
             "weak_reason": context_diagnostics.get("weak_reason"),
             "fallback_generated": context_selection["fallback_generated"],
             "rejected_count": len(context_selection["rejected"]),
@@ -12384,7 +13409,11 @@ def _valid_call_report_summary_for_interaction(
         raw_evidence
         if summary is not None
         or isinstance(raw_evidence, dict)
-        and isinstance(raw_evidence.get("call_essence"), dict)
+        and (
+            isinstance(raw_evidence.get("call_essence"), dict)
+            or isinstance(raw_evidence.get("block_candidates"), dict)
+            or isinstance(raw_evidence.get("semantic_case"), dict)
+        )
         else None
     )
     return summary, dict(evidence) if isinstance(evidence, dict) else None
@@ -12422,19 +13451,26 @@ def _valid_business_outcome_for_interaction(
 def _call_list_status_from_llm2_business_outcome(
     outcome: dict[str, Any] | None,
     *,
+    status_details: dict[str, Any] | None = None,
     resolver_outcome: BusinessOutcome | None = None,
     follow_up: dict[str, Any] | None = None,
     signal_text: str | None = None,
     deadline: str | None = None,
 ) -> dict[str, Any]:
+    status_details_selection = _call_list_status_from_status_details(status_details)
+    if status_details_selection["status"] is not None:
+        return status_details_selection
     raw_status = str((outcome or {}).get("status") or "").strip()
     if not raw_status:
+        missing_reason = status_details_selection.get("semantic_status_missing_reason") or "llm_status_missing"
         return {
             "status": None,
-            "unclassified_reason_code": None,
-            "source": "business_outcome_resolver",
+            "unclassified_reason_code": "llm_status_missing",
+            "source": "missing_llm_semantic_status",
             "raw_status": None,
-            "fallback_reason": "missing_llm2_business_outcome",
+            "fallback_reason": "llm_status_missing",
+            "semantic_status_missing_reason": missing_reason,
+            "semantic_status_quality": "missing",
         }
     if raw_status == "not_suitable":
         return {
@@ -12443,22 +13479,20 @@ def _call_list_status_from_llm2_business_outcome(
             "source": "report_evidence.business_outcome",
             "raw_status": raw_status,
             "fallback_reason": None,
+            "semantic_status_quality": "missing",
+            "semantic_status_missing_reason": "not_suitable",
         }
     mapped = CALL_LIST_LLM2_STATUS_MAP.get(raw_status)
     if mapped:
-        if mapped == "agreed" and not _llm2_agreement_has_explicit_commercial_step(
-            outcome=outcome,
-            resolver_outcome=resolver_outcome,
-            follow_up=follow_up or {},
-            signal_text=signal_text,
-            deadline=deadline,
-        ):
+        if mapped == "agreed" and not _llm2_business_outcome_agreement_has_evidence(outcome):
             return {
                 "status": None,
-                "unclassified_reason_code": None,
-                "source": "business_outcome_resolver",
+                "unclassified_reason_code": "agreement_missing_evidence",
+                "source": "missing_llm_semantic_status",
                 "raw_status": raw_status,
-                "fallback_reason": "llm2_agreement_without_explicit_commercial_step",
+                "fallback_reason": "agreement_missing_evidence",
+                "semantic_status_missing_reason": "agreement_missing_evidence",
+                "semantic_status_quality": "missing",
             }
         return {
             "status": mapped,
@@ -12466,14 +13500,99 @@ def _call_list_status_from_llm2_business_outcome(
             "source": "report_evidence.business_outcome",
             "raw_status": raw_status,
             "fallback_reason": None,
+            "semantic_status_quality": (
+                "confirmed"
+                if mapped == "agreed" or _summary_text((outcome or {}).get("evidence_quote"), limit=80)
+                else "weak"
+            ),
+            "semantic_status_missing_reason": None,
         }
     return {
         "status": None,
-        "unclassified_reason_code": None,
-        "source": "business_outcome_resolver",
+        "unclassified_reason_code": "invalid_llm_semantic_status",
+        "source": "missing_llm_semantic_status",
         "raw_status": raw_status,
-        "fallback_reason": "invalid_llm2_business_outcome_status",
+        "fallback_reason": "llm_status_missing",
+        "semantic_status_missing_reason": (
+            status_details_selection.get("semantic_status_missing_reason")
+            or "invalid_llm_semantic_status"
+        ),
+        "semantic_status_quality": "missing",
     }
+
+
+def _call_list_status_from_status_details(status_details: dict[str, Any] | None) -> dict[str, Any]:
+    details = dict(status_details or {}) if isinstance(status_details, dict) else {}
+    raw_status = str(details.get("status") or "").strip()
+    if not raw_status:
+        return {
+            "status": None,
+            "unclassified_reason_code": None,
+            "source": None,
+            "raw_status": None,
+            "fallback_reason": None,
+            "semantic_status_missing_reason": None,
+            "semantic_status_quality": "missing",
+        }
+    detail_status = _call_feedback_status_detail_key(raw_status)
+    mapped = "tech_service" if detail_status == "service" else "agreed" if detail_status == "agreement" else detail_status
+    if mapped not in {"agreed", "rescheduled", "refusal", "open", "tech_service"}:
+        return {
+            "status": None,
+            "unclassified_reason_code": "invalid_llm_semantic_status",
+            "source": "missing_llm_semantic_status",
+            "raw_status": raw_status,
+            "fallback_reason": "llm_status_missing",
+            "semantic_status_missing_reason": "invalid_status_details_status",
+            "semantic_status_quality": "missing",
+        }
+    if mapped == "agreed" and not _status_details_agreement_has_evidence(details):
+        return {
+            "status": None,
+            "unclassified_reason_code": "agreement_missing_evidence",
+            "source": "missing_llm_semantic_status",
+            "raw_status": raw_status,
+            "fallback_reason": "agreement_missing_evidence",
+            "semantic_status_missing_reason": "agreement_missing_evidence",
+            "semantic_status_quality": "missing",
+        }
+    return {
+        "status": mapped,
+        "unclassified_reason_code": None,
+        "source": "scores_detail.status_details.status",
+        "raw_status": raw_status,
+        "fallback_reason": None,
+        "semantic_status_missing_reason": None,
+        "semantic_status_quality": "confirmed" if mapped == "agreed" else "weak",
+    }
+
+
+def _status_details_agreement_has_evidence(status_details: dict[str, Any]) -> bool:
+    agreement = status_details.get("agreement")
+    if not isinstance(agreement, dict):
+        return False
+    has_meaning = any(
+        _summary_text(agreement.get(field), limit=160)
+        for field in ("what_agreed", "manager_commitment", "client_commitment", "deadline", "condition")
+    )
+    return bool(has_meaning and _summary_text(agreement.get("evidence"), limit=220))
+
+
+def _llm2_business_outcome_agreement_has_evidence(outcome: dict[str, Any] | None) -> bool:
+    data = dict(outcome or {}) if isinstance(outcome, dict) else {}
+    has_action_anchor = any(
+        _summary_text(data.get(field), limit=220)
+        for field in (
+            "what_agreed",
+            "agreement_subject",
+            "manager_commitment",
+            "client_commitment",
+            "next_step",
+            "deadline",
+            "condition",
+        )
+    )
+    return bool(has_action_anchor and _summary_text(data.get("evidence_quote"), limit=220))
 
 
 def _llm2_agreement_has_explicit_commercial_step(
@@ -12813,7 +13932,7 @@ def _final_status_for_artifact(
     if row is not None:
         status = _final_manager_status_from_call_row(row)
         return str(status) if status is not None else None
-    return BusinessOutcomeResolver().resolve(artifact).final_status
+    return None
 
 
 def _is_report_evidence_sales_like(
@@ -14177,71 +15296,6 @@ def _select_client_grounded_situation_quote(
     return best[1], int(best[1]["relevance"])
 
 
-def _client_grounded_situation_coaching_view(
-    *,
-    candidate: dict[str, Any],
-    quote: str,
-    stage_code: str,
-    stage_name: str,
-    score_by_stage: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Build aligned Situation Day copy when client evidence replaces manager-only proof."""
-    signal_kind = _client_signal_kind(quote)
-    if signal_kind == "trust_barrier":
-        pattern_title = "Клиент обозначил барьер доверия к незнакомому звонку"
-        what_happened = "Клиент прямо обозначил недоверие к звонкам с незнакомых номеров."
-        meaning = "Перед продажей нужно снять риск недоверия и закрепить безопасный канал продолжения."
-        what_was_missing = "Не хватило фиксации удобного и доверенного способа связи: WhatsApp, знакомый номер или точное время следующего контакта."
-        next_time_action = "Коротко подтвердить, кто звонит и зачем, затем предложить безопасный способ продолжить разговор."
-        scripts = [
-            "Понимаю, сейчас много подозрительных звонков. Я из Договор-24, пишу вам в WhatsApp, чтобы вы могли проверить контакт.",
-            "Давайте я отправлю короткое сообщение с темой разговора, а потом созвонимся в удобное для вас время.",
-            "Какой канал для продолжения вам надёжнее: WhatsApp, email или звонок в конкретное время?",
-        ]
-    elif signal_kind == "timing_barrier":
-        pattern_title = "Клиент обозначил ограничение по времени или каналу связи"
-        what_happened = f"Клиент сказал: «{_dialogue_turn_text(quote, limit=180)}»."
-        meaning = "Интерес можно потерять, если не закрепить удобный формат и срок продолжения."
-        what_was_missing = "Не хватило конкретной договорённости о времени или канале следующего контакта."
-        next_time_action = "Уточнить удобный канал и зафиксировать конкретное время следующего касания."
-        scripts = [
-            "Поняла, сейчас неудобно. Когда лучше вернуться к разговору?",
-            "Могу отправить короткую информацию в WhatsApp и договориться о точном времени звонка.",
-            "Давайте зафиксируем удобный слот, чтобы не отвлекать вас неожиданным звонком.",
-        ]
-    else:
-        fact = f"Клиент сказал: «{_dialogue_turn_text(quote, limit=180)}»."
-        normalized_title = _normalize_problem_statement(
-            candidate.get("situation_title"),
-            stage_code=stage_code,
-            fallback=_stage_problem_fallback(stage_code),
-        )
-        pattern_title = str(normalized_title.get("text") or "").strip() or "Ситуация дня с клиентской репликой"
-        what_happened = fact
-        meaning = _first_sentence(str(candidate.get("what_it_means") or ""), limit=260)
-        what_was_missing = _first_sentence(str(candidate.get("what_was_missing") or ""), limit=260)
-        next_time_action = _first_sentence(str(candidate.get("next_time_action") or ""), limit=260)
-        scripts = [
-            _first_sentence(str(item or ""), limit=220)
-            for item in list(candidate.get("scripts") or [])[:3]
-            if str(item or "").strip()
-        ]
-
-    return {
-        "pattern_title": pattern_title,
-        "stage_code": stage_code,
-        "stage_label": stage_name,
-        "stage_score_label": _report_evidence_stage_score_label(stage_code, score_by_stage),
-        "what_happened": what_happened,
-        "meaning": meaning,
-        "what_was_missing": what_was_missing,
-        "next_time_action": next_time_action,
-        "scripts": scripts[:3],
-        "source": "report_evidence.client_grounded_situation",
-        "dialogue_is_partial": True,
-    }
-
-
 def _report_evidence_situation_candidate_rank(
     *,
     candidate: dict[str, Any],
@@ -14567,7 +15621,7 @@ def _build_block_candidate_call_breakdown(
                 f"{stage_name}: {what}".strip(),
                 moment_cell or supporting_quote or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
                 str(moment.get("better_action") or "").strip()
-                or "Закрепить следующий шаг конкретной формулировкой.",
+                or LLM_COMMENT_MISSING_TEXT,
             ]
         )
         moments.append(
@@ -15029,33 +16083,30 @@ def _build_report_evidence_situation(
             dialogue_turns = [{"speaker": "client", "text": quote_text}]
             dialogue_source = f"report_evidence.{selected_client_quote.get('source_key')}"
             dialogue_partial_reason = "client_quote_without_adjacent_manager_turn"
-            coaching_view = _client_grounded_situation_coaching_view(
-                candidate=candidate,
-                quote=quote_text,
-                stage_code=stage_code,
-                stage_name=stage_name,
-                score_by_stage=score_by_stage,
-            )
-            coaching_view_source = "report_evidence.client_grounded_situation"
     dialogue_is_partial = any(turn.get("speaker") == "unknown" for turn in dialogue_turns) or bool(dialogue_partial_reason)
     if coaching_view is None:
         normalized_title = _normalize_problem_statement(
             candidate.get("situation_title"),
             stage_code=stage_code,
-            fallback=_stage_problem_fallback(stage_code),
+            fallback=LLM_COMMENT_MISSING_TEXT,
         )
         normalized_what_happened = _normalize_problem_statement(
             candidate.get("what_happened"),
             stage_code=stage_code,
-            fallback=_stage_problem_fallback(stage_code),
+            fallback=LLM_COMMENT_MISSING_TEXT,
         )
+        raw_title = str(normalized_title.get("text") or "").strip()
+        if raw_title == LLM_COMMENT_MISSING_TEXT:
+            raw_title = ""
+        raw_what_happened = str(normalized_what_happened.get("text") or "").strip()
         coaching_view = {
-            "pattern_title": str(normalized_title.get("text") or "").strip()
-            or "Ситуация дня из report_evidence",
+            "pattern_title": raw_title or "Ситуация дня из report_evidence",
             "stage_code": stage_code,
             "stage_label": stage_name,
             "stage_score_label": _report_evidence_stage_score_label(stage_code, score_by_stage),
-            "what_happened": _first_sentence(str(normalized_what_happened.get("text") or ""), limit=260),
+            "what_happened": None
+            if raw_what_happened == LLM_COMMENT_MISSING_TEXT
+            else _first_sentence(raw_what_happened, limit=260),
             "meaning": _first_sentence(str(candidate.get("what_it_means") or ""), limit=260),
             "what_was_missing": _first_sentence(str(candidate.get("what_was_missing") or ""), limit=260),
             "next_time_action": _first_sentence(str(candidate.get("next_time_action") or ""), limit=260),
@@ -15075,7 +16126,7 @@ def _build_report_evidence_situation(
             "manager_text": _manager_text_from_turns(turns),
             "criterion_code": None,
             "stage_code": stage_code,
-            "source": "report_evidence.client_grounded_situation"
+            "source": "report_evidence.situation_candidates+client_quote"
             if selected_client_quote is not None
             else "report_evidence.situation_candidates",
             "evidence_quality": "direct" if selected_client_quote is not None else candidate.get("evidence_quality"),
@@ -15492,7 +16543,7 @@ def _build_call_breakdown_from_report_evidence(
                     "1",
                     f"{stage_name}: {what}".strip(),
                     fragment or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                    better or "Закрепить следующий шаг конкретной формулировкой.",
+                    better or LLM_COMMENT_MISSING_TEXT,
                 ]
             ],
             "summary_line": _call_breakdown_summary_line(ref=ref, evidence_strength=best_strength),
@@ -15549,18 +16600,21 @@ def _build_call_breakdown_from_report_evidence(
         if fragment:
             fragment_present = True
         normalized_what = _normalize_problem_statement(
-            moment.get("what_happened"),
+            moment.get("what_happened") or moment.get("moment_summary"),
             stage_code=moment_stage_code,
-            fallback=_stage_problem_fallback(moment_stage_code),
+            fallback=LLM_COMMENT_MISSING_TEXT,
         )
-        what = _first_sentence(str(normalized_what.get("text") or ""), limit=220)
+        raw_what = str(normalized_what.get("text") or "").strip()
+        if not raw_what or raw_what == LLM_COMMENT_MISSING_TEXT:
+            continue
+        what = _first_sentence(raw_what, limit=220)
         better = _first_sentence(str(moment.get("what_better") or ""), limit=240)
         rows.append(
             [
                 f"{index}",
                 f"{stage_name}: {what}".strip(),
                 fragment or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                better or "Закрепить следующий шаг конкретной формулировкой.",
+                better or LLM_COMMENT_MISSING_TEXT,
             ]
         )
     if not rows:
@@ -16280,53 +17334,45 @@ def _follow_up_hotness(
     reason: str | None,
     evidence_follow_up: dict[str, Any] | None,
     row: dict[str, Any],
+    summary_hotness: str | None = None,
 ) -> dict[str, str]:
-    """Return deterministic follow-up hotness without changing final business outcome."""
+    """Return LLM-provided follow-up hotness/priority, or a neutral missing state."""
     evidence = dict(evidence_follow_up or {})
-    text = _normalize_hotness_text(
-        next_step,
-        reason,
-        evidence.get("next_step"),
-        evidence.get("why_follow_up"),
-        evidence.get("first_phrase"),
-        row.get("business_outcome_evidence"),
-        row.get("next_step"),
-        row.get("reason"),
-    )
-    if final_status == "agreed":
+    summary_code = str(summary_hotness or "").strip().lower()
+    if summary_code in {"hot", "warm", "low"}:
         return {
-            "code": "hot",
-            "label": CALL_TOMORROW_HOTNESS_LABELS["hot"],
-            "reason": (
-                "final_agreed_commercial_signal"
-                if _contains_hotness_signal(text, COMMERCIAL_HOTNESS_SIGNALS) or deadline
-                else "final_agreed"
-            ),
+            "code": summary_code,
+            "label": CALL_TOMORROW_HOTNESS_LABELS[summary_code],
+            "reason": "report_evidence.call_report_summary.hotness",
+            "source": "report_evidence.call_report_summary.hotness",
         }
-    if final_status == "rescheduled":
+
+    evidence_priority = str(evidence.get("priority") or "").strip().lower()
+    if evidence_priority in {"hot", "rescheduled"}:
         return {
-            "code": "rescheduled",
-            "label": CALL_TOMORROW_HOTNESS_LABELS["rescheduled"],
-            "reason": "final_rescheduled",
+            "code": evidence_priority,
+            "label": CALL_TOMORROW_HOTNESS_LABELS[evidence_priority],
+            "reason": "report_evidence.follow_up_candidates.priority",
+            "source": "report_evidence.follow_up_candidates.priority",
         }
-    if final_status == "open" and (
-        _contains_hotness_signal(text, WARM_HOTNESS_SIGNALS)
-        or str(evidence.get("status") or "").strip().lower() == "open"
-    ):
+    if evidence_priority == "open":
         return {
-            "code": "warm",
-            "label": CALL_TOMORROW_HOTNESS_LABELS["warm"],
-            "reason": "open_with_explicit_interest_or_materials_request",
+            "code": "open",
+            "label": "Открытый LLM",
+            "reason": "report_evidence.follow_up_candidates.priority",
+            "source": "report_evidence.follow_up_candidates.priority",
         }
+
     return {
-        "code": "low",
-        "label": CALL_TOMORROW_HOTNESS_LABELS["low"],
-        "reason": "open_without_clear_follow_up_signal",
+        "code": "unknown",
+        "label": "не определен LLM",
+        "reason": "missing_llm_hotness_or_priority",
+        "source": "missing_llm_hotness_or_priority",
     }
 
 
 def _call_tomorrow_signal_category(*, final_status: str, text: str) -> str:
-    """Classify tomorrow action context without changing inclusion or hotness."""
+    """Diagnostics-only keyword category; never feed manager-facing tomorrow wording."""
     if _contains_hotness_signal(text, CALL_TOMORROW_SERVICE_OR_USAGE_MARKERS):
         return "service_or_usage_issue"
     if final_status == "rescheduled":
@@ -16401,7 +17447,7 @@ def _call_tomorrow_profile(
     evidence_follow_up: dict[str, Any] | None,
     row: dict[str, Any],
 ) -> dict[str, str | bool]:
-    """Return one signal profile for tomorrow context, recommendation and phrase."""
+    """Return tomorrow wording from LLM-produced follow-up fields only."""
     evidence = dict(evidence_follow_up or {})
     evidence_signal_text = _normalize_hotness_text(
         raw_reason,
@@ -16409,11 +17455,9 @@ def _call_tomorrow_profile(
         summary_hotness_reason,
         evidence.get("why_follow_up"),
         evidence.get("first_phrase"),
-        row.get("business_outcome_evidence"),
+        row.get("llm2_business_outcome_reason"),
+        row.get("llm2_business_outcome_evidence"),
         row.get("reason"),
-        row.get("call_list_topic"),
-        row.get("call_list_context"),
-        row.get("call_signal_text"),
     )
     action_signal_text = _normalize_hotness_text(
         next_step,
@@ -16421,36 +17465,45 @@ def _call_tomorrow_profile(
         evidence.get("next_step"),
         row.get("next_step"),
     )
-    category = _call_tomorrow_signal_category(final_status=final_status, text=evidence_signal_text)
-    if category == "weak_open" and not evidence_signal_text:
-        category = _call_tomorrow_signal_category(final_status=final_status, text=action_signal_text)
     signal_text = _normalize_hotness_text(evidence_signal_text, action_signal_text)
-    profile = dict(CALL_TOMORROW_SIGNAL_PROFILES.get(category) or CALL_TOMORROW_SIGNAL_PROFILES["weak_open"])
-    action_source = "deterministic_call_tomorrow_signal"
-    action = profile["recommendation"]
-    if _call_tomorrow_summary_action_specific(summary_next_action, category=category):
+
+    action_source = "missing_llm_next_action"
+    action = "не определен LLM"
+    if _call_summary_action_usable(summary_next_action):
         action = _summary_text(summary_next_action, limit=240) or action
         action_source = "call_report_summary.manager_next_action"
+    elif _summary_text(evidence.get("next_step"), limit=240):
+        action = _summary_text(evidence.get("next_step"), limit=240) or action
+        action_source = "report_evidence.follow_up_candidates.next_step"
+    elif _summary_text(next_step, limit=240):
+        action = _summary_text(next_step, limit=240) or action
+        action_source = "scores_detail.follow_up.next_step_text"
 
-    context = profile["context"]
-    context_source = "deterministic_call_tomorrow_signal"
-    if category != "weak_open" and _call_tomorrow_context_specific(summary_context, category=category):
+    context_source = "missing_llm_follow_up_context"
+    context = "не определен LLM"
+    if _call_summary_context_usable(summary_context):
         context = _summary_text(summary_context, limit=280) or context
         context_source = "call_report_summary.short_context"
-    elif category != "weak_open" and _call_summary_action_usable(summary_hotness_reason):
+    elif _call_summary_action_usable(summary_hotness_reason):
         context = _summary_text(summary_hotness_reason, limit=220) or context
         context_source = "call_report_summary.hotness_reason"
+    elif _summary_text(evidence.get("why_follow_up"), limit=220):
+        context = _summary_text(evidence.get("why_follow_up"), limit=220) or context
+        context_source = "report_evidence.follow_up_candidates.why_follow_up"
+    elif _summary_text(raw_reason, limit=220):
+        context = _summary_text(raw_reason, limit=220) or context
+        context_source = "scores_detail.follow_up.reason_not_fixed"
 
-    if category == "rescheduled" and deadline and "согласованный срок" not in context.lower():
+    if final_status == "rescheduled" and deadline and context != "не определен LLM" and "согласованный срок" not in context.lower():
         context = f"{context} Срок возврата: {deadline}."
 
     return {
-        "category": category,
+        "category": "llm_follow_up",
         "signal_text": signal_text,
         "evidence_signal_text": evidence_signal_text,
         "context": context,
         "recommendation": action if action.endswith((".", "!", "?")) else f"{action}.",
-        "opening_script": profile["phrase"],
+        "opening_script": _summary_text(evidence.get("first_phrase"), limit=220) or "не определен LLM",
         "action_source": action_source,
         "context_source": context_source,
         "used_call_report_summary": action_source.startswith("call_report_summary")
@@ -16468,6 +17521,9 @@ def _call_tomorrow_rejection_reason(item: dict[str, Any]) -> str | None:
     """Reject follow-up contacts whose action is not grounded enough for manager-facing output."""
     status = str(item.get("status") or "")
     category = str(item.get("action_profile") or "")
+    action_source = str(item.get("action_source") or "")
+    if action_source == "missing_llm_next_action" or _summary_norm(item.get("next_step")) == _summary_norm("не определен LLM"):
+        return "missing_llm_next_action"
     text = _normalize_hotness_text(
         item.get("reason"),
         item.get("next_step"),
@@ -16514,29 +17570,35 @@ def _build_call_tomorrow(
     call_list: list[dict[str, Any]],
     report_evidence_index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build КОНТАКТЫ В РАБОТУ from final manager-facing report-day outcomes.
+    """Build КОНТАКТЫ В РАБОТУ from LLM-produced follow-up/action fields.
 
-    Selection rule (deterministic):
-    - Include only final Договорённость, Перенос, Открыт
+    Selection rule:
+    - Consider only final LLM sales-like statuses: Договорённость, Перенос, Открыт
     - Exclude final Отказ, Тех/сервис and unclassified technical buckets
-    - Priority groups: Горячий → Перенос → Тёплый → Низкий
-    - Within group: soonest deadline first, then call time
+    - Use only LLM hotness/priority/action fields for manager-facing contacts
+    - If LLM priority is missing, keep a neutral "не определен LLM" priority
+    - Within LLM priority group: soonest deadline first, then call time
     - Deduplicate by client_label
     - Cap at 5 contacts total
     """
-    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in CALL_TOMORROW_HOTNESS_ORDER}
+    priority_order = (*CALL_TOMORROW_HOTNESS_ORDER, "open", "unknown")
+    priority_rank = {value: index for index, value in enumerate(priority_order)}
+    grouped: dict[str, list[dict[str, Any]]] = {s: [] for s in priority_order}
     rejected: list[dict[str, Any]] = []
+    tomorrow_priority_missing_llm_count = 0
 
     for row in call_list:
         status = str(_final_manager_status_from_call_row(row) or "")
         if status not in FINAL_SALES_LIKE_STATUSES:
             continue
 
+        client_phone = _clean_display_part(row.get("client_phone"))
+        client_name = _safe_client_display_name(row.get("client_name"), phone=client_phone)
         client_label = str(
-            row.get("client_or_phone")
-            or row.get("client_name")
-            or row.get("client_phone")
+            client_name
+            or client_phone
             or row.get("client_call_reference")
+            or row.get("client_or_phone")
             or ""
         ).strip()
         if not client_label:
@@ -16554,6 +17616,7 @@ def _build_call_tomorrow(
         )
         summary_next_action = _summary_text((summary or {}).get("manager_next_action"), limit=240)
         summary_context = _summary_text((summary or {}).get("short_context"), limit=280)
+        summary_hotness = str((summary or {}).get("hotness") or "").strip().lower() or None
         summary_hotness_reason = _summary_text((summary or {}).get("hotness_reason"), limit=220)
         row_context = _summary_text(row.get("call_list_context_rich") or row.get("call_list_context"), limit=280)
         row_context_source = str(row.get("call_list_context_source") or "").strip()
@@ -16564,14 +17627,15 @@ def _build_call_tomorrow(
             or _call_list_context_generic_reason(row_context, status=status)
         )
         row_context_usable = bool(row_context and not row_context_weak_reason)
+        row_context_is_llm = row_context_usable and row_context_source.startswith("report_evidence.")
         aligned_summary_context = (
             summary_context
             if row_context_source == "report_evidence.call_report_summary.short_context"
             else row_context
-            if row_context_usable
+            if row_context_is_llm
             else None
         )
-        aligned_hotness_reason = summary_hotness_reason if row_context_usable else None
+        aligned_hotness_reason = summary_hotness_reason
         safe_summary_phrase = _safe_manager_phrase_from_summary(
             summary=summary,
             evidence=summary_evidence,
@@ -16601,6 +17665,7 @@ def _build_call_tomorrow(
             deadline=deadline,
             next_step=next_step,
             reason=raw_reason,
+            summary_hotness=summary_hotness,
             evidence_follow_up=evidence_follow_up,
             row=row,
         )
@@ -16616,37 +17681,30 @@ def _build_call_tomorrow(
             row=row,
         )
         next_step = str(profile["recommendation"])
-        reason = str(row_context if row_context_usable else profile["context"])
+        reason = str(row_context if row_context_is_llm else profile["context"])
         context_source = (
             row_context_source
-            if row_context_usable and row_context_source != "report_evidence.call_report_summary.short_context"
+            if row_context_is_llm and row_context_source != "report_evidence.call_report_summary.short_context"
             else str(profile["context_source"])
         )
         opening_script = str(
             safe_summary_phrase
-            if safe_summary_phrase and str(profile["action_source"]) == "call_report_summary.manager_next_action"
+            if safe_summary_phrase
             else profile["opening_script"]
-            or _call_tomorrow_opening_script(
-                status=status,
-                deadline=deadline,
-                next_step=next_step,
-                scenario_type=scenario_type,
-            )
         ).strip()
         call_report_summary_used = bool(
             summary
             and (
                 profile["used_call_report_summary"]
-                or (
-                    safe_summary_phrase
-                    and str(profile["action_source"]) == "call_report_summary.manager_next_action"
-                )
+                or safe_summary_phrase
+                or hotness.get("source") == "report_evidence.call_report_summary.hotness"
             )
         )
 
         candidate_item = {
             "interaction_id": interaction_id,
             "client_label": client_label,
+            "client_name": client_name,
             "client_call_reference": str(row.get("client_call_reference") or "").strip() or client_label,
             "client_phone": row.get("client_phone"),
             "date_label": row.get("date_label"),
@@ -16660,6 +17718,7 @@ def _build_call_tomorrow(
             "priority_code": hotness["code"],
             "priority_label": hotness["label"],
             "priority_reason": hotness["reason"],
+            "priority_source": hotness["source"],
             "deadline": deadline,
             "next_step": next_step,
             "reason": reason,
@@ -16670,6 +17729,7 @@ def _build_call_tomorrow(
             "action_source": str(profile["action_source"]),
             "context_source": context_source,
             "call_report_summary_used": call_report_summary_used,
+            "semantic_source_policy": "llm_only_v1",
             "call_list_context": row_context,
             "call_list_context_source": row_context_source,
             "call_list_context_weak_reason": row_context_weak_reason or None,
@@ -16680,10 +17740,13 @@ def _build_call_tomorrow(
                 if call_report_summary_used
                 else "report_evidence.follow_up_candidates"
                 if evidence_follow_up
+                else "scores_detail.follow_up"
+                if str(profile["action_source"]).startswith("scores_detail.follow_up")
+                or str(profile["context_source"]).startswith("scores_detail.follow_up")
                 else "final_call_list"
             ),
             "_sort_key": (
-                CALL_TOMORROW_HOTNESS_RANK.get(hotness["code"], 99),
+                priority_rank.get(hotness["code"], 99),
                 _follow_up_deadline_sort_value(deadline),
                 time_label,
             ),
@@ -16696,6 +17759,7 @@ def _build_call_tomorrow(
                     "client_call_reference": candidate_item["client_call_reference"],
                     "status": status,
                     "priority_code": hotness["code"],
+                    "priority_source": hotness["source"],
                     "action_profile": str(profile["category"]),
                     "source": candidate_item["source"],
                     "rejection_reason": rejection_reason,
@@ -16708,7 +17772,7 @@ def _build_call_tomorrow(
 
     seen: set[str] = set()
     contacts: list[dict[str, Any]] = []
-    for priority_code in CALL_TOMORROW_HOTNESS_ORDER:
+    for priority_code in priority_order:
         for item in sorted(grouped[priority_code], key=lambda x: x["_sort_key"]):
             if item["client_label"] in seen:
                 continue
@@ -16716,6 +17780,7 @@ def _build_call_tomorrow(
             contacts.append({
                 "interaction_id": item["interaction_id"],
                 "client_label": item["client_label"],
+                "client_name": item["client_name"],
                 "client_call_reference": item["client_call_reference"],
                 "client_phone": item["client_phone"],
                 "date_label": item["date_label"],
@@ -16727,6 +17792,7 @@ def _build_call_tomorrow(
                 "priority_code": item["priority_code"],
                 "priority_label": item["priority_label"],
                 "priority_reason": item["priority_reason"],
+                "priority_source": item["priority_source"],
                 "deadline": item["deadline"],
                 "next_step": item["next_step"],
                 "reason": item["reason"],
@@ -16736,6 +17802,7 @@ def _build_call_tomorrow(
                 "action_source": item["action_source"],
                 "context_source": item["context_source"],
                 "call_report_summary_used": item["call_report_summary_used"],
+                "semantic_source_policy": item["semantic_source_policy"],
                 "call_list_context": item["call_list_context"],
                 "call_list_context_source": item["call_list_context_source"],
                 "call_list_context_weak_reason": item["call_list_context_weak_reason"],
@@ -16748,21 +17815,29 @@ def _build_call_tomorrow(
         if len(contacts) >= 5:
             break
 
+    tomorrow_priority_missing_llm_count = sum(
+        1 for item in contacts if item.get("priority_code") == "unknown"
+    )
+
     return {
         "is_placeholder": len(contacts) == 0,
         "contacts": contacts,
         "empty_state": "Нет коммерческих звонков для работы завтра по итогам отчётного дня.",
-        "source_note": "derived_from_final_business_outcome_call_list_prefers_valid_report_evidence",
+        "source_note": "llm_only_follow_up_sources",
+        "semantic_source_policy": "llm_only_v1",
         "selection_diagnostics": {
-            "selection_mode": "final_business_outcome_with_follow_up_quality_gate",
+            "selection_mode": "llm_only_follow_up_quality_gate",
+            "semantic_source_policy": "llm_only_v1",
             "accepted_count": len(contacts),
             "rejected_count": len(rejected),
+            "tomorrow_priority_missing_llm_count": tomorrow_priority_missing_llm_count,
             "rejected": rejected[:20],
         },
         "call_tomorrow_quality": {
             "status": "passed" if contacts else "insufficient",
             "accepted_count": len(contacts),
             "rejected_count": len(rejected),
+            "tomorrow_priority_missing_llm_count": tomorrow_priority_missing_llm_count,
             "filtered_reasons": _count_reasons(item.get("rejection_reason") for item in rejected),
         },
     }
@@ -16774,11 +17849,7 @@ def _build_call_breakdown(
     artifacts: list[ReportArtifact],
     daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build compact step-by-step breakdown of the most representative problem call.
-
-    Selection rule: among calls containing the top gap label, prefer calls with
-    usable business evidence, then pick the lowest overall score.
-    """
+    """Return an empty Call Breakdown placeholder when LLM evidence is unavailable."""
     _empty: dict[str, Any] = {
         "is_placeholder": True,
         "call_id": None,
@@ -16792,201 +17863,22 @@ def _build_call_breakdown(
         "worked": [],
         "to_fix": [],
         "recommendation": None,
-        "rows": [
-            [
-                "1",
-                "Недостаточно evidence для показа разбора по фокусному этапу.",
-                CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                _first_sentence(str((daily_focus or {}).get("problem_statement") or ""), limit=220)
-                or "Повторите разбор после следующего полного запуска.",
-            ]
-        ],
-        "summary_line": "Звонок по фокусному этапу не выбран: подтверждающее evidence ограничено.",
-        "source_note": "focus_evidence_missing",
-        "call_breakdown_source": "focus_evidence_missing",
+        "rows": [],
+        "summary_line": "Разбор звонка не сформирован: нет LLM-кандидата с подтвержденным evidence.",
+        "source_note": "legacy_fallback_disabled",
+        "call_breakdown_source": "legacy_fallback_disabled",
         "call_breakdown_evidence_strength": "missing",
         "call_breakdown_fragment_present": False,
+        "selection_diagnostics": {
+            "block": "call_breakdown",
+            "selection_mode": "legacy_fallback_disabled",
+            "reason": "call_breakdown_missing_llm_candidate",
+            "llm_only_semantic_reporting": True,
+            "improve_items_count": len(improve_items),
+            "artifacts_count": len(artifacts),
+        },
     }
-    if not improve_items or not artifacts:
-        return _empty
-
-    gap_label = improve_items[0]["label"]
-    focus_stage_code = _daily_focus_stage_code(daily_focus)
-    candidates: list[tuple[int, float, int, datetime, ReportArtifact]] = []
-    for artifact in artifacts:
-        detail = dict((artifact.analysis.scores_detail or {}) if artifact.analysis is not None else {})
-        if focus_stage_code:
-            has_gap = False
-            for item in detail.get("gaps") or []:
-                criterion_code = str((item or {}).get("criterion_code") or "").strip()
-                gap_stage = _stage_code_from_criterion_code(criterion_code)
-                if gap_stage == focus_stage_code:
-                    has_gap = True
-                    break
-                if not criterion_code and (
-                    _finding_item_label(dict(item or {})) != "Без названия"
-                    or _finding_item_interpretation(dict(item or {}))
-                ):
-                    has_gap = True
-                    break
-        else:
-            has_gap = any(
-                _finding_item_label(dict(item or {})) == gap_label
-                for item in (detail.get("gaps") or [])
-            )
-        if has_gap:
-            s = _extract_score_percent(artifact.analysis)
-            evidence_score = _artifact_fallback_evidence_score(artifact)
-            evidence_rank = 0 if evidence_score >= 4 else 1
-            candidates.append(
-                (
-                    evidence_rank,
-                    s,
-                    -evidence_score,
-                    artifact.call_started_at or datetime.max.replace(tzinfo=UTC),
-                    artifact,
-                )
-            )
-
-    if not candidates:
-        return _empty
-    candidates.sort(key=lambda item: item[:4])
-    best_evidence_rank, _best_score, best_negative_evidence_score, _best_started_at, best_artifact = candidates[0]
-    best_evidence_score = abs(best_negative_evidence_score)
-
-    detail = dict((best_artifact.analysis.scores_detail or {}) if best_artifact.analysis is not None else {})
-    ref = _artifact_call_reference(best_artifact)
-    fallback_fragment = _artifact_fallback_evidence_fragment(best_artifact)
-    fallback_strength = _call_breakdown_fragment_strength(
-        fragment=fallback_fragment,
-        evidence_quality="indirect" if best_evidence_rank == 0 else "weak",
-    )
-
-    # Build stage steps ordered by funnel
-    raw_stages = detail.get("score_by_stage") or []
-    stage_lookup = {str(s.get("stage_code") or ""): s for s in raw_stages}
-    stage_steps: list[dict[str, Any]] = []
-    for code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
-        if code not in stage_lookup:
-            continue
-        s = stage_lookup[code]
-        s_score = int(s.get("stage_score") or 0)
-        max_s = int(s.get("max_stage_score") or 0)
-        if max_s > 0:
-            normalized = round(s_score / max_s * 10, 1)
-            stage_steps.append({
-                "funnel_label": funnel_label,
-                "stage_name": stage_name,
-                "score": normalized,
-                "is_weak": normalized < 4.0,
-            })
-
-    worked = [
-        {
-            "label": _finding_item_label(dict(i or {})),
-            "interpretation": _finding_item_interpretation(dict(i or {})),
-        }
-        for i in (detail.get("strengths") or [])[:2]
-        if _finding_item_label(dict(i or {})) != "Без названия"
-    ]
-    to_fix_source = list(detail.get("gaps") or [])
-    if focus_stage_code:
-        to_fix_source = [
-            item
-            for item in to_fix_source
-            if _stage_code_from_criterion_code(str((item or {}).get("criterion_code") or "")) == focus_stage_code
-            or not str((item or {}).get("criterion_code") or "").strip()
-        ]
-    to_fix = [
-        {
-            "label": str(
-                _normalize_problem_statement(
-                    _finding_item_label(dict(i or {})),
-                    stage_code=focus_stage_code,
-                    criterion_code=str((i or {}).get("criterion_code") or ""),
-                    fallback=_stage_problem_fallback(focus_stage_code),
-                ).get("text")
-                or _finding_item_label(dict(i or {}))
-            ),
-            "interpretation": str(
-                _normalize_problem_statement(
-                    _finding_item_interpretation(dict(i or {})),
-                    stage_code=focus_stage_code,
-                    criterion_code=str((i or {}).get("criterion_code") or ""),
-                    fallback=_stage_problem_fallback(focus_stage_code),
-                ).get("text")
-                or _finding_item_interpretation(dict(i or {}))
-            ),
-        }
-        for i in to_fix_source[:2]
-        if _finding_item_label(dict(i or {})) != "Без названия"
-    ]
-
-    recs = detail.get("recommendations") or []
-    recommendation = None
-    if recs:
-        r = recs[0]
-        better_phrase = str(r.get("better_phrase") or r.get("recommendation") or r.get("problem") or "").strip()
-        if better_phrase:
-            recommendation = {
-                "title": str(r.get("criterion_name") or r.get("criterion_code") or "Рекомендация"),
-                "better_phrasing": better_phrase,
-            }
-
-    rows: list[list[str]] = []
-    for idx, item in enumerate(to_fix[:3], start=1):
-        row_recommendation = ""
-        if idx - 1 < len(recs):
-            rec = recs[idx - 1]
-            row_recommendation = str(
-                rec.get("better_phrase")
-                or rec.get("recommendation")
-                or rec.get("problem")
-                or ""
-            ).strip()
-        if not row_recommendation:
-            row_recommendation = str((recommendation or {}).get("better_phrasing") or "").strip()
-        rows.append(
-            [
-                f"{idx}",
-                f"{item.get('label') or 'Момент разговора'}: {item.get('interpretation') or 'Требует уточнения.'}",
-                fallback_fragment if idx == 1 and fallback_fragment else CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                row_recommendation or "Следующий шаг нужно формулировать конкретнее.",
-            ]
-        )
-    if not rows:
-        rows.append(
-            [
-                "1",
-                "Недостаточно данных для детального покадрового разбора звонка.",
-                fallback_fragment or CALL_BREAKDOWN_MISSING_FRAGMENT_NOTE,
-                str((recommendation or {}).get("better_phrasing") or "Повторите разбор после следующего полного запуска."),
-            ]
-        )
-
-    return {
-        "is_placeholder": not stage_steps and not worked and not to_fix,
-        "call_id": str(best_artifact.interaction.id),
-        "client_label": ref["client_label"],
-        "client_phone": ref["client_phone"],
-        "date_label": ref["date_label"],
-        "time_label": ref["time_label"],
-        "client_call_reference": ref["client_call_reference"],
-        "stage_code": focus_stage_code or None,
-        "stage_name": (daily_focus or {}).get("stage_name"),
-        "stage_steps": stage_steps,
-        "worked": worked,
-        "to_fix": to_fix,
-        "recommendation": recommendation,
-        "rows": rows,
-        "summary_line": _call_breakdown_summary_line(ref=ref, evidence_strength=fallback_strength),
-        "source_note": "legacy_fallback",
-        "fallback_evidence_score": best_evidence_score,
-        "fallback_evidence_quality": "weak" if best_evidence_rank else "indirect",
-        "call_breakdown_source": "legacy_fallback",
-        "call_breakdown_evidence_strength": fallback_strength,
-        "call_breakdown_fragment_present": fallback_fragment is not None,
-    }
+    return _empty
 
 
 def _build_problem_call_example(
@@ -17189,7 +18081,7 @@ def _build_call_outcomes_summary(*, artifacts: list[ReportArtifact]) -> dict[str
         "tech_service_count": tech_service,
         "unclassified_count": unclassified,
         "unclassified_by_bucket": unclassified_by_bucket,
-        "source_note": "derived_from_business_outcome_resolver",
+        "source_note": "derived_from_llm_only_visible_call_status",
     }
 
 
@@ -17201,6 +18093,11 @@ def _build_call_outcomes_summary_from_call_list(*, call_list: list[dict[str, Any
     open_count = 0
     tech_service = 0
     unclassified = 0
+    status_not_confirmed_count = 0
+    status_not_confirmed_with_analysis_count = 0
+    status_not_confirmed_missing_llm_count = 0
+    status_not_confirmed_rejected_evidence_count = 0
+    analysis_error_count = 0
     unclassified_by_bucket: dict[str, int] = {}
     for row in call_list:
         status = _final_manager_status_from_call_row(row)
@@ -17212,6 +18109,29 @@ def _build_call_outcomes_summary_from_call_list(*, call_list: list[dict[str, Any
                 or UNCLASSIFIED_MANAGER_STATUS_LABELS["unknown"]
             )
             unclassified_by_bucket[bucket] = unclassified_by_bucket.get(bucket, 0) + 1
+            source = str(row.get("call_list_status_source") or "").strip()
+            display_status = str(row.get("call_list_display_status") or "").strip()
+            is_status_not_confirmed = (
+                display_status == "status_not_confirmed"
+                or source in {"missing_llm_semantic_status", "llm_semantic_status_rejected"}
+            )
+            if is_status_not_confirmed:
+                status_not_confirmed_count += 1
+                if row.get("call_list_analysis_ready"):
+                    status_not_confirmed_with_analysis_count += 1
+                missing_reason = str(
+                    row.get("semantic_status_missing_reason")
+                    or row.get("call_list_status_fallback_reason")
+                    or ""
+                ).strip()
+                if missing_reason == "agreement_missing_evidence":
+                    status_not_confirmed_rejected_evidence_count += 1
+                else:
+                    status_not_confirmed_missing_llm_count += 1
+            if row.get("call_list_analysis_failed") or str(
+                row.get("call_list_unclassified_reason_code") or ""
+            ).startswith("analysis_failed"):
+                analysis_error_count += 1
             continue
         if status == "tech_service":
             tech_service += 1
@@ -17230,7 +18150,13 @@ def _build_call_outcomes_summary_from_call_list(*, call_list: list[dict[str, Any
         "open_count": open_count,
         "tech_service_count": tech_service,
         "unclassified_count": unclassified,
+        "status_not_confirmed_count": status_not_confirmed_count,
+        "status_not_confirmed_with_analysis_count": status_not_confirmed_with_analysis_count,
+        "status_not_confirmed_missing_llm_count": status_not_confirmed_missing_llm_count,
+        "status_not_confirmed_rejected_evidence_count": status_not_confirmed_rejected_evidence_count,
+        "analysis_error_count": analysis_error_count,
         "unclassified_by_bucket": unclassified_by_bucket,
+        "semantic_source_policy": "llm_only_v1",
         "source_note": "derived_from_call_list_display_status",
     }
 
@@ -17377,26 +18303,7 @@ def _build_client_call_reference(
 
 
 def _safe_persisted_transcript_contact_name(artifact: ReportArtifact) -> str | None:
-    """Return a contact name only when persisted transcript metadata states it directly."""
-    metadata = dict(artifact.interaction.metadata_ or {})
-    segments = [dict(item or {}) for item in list(metadata.get("segments") or []) if isinstance(item, dict)]
-    segment_texts = [_clean_display_part(item.get("text")) for item in segments]
-    for index, text in enumerate(segment_texts[:-1]):
-        lowered = text.lower().replace("ё", "е")
-        if "как могу к вам обращаться" not in lowered and "как к вам обращаться" not in lowered:
-            continue
-        candidate = _safe_contact_name_candidate(segment_texts[index + 1])
-        if candidate:
-            return candidate
-
-    full_text = _clean_display_part(" ".join(segment_texts) or artifact.interaction.text)
-    match = re.search(
-        r"(?:как могу к вам обращаться|как к вам обращаться)[^А-Яа-яЁё]{0,40}"
-        r"([А-ЯЁ][А-Яа-яЁё-]{1,30}(?:\s+[А-ЯЁ][А-Яа-яЁё-]{1,30}){0,2})",
-        full_text,
-    )
-    if match:
-        return _safe_contact_name_candidate(match.group(1))
+    """Deprecated fail-closed shim: Report Layer must not extract names from STT."""
     return None
 
 
@@ -17556,6 +18463,7 @@ def _render_manager_daily_text(payload: dict[str, Any]) -> str:
         )
         for row in call_rows[:10]
     ]
+    edo_scope_line = str((payload.get("edo_scope_summary") or {}).get("summary_line") or "").strip()
     return "\n".join(
         [
             header["report_title"],
@@ -17583,6 +18491,7 @@ def _render_manager_daily_text(payload: dict[str, Any]) -> str:
             "",
             "Рекомендации:",
             *recommendation_lines,
+            *(["", edo_scope_line] if edo_scope_line else []),
             "",
             "Короткий список звонков:",
             *call_lines,
@@ -17687,9 +18596,8 @@ def _best_contact(artifacts: list[ReportArtifact]) -> str | None:
         key=lambda item: _extract_score_percent(item.analysis),
         reverse=True,
     )[0]
-    detail = dict((best.analysis.scores_detail or {}) if best.analysis is not None else {})
-    call = dict(detail.get("call") or {})
-    return call.get("contact_name") or call.get("contact_phone") or (best.interaction.metadata_ or {}).get("contact_phone")
+    ref = _artifact_call_reference(best)
+    return ref.get("client_name") or ref.get("client_phone") or ref.get("client_call_reference")
 
 
 def _best_signal_text(

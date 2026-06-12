@@ -68,6 +68,7 @@ This package is additive. It must not change checklist scoring, stage applicabil
 
 ### Grounding rules
 - Use only the transcript and provided segments/metadata.
+- Contact/client name is stricter than other facts: fill `call.contact_name` and `report_evidence.call_report_summary.client_display_name` only when the client's name, FIO, or safe name fragment is explicitly spoken in the STT transcript or STT segments. Never use Bitrix/CRM/telephony metadata name fields such as `metadata.contact_name`, `contact_label`, `customer_name`, `client_name`, `client_display_name`, or similar fields as the source for a client name. If the transcript/segments do not clearly prove the name, use `null`. Phone/date/time may still come from metadata.
 - Every quote and every `dialogue_fragment[].text` must be copied verbatim from the transcript.
 - Every `semantic_case.best_dialogue_fragment[].text` must also be copied verbatim from the transcript.
 - Every `block_candidates.*.supporting_quote`, when present, must be copied verbatim from the transcript.
@@ -214,7 +215,7 @@ These examples show allowed enum values and field shape. Do not copy the example
 ```
 
 ### `call_report_summary`
-Return a compact report summary for every call when enough transcript or metadata exists. Use `null` only when the transcript is too thin to summarize safely.
+Return a compact report summary for every call when enough transcript or non-name metadata exists. Use `null` only when the transcript is too thin to summarize safely.
 
 ```json
 {
@@ -234,16 +235,16 @@ Field rules:
 - `short_topic`: short call essence, max 120 chars. Good examples: `Клиент попросил счёт`, `Клиент хочет посоветоваться`, `Помощь с подписанием`, `Клиент отказался от услуги`, `Клиент попросил отправить КП`, `Клиент попросил материалы в WhatsApp`. Do not use generic labels such as `Продажи`, `Холодный звонок`, or `Разговор с клиентом`.
 - `short_context`: short context, max 280 chars. Examples: `Клиент попросил материалы в WhatsApp и не зафиксировал срок возврата.`, `Клиент готов рассмотреть ЭДО, нужно отправить счёт и уточнить сроки оплаты.`, `Клиент сказал, что текущего решения достаточно.`, `Клиенту помогали с подписанием документа через QR.`
 - `manager_visible_summary`: natural manager-facing call context, max 640 chars. Use 2-4 short sentences when needed: what the client wanted/said, what was agreed or not agreed, and what the manager should remember. This field may carry more meaning than `short_context`; do not force it into a table-like `what/result/action` structure.
-- `client_display_name`: fill only when a name, FIO, or name fragment is explicit in transcript or metadata. Do not invent names. Do not use company/generic words as a name. If uncertain, use `null`. Do not include phone, date, or time here; those are reporting-layer responsibilities.
+- `client_display_name`: fill only when a name, FIO, or name fragment is explicitly spoken in the STT transcript or STT segments. Do not use metadata as a name source. Do not invent names. Do not use company/generic words as a name. If uncertain, use `null`. Do not include phone, date, or time here; those are reporting-layer responsibilities.
 - `client_name_confidence`: use `high|medium|low` only when `client_display_name` is not null; otherwise use `null`.
-- `hotness`: semantic signal only. Use only `hot`, `warm`, or `low`. Never use `rescheduled`, `open`, `agreed`, or `cold`. Reporting remains final authority for deterministic hotness priority.
+- `hotness`: manager-facing semantic priority signal. Use only `hot`, `warm`, or `low`. Never use `rescheduled`, `open`, `agreed`, or `cold`. Reporting may validate, sort, and hide unsafe rows, but it must not invent manager-facing hotness when this field is missing.
 - `hotness_reason`: explain why the contact is semantically hot/warm/low.
 - `manager_next_action`: concrete manager action, for example `Отправить счёт и согласовать дату оплаты.`, `Уточнить, удалось ли обсудить предложение с коллегами.`, `Вернуться к клиенту после указанного срока.`, `Не продолжать коммерческий follow-up, так как клиент отказался.`
 - `suggested_manager_phrase`: phrase from the manager's voice. Do not copy a client quote. Do not start with client words such as `Да, выставляйте счёт`. Use a normal manager opening such as `Добрый день. Возвращаюсь по материалам: удалось обсудить предложение с коллегами?` or `Добрый день. Отправляю счёт, как договорились. Когда удобно сверить сроки оплаты?`
 - If there is no follow-up, set `suggested_manager_phrase=null`.
 - For `refusal`, `tech_service`, and `not_suitable`, usually set `suggested_manager_phrase=null` unless there is an explicit service follow-up.
 
-`call_report_summary` is also a semantic signal, not final report authority. The deterministic reporting layer remains final authority for final outcome, call-list inclusion/exclusion, phone/date/time display, and manager-facing hotness priority.
+`call_report_summary` is the LLM semantic source for call-list context and tomorrow follow-up wording. The reporting layer remains responsible for inclusion/exclusion, phone/date/time display, validation, sorting, counts, and diagnostics, but it must not invent manager-facing outcome meaning or hotness priority when LLM semantic fields are missing.
 
 ### `semantic_case`
 Return one coherent per-call semantic analysis for report usage when the call has enough business meaning. This is the main meaning object for downstream report blocks. It is not a final rendered report block.

@@ -132,16 +132,16 @@ class SituationDayTemplateTests(unittest.TestCase):
             "kind": "table",
             "columns": ["#", "Клиент", "Тип / суть", "Контекст", "Статус"],
             "rows": [["1", "Алия", "Продажи", "Клиент попросил КП", "Договорённость"]],
-            "compact_columns": ["Статус", "В работу", "Когда", "Суть звонка / договорённость"],
-            "compact_rows": [["Договорённость", "Да", "10:00", "Алия. Клиент попросил КП"]],
+            "compact_columns": ["Статус", "Контакт", "Суть звонка", "Итог / обратная связь"],
+            "compact_rows": [["Договорённость", "Алия · 10:00", "Клиент попросил КП", "Итог: договорились отправить КП."]],
         }
 
         visible_text = "\n".join(report_templates._section_to_text_lines(section))
         html_doc = report_templates._render_html_section(section)
 
-        self.assertIn("Статус | В работу | Когда | Суть звонка / договорённость", visible_text)
-        self.assertIn("Договорённость | Да | 10:00 | Алия. Клиент попросил КП", visible_text)
-        self.assertIn("<th>В работу</th>", html_doc)
+        self.assertIn("Статус | Контакт | Суть звонка | Итог / обратная связь", visible_text)
+        self.assertIn("Договорённость | Алия · 10:00 | Клиент попросил КП | Итог: договорились отправить КП.", visible_text)
+        self.assertIn("<th>Контакт</th>", html_doc)
         self.assertNotIn("<th>Тип / суть</th>", html_doc)
 
     def test_call_list_compact_rows_preserve_existing_payload_facts(self) -> None:
@@ -156,6 +156,12 @@ class SituationDayTemplateTests(unittest.TestCase):
                     "call_list_status": "agreed",
                     "call_list_topic": "Клиент попросил КП",
                     "call_list_context": "Договорились отправить КП в WhatsApp.",
+                    "call_feedback_summary": {
+                        "render_text": (
+                            "Итог: договорились отправить КП. Оценка: 4.0/5. "
+                            "Сильное: менеджер уточнил запрос. Улучшить: закрепить срок ответа."
+                        ),
+                    },
                 }
             ],
             call_tomorrow_contacts=[
@@ -170,7 +176,8 @@ class SituationDayTemplateTests(unittest.TestCase):
         self.assertEqual(rows[0][1], "Алия · 10:00")
         self.assertIn("Клиент попросил КП", rows[0][2])
         self.assertIn("Договорились отправить КП в WhatsApp", rows[0][2])
-        self.assertIn("конкретном следующем шаге", rows[0][3])
+        self.assertIn("Оценка: 4.0/5", rows[0][3])
+        self.assertIn("Сильное: менеджер уточнил запрос", rows[0][3])
 
     def test_call_list_compact_rows_use_rich_context_without_220_char_truncation(self) -> None:
         report_templates = _load_report_templates_module()
@@ -196,6 +203,40 @@ class SituationDayTemplateTests(unittest.TestCase):
 
         self.assertIn("после внутренних согласований", rows[0][2])
         self.assertNotIn("...", rows[0][2])
+
+    def test_call_list_missing_llm_semantic_status_uses_neutral_labels(self) -> None:
+        report_templates = _load_report_templates_module()
+
+        rows = report_templates._build_call_list_compact_rows(
+            call_list_raw=[
+                {
+                    "interaction_id": "call-1",
+                    "client_call_reference": "Алия · 10:00",
+                    "status": "agreed",
+                    "deadline": "2026-06-11",
+                    "reason": "Клиент попросил КП и договорился вернуться завтра.",
+                    "call_type": "sales",
+                    "scenario_type": "follow_up",
+                    "call_list_status_source": "missing_llm_semantic_status",
+                }
+            ],
+            call_tomorrow_contacts=[
+                {
+                    "interaction_id": "call-1",
+                    "client_call_reference": "Алия · 10:00",
+                    "priority_label": "Высокий",
+                    "deadline": "2026-06-11",
+                    "reason": "Отправить КП клиенту.",
+                }
+            ],
+        )
+
+        self.assertEqual(rows[0][0], "Статус не подтвержден")
+        self.assertEqual(rows[0][2], "Суть не сформирована LLM")
+        self.assertEqual(rows[0][3], "Нет LLM-комментария")
+        self.assertNotIn("Договор", " | ".join(rows[0]))
+        self.assertNotIn("Высокий", rows[0][0])
+        self.assertNotIn("Отправить КП", rows[0][3])
 
     def test_manager_daily_pdf_insufficient_situation_day_hides_detail_rows(self) -> None:
         report_templates = _load_report_templates_module()

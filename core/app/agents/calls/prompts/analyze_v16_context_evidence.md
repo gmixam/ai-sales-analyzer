@@ -124,7 +124,8 @@ Keep the existing schema compatible:
 - preserve `classification`, `summary`, `score_by_stage`, `strengths`,
   `gaps`, `recommendations`, `agreements`, `follow_up`,
   `evidence_fragments`, `report_evidence_version`, and `report_evidence`;
-- keep `report_evidence.business_outcome` as a semantic signal only;
-- keep deterministic reporting as final authority for final outcome, report
-  scope, hotness, and delivery;
+- keep `report_evidence.business_outcome` as an LLM semantic source;
+- keep deterministic reporting responsible for report scope, validation,
+  sorting, counts, formatting, delivery, and diagnostics; manager-facing
+  outcome meaning and hotness must come from LLM semantic fields only;
 - use existing enum values only.

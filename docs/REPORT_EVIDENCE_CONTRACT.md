@@ -72,9 +72,11 @@ Reporting layer -> deterministic selection, validation, routing, rendering, deli
 **Reporting layer**
 - Is deterministic and is not an AI analysis layer.
 - Selects report scope, report-day calls, `meaningful_calls`, and `coaching_core`.
-- Runs `BusinessOutcomeResolver` for final manager-facing outcome.
+- Uses LLM semantic fields as the only source of manager-facing business meaning.
+- May keep `BusinessOutcomeResolver` only as diagnostics/counter context; it
+  must not create final manager-facing outcome/status/hotness/context.
 - Validates and ranks `report_evidence.block_candidates`, `report_evidence.semantic_case`, and legacy `report_evidence` candidates.
-- Falls back to Step 8W legacy evidence logic when `report_evidence` is missing or invalid.
+- Fails closed to neutral missing-LLM states when `report_evidence` is missing or invalid.
 - Owns final block eligibility, evidence gates, role boundaries and visible
   renderer shape.
 - Keeps `Разбор звонка` from duplicating `Ситуацию дня`.
@@ -161,11 +163,11 @@ Used by `ИТОГ ДНЯ`, `call_list` / visible appendix `ПРИЛОЖЕНИЕ:
 ```
 
 Rules:
-- Current `BusinessOutcomeResolver` remains the deterministic source for final report status.
-- `report_evidence.business_outcome` is a structured LLM2 signal, not final authority yet.
-- Future resolver versions may use `report_evidence.business_outcome` as the primary semantic signal, but final resolver priority still wins when technical blockers, service/refusal rules, or deterministic conflict rules apply.
-- If LLM2 suggests `agreement` but the final resolver finds explicit refusal, final status is `refusal`.
-- If LLM2 marks `not_suitable` but transcript/evidence contains service help, final status is `tech_service`.
+- `report_evidence.business_outcome` is an LLM semantic source for visible report status.
+- `scores_detail.status_details` may be preferred when present because it is the latest LLM2D status detail contract.
+- `BusinessOutcomeResolver` must not override or create the visible status.
+- If LLM2 does not provide a valid status, the report must show a neutral state such as `Без подтвержденного статуса`, not a resolver-inferred outcome.
+- If LLM2 suggests `agreement` without evidence/details, the report must not show it as `Договорённость`; it should expose `agreement_missing_evidence`.
 
 Allowed statuses:
 - `agreement` — real commercial next step.
@@ -202,7 +204,7 @@ Field intent:
   call needs more than a compressed `short_context`; max `640` chars. It must
   remain concise, factual, Russian, and grounded in transcript/metadata. It is
   preferred by the report layer before `short_context` when it passes validation.
-- `client_display_name` — name/FIO/name fragment only if explicitly present in transcript or metadata; do not invent; use `null` if uncertain.
+- `client_display_name` — name/FIO/name fragment only if explicitly spoken in the STT transcript or STT segments; do not use metadata name fields, do not invent, and use `null` if uncertain.
 - `client_name_confidence` — `high|medium|low`; omit or set `null` when `client_display_name=null`.
 - `hotness` — semantic signal only: `hot|warm|low`. `rescheduled` is a final deterministic status/category, not LLM hotness.
 - `hotness_reason` — why the model sees this signal; max `280` chars.
@@ -216,8 +218,10 @@ Examples:
 - `suggested_manager_phrase`: `Добрый день. Возвращаюсь по материалам: удалось обсудить предложение с коллегами?`
 
 Authority rules:
-- Reporting layer remains final authority for final outcome, call-list inclusion/exclusion, and manager-facing tomorrow hotness priority.
-- `call_report_summary.hotness` is a semantic signal that future reporting steps may use as input; it must not override deterministic Step 8AH-3 hotness rules by itself.
+- Reporting layer remains responsible for call-list inclusion/exclusion, phone/date/time display, validation, sorting, counts, and diagnostics.
+- Manager-facing final outcome meaning and tomorrow hotness/priority come only from LLM semantic fields.
+- `call_report_summary.hotness` is the preferred LLM semantic priority signal for tomorrow follow-up when present and valid.
+- If LLM hotness/action/context is missing, reporting must show a neutral missing state or exclude the row; it must not infer hotness from keywords.
 - Phone/date/time remain the reporting layer's responsibility through the unified client/call reference contract.
 - For `refusal`, `tech_service`, and `not_suitable`, `suggested_manager_phrase` should usually be `null`; a non-null phrase is allowed only for explicit service follow-up and should be treated carefully by the validator/reporting layer.
 
@@ -802,8 +806,8 @@ Current implemented source policy:
 - validate each report-day `meaningful_calls` analysis with `validate_report_evidence(scores_detail, transcript)`;
 - if `report_evidence.semantic_case` exists, is valid, usable, grounded, aligned with the daily focus, and passes the block-specific suitability gate, prefer it for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, and `ГОЛОС КЛИЕНТА`;
 - if no usable semantic case exists, prefer existing valid `report_evidence v1` candidates for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`, and follow-up candidate text enrichment;
-- if it is missing or invalid, use Step 8W legacy fallback;
-- keep `BusinessOutcomeResolver` as final authority for `payload.call_list[]`, outcome counters, money rules, and tomorrow inclusion/exclusion;
+- if it is missing or invalid, use neutral missing-LLM diagnostics instead of creating manager-facing business meaning;
+- keep `BusinessOutcomeResolver` only as diagnostics/counter context, not as final authority for `payload.call_list[]`, outcome counters, money rules, or tomorrow manager-facing meaning;
 - expose diagnostics for availability, validity, errors, warnings, version, semantic-case usage, filter reasons, and selected source.
 
 Current diagnostic source values:
@@ -813,26 +817,25 @@ Current diagnostic source values:
 
 `payload.report_evidence_diagnostics.calls[]` records `semantic_case_available`, `semantic_case_valid`, `semantic_case_report_block_fit`, `semantic_case_used`, `semantic_case_filtered_reason`, and `report_evidence_source` for each report-day meaningful call. `payload.report_evidence_diagnostics.blocks` records source selection plus selected/rejected semantic candidates for `situation_day`, `call_breakdown`, `voice_of_customer`, `additional_situations`, and `call_tomorrow`.
 
-This integration does not make `report_evidence.business_outcome` final authority. It remains a semantic signal until a future resolver step explicitly consumes it under deterministic priority rules.
+This integration treats LLM semantic fields as the only manager-facing business-meaning source. Reporting may validate, sort, aggregate, and hide unsafe rows, but it must not create replacement business meaning.
 
 ## BusinessOutcomeResolver Synchronization
 
 Current state:
-- `BusinessOutcomeResolver` is the final deterministic source for manager-facing `call_list[]`, `call_outcomes_summary`, money block, and tomorrow filtering.
+- `BusinessOutcomeResolver` is legacy deterministic logic retained only for diagnostics and migration comparison.
 - It uses persisted transcript, latest analysis, classification, follow-up, fail reason, and metadata.
 
 Target state:
-- `report_evidence.business_outcome` becomes the primary semantic input when present and valid.
-- Deterministic priority and safety rules remain in the resolver.
-- The resolver records the final status plus a reason code showing whether the decision came from `report_evidence`, transcript fallback, classification/follow-up, or technical blocker.
+- LLM semantic fields (`status_details`, `report_evidence.business_outcome`, `call_report_summary`, `follow_up_candidates`, `semantic_case`, and `block_candidates`) are the only manager-facing semantic inputs.
+- Reporting records neutral missing-LLM states when required semantic fields are absent.
+- Resolver diagnostics may be recorded for audit, but never as manager-facing meaning.
 
 Conflict examples:
 
-| LLM2 signal | Deterministic evidence | Final resolver status |
+| LLM2 signal | Missing/invalid LLM evidence | Manager-facing result |
 |---|---|---|
-| `open` | explicit refusal quote | `refusal` |
-| `not_suitable` | document signing / NCALayer help | `tech_service` |
-| `agreement` | no concrete next commercial step | `open` or `rescheduled` |
+| missing status | resolver sees keyword | `Без подтвержденного статуса` |
+| `agreement` | no concrete next commercial step/evidence | `Без подтвержденной договоренности` |
 | any business status | no transcript | `Без транскрипта` |
 | any business status | provider/contract error | `Ошибка анализа` / `Ошибка провайдера` |
 
@@ -898,13 +901,13 @@ Choose top situations where:
 
 ### Follow-Up
 
-Use `semantic_case.recommended_next_action`, `customer_signal`, and `why_this_call_matters` only for wording enrichment when aligned with the final resolver status.
+Use `semantic_case.recommended_next_action`, `customer_signal`, and `why_this_call_matters` only for wording enrichment when aligned with LLM-confirmed visible status and evidence.
 
-Use `report_evidence.follow_up_candidates` plus final resolver status:
-- include only final `agreement`, `rescheduled`, or `open`;
+Use `report_evidence.follow_up_candidates` plus LLM-confirmed visible status:
+- include only LLM-confirmed `agreement`, `rescheduled`, or `open`;
 - exclude `refusal`, `tech_service`, `not_suitable`, and unclassified technical buckets;
-- final resolver status wins over LLM follow-up if conflict;
-- final `open` renders as open, not hot agreement.
+- if LLM status/follow-up conflict or evidence is missing, render a neutral missing-LLM state or exclude the row;
+- final LLM `open` renders as open, not hot agreement.
 
 ## Backward Compatibility
 

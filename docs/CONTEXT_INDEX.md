@@ -13,22 +13,28 @@ audit-fix pass.
    - текущий статус, последняя безопасная точка, что можно запускать дальше.
 2. [docs/PILOT_OPERATIONS.md](PILOT_OPERATIONS.md)
    - ежедневный порядок пилотирования, проверки, delivery gate.
-3. [docs/RUNTIME_PROFILES.md](RUNTIME_PROFILES.md)
+3. [docs/PILOT_BACKLOG.md](PILOT_BACKLOG.md)
+   - актуальная очередь задач пилота, включая Bitrix sync, расписание, РОП
+     delivery и возврат скрытых блоков.
+4. [docs/RUNTIME_PROFILES.md](RUNTIME_PROFILES.md)
    - какой runtime-профиль использовать и как не перепутать API/subagents.
-4. [docs/MVP1_PILOT_METRICS_MEASUREMENTS.md](MVP1_PILOT_METRICS_MEASUREMENTS.md)
+5. [docs/MVP1_PILOT_METRICS_MEASUREMENTS.md](MVP1_PILOT_METRICS_MEASUREMENTS.md)
    - KPI, GO/NO-GO, экономика прогона и правила заполнения замеров.
-5. [docs/AI_PROVIDER_ROUTING.md](AI_PROVIDER_ROUTING.md)
+6. [docs/AI_PROVIDER_ROUTING.md](AI_PROVIDER_ROUTING.md)
    - provider pools, модели, env и route-plan checks.
-6. [docs/MANUAL_REPORTING_PILOT.md](MANUAL_REPORTING_PILOT.md)
+7. [docs/MANUAL_REPORTING_PILOT.md](MANUAL_REPORTING_PILOT.md)
    - manual reporting pipeline и режимы запуска отчетов.
-7. [docs/PROGRESS.md](PROGRESS.md)
+8. [docs/PROGRESS.md](PROGRESS.md)
    - хронология выполненных этапов.
-8. [docs/DECISIONS.md](DECISIONS.md)
+9. [docs/DECISIONS.md](DECISIONS.md)
    - архитектурные и операционные решения.
 
 Если задача связана с качеством ежедневного отчета, дополнительно открыть:
 
 - [docs/MANAGER_REPORT_FEEDBACK.md](MANAGER_REPORT_FEEDBACK.md)
+- [docs/MANAGER_DAILY_CALL_FEEDBACK_MINI_TZ.md](MANAGER_DAILY_CALL_FEEDBACK_MINI_TZ.md)
+- [docs/LLM2_STATUS_DETAILS_MINI_TZ.md](LLM2_STATUS_DETAILS_MINI_TZ.md)
+- [docs/LLM_ONLY_SEMANTIC_REPORTING_TZ.md](LLM_ONLY_SEMANTIC_REPORTING_TZ.md)
 - [docs/MANAGER_DAILY_SELECTION_MODEL.md](MANAGER_DAILY_SELECTION_MODEL.md)
 - [docs/REPORT_EVIDENCE_CONTRACT.md](REPORT_EVIDENCE_CONTRACT.md)
 - [docs/LLM2_MANAGER_DAILY_INSTRUCTIONS_MAP.md](LLM2_MANAGER_DAILY_INSTRUCTIONS_MAP.md)
@@ -40,9 +46,13 @@ audit-fix pass.
 ## Текущие правила пилота
 
 - Compact LLM2 input является runtime default: `AI_LLM2_INPUT_PROFILE=compact`.
+- Текущие задачи пилота ведутся в `docs/PILOT_BACKLOG.md`.
 - Business delivery менеджерам запускать только после operator review или
   явного указания пользователя.
 - После каждого полного дневного прогона фиксировать KPI и стоимость в USDT.
+- Комментарии менеджеров/РОП сначала фиксировать в
+  `docs/MANAGER_REPORT_FEEDBACK.md`; системные проблемы связывать с
+  `docs/PILOT_BACKLOG.md`.
 - `review_packages/` и `core/review_packages/` являются локальными runtime
   артефактами, а не source of truth.
 - Исторические временные планы и длинные аудиты лежат в `docs/archive/`.

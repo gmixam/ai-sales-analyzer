@@ -35,6 +35,7 @@ const {
   Footer,
   VerticalAlign,
   PageBreak,
+  PageOrientation,
   ShadingType,
 } = require("docx");
 
@@ -724,6 +725,7 @@ function emptyStateData(payload) {
     meaningful_calls: 0,
     day_score: 0,
     day_funnel: null,
+    edo_scope_summary: {},
     coaching_window: null,
     outcomes: { total: 0, agreed: 0, rescheduled: 0, refusal: 0, open: 0, tech_service: 0, unclassified_by_bucket: {}, unclassified_note: "" },
     money_on_table: { body: "", highlight_line: "", reason_line: "", note: "", hidden: true },
@@ -938,12 +940,17 @@ function dataFromBundle(bundle) {
   const smMeaningful = safeNumber(sm.meaningful_calls_total, null);
   const includedInReport = safeNumber(sm.included_in_report_total, null);
   const exclusionReasons = sm.exclusion_reasons || {};
+  const dayExclusionReasons = sm.day_exclusion_reasons || {};
+  const processingReasons = sm.processing_reasons || {};
   const dayFunnel = rawTotal !== null ? {
     raw: rawTotal,
     meaningful: smMeaningful !== null ? smMeaningful : meaningfulCalls,
     excluded: rawTotal - (smMeaningful !== null ? smMeaningful : meaningfulCalls),
     in_report: includedInReport !== null ? includedInReport : null,
     reasons: exclusionReasons,
+    day_reasons: dayExclusionReasons,
+    processing_reasons: processingReasons,
+    edo_scope_line: payload.edo_scope_summary?.summary_line || "",
   } : null;
 
   // Coaching window note
@@ -988,6 +995,7 @@ function dataFromBundle(bundle) {
     day_score: safeNumber(reportHeader.day_score),
     selection_note: reportHeader.selection_note || "",
     day_funnel: dayFunnel,
+    edo_scope_summary: payload.edo_scope_summary || {},
     coaching_window: coachingWindow,
     outcomes: {
       total: meaningfulCalls,
@@ -1217,12 +1225,12 @@ function cell(text, opts = {}) {
     borders,
     verticalAlign: vertAlign,
     margins: { top: 60, bottom: 60, left: 80, right: 80 },
-    children: [
+    children: String(text).split(/\n+/).map((line) =>
       new Paragraph({
         alignment: align,
         children: [
           new TextRun({
-            text: String(text),
+            text: String(line),
             bold,
             size,
             color,
@@ -1230,9 +1238,9 @@ function cell(text, opts = {}) {
             italics: italic,
           }),
         ],
-        spacing: { before: 0, after: 0 },
-      }),
-    ],
+        spacing: { before: 0, after: 40 },
+      })
+    ),
   };
 
   if (shading) cellOpts.shading = shading;
@@ -1366,38 +1374,47 @@ function cellParagraphs(paras, opts = {}) {
 // ──────────────────────────────────────────────────────────────
 
 function buildDayFunnelNote() {
-  // A: day funnel line
   const f = DATA.day_funnel;
   if (!f || f.raw === null) return null;
   const excluded = f.raw - f.meaningful;
-  const parts = [];
-  parts.push(`найдено в телефонии — ${f.raw}`);
-  // Show meaningful count only when it differs from raw (i.e. some calls excluded)
-  if (f.meaningful !== null && excluded > 0) {
-    parts.push(`содержательных — ${f.meaningful}`);
-    parts.push(`исключено из списка дня — ${excluded}`);
-  }
-  const line = "Воронка дня: " + parts.join("; ") + ".";
-
-  // Exclusion reasons (only if they sum ≤ excluded and non-zero)
   const reasonLabels = {
     too_short_or_no_speech: "слишком короткие / без речи",
     ivr_or_autoanswer: "IVR / автоответчик",
+  };
+  const processingLabels = {
     support_internal: "служебные / внутренние",
     not_enough_analysis: "нет готового разбора",
     not_selected_for_core_review: "не вошли в коучинговый отбор",
   };
-  const reasons = f.reasons || {};
+  const legacyReasons = f.reasons || {};
+  const reasons = Object.keys(f.day_reasons || {}).length > 0
+    ? f.day_reasons
+    : Object.fromEntries(Object.keys(reasonLabels).map((code) => [code, legacyReasons[code] || 0]));
   const reasonParts = Object.entries(reasonLabels)
     .map(([code, label]) => ({ label, count: safeNumber(reasons[code], 0) }))
     .filter((r) => r.count > 0);
   const reasonSum = reasonParts.reduce((s, r) => s + r.count, 0);
-  let reasonLine = null;
-  if (reasonParts.length > 0 && reasonSum <= excluded + 1) {
-    reasonLine = "Почему исключено: " + reasonParts.map((r) => `${r.label} — ${r.count}`).join(", ") + ".";
+  let reasonSuffix = "";
+  if (excluded > 0 && reasonParts.length > 0 && reasonSum <= excluded) {
+    reasonSuffix = ` (${reasonParts.map((r) => r.label).join(" / ")})`;
   }
+  const processingReasons = Object.keys(f.processing_reasons || {}).length > 0
+    ? f.processing_reasons
+    : Object.fromEntries(Object.keys(processingLabels).map((code) => [code, legacyReasons[code] || 0]));
+  const processingParts = Object.entries(processingLabels)
+    .map(([code, label]) => ({ label, count: safeNumber(processingReasons[code], 0) }))
+    .filter((r) => r.count > 0);
+  const processingSuffix = processingParts.length > 0
+    ? ` (${processingParts.map((r) => r.label).join(" / ")})`
+    : "";
+  const inReport = safeNumber(f.in_report, 0);
+  const notInCoaching = Math.max(0, safeNumber(f.meaningful, 0) - inReport);
+  const notInCoachingSuffix = notInCoaching > 0 ? processingSuffix : "";
+  const line = `Воронка дня: найдено в телефонии — ${f.raw}; содержательных — ${f.meaningful}; исключено из списка дня — ${excluded}${reasonSuffix}.`;
+  const processingLine = `Из ${f.meaningful} содержательных: не вошло в коучинговый разбор — ${notInCoaching}${notInCoachingSuffix}, в коучинговый разбор вошло — ${inReport}.`;
+  const edoScopeLine = cleanText(f.edo_scope_line || DATA.edo_scope_summary?.summary_line);
 
-  return { line, reasonLine };
+  return { line, reasonLine: null, processingLine, edoScopeLine };
 }
 
 function buildCoachingWindowNote() {
@@ -1414,11 +1431,6 @@ function buildCoachingWindowNote() {
     }
     note += " В список ниже включены только звонки отчётного дня.";
     return note;
-  }
-
-  // Single-day window: show coaching core count if it differs from meaningful_calls
-  if (inReport !== null && inReport < DATA.meaningful_calls) {
-    return `В коучинговый разбор вошло ${inReport} из ${DATA.meaningful_calls} звонков дня.`;
   }
 
   return null;
@@ -1486,12 +1498,26 @@ function buildShapka() {
     paras.push(new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [new TextRun({ text: funnelData.line, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
-      spacing: { before: 0, after: funnelData.reasonLine ? 20 : (coachingNote ? 20 : 100) },
+      spacing: { before: 0, after: (funnelData.reasonLine || funnelData.processingLine || coachingNote) ? 20 : 100 },
     }));
     if (funnelData.reasonLine) {
       paras.push(new Paragraph({
         alignment: AlignmentType.CENTER,
         children: [new TextRun({ text: funnelData.reasonLine, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
+        spacing: { before: 0, after: (funnelData.processingLine || coachingNote) ? 20 : 100 },
+      }));
+    }
+    if (funnelData.processingLine) {
+      paras.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: funnelData.processingLine, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
+        spacing: { before: 0, after: (funnelData.edoScopeLine || coachingNote) ? 20 : 100 },
+      }));
+    }
+    if (funnelData.edoScopeLine) {
+      paras.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: funnelData.edoScopeLine, size: SZ.meta, color: COLORS.gray, font: "Arial" })],
         spacing: { before: 0, after: coachingNote ? 20 : 100 },
       }));
     }
@@ -2433,12 +2459,12 @@ function buildPozvoni() {
 // ──────────────────────────────────────────────────────────────
 
 function buildSpisokZvonkov() {
-  const tableWidth = 10200;
+  const tableWidth = 15100;
   const widths = {
     status: { size: 1800, type: WidthType.DXA },
     contact: { size: 1800, type: WidthType.DXA },
-    callEssence: { size: 3600, type: WidthType.DXA },
-    agreement: { size: 3000, type: WidthType.DXA },
+    callEssence: { size: 5500, type: WidthType.DXA },
+    agreement: { size: 6000, type: WidthType.DXA },
   };
   const columnWidths = [
     widths.status.size,
@@ -2459,7 +2485,7 @@ function buildSpisokZvonkov() {
       headCell("Статус", { width: widths.status, align: AlignmentType.CENTER }),
       headCell("Контакт", { width: widths.contact, align: AlignmentType.LEFT }),
       headCell("Суть звонка", { width: widths.callEssence, align: AlignmentType.LEFT }),
-      headCell("Договоренность", { width: widths.agreement, align: AlignmentType.LEFT }),
+      headCell("Итог / обратная связь", { width: widths.agreement, align: AlignmentType.LEFT }),
     ],
   });
 
@@ -2603,7 +2629,34 @@ async function main() {
     spacing: { before: 0, after: 0 },
   });
 
-  const children = [
+  const portraitPage = {
+    size: {
+      width: 11906,
+      height: 16838,
+      orientation: PageOrientation.PORTRAIT,
+    },
+    margin: {
+      top: 850,
+      right: 850,
+      bottom: 1200,
+      left: 850,
+    },
+  };
+  const landscapePage = {
+    size: {
+      width: 11906,
+      height: 16838,
+      orientation: PageOrientation.LANDSCAPE,
+    },
+    margin: {
+      top: 850,
+      right: 850,
+      bottom: 1200,
+      left: 850,
+    },
+  };
+
+  const mainChildren = [
     // Block 1
     ...buildShapka(),
     // Block 2
@@ -2622,11 +2675,9 @@ async function main() {
     ...buildChellendj(),
     // Block 9
     ...(DATA.call_tomorrow_hidden ? [] : buildPozvoni()),
-    // Block 10
-    ...buildSpisokZvonkov(),
-    // Block 11
-    ...buildStatusLegend(),
   ];
+  const callListChildren = buildSpisokZvonkov();
+  const legendChildren = buildStatusLegend();
 
   const doc = new Document({
     creator: "AI Sales Analyzer",
@@ -2635,18 +2686,7 @@ async function main() {
       {
         properties: {
           titlePage: true,
-          page: {
-            size: {
-              width: 11906,
-              height: 16838,
-            },
-            margin: {
-              top: 850,
-              right: 850,
-              bottom: 1200,
-              left: 850,
-            },
-          },
+          page: portraitPage,
         },
         footers: {
           // Empty footer on first page
@@ -2654,7 +2694,25 @@ async function main() {
           // Confidentiality footer on all subsequent pages
           default: new Footer({ children: [footerPara] }),
         },
-        children,
+        children: mainChildren,
+      },
+      {
+        properties: {
+          page: landscapePage,
+        },
+        footers: {
+          default: new Footer({ children: [footerPara] }),
+        },
+        children: callListChildren,
+      },
+      {
+        properties: {
+          page: portraitPage,
+        },
+        footers: {
+          default: new Footer({ children: [footerPara] }),
+        },
+        children: legendChildren,
       },
     ],
   });

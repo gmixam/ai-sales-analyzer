@@ -964,6 +964,9 @@ class AIProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("quality_rules", compact)
         self.assertNotIn("output_contract", compact)
         self.assertEqual(compact["input_profile"], "compact")
+        self.assertIn("status_details_contract", compact)
+        self.assertIn("agreement", compact["status_details_contract"]["structures"])
+        self.assertIn("service", compact["status_details_contract"]["status_enum"])
         self.assertIn("scoring_context", compact)
         self.assertEqual(
             compact["scoring_context"]["stage_scores"][0]["stage_code"],

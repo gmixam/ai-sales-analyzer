@@ -7,8 +7,9 @@ headings, routing notes, or report text.
 
 ## Purpose
 
-Produce final normalized analysis, recommendations, and a universal evidence
-pack using only proven or safely softened proof cards from LLM-2C.
+Produce final normalized analysis, a compact coaching decision, legacy
+recommendations, and a universal evidence pack using only proven or safely
+softened proof cards from LLM-2C.
 
 ## Input
 
@@ -18,6 +19,7 @@ The input is one JSON object. It may be the legacy full profile:
 {
   "call_id": "string",
   "llm2a_artifact": {},
+  "edo_scope": {},
   "llm2b_artifact": {},
   "llm2c_artifact": {},
   "mvp1_contract_shape": {},
@@ -32,6 +34,13 @@ or the compact profile:
   "input_profile": "compact",
   "call_id": "string",
   "business_outcome_signal": {},
+  "edo_scope": {
+    "sales_scoring_scope": "full|partial|none|unclear",
+    "scope_reason": "edo_sales|edo_service|legal_direction|tech_support|internal_or_wrong_call|mixed|insufficient_data|other",
+    "applicable_part": "string|null",
+    "expected_manager_action": "sell|transfer|support|clarify|close_service_issue|keep_relationship|no_action|other",
+    "evidence_ids": ["ev_001"]
+  },
   "outcome_facts": {
     "business_outcome": {},
     "follow_up": {}
@@ -63,13 +72,21 @@ cards, and explicit outcome facts.
   notes, summaries, strengths, gaps, and manager-facing text in Russian. Keep
   enum values, ids, field names, and exact transcript quotes unchanged.
 - Use stable recommendation ids: `rec_001`, `rec_002`, ...
-- Create recommendations only from proof cards with
-  `proof_status="proven"` or `proof_status="softened"`.
-- A recommendation must reference one `proof_id`.
+- Create legacy improvement recommendations only from manager-gap proof cards
+  with `proof_status="proven"` or `proof_status="softened"`.
+- A legacy improvement recommendation must reference one `proof_id`.
 - Do not create new claims, gaps, scenes, quotes, or proof cards.
 - Do not use rejected or insufficient proof cards for confident
   manager-facing guidance.
 - Do not strengthen a softened claim back into a hard claim.
+- Scores, gaps, proof cards, `edo_scope`, and `status_details` are input
+  signals for the coaching decision. They do not automatically create a
+  recommendation or force manager-facing advice.
+- Never create an `Улучшить`/improvement recommendation only because a score is
+  low, a stage column exists in the report, or a gap candidate was mentioned.
+- Use LLM-2A `edo_scope` when deciding recommendation content. Do not redefine
+  the call scope or turn service, legal, support, internal/wrong-call,
+  out-of-scope, or unclear calls into sales failures.
 - Do not select, name, fit, route, or prepare report blocks.
 - Do not emit `block_candidates`, `report_block_fit`, or report section names
   such as `situation_day`, `call_breakdown`, `voice_of_customer`, or
@@ -98,6 +115,18 @@ Return this JSON shape:
       "stage_code": "string"
     }
   ],
+  "coaching_decision": {
+    "decision": "improve|maintain|no_comment",
+    "title": "Улучшить|Поддерживать|Корректно|null",
+    "text": "string|null",
+    "reason": "string",
+    "based_on": {
+      "stage_code": "string|null",
+      "criterion_codes": ["string"],
+      "proof_ids": ["proof_001"],
+      "evidence_ids": ["ev_001"]
+    }
+  },
   "universal_evidence_pack": {
     "proof_cards": [],
     "scenes": [],
@@ -115,6 +144,14 @@ Return this JSON shape:
     "recommendations": [],
     "agreements": [],
     "follow_up": {},
+    "status_details": {
+      "status": "agreement|rescheduled|refusal|open|service",
+      "agreement": null,
+      "rescheduled": null,
+      "refusal": null,
+      "open": null,
+      "service": null
+    },
     "evidence_fragments": [],
     "report_evidence_version": "v1",
     "report_evidence": {}
@@ -157,10 +194,134 @@ Return this JSON shape:
 - Do not convert vague availability such as "можете обращаться" into a
   callback, agreement, or follow-up.
 
+## Coaching Decision
+
+Return exactly one compact `coaching_decision` for the call:
+
+- `decision="improve"`: choose only when there is a proven or safely softened
+  important manager gap, the gap is applicable to the manager's role and call
+  scope, and it could plausibly affect the call result. `title` must be
+  `Улучшить`; `text` must be a short report-ready action tied to the call; and
+  `based_on.proof_ids` must include the proof card used by the legacy
+  recommendation.
+- `decision="maintain"`: choose when no important applicable gap is proven, but
+  there is a proven or safely softened `strong_practice` or clearly useful
+  manager action worth reinforcing. Use `title="Поддерживать"` for commercial
+  best practice or `title="Корректно"` for confirmed service/transfer/support
+  behavior. `text` must describe what to keep doing, not disguise a criticism.
+- `decision="no_comment"`: choose when there is neither a proven important gap
+  nor a specific strong action worth reinforcing. Set `title=null`,
+  `text=null`, and explain the absence briefly in `reason`.
+
+Simple decision logic:
+
+```text
+Proven important gap? -> improve
+No gap, useful action? -> maintain
+Neither gap nor strong action? -> no_comment
+```
+
+Do not force improvement:
+
+- A low score, weak stage count, report column, open status, missing follow-up,
+  or gap candidate is only a signal to inspect proof. It is not enough for
+  `decision="improve"`.
+- If the relevant proof card is `rejected` or `insufficient`, that gap cannot
+  become `Улучшить`; choose `maintain` if a confirmed strong action exists, or
+  `no_comment`.
+- If the only possible advice is generic, such as "лучше выявлять
+  потребности", and it is not concretely connected to this call, choose
+  `no_comment` or a grounded `maintain`.
+- For `edo_scope.sales_scoring_scope="none"` or `"unclear"`, do not create a
+  sales-push decision. `maintain`/`Корректно` is allowed only when the
+  service, transfer, support, clarification, or relationship behavior is
+  confirmed by proof/evidence.
+
+Legacy `recommendations` are the compatibility view for `decision="improve"`.
+When `decision` is `maintain` or `no_comment`, return an empty top-level
+`recommendations` list unless a valid non-improvement compatibility contract is
+explicitly supplied in the input.
+
+## EDO Scope For Recommendations
+
+Use `edo_scope` as the recommendation boundary:
+
+- `sales_scoring_scope="full"` and `scope_reason="edo_sales"`: sales coaching
+  recommendations may address proven or softened gaps in the applicable sales
+  stages.
+- `sales_scoring_scope="partial"`: separate service/out-of-scope context from
+  the sales part. Recommend only for the sales portion named in
+  `edo_scope.applicable_part`, and preserve the non-sales context.
+- `sales_scoring_scope="none"`: do not recommend "sell harder", "identify the
+  need", "close the deal", or similar sales-push actions. For
+  `tech_support`, recommend helping, transferring to support, or confirming the
+  technical resolution. For `legal_direction`, recommend transferring to the
+  legal direction or clarifying the responsible owner. For `edo_service`,
+  recommend quality of support, relationship maintenance, and closing the
+  service issue.
+- `sales_scoring_scope="unclear"`: avoid hard manager-facing conclusions and
+  use cautious wording tied to missing evidence.
+- For `sales_scoring_scope="none"` or `"unclear"`, never emit sales-push
+  wording in `coaching_decision`, legacy `recommendations`, or compatibility
+  fields. A confirmed `maintain` decision may use `Корректно` for service,
+  transfer, support, clarification, relationship maintenance, or service
+  closure.
+
+Recommendations must not duplicate `business_outcome`, `status_details`, or
+the full `evidence_ledger`. Use `edo_scope.evidence_ids`, proof ids, and compact
+references. Do not narrow the call meaning; use the nuance already present in
+`partial`, `other`, `unclear`, `applicable_part`, and
+`expected_manager_action`.
+
+## `status_details`
+
+Add `final_normalized_analysis.status_details` for the final call status.
+Use `business_outcome_signal.status` as the source status and do not change the
+status. Map `tech_service` to `service`. Fill only the structure that matches
+the current status; all other status structures must be `null`. Unknown facts
+must be `null`, not invented.
+
+Shapes:
+
+```json
+{
+  "status": "agreement",
+  "agreement": {
+    "type": "invoice|payment|presentation|demo|cp|contract|other|null",
+    "what_agreed": "string|null",
+    "manager_commitment": "string|null",
+    "client_commitment": "string|null",
+    "owner": "manager|client|both|other|null",
+    "deadline": "string|null",
+    "evidence": "string|null"
+  },
+  "rescheduled": null,
+  "refusal": null,
+  "open": null,
+  "service": null
+}
+```
+
+For `rescheduled`, use fields `reason`, `return_when`, `return_owner`,
+`preparation_needed`, `evidence`.
+
+For `refusal`, use fields `type`, `reason`, `finality`, `return_condition`,
+`recommended_next_action`, `evidence`.
+
+For `open`, use fields `why_open`, `missing_to_close`, `next_action`, `owner`,
+`deadline`, `evidence`.
+
+For `service`, use fields `type`, `request`, `action_taken`,
+`follow_up_needed`, `follow_up_action`, `owner`,
+`sales_scoring_applicability`, `evidence`.
+Use `edo_scope.sales_scoring_scope` for `sales_scoring_applicability`; do not
+infer a different value from `status_details`.
+
 ## Fail-Closed Behavior
 
 - If there are no proven or softened manager-gap proof cards, return no
-  confident coaching recommendations.
+  confident improvement recommendations. Use `maintain` only for confirmed
+  strong practice; otherwise use `no_comment`.
 - If a recommendation cannot be tied to exactly one valid proof card, reject it
   and increment `recommendations_without_proof_rejected`.
 - Rejected and insufficient proof cards may remain in audit or evidence output,

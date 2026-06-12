@@ -247,11 +247,10 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
     selection = dict(payload.get("selection_model") or {})
     manager_name = str(header.get("manager_name") or "менеджер").strip()
     date_label = _format_report_period_ru(period) or str(header.get("report_date") or "").strip()
-    meaningful_calls = (
-        selection.get("meaningful_calls_total")
-        or (payload.get("kpi_overview") or {}).get("calls_count")
-        or 0
-    )
+    kpi_calls = (payload.get("kpi_overview") or {}).get("calls_count")
+    meaningful_calls = selection.get("meaningful_calls_total")
+    if meaningful_calls is None:
+        meaningful_calls = kpi_calls if kpi_calls is not None else 0
     raw_calls = selection.get("raw_calls_total")
     if raw_calls is None:
         raw_calls = meaningful_calls
@@ -261,21 +260,50 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
             excluded_calls = max(0, int(raw_calls) - int(meaningful_calls))
         except (TypeError, ValueError):
             excluded_calls = 0
-    included_in_report = (
-        selection.get("included_in_report_total")
-        or selection.get("analyzed_calls_total")
-        or (payload.get("kpi_overview") or {}).get("calls_count")
-        or meaningful_calls
+    included_in_report = selection.get("included_in_report_total")
+    if included_in_report is None:
+        included_in_report = selection.get("analyzed_calls_total")
+    if included_in_report is None:
+        included_in_report = kpi_calls if kpi_calls is not None else meaningful_calls
+    day_exclusion_reasons = dict(selection.get("day_exclusion_reasons") or selection.get("exclusion_reasons") or {})
+    processing_reasons = dict(selection.get("processing_reasons") or {})
+    not_in_coaching = max(0, int(meaningful_calls or 0) - int(included_in_report or 0))
+    exclusion_reason_text = (
+        _selection_reason_suffix(
+            reasons=day_exclusion_reasons,
+            labels=_EXCLUSION_REASON_LABELS,
+            allowed_codes={"too_short_or_no_speech", "ivr_or_autoanswer"},
+        )
+        if int(excluded_calls or 0) > 0
+        else ""
+    )
+    processing_reason_text = (
+        _selection_reason_suffix(
+            reasons=processing_reasons,
+            labels=_PROCESSING_REASON_LABELS,
+        )
+        if not_in_coaching > 0
+        else ""
     )
     day_score = _manager_reader_value(_resolve_manager_day_score(payload=payload), "Нет базы")
     subject = f"Ежедневный отчет по звонкам - {manager_name} - {date_label}"
     greeting_name = manager_name.split()[0] if manager_name else ""
     greeting = f"Добрый день, {greeting_name}." if greeting_name else "Добрый день."
     funnel_lines = [
-        f"1) найдено в телефонии — {_manager_reader_value(raw_calls, '0')};",
-        f"2) содержательных — {_manager_reader_value(meaningful_calls, '0')};",
-        f"3) исключено из списка дня — {_manager_reader_value(excluded_calls, '0')}.",
+        (
+            f"Воронка дня: найдено в телефонии — {_manager_reader_value(raw_calls, '0')}; "
+            f"содержательных — {_manager_reader_value(meaningful_calls, '0')}; "
+            f"исключено из списка дня — {_manager_reader_value(excluded_calls, '0')}"
+            f"{exclusion_reason_text}."
+        ),
     ]
+    coaching_line = (
+        f"Из {_manager_reader_value(meaningful_calls, '0')} содержательных: "
+        f"не вошло в коучинговый разбор — {_manager_reader_value(not_in_coaching, '0')}"
+        f"{processing_reason_text}, "
+        f"в коучинговый разбор вошло — {_manager_reader_value(included_in_report, '0')}."
+    )
+    edo_scope_line = str((payload.get("edo_scope_summary") or {}).get("summary_line") or "").strip()
     status_lines = [
         f"{_manager_reader_value(outcomes.get('agreed_count'), '0')} ДОГОВОРЁННОСТЬ",
         f"{_manager_reader_value(outcomes.get('rescheduled_count'), '0')} ПЕРЕНОС",
@@ -283,6 +311,9 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
         f"{_manager_reader_value(outcomes.get('open_count'), '0')} ОТКРЫТ",
         f"{_manager_reader_value(outcomes.get('tech_service_count'), '0')} ТЕХ/СЕРВИС",
     ]
+    status_not_confirmed = int(outcomes.get("status_not_confirmed_with_analysis_count") or outcomes.get("status_not_confirmed_count") or 0)
+    if status_not_confirmed > 0:
+        status_lines.append(f"{status_not_confirmed} СТАТУС НЕ ПОДТВЕРЖДЕН")
     text = "\n".join(
         [
             greeting,
@@ -290,11 +321,8 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
             f"Во вложении ежедневный отчет по звонкам за {date_label}:",
             *funnel_lines,
             "",
-            (
-                "В коучинговый разбор вошло "
-                f"{_manager_reader_value(included_in_report, '0')} из "
-                f"{_manager_reader_value(meaningful_calls, '0')} звонков дня."
-            ),
+            coaching_line,
+            *(["", edo_scope_line] if edo_scope_line else []),
             "",
             *status_lines,
             "",
@@ -306,15 +334,28 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
         greeting=greeting,
         intro=f"Во вложении ежедневный отчет по звонкам за {date_label}:",
         funnel_lines=funnel_lines,
-        coaching_line=(
-            "В коучинговый разбор вошло "
-            f"{_manager_reader_value(included_in_report, '0')} из "
-            f"{_manager_reader_value(meaningful_calls, '0')} звонков дня."
-        ),
+        coaching_line=coaching_line,
+        edo_scope_line=edo_scope_line,
         status_lines=status_lines,
         day_score=f"Балл дня: {day_score} / 5",
     )
     return {"subject": subject, "text": text, "html": html_body}
+
+
+def _selection_reason_suffix(
+    *,
+    reasons: dict[str, Any],
+    labels: dict[str, str],
+    allowed_codes: set[str] | None = None,
+) -> str:
+    parts: list[str] = []
+    for code, label in labels.items():
+        if allowed_codes is not None and code not in allowed_codes:
+            continue
+        count = int(reasons.get(code) or 0)
+        if count > 0:
+            parts.append(label)
+    return f" ({' / '.join(parts)})" if parts else ""
 
 
 def _manager_daily_email_html(
@@ -326,15 +367,22 @@ def _manager_daily_email_html(
     coaching_line: str,
     status_lines: list[str],
     day_score: str,
+    edo_scope_line: str = "",
 ) -> str:
     funnel_html = "<br>".join(html.escape(item) for item in funnel_lines if str(item).strip())
     status_html = "<br>".join(html.escape(item) for item in status_lines if str(item).strip())
+    edo_scope_html = (
+        f"<p>{html.escape(edo_scope_line)}</p>"
+        if str(edo_scope_line or "").strip()
+        else ""
+    )
     return (
         "<html><head><meta charset=\"utf-8\"></head><body>"
         f"<h2>{html.escape(subject)}</h2>"
         f"<p>{html.escape(greeting)}</p>"
         f"<p>{html.escape(intro)}<br>{funnel_html}</p>"
         f"<p>{html.escape(coaching_line)}</p>"
+        f"{edo_scope_html}"
         f"<p>{status_html}</p>"
         f"<p><strong>{html.escape(day_score)}</strong></p>"
         "</body></html>"
@@ -807,8 +855,12 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
     call_breakdown_scope = dict(data_scopes.get("call_breakdown") or coaching_scope)
     additional_scope = dict(data_scopes.get("additional_situations") or coaching_scope)
     challenge_scope = dict(data_scopes.get("challenge") or coaching_scope)
+    call_list_display_raw = _filter_call_list_for_manager_display(call_list_raw)
     warm_pipeline = _build_warm_pipeline_data(call_list_raw=call_list_raw, call_outcomes=call_outcomes)
-    call_list_coverage_note = _build_call_list_coverage_note(payload=payload, call_list_count=len(call_list_raw))
+    call_list_coverage_note = _build_call_list_coverage_note(
+        payload=payload,
+        call_list_count=len(call_list_display_raw),
+    )
     money_on_table = _build_money_on_table_data(
         call_list_raw=call_list_raw,
         call_outcomes=call_outcomes,
@@ -829,6 +881,12 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         daily_focus=daily_focus,
     )
     _unclassified_count = int(call_outcomes.get("unclassified_count") or 0)
+    _status_not_confirmed_count = int(
+        call_outcomes.get("status_not_confirmed_with_analysis_count")
+        or call_outcomes.get("status_not_confirmed_count")
+        or 0
+    )
+    _unclassified_without_semantic_missing = max(0, _unclassified_count - _status_not_confirmed_count)
     outcome_cols = [
         {"label": "ЗВОНКОВ", "value": total_calls, "tone": "neutral"},
         {"label": "ДОГОВОРЕННОСТЬ", "value": _manager_reader_value(call_outcomes.get("agreed_count"), "0"), "tone": "positive"},
@@ -837,8 +895,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         {"label": "ОТКРЫТ", "value": _manager_reader_value(call_outcomes.get("open_count"), "0"), "tone": "warning"},
         {"label": "ТЕХ/СЕРВИС", "value": _manager_reader_value(call_outcomes.get("tech_service_count"), "0"), "tone": "neutral"},
     ]
-    if _unclassified_count > 0:
-        outcome_cols.append({"label": "БЕЗ РАЗБОРА", "value": _unclassified_count, "tone": "neutral"})
+    if _status_not_confirmed_count > 0:
+        outcome_cols.append({"label": "СТАТУС НЕ ПОДТВ.", "value": _status_not_confirmed_count, "tone": "neutral"})
+    if _unclassified_without_semantic_missing > 0:
+        outcome_cols.append({"label": "БЕЗ РАЗБОРА", "value": _unclassified_without_semantic_missing, "tone": "neutral"})
     unclassified_note = _build_unclassified_summary_note(call_outcomes)
     primary_call_ids = _manager_daily_primary_call_ids(payload)
     situation_call_ids = _manager_daily_situation_call_ids(payload)
@@ -976,7 +1036,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 "Статус",
                 "Контакт",
                 "Суть звонка",
-                "Договоренность",
+                "Итог / обратная связь",
             ],
             "rows": [
                 [
@@ -986,40 +1046,24 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                         "Клиент не определён",
                     ),
                     _manager_reader_value(
-                        row.get("call_list_topic")
-                        or _call_topic_label(row.get("call_type"), row.get("scenario_type")),
+                        _call_list_topic_label(row),
                         "—",
                     ),
                     _manager_reader_value(
-                        row.get("call_list_context")
-                        or _call_context_label(
-                            str(
-                                (
-                                    row.get("final_manager_status")
-                                    if "final_manager_status" in row
-                                    else row.get("call_list_status")
-                                    if "call_list_status" in row
-                                    else row.get("status")
-                                )
-                                or ""
-                            ),
-                            row.get("deadline"),
-                            row.get("reason"),
-                            row=row,
-                        ),
+                        _call_list_context_label(row, prefer_rich=False),
                         "—",
                     ),
                     _call_list_status_label(row),
                 ]
-                for idx, row in enumerate(call_list_raw)
+                for idx, row in enumerate(call_list_display_raw)
             ],
             "compact_rows": _build_call_list_compact_rows(
-                call_list_raw=call_list_raw,
+                call_list_raw=call_list_display_raw,
                 call_tomorrow_contacts=list((payload.get("call_tomorrow") or {}).get("contacts") or []),
             ),
             "note": (
                 call_list_coverage_note
-                if call_list_raw
+                if call_list_display_raw
                 else "Звонки за выбранный день не найдены."
             ),
         },
@@ -2697,7 +2741,7 @@ def _render_manager_daily_pdf_report(
             top=92,
             columns=[str(column) for column in call_list_columns],
             rows=visible_call_list_rows[chunk_start : chunk_start + rows_per_call_list_page],
-            col_widths=[118, 128, 174, 91] if len(call_list_columns) == 4 else [24, 188, 110, 112, 77],
+            col_widths=[88, 98, 185, 186] if len(call_list_columns) == 4 else [24, 188, 110, 112, 77],
             body_size=6.35 if len(call_list_columns) == 4 else 7.2,
         )
         if call_list.get("note") and chunk_start + rows_per_call_list_page >= len(visible_call_list_rows):
@@ -3162,8 +3206,11 @@ def _resolve_manager_day_score(*, payload: dict[str, Any]) -> float | None:
 _EXCLUSION_REASON_LABELS: dict[str, str] = {
     "too_short_or_no_speech": "слишком короткие / без речи",
     "ivr_or_autoanswer": "IVR / автоответчик",
+}
+
+_PROCESSING_REASON_LABELS: dict[str, str] = {
     "support_internal": "тех/сервисные",
-    "not_enough_analysis": "нет готового анализа",
+    "not_enough_analysis": "нет готового разбора",
     "not_selected_for_core_review": "не вошли в коучинговый разбор",
 }
 
@@ -3177,10 +3224,11 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
     """
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     outcome = readiness.get("readiness_outcome")
-    if outcome not in {"signal_report", "full_report"}:
+    sm = dict(payload.get("selection_model") or {})
+    edo_scope_line = str((payload.get("edo_scope_summary") or {}).get("summary_line") or "").strip()
+    if outcome not in {"signal_report", "full_report"} and not sm and not edo_scope_line:
         return None
 
-    sm = dict(payload.get("selection_model") or {})
     window_days = int(readiness.get("window_days_used") or 1)
     window_note = _build_manager_daily_window_note(readiness=readiness, window_days=window_days)
 
@@ -3188,25 +3236,33 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
         raw_total = int(sm.get("raw_calls_total") or 0)
         meaningful_total = int(sm.get("meaningful_calls_total") or 0)
         in_report = int(sm.get("included_in_report_total") or 0)
-        exclusion_reasons = dict(sm.get("exclusion_reasons") or {})
+        excluded_total = int(sm.get("excluded_calls_total") or max(0, raw_total - meaningful_total))
+        not_in_coaching = max(0, meaningful_total - in_report)
+        legacy_reasons = dict(sm.get("exclusion_reasons") or {})
+        exclusion_reasons = dict(sm.get("day_exclusion_reasons") or {
+            code: legacy_reasons.get(code, 0)
+            for code in _EXCLUSION_REASON_LABELS
+        })
+        processing_reasons = dict(sm.get("processing_reasons") or {
+            code: legacy_reasons.get(code, 0)
+            for code in _PROCESSING_REASON_LABELS
+        })
 
-        parts: list[str] = []
-        if raw_total:
-            parts.append(f"Найдено в телефонии: {raw_total}")
-        if meaningful_total and meaningful_total != raw_total:
-            parts.append(f"содержательных: {meaningful_total}")
-        parts.append(f"вошло в разбор: {in_report}")
-        line1 = " · ".join(parts)
-
-        reason_parts: list[str] = []
-        for code, label in _EXCLUSION_REASON_LABELS.items():
-            count = int(exclusion_reasons.get(code) or 0)
-            if count > 0:
-                reason_parts.append(f"{label}: {count}")
-
-        lines = [line1]
-        if reason_parts:
-            lines.append("Не вошло: " + ", ".join(reason_parts) + ".")
+        line1 = (
+            f"Воронка дня: найдено в телефонии — {raw_total}; "
+            f"содержательных — {meaningful_total}; "
+            f"исключено из списка дня — {excluded_total}"
+            f"{_selection_reason_suffix(reasons=exclusion_reasons, labels=_EXCLUSION_REASON_LABELS, allowed_codes={'too_short_or_no_speech', 'ivr_or_autoanswer'}) if excluded_total > 0 else ''}."
+        )
+        line2 = (
+            f"Из {meaningful_total} содержательных: "
+            f"не вошло в коучинговый разбор — {not_in_coaching}"
+            f"{_selection_reason_suffix(reasons=processing_reasons, labels=_PROCESSING_REASON_LABELS) if not_in_coaching > 0 else ''}, "
+            f"в коучинговый разбор вошло — {in_report}."
+        )
+        lines = [line1, line2]
+        if edo_scope_line:
+            lines.append(edo_scope_line)
         if window_note:
             lines.append(window_note)
     else:
@@ -3246,16 +3302,22 @@ def _build_call_list_coverage_note(*, payload: dict[str, Any], call_list_count: 
     """Return a short appendix coverage note for the rendered call list."""
     sm = dict(payload.get("selection_model") or {})
     if not sm:
-        return f"Приложение: показаны все {call_list_count} содержательных звонков выбранного дня."
+        return f"Приложение: показаны {call_list_count} звонков с готовым разбором."
 
     raw_total = int(sm.get("raw_calls_total") or 0)
-    meaningful_total = int(sm.get("meaningful_calls_total") or call_list_count or 0)
+    meaningful_value = sm.get("meaningful_calls_total")
+    meaningful_total = int(meaningful_value if meaningful_value is not None else (call_list_count or 0))
+    analyzed_value = sm.get("included_in_report_total")
+    if analyzed_value is None:
+        analyzed_value = sm.get("analyzed_calls_total")
+    analyzed_total = int(analyzed_value if analyzed_value is not None else (call_list_count or 0))
     parts: list[str] = []
     if raw_total:
         parts.append(f"найдено в телефонии: {raw_total}")
     if meaningful_total and meaningful_total != raw_total:
         parts.append(f"содержательных: {meaningful_total}")
-    parts.append(f"в списке: {call_list_count}")
+    parts.append(f"с готовым разбором: {analyzed_total}")
+    parts.append(f"показано в таблице: {call_list_count}")
 
     reason_parts: list[str] = []
     exclusion_reasons = dict(sm.get("exclusion_reasons") or {})
@@ -3266,10 +3328,17 @@ def _build_call_list_coverage_note(*, payload: dict[str, Any], call_list_count: 
         if count > 0:
             reason_parts.append(f"{label}: {count}")
 
-    note = "Покрытие приложения: " + " · ".join(parts) + "."
+    note = "Покрытие таблицы: " + " · ".join(parts) + "."
     if reason_parts:
         note += " Не вошли в список: " + ", ".join(reason_parts) + "."
     return note
+
+
+def _filter_call_list_for_manager_display(call_list_raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only rows that have a ready call analysis for the visible manager table."""
+    if not any("call_list_analysis_ready" in row for row in call_list_raw):
+        return list(call_list_raw)
+    return [row for row in call_list_raw if bool(row.get("call_list_analysis_ready"))]
 
 
 def _build_manager_daily_window_note(*, readiness: dict[str, Any], window_days: int) -> str | None:
@@ -4896,6 +4965,62 @@ def _call_context_label(
     return "—"
 
 
+_CALL_LIST_MISSING_LLM_STATUS_SOURCES = {
+    "missing_llm_semantic_status",
+    "llm_semantic_status_rejected",
+}
+
+
+def _call_list_has_missing_llm_semantic_status(row: dict[str, Any]) -> bool:
+    """Return True when the payload explicitly says LLM did not confirm status."""
+    source = str(row.get("call_list_status_source") or "").strip()
+    display_status = str(row.get("call_list_display_status") or "").strip()
+    return source in _CALL_LIST_MISSING_LLM_STATUS_SOURCES or display_status == "status_not_confirmed"
+
+
+def _call_list_raw_status(row: dict[str, Any]) -> Any:
+    """Return status while avoiding resolver-derived fallback for missing LLM status rows."""
+    if _call_list_has_missing_llm_semantic_status(row):
+        return None
+    return (
+        row.get("final_manager_status")
+        if "final_manager_status" in row
+        else row.get("call_list_status")
+        if "call_list_status" in row
+        else row.get("status")
+    )
+
+
+def _call_list_topic_label(row: dict[str, Any]) -> str:
+    """Return call-list topic without inventing semantic meaning for missing LLM rows."""
+    topic = _manager_reader_value(row.get("call_list_topic"), "")
+    if topic:
+        return topic
+    if _call_list_has_missing_llm_semantic_status(row):
+        return "Суть не сформирована LLM"
+    return _call_topic_label(row.get("call_type"), row.get("scenario_type"))
+
+
+def _call_list_context_label(row: dict[str, Any], *, prefer_rich: bool = True) -> str:
+    """Return call-list context without deriving meaning when LLM status is missing."""
+    explicit_context = (
+        row.get("call_list_context_rich") or row.get("call_list_context")
+        if prefer_rich
+        else row.get("call_list_context")
+    )
+    context = _manager_reader_value(explicit_context, "")
+    if context:
+        return context
+    if _call_list_has_missing_llm_semantic_status(row):
+        return "Суть не сформирована LLM"
+    return _call_context_label(
+        str(_call_list_raw_status(row) or ""),
+        row.get("deadline"),
+        row.get("reason"),
+        row=row,
+    )
+
+
 def _call_status_label(value: Any) -> str:
     """Map internal call status to reader-facing Russian label."""
     mapping = {
@@ -4911,13 +5036,9 @@ def _call_status_label(value: Any) -> str:
 
 def _call_list_status_label(row: dict[str, Any]) -> str:
     """Return manager-facing status for one call-list row."""
-    status = (
-        row.get("final_manager_status")
-        if "final_manager_status" in row
-        else row.get("call_list_status")
-        if "call_list_status" in row
-        else row.get("status")
-    )
+    if _call_list_has_missing_llm_semantic_status(row):
+        return "Статус не подтвержден"
+    status = _call_list_raw_status(row)
     if status is None:
         return str(
             row.get("call_list_unclassified_status_label")
@@ -5032,6 +5153,8 @@ def _call_list_status_priority_when_label(
 ) -> str:
     """Return status plus follow-up priority/deadline when the call is in work."""
     parts = [_call_list_status_label(row)]
+    if _call_list_has_missing_llm_semantic_status(row):
+        return parts[0]
     if matched_contact:
         priority = _manager_reader_value(
             matched_contact.get("priority_label")
@@ -5075,7 +5198,10 @@ def _call_list_contact_label(
     source = matched_contact or row
     return _manager_reader_value(
         source.get("client_call_reference")
+        or source.get("client_name")
         or source.get("client_label")
+        or row.get("client_call_reference")
+        or row.get("client_name")
         or row.get("client_or_phone")
         or row.get("client_phone"),
         "Клиент не определён",
@@ -5088,6 +5214,13 @@ def _call_list_recommendation_label(
     matched_contact: dict[str, Any] | None,
 ) -> str:
     """Return the same concise next-action value used before the header-only edit."""
+    feedback = row.get("call_feedback_summary")
+    if isinstance(feedback, dict):
+        feedback_text = _manager_reader_value(feedback.get("render_text"), "")
+        if feedback_text:
+            return _call_list_trim_multiline_cell(feedback_text, limit=900)
+    if _call_list_has_missing_llm_semantic_status(row):
+        return "Нет LLM-комментария"
     if not matched_contact:
         return "—"
     return _call_list_trim_cell(_call_goal_for_contact(matched_contact), limit=135)
@@ -5100,27 +5233,11 @@ def _call_list_essence_label(row: dict[str, Any], *, include_contact: bool = Tru
         "Клиент не определён",
     )
     topic = _manager_reader_value(
-        row.get("call_list_topic") or _call_topic_label(row.get("call_type"), row.get("scenario_type")),
+        _call_list_topic_label(row),
         "",
     )
     context = _manager_reader_value(
-        row.get("call_list_context_rich")
-        or row.get("call_list_context")
-        or _call_context_label(
-            str(
-                (
-                    row.get("final_manager_status")
-                    if "final_manager_status" in row
-                    else row.get("call_list_status")
-                    if "call_list_status" in row
-                    else row.get("status")
-                )
-                or ""
-            ),
-            row.get("deadline"),
-            row.get("reason"),
-            row=row,
-        ),
+        _call_list_context_label(row),
         "",
     )
     parts: list[str] = [client] if include_contact else []
@@ -5135,6 +5252,18 @@ def _call_list_essence_label(row: dict[str, Any], *, include_contact: bool = Tru
 def _call_list_trim_cell(value: Any, *, limit: int) -> str:
     """Keep dense report table cells readable in PDF."""
     text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _call_list_trim_multiline_cell(value: Any, *, limit: int) -> str:
+    """Keep line breaks in dense feedback cells while still bounding extreme text."""
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
+    text = "\n".join(line for line in lines if line).strip()
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."

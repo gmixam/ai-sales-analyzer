@@ -68,6 +68,93 @@ _STAGE_CODE_ALIASES = {
     "closing": "completion_next_step",
     "sale": "sale_final",
 }
+_STATUS_DETAILS_KEYS = ("agreement", "rescheduled", "refusal", "open", "service")
+_STATUS_DETAILS_ALIASES = {
+    "agreed": "agreement",
+    "agreement": "agreement",
+    "deal": "agreement",
+    "rescheduled": "rescheduled",
+    "postponed": "rescheduled",
+    "callback": "rescheduled",
+    "refusal": "refusal",
+    "declined": "refusal",
+    "rejected": "refusal",
+    "open": "open",
+    "tech_service": "service",
+    "support": "service",
+    "service": "service",
+}
+_STATUS_DETAILS_FIELDS = {
+    "agreement": (
+        "type",
+        "what_agreed",
+        "manager_commitment",
+        "client_commitment",
+        "owner",
+        "deadline",
+        "evidence",
+    ),
+    "rescheduled": (
+        "reason",
+        "return_when",
+        "return_owner",
+        "preparation_needed",
+        "evidence",
+    ),
+    "refusal": (
+        "type",
+        "reason",
+        "finality",
+        "return_condition",
+        "recommended_next_action",
+        "evidence",
+    ),
+    "open": (
+        "why_open",
+        "missing_to_close",
+        "next_action",
+        "owner",
+        "deadline",
+        "evidence",
+    ),
+    "service": (
+        "type",
+        "request",
+        "action_taken",
+        "follow_up_needed",
+        "follow_up_action",
+        "owner",
+        "sales_scoring_applicability",
+        "evidence",
+    ),
+}
+_EDO_SALES_SCORING_SCOPES = {"full", "partial", "none", "unclear"}
+_EDO_SCOPE_REASONS = {
+    "edo_sales",
+    "edo_service",
+    "legal_direction",
+    "tech_support",
+    "internal_or_wrong_call",
+    "mixed",
+    "insufficient_data",
+    "other",
+}
+_EDO_EXPECTED_MANAGER_ACTIONS = {
+    "sell",
+    "transfer",
+    "support",
+    "clarify",
+    "close_service_issue",
+    "keep_relationship",
+    "no_action",
+    "other",
+}
+_COACHING_DECISIONS = {"improve", "maintain", "no_comment"}
+_COACHING_TITLES_BY_DECISION = {
+    "improve": {"Улучшить"},
+    "maintain": {"Поддерживать", "Корректно"},
+    "no_comment": {None, ""},
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +209,13 @@ def normalize_llm2_layered_analysis(
         llm2d=llm2d,
         final_from_2d=final_from_2d,
     )
+    edo_scope, edo_scope_warnings = _normalized_edo_scope(llm2a.get("edo_scope"))
+    if edo_scope:
+        scores_detail["edo_scope"] = edo_scope
+    if edo_scope_warnings:
+        diagnostics = _as_dict(scores_detail.get("diagnostics"))
+        diagnostics.setdefault("edo_scope_validation", []).extend(edo_scope_warnings)
+        scores_detail["diagnostics"] = diagnostics
 
     evidence_by_id = _evidence_ledger_by_id(llm2a)
     scenes_by_id = _scenes_by_id(llm2a)
@@ -157,6 +251,21 @@ def normalize_llm2_layered_analysis(
         _as_list(final_from_2d.get("recommendations") or llm2d.get("recommendations")),
         accepted_proof_cards=accepted_proof_cards,
     )
+    status_details = _normalized_status_details(
+        final_from_2d.get("status_details") or llm2d.get("status_details")
+    )
+    if status_details:
+        scores_detail["status_details"] = status_details
+    else:
+        scores_detail.pop("status_details", None)
+    coaching_decision = _normalized_coaching_decision(
+        final_from_2d.get("coaching_decision") or llm2d.get("coaching_decision"),
+        scores_detail=scores_detail,
+    )
+    if coaching_decision:
+        scores_detail["coaching_decision"] = coaching_decision
+    else:
+        scores_detail.pop("coaching_decision", None)
     if not scores_detail.get("evidence_fragments"):
         scores_detail["evidence_fragments"] = _evidence_fragments_from_scenes(
             scenes_by_id=scenes_by_id,
@@ -545,6 +654,8 @@ def _score_by_stage_from_criteria(criteria_results: list[dict[str, Any]]) -> lis
     stage_order = _checklist_stage_order()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for criterion in criteria_results:
+        if not _criterion_is_applicable(criterion):
+            continue
         stage_code = _str_or_none(criterion.get("stage_code"))
         if not stage_code:
             continue
@@ -564,6 +675,15 @@ def _score_by_stage_from_criteria(criteria_results: list[dict[str, Any]]) -> lis
             }
         )
     return stages
+
+
+def _criterion_is_applicable(criterion: dict[str, Any]) -> bool:
+    value = criterion.get("applicable", True)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    return str(value).strip().lower() not in {"false", "0", "no", "n", "нет"}
 
 
 def _normalized_strengths(
@@ -655,6 +775,257 @@ def _normalized_recommendations(
             }
         )
     return normalized
+
+
+def _normalized_status_details(value: Any) -> dict[str, Any] | None:
+    raw = _as_dict(value)
+    if not raw:
+        return None
+    status = _normalized_status_detail_status(raw.get("status"))
+    if not status:
+        for candidate in _STATUS_DETAILS_KEYS:
+            if _as_dict(raw.get(candidate)):
+                status = candidate
+                break
+    if not status:
+        return None
+    result: dict[str, Any] = {"status": status}
+    for key in _STATUS_DETAILS_KEYS:
+        result[key] = None
+    active_raw = _as_dict(raw.get(status))
+    if not active_raw:
+        active_raw = _as_dict(raw.get("details") or raw.get("detail"))
+    active: dict[str, Any] = {}
+    for field in _STATUS_DETAILS_FIELDS[status]:
+        if field == "follow_up_needed":
+            bool_value = _optional_bool(active_raw.get(field))
+            if bool_value is not None:
+                active[field] = bool_value
+            continue
+        text = _clip(active_raw.get(field), 420 if field == "evidence" else 240)
+        if text is not None:
+            active[field] = text
+    result[status] = active
+    return result
+
+
+def _normalized_coaching_decision(
+    value: Any,
+    *,
+    scores_detail: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw = _as_dict(value)
+    if not raw:
+        return None
+    warnings: list[dict[str, Any]] = []
+    decision = _lower_str(raw.get("decision")).replace("-", "_")
+    if decision not in _COACHING_DECISIONS:
+        _append_coaching_decision_diagnostic(
+            scores_detail,
+            {
+                "code": "coaching_decision_invalid_enum",
+                "field": "decision",
+                "original": raw.get("decision"),
+            },
+        )
+        return None
+
+    title = _normalized_coaching_title(
+        raw.get("title"),
+        decision=decision,
+        warnings=warnings,
+    )
+    based_on = _normalized_coaching_based_on(raw.get("based_on"))
+    normalized: dict[str, Any] = {
+        "decision": decision,
+        "title": title,
+        "text": _clip(raw.get("text"), 360),
+        "reason": _clip(raw.get("reason"), 360),
+        "based_on": based_on,
+    }
+    normalized = {key: item for key, item in normalized.items() if item not in ({},)}
+    for warning in warnings:
+        _append_coaching_decision_diagnostic(scores_detail, warning)
+    return normalized
+
+
+def _normalized_coaching_title(
+    value: Any,
+    *,
+    decision: str,
+    warnings: list[dict[str, Any]],
+) -> str | None:
+    title = _str_or_none(value)
+    if title is None:
+        return None
+    allowed = _COACHING_TITLES_BY_DECISION[decision]
+    if title in allowed:
+        return title or None
+    code = (
+        "coaching_decision_title_mismatch"
+        if title in {"Улучшить", "Поддерживать", "Корректно"}
+        else "coaching_decision_invalid_title"
+    )
+    warnings.append(
+        {
+            "code": code,
+            "field": "title",
+            "decision": decision,
+            "original": title,
+            "replacement": None,
+        }
+    )
+    return None
+
+
+def _normalized_coaching_based_on(value: Any) -> dict[str, Any]:
+    raw = _as_dict(value)
+    if not raw:
+        return {}
+    based_on: dict[str, Any] = {}
+    stage_code = _normalized_stage_code(raw.get("stage_code"))
+    if stage_code:
+        based_on["stage_code"] = stage_code
+    criterion_codes = _string_list(
+        raw.get("criterion_codes")
+        or ([raw.get("criterion_code")] if raw.get("criterion_code") else [])
+    )
+    if criterion_codes:
+        based_on["criterion_codes"] = criterion_codes
+    proof_ids = _string_list(
+        raw.get("proof_ids") or ([raw.get("proof_id")] if raw.get("proof_id") else [])
+    )
+    if proof_ids:
+        based_on["proof_ids"] = proof_ids
+    evidence_ids = _string_list(
+        raw.get("evidence_ids")
+        or ([raw.get("evidence_id")] if raw.get("evidence_id") else [])
+    )
+    if evidence_ids:
+        based_on["evidence_ids"] = evidence_ids
+    return based_on
+
+
+def _append_coaching_decision_diagnostic(
+    scores_detail: dict[str, Any],
+    warning: dict[str, Any],
+) -> None:
+    diagnostics = _as_dict(scores_detail.get("diagnostics"))
+    diagnostics.setdefault("coaching_decision_validation", []).append(warning)
+    scores_detail["diagnostics"] = diagnostics
+
+
+def _normalized_edo_scope(value: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if value is None:
+        return None, []
+    raw = _as_dict(value)
+    if not raw:
+        return None, [{"code": "edo_scope_invalid_shape", "field": "edo_scope"}]
+
+    warnings: list[dict[str, Any]] = []
+    sales_scoring_scope = _normalized_edo_enum(
+        raw.get("sales_scoring_scope"),
+        allowed_values=_EDO_SALES_SCORING_SCOPES,
+        default="unclear",
+        field="sales_scoring_scope",
+        warnings=warnings,
+    )
+    scope_reason = _normalized_edo_enum(
+        raw.get("scope_reason"),
+        allowed_values=_EDO_SCOPE_REASONS,
+        default="other",
+        field="scope_reason",
+        warnings=warnings,
+    )
+    expected_manager_action = _normalized_edo_enum(
+        raw.get("expected_manager_action"),
+        allowed_values=_EDO_EXPECTED_MANAGER_ACTIONS,
+        default="other",
+        field="expected_manager_action",
+        warnings=warnings,
+    )
+    evidence_ids = _edo_scope_evidence_ids(raw.get("evidence_ids"), warnings=warnings)
+    return {
+        "sales_scoring_scope": sales_scoring_scope,
+        "scope_reason": scope_reason,
+        "applicable_part": _clip(raw.get("applicable_part"), 420) or "",
+        "expected_manager_action": expected_manager_action,
+        "evidence_ids": evidence_ids,
+    }, warnings
+
+
+def _normalized_edo_enum(
+    value: Any,
+    *,
+    allowed_values: set[str],
+    default: str,
+    field: str,
+    warnings: list[dict[str, Any]],
+) -> str:
+    normalized = _lower_str(value).replace("-", "_")
+    if normalized in allowed_values:
+        return normalized
+    warnings.append(
+        {
+            "code": "edo_scope_invalid_enum",
+            "field": field,
+            "original": value,
+            "replacement": default,
+        }
+    )
+    return default
+
+
+def _edo_scope_evidence_ids(
+    value: Any,
+    *,
+    warnings: list[dict[str, Any]],
+) -> list[str]:
+    if not isinstance(value, list):
+        if value not in (None, ""):
+            warnings.append(
+                {
+                    "code": "edo_scope_invalid_evidence_ids_shape",
+                    "field": "evidence_ids",
+                    "original_type": type(value).__name__,
+                    "replacement": [],
+                }
+            )
+        return []
+    evidence_ids = []
+    invalid_count = 0
+    for item in value:
+        if not isinstance(item, str):
+            invalid_count += 1
+            continue
+        text = item.strip()
+        if text:
+            evidence_ids.append(text)
+    if invalid_count:
+        warnings.append(
+            {
+                "code": "edo_scope_invalid_evidence_id_item",
+                "field": "evidence_ids",
+                "invalid_count": invalid_count,
+            }
+        )
+    return evidence_ids
+
+
+def _normalized_status_detail_status(value: Any) -> str | None:
+    text = _lower_str(value).replace("-", "_")
+    return _STATUS_DETAILS_ALIASES.get(text)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    text = _lower_str(value)
+    if text in {"true", "yes", "1", "да", "нужен", "требуется"}:
+        return True
+    if text in {"false", "no", "0", "нет", "не нужен", "не требуется"}:
+        return False
+    return None
 
 
 def _attach_report_evidence(

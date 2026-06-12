@@ -6,17 +6,31 @@
 Он является source of truth для bounded implementation tasks по этой теме.
 
 **Первичная фиксация:** 2026-04-30.
-**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` для финальных outcome-категорий report-day `meaningful_calls`; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с финальным outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback, without replacing `BusinessOutcomeResolver` final authority; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem; Step 8AH-11D добавил quality gate for Additional Situations so generic/contextless cards are hidden and valid cards use evidence/context-backed, stage-specific wording; Step 8AH-11E добавил quality gate for call-list context so weak, truncated, technical, or empty contexts are replaced by human-readable deterministic fallbacks without changing report-day semantics; Step 8AH-11H добавил quality gate for Call Breakdown so manager-facing rows require confirming evidence, aligned corrective recommendations, and clean wording; 2026-05-12 block-fit update добавил `semantic_case.report_block_fit` и block-specific gates, чтобы valid semantic case не использовался в неподходящем блоке; 2026-05-12 role/problem-fit update добавил block roles, problem-fit alignment, and problem-fragment evidence gate for problem-oriented blocks; 2026-05-14 v14 proof-layer update добавил proof metadata and counter-evidence gates for problem-oriented semantic cases so `СИТУАЦИЯ ДНЯ` / problem `РАЗБОР ЗВОНКА` cannot use a quote that proves the opposite of the claimed manager gap; 2026-05-14 v15 block-ready target зафиксировал, что LLM2 готовит `report_evidence.block_candidates` for `situation_day`, `call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, `tomorrow_challenge`, and `call_list_context`, while Reporting keeps deterministic final authority.
+**Implementation update:** 2026-05-08 — Step 8R добавил reporting-layer `BusinessOutcomeResolver` как legacy deterministic outcome classifier for diagnostics/counters; Step 8U выровнял post-summary blocks (`КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, normal coaching examples) с единым outcome source; Step 8W сделал `СИТУАЦИЯ ДНЯ` evidence-based через persisted evidence/transcript fallback выбранного sales-like `РАЗБОР ЗВОНКА`; Step 8Y зафиксировал целевой additive `LLM2 -> report_evidence -> reporting layer` contract in `docs/REPORT_EVIDENCE_CONTRACT.md`; Step 8AD подключил valid `report_evidence` как preferred evidence/candidate source with Step 8W fallback; Step 8AF добавил quality guard for legacy fallback so IVR/greeting-only fragments are not used as proof when better sales-like evidence exists; Step 8AH-1 зафиксировал единый display contract for client/call references across manager_daily blocks; Step 8AH-2 зафиксировал human-readable table layout contract and status-order call-list sorting; Step 8AH-7 подключил valid `report_evidence.call_report_summary` для call-list topic/context, tomorrow text enrichment, and voice-of-customer manager action with guarded fallback; Step 8-STABLE зафиксировал stable analysis selection so normal `manager_daily` prefers reusable production/stable rows and excludes controlled sample / verification analyses unless explicitly opted in; Step 8AH-8C усилил `СИТУАЦИЯ ДНЯ`, чтобы client-reaction conclusions prefer persisted client-grounded evidence over manager-only fragments when such evidence exists; Step 8AH-8D усилил `ГОЛОС КЛИЕНТА`, чтобы manager action was signal-specific rather than generic; Step 8AH-8E усилил `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, чтобы context/recommendation/opening phrase came from one signal-specific follow-up profile; Step 8AH-11A добавил `data_scope` для coaching-блоков, чтобы expanded/rolling evidence не рендерился как plain report-day; Step 8AH-11B добавил `daily_coaching_focus` как единый source for focus stage across main coaching blocks; Step 8AH-11C добавил downstream problem-statement normalization so positive/neutral LLM2 or fallback wording is not rendered as a manager-facing problem; Step 8AH-11D добавил quality gate for Additional Situations so generic/contextless cards are hidden and valid cards use evidence/context-backed, stage-specific wording; Step 8AH-11E добавил quality gate for call-list context so weak, truncated, technical, or empty contexts are replaced by neutral diagnostics or LLM-provided context without inventing business meaning; Step 8AH-11H добавил quality gate for Call Breakdown so manager-facing rows require confirming evidence, aligned corrective recommendations, and clean wording; 2026-05-12 block-fit update добавил `semantic_case.report_block_fit` и block-specific gates, чтобы valid semantic case не использовался в неподходящем блоке; 2026-05-12 role/problem-fit update добавил block roles, problem-fit alignment, and problem-fragment evidence gate for problem-oriented blocks; 2026-05-14 v14 proof-layer update добавил proof metadata and counter-evidence gates for problem-oriented semantic cases so `СИТУАЦИЯ ДНЯ` / problem `РАЗБОР ЗВОНКА` cannot use a quote that proves the opposite of the claimed manager gap; 2026-05-14 v15 block-ready target зафиксировал, что LLM2 готовит `report_evidence.block_candidates` for `situation_day`, `call_breakdown`, `voice_of_customer`, `money_on_table`, `tomorrow_follow_up`, `tomorrow_challenge`, and `call_list_context`, while Reporting keeps deterministic validation/selection/rendering authority only.
 
 **Current semantic-report update:** 2026-05-21 — SFB-1..SFB-5 implemented in
 `feature/llm2-block-ready-v15` (`73cb5cf`). `manager_daily` now uses LLM3
 narrative composers for selected report blocks while this selection model
-continues to own report-day scope, `meaningful_calls`, `coaching_core`, final
-outcome/status authority, evidence gates, and renderer eligibility. `Ситуация
+continues to own report-day scope, `meaningful_calls`, `coaching_core`,
+evidence gates, counters/diagnostics, and renderer eligibility. Business
+meaning shown to a manager must come only from LLM-provided semantic fields.
+`Ситуация
 дня` is a single narrative block; `Разбор звонка` is a concrete call-turn
 breakdown and must not duplicate it; `Голос клиента` is customer-signal
 interpretation; call-list context may prefer richer `manager_visible_summary`
 when validated.
+
+**LLM-only semantic reporting update:** 2026-06-05 — действующее правило:
+manager-facing business meaning comes only from LLM (`scores_detail.status_details`,
+`report_evidence.business_outcome`, `follow_up`, `call_report_summary`,
+`block_candidates`, `semantic_case` and other approved LLM semantic fields).
+Deterministic mechanisms may only diagnose, validate evidence, enforce format,
+count rows, sort, and select among LLM-provided candidates. They must not invent
+or finalize business status, agreement/refusal/open meaning, hotness, call
+essence, situation-day thesis, stage problem, recommendation, praise, or
+manager-facing sales advice. If LLM meaning/evidence is missing, the report
+must show a neutral state such as `Без подтвержденного статуса`, `Суть не
+сформирована LLM`, or `Нет LLM-комментария`.
 
 ---
 
@@ -171,14 +185,14 @@ Service note должна отображать полную воронку от�
 - Колонки since Step 8AH-2: `#` / `Клиент` / `Тип / суть` / `Контекст` / `Статус`.
 - `Клиент` содержит unified client/call reference from Step 8AH-1, including date/time, so separate `Время` column is no longer rendered.
 - `Тип / суть` uses valid, non-generic `report_evidence.call_report_summary.short_topic` when available; otherwise it falls back to the deterministic `classification.call_type` / `scenario_type` label.
-- `Контекст` is selected through the Step 8AH-11E/SFB-5 call-list context quality gate. The gate now prefers useful richer context (`call_report_summary.manager_visible_summary`, valid `block_candidates.call_list_context.manager_visible_summary` / `call_list_context_rich`, or semantic-case manager-visible context), then useful `short_context`, then specific `short_topic`, then deterministic outcome/next-step/signal fallbacks.
+- `Контекст` is selected through the Step 8AH-11E/SFB-5 call-list context quality gate. The gate now prefers useful richer LLM context (`call_report_summary.manager_visible_summary`, valid `block_candidates.call_list_context.manager_visible_summary` / `call_list_context_rich`, or semantic-case manager-visible context), then useful `short_context`, then specific `short_topic`. If no LLM context passes, reporting shows neutral missing-context wording and diagnostics; it must not generate a new business meaning from transcript/status/follow-up fields.
 - The call-list table remains compact. Richer context is preserved in payload as
   `call_list_context_rich` / `manager_visible_summary`, but the visible
   `call_list_context` rendered in PDF/email is one compact phrase with a
   `150` character limit. Rich context is allowed to preserve meaning, not to
   turn the row into a full call breakdown.
 - The call-list context gate rejects empty, bare-dash, low-information, truncated-with-ellipsis, technical-code-like, and bad-deadline contexts such as `до После...`, `до На этой неделе`, or `→ до Конец года 2026`.
-- For `Договорённость`, `Перенос`, `Открыт`, and sales-related `Отказ`, the renderer should not show bare `—`; if summary context is missing/weak, reporting generates a human-readable fallback.
+- For `Договорённость`, `Перенос`, `Открыт`, and sales-related `Отказ`, the renderer should not show bare `—`; if LLM summary/context is missing or weak, reporting shows a neutral state such as `Суть не сформирована LLM` and exposes the missing-field diagnostic.
 - Sort order: `Договорённость`, `Перенос`, `Отказ`, `Открыт`, `Тех/сервис`, `Не подходит для разбора`, then technical/unclassified buckets. Within each status group, sort by call time.
 
 ---
@@ -188,7 +202,7 @@ Service note должна отображать полную воронку от�
 Во всех `manager_daily` блоках, где отображается клиент или звонок, кроме самих фрагментов звонка, используется единый reader-facing reference:
 
 ```text
-имя / ФИО / безопасный persisted label · телефон · дата, время
+имя / ФИО из LLM1/STT analysis · телефон · дата, время
 ```
 
 Fallback rules:
@@ -196,12 +210,19 @@ Fallback rules:
 - если телефона нет: `имя · дата, время`;
 - если имя/label уже является тем же телефоном, телефон не дублируется;
 - reporting layer не выдумывает ФИО и не извлекает новое имя из transcript ad hoc;
+- reporting layer не использует Bitrix/CRM/telephony metadata name fields как источник видимого ФИО;
 - unsafe / suspicious labels are rejected before display and fall back to phone/date/time.
 
 Source priority:
-1. persisted analysis call metadata (`scores_detail.call.contact_name` / `contact_phone` and compatible aliases);
-2. persisted interaction metadata (`contact_name`, `contact_label`, `customer_name`, `contact_phone` and compatible aliases);
-3. existing call reference fields already assembled in the reporting payload.
+1. persisted analysis call metadata name from LLM1/STT (`scores_detail.call.contact_name` and compatible aliases);
+2. persisted analysis call phone (`scores_detail.call.contact_phone`) or safe telephony phone metadata;
+3. date/time from call metadata.
+
+Visible client names must not fall back to interaction/telephony/Bitrix name fields
+(`contact_name`, `contact_label`, `customer_name`, `client_name`). Those fields may
+remain available for diagnostics or upstream enrichment, but manager-facing display
+uses a name only after LLM1/analyzer has persisted it in analysis. See
+[`PILOT-13`](PILOT13_CONTACT_NAME_SOURCE_TZ.md).
 
 Since Step 8AH-8B, candidate names/labels are rendered only if they pass the safe display-name guard:
 - exact unsafe/generic labels such as `ужас`, `алло`, `да`, `нет`, `не знаю`, `клиент`, `абонент`, `заявка`, `договор`, `эдо`, `поддержка`, `продажи`, `техподдержка`, `менеджер`, and `неизвестно` are rejected;
@@ -228,7 +249,7 @@ Since Step 8AH-7, richer per-call topic/context may come from valid `report_evid
 - `short_topic` can fill `Тип / суть` only when specific and non-generic;
 - `short_context` can fill `Контекст` when useful;
 - broad `short_topic` values such as `Обсуждение...`, `Разговор...`, `Звонок...`, `Продажи...`, or `Холодный звонок...` fall back to deterministic type/scenario labels;
-- missing or invalid `report_evidence` falls back to the previous deterministic/legacy fields.
+- missing or invalid `report_evidence` does not authorize deterministic business-summary generation; report rows use other valid LLM semantic fields or neutral missing-LLM states.
 
 Since Step 8AH-11E/SFB-5, `Контекст` is no longer a raw summary/follow-up
 passthrough. The quality gate chooses the first usable rich source:
@@ -237,33 +258,27 @@ passthrough. The quality gate chooses the first usable rich source:
    `call_list_context_rich`);
 3. high-quality `call_report_summary.short_context`;
 4. specific `call_report_summary.short_topic` normalized as a sentence;
-5. final outcome + next step / deadline fallback;
-6. call type + customer signal fallback;
-7. safe deterministic fallback.
+5. neutral missing-LLM context state.
 
 After source selection, the visible table context is compacted to one sentence.
 The full selected text remains available in `call_list_context_rich`; diagnostics
 expose `compacted_context_count`, `visible_context_limit`, and
 `max_visible_context_length`.
 
-Fallback examples:
-- `open` without a clear next step: `Контакт открыт, следующий шаг не зафиксирован.`;
-- `rescheduled` with a deadline: `Клиент попросил вернуться в согласованный срок: {deadline}.`;
-- invoice/payment agreement: `Есть коммерческий следующий шаг: отправить счёт, подтвердить получение и согласовать оплату.`;
-- refusal without reason: `Клиент отказался, причина отказа не извлечена.`;
-- technical/service: `Технический / сервисный звонок, продажный контекст не выявлен.`;
-- after-signature service/sales attempt: `Звонок после подписания документа, продажный потенциал не раскрыт.`;
-- materials/KP/WhatsApp request: `Клиент попросил материалы, следующий контакт нужно закрепить отдельно.`
+Neutral missing-context examples:
+- `Суть не сформирована LLM`;
+- `Нет готового LLM-контекста`;
+- `Контекст не подтвержден LLM`.
 
 Payload diagnostics:
 - `call_list_context_quality.status`;
 - total calls;
 - count of contexts sourced from `call_report_summary.short_context` / `short_topic`;
-- count of deterministic fallbacks;
+- count of neutral missing-LLM contexts;
 - retained bare contexts, if any;
 - rejected candidate contexts with reasons: `empty_context`, `bare_dash`, `truncated_context`, `technical_fragment`, `bad_deadline_wording`, `low_information`.
 
-This gate does not change final status, outcome totals, report-day call-list inclusion, status sorting, or coaching-block data-scope behavior.
+This gate does not create or change business status, outcome totals, report-day call-list inclusion, status sorting, or coaching-block data-scope behavior.
 
 ### Step 8AH-11 Semantic Regression Checkpoint
 
@@ -514,12 +529,12 @@ Since Step 8AD, evidence-bearing coaching blocks prefer valid additive LLM2 `rep
 - `ГОЛОС КЛИЕНТА` prefers usable grounded `report_evidence.voice_of_customer`;
 - `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ` prefers usable high/medium `report_evidence.additional_situations`;
 - `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` may use `report_evidence.follow_up_candidates` for text enrichment, but only after the final `payload.call_list[]` status allows inclusion.
-- Since Step 8AH-7, `call_report_summary.manager_next_action`, `short_context`, `hotness_reason`, and safe `suggested_manager_phrase` may enrich `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and `manager_next_action` may enrich `ГОЛОС КЛИЕНТА`; deterministic final outcome and Step 8AH-3 hotness priority remain final authority.
-- Since Step 8AH-8D, `ГОЛОС КЛИЕНТА` manager action first uses a valid specific `call_report_summary.manager_next_action` only when it aligns with the detected client quote signal; otherwise reporting uses deterministic signal-specific actions for internal discussion, current-solution-enough, trust barrier, materials/price request, refusal, and service/signing issues. Generic fallback is last resort and must not replace a clear client signal.
-- Since Step 8AH-8E, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` uses signal-specific follow-up profiles for invoice/payment, meeting/demo, materials/KP/WhatsApp, internal discussion, rescheduled callbacks, trust/channel barriers, weak open, and generic agreements. The same profile supplies `Контекст`, `Рекомендация`, and the safe opening phrase. LLM2 `manager_next_action` may override only when specific and aligned; deterministic hotness and final inclusion/exclusion remain unchanged.
+- Since Step 8AH-7, `call_report_summary.manager_next_action`, `short_context`, `hotness_reason`, and safe `suggested_manager_phrase` may enrich `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, and `manager_next_action` may enrich `ГОЛОС КЛИЕНТА`; after the 2026-06-05 LLM-only update, deterministic logic validates/filters these fields but does not create final outcome or hotness priority.
+- Since Step 8AH-8D, `ГОЛОС КЛИЕНТА` manager action first uses a valid specific `call_report_summary.manager_next_action` only when it aligns with the detected client quote signal; if no LLM action is valid, reporting may hide the action or show neutral missing-LLM wording, but must not replace it with generic deterministic advice.
+- Since Step 8AH-8E, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` uses LLM-provided signal-specific follow-up candidates for invoice/payment, meeting/demo, materials/KP/WhatsApp, internal discussion, rescheduled callbacks, trust/channel barriers, weak open, and generic agreements. Deterministic code may select/sort among accepted candidates; it must not create hotness, context, recommendation, or opening phrase.
 - Since Step 8AH-8F, `РАЗБОР ЗВОНКА` ranks evidence-backed coaching moments above fragmentless moments. Since Step 8AH-11H, fragmentless moments are filtered out of manager-facing rows; if no valid row remains, the explicit insufficient-evidence fallback is rendered instead of a weak fragment row.
 
-If `report_evidence` is missing or invalid, the report uses the current Step 8W persisted evidence/transcript fallback. Reporting diagnostics must expose `report_evidence_available`, `report_evidence_valid`, validation issues, and `report_evidence_source=report_evidence|legacy_fallback`.
+If `report_evidence` is missing or invalid, the report may use other valid LLM semantic fields or neutral insufficient-evidence states. Step 8W persisted evidence/transcript fallback can remain as diagnostics/proof formatting only; it must not create manager-facing business meaning. Reporting diagnostics must expose `report_evidence_available`, `report_evidence_valid`, validation issues, and source selection.
 
 Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - greeting-only, name-confirmation, connection/noise, `ТЕЛЕФОННЫЙ ЗВОНОК`, and IVR-like boilerplate are not selected as proof fragments while any more meaningful sales-like fragment exists;
@@ -542,19 +557,17 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - `call_outcomes_summary.unclassified_by_bucket` разделяет manager-facing причины: `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера`, `Нет итога`, `Нет классификации`, `Без разбора`.
 - Сумма всех категорий (включая `БЕЗ РАЗБОРА`) обязана равняться `meaningful_calls_total`.
 
-**Business outcome resolver (Step 8R):**
-- Финальный `status` для `call_list[]` и `call_outcomes_summary` определяется deterministic reporting-layer resolver из уже сохранённых данных: transcript / `interaction.text`, selected stable reusable or persisted failed analysis, `scores_detail.classification`, `scores_detail.follow_up`, fail reason and metadata.
-- Resolver не запускает STT/LLM, не меняет analyzer prompt, scoring, eligibility, selection model, rolling window, delivery или PDF layout.
-- Приоритет категорий:
-  1. technical blockers: `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера`;
-  2. `Тех/сервис` для содержательной сервисной помощи;
-  3. `Отказ` для явного отказа;
-  4. `Договорённость` только для реального следующего коммерческого шага;
-  5. `Перенос`;
-  6. `Открыт`;
-  7. `Не подходит для разбора` только для truly semantic-empty / no business signal.
-- `not_coachable_or_reportable` больше не означает автоматическое `Не подходит для разбора` в manager-facing outcome. Сначала resolver пытается найти business outcome; если найден сервис, отказ, перенос, договорённость или open/follow-up, в отчёт попадает бизнес-категория. Если business signal отсутствует, остаётся `Не подходит для разбора`.
-- `duration_below_threshold` / coaching non-eligibility не должны перебивать business outcome в report-day call list, если transcript or persisted analysis содержит бизнес-смысл.
+**Business outcome resolver (Step 8R, superseded for manager-facing meaning on 2026-06-05):**
+- `BusinessOutcomeResolver` is legacy deterministic logic and must not be the final authority for manager-facing business meaning.
+- Visible `call_list_status` / `final_manager_status` may come only from LLM semantic fields, in this order when valid and evidence-backed:
+  1. `scores_detail.status_details.status`;
+  2. `report_evidence.business_outcome.status`;
+  3. other approved LLM semantic status fields explicitly added to the report contract.
+- If no LLM status is available or evidence is insufficient, payload must keep `call_list_status = None` / `final_manager_status = None` and render a neutral label such as `Без подтвержденного статуса`.
+- Deterministic code may still count technical blockers (`Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера`), validate evidence, format labels, sort rows, and expose diagnostics.
+- `BusinessOutcomeResolver` may remain only as diagnostics: `resolver_status`, `resolver_reason_code`, `resolver_confidence`, mismatch counters, and investigation notes. Its output must not be promoted into `Договорённость`, `Перенос`, `Отказ`, `Открыт`, or `Тех/сервис` unless LLM supplied that same business meaning.
+- `not_coachable_or_reportable`, `duration_below_threshold`, and coaching non-eligibility are not business statuses. They can explain readiness/coverage, but they must not create a manager-facing outcome.
+- Confirmed pilot issue on 2026-06-05: in Tolegen's manager_daily report for 2026-06-04, resolver fallback produced false `Договорённость` rows where LLM did not confirm agreement through `business_outcome` / `status_details`. This is the concrete regression that triggered `docs/LLM_ONLY_SEMANTIC_REPORTING_TZ.md`.
 
 **Stable analysis selection (Step 8-STABLE):**
 - Normal `manager_daily` report runs do not use raw latest-by-`created_at` blindly.
@@ -567,17 +580,12 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 
 **`coaching_core` и rolling window не влияют на `call_outcomes_summary`** — они используются только в narrative/coaching-блоках (`СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`). `БАЛЛЫ ПО ЭТАПАМ` используют отдельный day-ready stage-score scope и обязаны показывать охват данных.
 
-**Post-summary outcome alignment (Step 8U):**
-- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` строится из финального report-day `payload.call_list[]` / `BusinessOutcomeResolver` status, а не из raw `follow_up` по `coaching_core`.
-- В блок попадают только final `Договорённость`, `Перенос`, `Открыт`.
-- Final `Отказ`, `Тех/сервис`, `Не подходит для разбора`, `Без транскрипта`, `Без анализа`, `Ошибка анализа`, `Ошибка провайдера` не становятся tomorrow sales actions.
-- Priority label is a deterministic follow-up hotness, separate from final outcome:
-  - `hot -> Горячий`: final `Договорённость`, especially when existing persisted text/follow-up fields mention invoice, payment, meeting/Zoom/demo, concrete date/deadline, purchase, connection, or commercial proposal.
-  - `rescheduled -> Перенос`: final `Перенос`.
-  - `warm -> Тёплый`: final `Открыт` with an explicit existing signal such as request for materials/information/KP/WhatsApp, "посмотрю/подумаем/посоветуюсь", or other clear interest without a hard commitment.
-  - `low -> Низкий`: final `Открыт` without a clear deadline or next commercial step.
-- Tomorrow sorting uses hotness order `Горячий -> Перенос -> Тёплый -> Низкий`, then nearest deadline, then call time.
-- `Открытый` remains a final status label in call outcomes/call list, but must not be used as a `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` priority label.
+**Post-summary outcome alignment (Step 8U, LLM-only semantic rule):**
+- `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА` строится только из LLM-подтвержденных semantic fields: `status_details`, `business_outcome`, `follow_up`, `follow_up_candidates`, `call_report_summary.manager_next_action`, `call_report_summary.hotness` / `hotness_reason`, or valid `block_candidates.tomorrow_follow_up`.
+- В блок попадают только контакты с LLM-подтвержденным next step / reason to follow up and enough evidence. Deterministic code may select among those candidates and sort by LLM-provided deadline/time, but it must not invent priority or hotness.
+- LLM-confirmed `refusal`, `tech_service`, `not_suitable`, technical blockers, or missing LLM status do not become tomorrow sales actions.
+- Priority/hotness label is manager-facing business meaning. It must come from LLM. If LLM did not provide it, render `не определен LLM` or exclude the row when there is no sufficient next step.
+- `Открытый` remains a possible LLM-confirmed final status label in call outcomes/call list, but must not be converted into a tomorrow priority without LLM priority/hotness.
 - Если после фильтрации нет кандидатов, блок показывает safe empty state и не фабрикует follow-up.
 - Normal coaching examples for report-day calls (`РАЗБОР ЗВОНКА`, `СИТУАЦИЯ ДНЯ`, `ЧЕЛЛЕНДЖ`) exclude final `Отказ`, `Тех/сервис`, and unclassified technical buckets when at least one final sales-like candidate (`Договорённость`, `Перенос`, `Открыт`) exists. If no sales-like candidate exists, sparse fallback behavior may remain explicit rather than silently treating service/refusal as normal sales coaching.
 
@@ -609,24 +617,26 @@ Since Step 8AF, legacy evidence fallback has an information-quality guard:
 - LLM2 must prepare block-specific meaning: `situation_day` gets a teachable thesis and better next action; `call_breakdown` gets one to three deeper moments; `voice_of_customer` gets a real customer signal without forcing a manager problem; `money_on_table` gets only concrete commercial opportunities; `tomorrow_follow_up` gets client-specific next action/opening/risk; `tomorrow_challenge` gets a skill standard signal; `call_list_context` gets short non-generic topic/context/action text.
 - v15 proof rules are strict. `direct_gap` is only for a quote/fragment that directly proves the manager gap; `sequence_inference` is for event order; `absence_in_context` is for an expected action missing from the available record; `context_support` is context only and cannot prove a `fit=true` manager-gap problem. A product-offer quote does not directly prove missing qualification; for that claim the proof is normally sequence or absence.
 - `report_evidence` contains report-ready candidates for `business_outcome`, `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, `ГОЛОС КЛИЕНТА`, `ДЕНЬГИ НА СТОЛЕ`, `КОГО ВЗЯТЬ В РАБОТУ ЗАВТРА`, `ЧЕЛЛЕНДЖ НА ЗАВТРА`, `call_list` context for the visible appendix `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ`, legacy `ДОПОЛНИТЕЛЬНЫЕ СИТУАЦИИ`, and reusable quote bank.
-- Reporting layer remains deterministic: it selects report scope/report-day calls, validates/ranks semantic cases and candidates, applies final `BusinessOutcomeResolver` status, aggregates, renders, and falls back to existing `report_evidence v1` or Step 8W logic when `semantic_case` is absent or invalid.
+- Reporting layer remains deterministic only for non-semantic operations: it selects report scope/report-day calls, validates/ranks LLM semantic cases and candidates, aggregates counts, formats, renders, and exposes diagnostics. It does not apply `BusinessOutcomeResolver` as a final business-status authority and does not create manager-facing business meaning when `semantic_case` / `report_evidence` is absent or invalid.
 - Starting with the semantic-case preference implementation on 2026-05-12, `manager_daily` prefers valid `semantic_case` for `СИТУАЦИЯ ДНЯ`, `РАЗБОР ЗВОНКА`, and `ГОЛОС КЛИЕНТА`; legacy `report_evidence v1` candidates remain the fallback path for older analyses.
 - Future v15 reporting selection should prefer valid `block_candidates[block]` before `semantic_case.report_block_fit`, but only after the schema/validator and report-layer gates accept them. Until then, `semantic_case` and legacy `report_evidence v1` remain the safe implemented sources.
 - A valid `semantic_case` is not enough by itself: each block applies its own suitability gate. `СИТУАЦИЯ ДНЯ` requires a manager gap or missed opportunity, problem title, and problem-fit alignment with the daily focus; `РАЗБОР ЗВОНКА` requires a coachable manager moment or strong-practice role with grounded manager evidence; `ГОЛОС КЛИЕНТА` requires a grounded customer signal.
 - Starting with the semantic-case diagnostics implementation on 2026-05-12, `payload.report_evidence_diagnostics` exposes per-call semantic-case availability, validity, usage, filter reason, and block-level source selection using `semantic_case`, `report_evidence_v1`, or `legacy_fallback`.
 - Block diagnostics include selected/rejected semantic candidates with rejection reasons such as `customer_signal_without_manager_gap`, `positive_diagnosis_not_problem_case`, `manager_fragment_missing`, `title_mode_not_problem`, `problem_signal_mismatch`, or `report_block_fit_score_below_threshold`.
-- Final `BusinessOutcomeResolver` status wins over `report_evidence.business_outcome` conflicts. For example, explicit refusal beats LLM-open, service/document help beats LLM-not-suitable, and technical blockers remain blockers.
+- `BusinessOutcomeResolver` status does not win over `report_evidence.business_outcome` conflicts for manager-facing meaning. Conflicts are diagnostics / human-review signals. The visible business status is selected only from valid LLM semantic status fields; if LLM evidence is missing or conflicting, show a neutral unconfirmed state rather than resolver-created meaning.
 - Для manager-facing `Договорённость` действует дополнительный safety rule:
   LLM2 `business_outcome.status=agreement` принимается в видимый
   `call_list_status=agreed` только при явном коммерческом следующем шаге:
   счёт/оплата/КП/договор/подписание/подключение/демо/встреча/Zoom или
   конкретный next-contact с действием. Если LLM2 называет `agreement` только
   слабый интерес (`скиньте материалы`, `посмотрю`, `подумаем`) без
-  коммерческого шага, Report Layer откатывается к `BusinessOutcomeResolver`, а
-  payload фиксирует `call_list_status_fallback_reason=llm2_agreement_without_explicit_commercial_step`.
+  коммерческого шага, Report Layer не показывает `Договорённость`; payload
+  фиксирует `call_list_status_fallback_reason=llm2_agreement_without_explicit_commercial_step`
+  или `agreement_missing_evidence` и оставляет видимый статус нейтральным либо
+  выбирает другой valid LLM-provided status.
 - Payload раскрывает `agreement_outcome_diagnostics`: сравнение LLM2 outcome,
-  resolver, видимого `call_list_status` и deterministic agreement extraction
-  для всех agreement-like звонков.
+  resolver diagnostics, видимого `call_list_status` и evidence validation для
+  всех agreement-like звонков.
 - Full contract, validation requirements, backward compatibility, prompt update plan, and rollout Step 8Z..8AI live in `docs/REPORT_EVIDENCE_CONTRACT.md`.
 
 **`ДЕНЬГИ НА СТОЛЕ`** использует только actionable outcomes из того же `call_outcomes_summary` (`agreed` + `open` + `rescheduled` из report-day meaningful). Buckets `Без транскрипта`, `Без анализа`, `Не подходит для разбора`, `Ошибка анализа`, `Ошибка провайдера` и прочий `БЕЗ РАЗБОРА` не входят в money calculation. Если actionable outcomes = 0, показывается `Данных для данного раздела недостаточно.`.
@@ -643,41 +653,58 @@ Gate проходит, когда в `call_list[]` нет blocking buckets:
 
 Gate может пропустить отчёт, если в нём остались:
 - normal outcomes (`Договорённость`, `Перенос`, `Отказ`, `Открыт`);
-- `Не подходит для разбора` для semantic-empty / not business-meaningful calls after BusinessOutcomeResolver pass;
+- `Не подходит для разбора` only when LLM/eligibility evidence supports non-coachable or not business-meaningful handling;
 - `Тех/сервис`.
 
 Если gate не проходит, runtime возвращает operator-facing `review_required` с reason `incomplete_day_call_processing`, counts и affected calls. Business email не отправляется; operator/test preview может быть создан только как incomplete preview.
 
 ---
 
-## D. Rolling Window Rule
+## D. Strict Report-Day Rule
 
 ### Операционный слой дня
 
 - `raw_calls` — всегда только за выбранный день.
 - `meaningful_calls` — всегда только за выбранный день.
 - СПИСОК ЗВОНКОВ ДНЯ — всегда только за выбранный день.
+- `coaching_core`, readiness decision, stage-score aggregates, follow-up
+  blocks, PDF/email subject/body and delivery gates — тоже только за выбранный
+  день.
 
-Операционный слой не расширяется rolling window. Менеджер видит свой рабочий день.
+Операционный слой не расширяется rolling window. Менеджер видит свой рабочий
+день. Если данных за день мало, `manager_daily` остается честным
+`signal_report`, `review_required` или `skip_accumulate` по этому дню.
 
 ### Коучинговый слой
 
-- `coaching_core` и readiness decision **могут** использовать rolling window `1 → 2 → 3` рабочих дня для набора аналитической базы, если за один день звонков слишком мало для `full_report`.
+Для manager-facing `manager_daily` коучинговый слой больше не имеет права
+использовать прошлые дни как visible/content базу. Исторические звонки нельзя
+подмешивать в:
 
-**Порядок проверки:**
-1. Сначала — только текущий рабочий день.
-2. Если `full_report` не достигнут — последние 2 рабочих дня.
-3. Если `full_report` не достигнут — последние 3 рабочих дня.
-4. Дальше окно не расширяется.
+- `СИТУАЦИЮ ДНЯ`;
+- `РАЗБОР ЗВОНКА`;
+- `БАЛЛЫ ПО ЭТАПАМ`;
+- `КОНТАКТЫ В РАБОТУ`;
+- `ПРИЛОЖЕНИЕ: ВСЕ ЗВОНКИ ДНЯ`;
+- верхнюю воронку и статусные счетчики;
+- email subject/body.
 
 ### Transparency rule
 
-Если rolling window применён (окно > 1 дня), это **обязательно** явно отражается в отчёте:
-- в service note: «Данные за N рабочих дн. (с … по …)»;
-- в structured result: `window_days_used`, `window_start`, `window_end`;
-- в coaching-блоках — там, где данные из окна, а не только из текущего дня.
+Для `manager_daily` expanded/rolling window является delivery blocker:
 
-СПИСОК ЗВОНКОВ ДНЯ при этом **не расширяется** — он всегда за один выбранный день.
+- `window_days_used` должен быть `1`;
+- `window_start == window_end == report_day`;
+- `meta.period.date_from == meta.period.date_to == report_day`;
+- `included_in_report_total <= meaningful_calls_total`.
+
+Если любое условие нарушено, business email менеджеру не отправляется; результат
+должен уйти в operator-only `review_required`. Telegram/operator preview
+допустим только для диагностики.
+
+Rolling/expanded periods остаются допустимыми только для РОП weekly/monthly,
+внутренних сравнений или специальных исследований, но не для manager-facing
+daily.
 
 ---
 

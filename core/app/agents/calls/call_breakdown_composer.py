@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 from app.agents.calls.openai_chat_compat import build_chat_completion_kwargs
 from app.agents.calls.openai_usage import extract_openai_usage_metadata
-from app.agents.calls.report_time import as_report_timezone, report_date_label_iso
+from app.agents.calls.report_time import as_report_timezone, report_date_label_iso, report_human_datetime_ru
 
 CALL_BREAKDOWN_COMPOSER_VERSION = "call_breakdown_composer_v2"
 CALL_BREAKDOWN_PROMPT_VERSION = "call_breakdown_composer_v2"
@@ -24,6 +24,28 @@ CALL_BREAKDOWN_SOURCE = "report_evidence.call_breakdown_composer.v2"
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "call_breakdown_composer_v2.md"
 
 _MISSING_FRAGMENT_NOTE = "Нет подтверждающего фрагмента в сохранённых данных."
+_UNSAFE_CLIENT_DISPLAY_NAME_VALUES = {
+    "абонент",
+    "алло",
+    "да",
+    "договор",
+    "добрый день",
+    "заявка",
+    "здравствуйте",
+    "клиент",
+    "менеджер",
+    "не знаю",
+    "неизвестно",
+    "нет",
+    "поддержка",
+    "продажи",
+    "ага",
+    "слушаю",
+    "техподдержка",
+    "угу",
+    "ужас",
+    "эдо",
+}
 
 _B2B_TERMS = (
     "b2b",
@@ -1936,14 +1958,15 @@ def _call_reference(
         _analysis_call_value(artifact, "contact_phone"),
         _analysis_call_value(artifact, "client_phone"),
     )
-    client_label = _first_text(
-        packet_excerpt.get("client_label"),
-        _metadata_value(artifact, "contact_name"),
-        _metadata_value(artifact, "client_name"),
-        _metadata_value(artifact, "contact_label"),
-        client_phone,
-        "Клиент",
+    client_name = _safe_client_display_name(
+        _first_text(
+            _analysis_call_value(artifact, "contact_name"),
+            _analysis_call_value(artifact, "client_name"),
+            _analysis_call_value(artifact, "name"),
+        ),
+        phone=client_phone,
     )
+    client_label = client_name or client_phone or "Клиент"
     report_started_at = as_report_timezone(started_at)
     date_label = _first_text(
         report_date_label_iso(report_started_at),
@@ -1954,13 +1977,10 @@ def _call_reference(
         packet_excerpt.get("time_label"),
         "—",
     )
-    reference = _first_text(
-        _build_client_call_reference(
-            client_label=client_label,
-            client_phone=client_phone,
-            started_at=started_at,
-        ),
-        packet_excerpt.get("client_call_reference"),
+    reference = _build_client_call_reference(
+        client_label=client_label,
+        client_phone=client_phone,
+        started_at=started_at,
     )
     return {
         "call_id": call_id,
@@ -1978,14 +1998,50 @@ def _build_client_call_reference(
     client_phone: str | None,
     started_at: datetime | None,
 ) -> str | None:
-    label = _text(client_label) or _text(client_phone)
-    parts = []
-    if label:
-        parts.append(label)
-    if started_at is not None:
-        report_started_at = as_report_timezone(started_at)
-        parts.append(report_started_at.strftime("%Y-%m-%d %H:%M") if report_started_at else started_at.strftime("%Y-%m-%d %H:%M"))
-    return ", ".join(parts) or None
+    phone = _text(client_phone)
+    label = _safe_client_display_name(client_label, phone=phone)
+    if not label and _is_phone_like_display(client_label) and not phone:
+        phone = _text(client_label)
+    parts = [
+        part
+        for part in (
+            label,
+            phone,
+            report_human_datetime_ru(started_at),
+        )
+        if part
+    ]
+    return " · ".join(parts) or None
+
+
+def _is_phone_like_display(value: Any) -> bool:
+    digits = re.sub(r"\D", "", _text(value))
+    return len(digits) >= 7
+
+
+def _same_phone_display(left: Any, right: Any) -> bool:
+    left_digits = re.sub(r"\D", "", _text(left))
+    right_digits = re.sub(r"\D", "", _text(right))
+    return bool(left_digits and right_digits and left_digits == right_digits)
+
+
+def _safe_client_display_name(value: Any, *, phone: Any = None) -> str | None:
+    text = _text(value).strip(".,:;!?«»\"'()[]{} ")
+    if not text or _is_phone_like_display(text) or _same_phone_display(text, phone):
+        return None
+    normalized = text.lower().replace("ё", "е")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if normalized in _UNSAFE_CLIENT_DISPLAY_NAME_VALUES:
+        return None
+    if len(text) > 60 or len(normalized) < 2:
+        return None
+    if any(marker in normalized for marker in ("http://", "https://", "www.", "@")):
+        return None
+    if re.search(r"\d", text):
+        return None
+    if not re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё -]{1,59}", text):
+        return None
+    return text
 
 
 def _stage_name_from_scores(

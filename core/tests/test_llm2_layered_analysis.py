@@ -83,6 +83,13 @@ def _layered_artifact() -> dict:
                 "evidence_ids": ["ev_001"],
                 "reason": "Client asked to receive materials before deciding.",
             },
+            "edo_scope": {
+                "sales_scoring_scope": "full",
+                "scope_reason": "edo_sales",
+                "applicable_part": "The whole call is a commercial EDO follow-up.",
+                "expected_manager_action": "sell",
+                "evidence_ids": ["ev_001", "ev_002"],
+            },
         },
         "llm2b_artifact": {
             "pass": "LLM-2B",
@@ -176,8 +183,35 @@ def _layered_artifact() -> dict:
             },
             "final_normalized_analysis": {
                 "summary": {"short": "Client asked for materials."},
+                "coaching_decision": {
+                    "decision": "improve",
+                    "title": "Улучшить",
+                    "text": "Add a concrete date or condition to the final step.",
+                    "reason": "The accepted proof card shows the next contact was not anchored.",
+                    "based_on": {
+                        "stage_code": "next_step",
+                        "criterion_codes": ["cn_owner_and_deadline"],
+                        "proof_ids": ["proof_001"],
+                        "evidence_ids": ["ev_001", "ev_002"],
+                    },
+                },
                 "agreements": [],
                 "follow_up": {},
+                "status_details": {
+                    "status": "open",
+                    "agreement": None,
+                    "rescheduled": None,
+                    "refusal": None,
+                    "open": {
+                        "why_open": "Клиент попросил материалы перед решением.",
+                        "missing_to_close": "Не закреплена дата следующего контакта.",
+                        "next_action": "Отправить материалы и согласовать дату возврата.",
+                        "owner": "manager",
+                        "deadline": None,
+                        "evidence": "Please send the materials in WhatsApp.",
+                    },
+                    "service": None,
+                },
             },
         },
     }
@@ -196,6 +230,26 @@ class LLM2LayeredAnalysisTests(unittest.TestCase):
         detail = result.scores_detail
         self.assertEqual(detail["call"]["call_id"], "call-layered-001")
         self.assertEqual(detail["report_evidence_version"], "v1")
+        self.assertEqual(detail["coaching_decision"]["decision"], "improve")
+        self.assertEqual(detail["coaching_decision"]["title"], "Улучшить")
+        self.assertEqual(
+            detail["coaching_decision"]["based_on"]["stage_code"],
+            "completion_next_step",
+        )
+        self.assertEqual(
+            detail["coaching_decision"]["based_on"]["proof_ids"],
+            ["proof_001"],
+        )
+        self.assertEqual(
+            detail["edo_scope"],
+            {
+                "sales_scoring_scope": "full",
+                "scope_reason": "edo_sales",
+                "applicable_part": "The whole call is a commercial EDO follow-up.",
+                "expected_manager_action": "sell",
+                "evidence_ids": ["ev_001", "ev_002"],
+            },
+        )
         self.assertEqual(detail["score"]["checklist_score"]["total_points"], 1)
         self.assertEqual(detail["score"]["checklist_score"]["max_points"], 2)
         self.assertEqual(detail["score_by_stage"][0]["stage_code"], "completion_next_step")
@@ -211,6 +265,12 @@ class LLM2LayeredAnalysisTests(unittest.TestCase):
         self.assertIn("Client asked to receive materials", call_essence["outcome_reason"])
         self.assertIn("Manager will send information", call_essence["agreement"])
         self.assertIn("Add a concrete date", call_essence["next_step"])
+        self.assertEqual(detail["status_details"]["status"], "open")
+        self.assertEqual(
+            detail["status_details"]["open"]["next_action"],
+            "Отправить материалы и согласовать дату возврата.",
+        )
+        self.assertIsNone(detail["status_details"]["agreement"])
         self.assertNotIn("_claim_id", proof_card)
         layered_metadata = detail["layered_analysis"]
         self.assertEqual(
@@ -250,6 +310,62 @@ class LLM2LayeredAnalysisTests(unittest.TestCase):
             "Sure, I will send the information",
             result.scores_detail["score_by_stage"][0]["criteria_results"][0]["evidence"],
         )
+
+    def test_invalid_edo_scope_enums_normalize_with_diagnostics(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2a_artifact"]["edo_scope"] = {
+            "sales_scoring_scope": "service_call",
+            "scope_reason": "technical_question",
+            "applicable_part": "LLM2A described this as support, but enums are invalid.",
+            "expected_manager_action": "handoff",
+            "evidence_ids": ["ev_001", 42, ""],
+        }
+
+        result = normalize_llm2_layered_analysis(artifact, transcript=TRANSCRIPT)
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(
+            result.scores_detail["edo_scope"],
+            {
+                "sales_scoring_scope": "unclear",
+                "scope_reason": "other",
+                "applicable_part": "LLM2A described this as support, but enums are invalid.",
+                "expected_manager_action": "other",
+                "evidence_ids": ["ev_001"],
+            },
+        )
+        warning_codes = {
+            item["code"]
+            for item in result.scores_detail["diagnostics"]["edo_scope_validation"]
+        }
+        self.assertIn("edo_scope_invalid_enum", warning_codes)
+        self.assertIn("edo_scope_invalid_evidence_id_item", warning_codes)
+
+    def test_non_applicable_criteria_do_not_create_stage_scores(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2b_artifact"]["criteria_results"].append(
+            {
+                "criterion_code": "np_not_observed",
+                "criterion_name": "Не наблюдавшийся этап",
+                "stage_code": "needs_discovery",
+                "applicable": False,
+                "score": 0,
+                "max_score": 2,
+                "comment": "Этап в звонке не происходил.",
+                "scene_ids": ["scene_001"],
+                "evidence_ids": ["ev_001"],
+                "missing_evidence_reason": "Этап не возникал в контексте звонка.",
+            }
+        )
+
+        result = normalize_llm2_layered_analysis(artifact, transcript=TRANSCRIPT)
+
+        self.assertTrue(result.is_valid)
+        stage_codes = [
+            item["stage_code"]
+            for item in result.scores_detail["score_by_stage"]
+        ]
+        self.assertEqual(stage_codes, ["completion_next_step"])
 
     def test_vague_availability_is_not_callback_or_agreement(self) -> None:
         artifact = deepcopy(_layered_artifact())
@@ -532,6 +648,41 @@ class LLM2LayeredAnalysisTests(unittest.TestCase):
             result.scores_detail["score_by_stage"][0]["stage_code"],
             "completion_next_step",
         )
+
+    def test_invalid_coaching_decision_enum_is_diagnostic_not_persisted(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2d_artifact"]["final_normalized_analysis"]["coaching_decision"][
+            "decision"
+        ] = "push_harder"
+
+        result = normalize_llm2_layered_analysis(
+            artifact,
+            transcript=TRANSCRIPT,
+            validate_evidence=False,
+        )
+
+        self.assertNotIn("coaching_decision", result.scores_detail)
+        diagnostics = result.scores_detail["diagnostics"]["coaching_decision_validation"]
+        self.assertEqual(diagnostics[0]["code"], "coaching_decision_invalid_enum")
+        self.assertEqual(diagnostics[0]["field"], "decision")
+
+    def test_coaching_decision_title_mismatch_is_cleared_with_diagnostic(self) -> None:
+        artifact = deepcopy(_layered_artifact())
+        artifact["llm2d_artifact"]["final_normalized_analysis"]["coaching_decision"].update(
+            {"decision": "maintain", "title": "Улучшить"}
+        )
+
+        result = normalize_llm2_layered_analysis(
+            artifact,
+            transcript=TRANSCRIPT,
+            validate_evidence=False,
+        )
+
+        decision = result.scores_detail["coaching_decision"]
+        self.assertEqual(decision["decision"], "maintain")
+        self.assertIsNone(decision["title"])
+        diagnostics = result.scores_detail["diagnostics"]["coaching_decision_validation"]
+        self.assertEqual(diagnostics[0]["code"], "coaching_decision_title_mismatch")
 
 
 if __name__ == "__main__":

@@ -40,6 +40,28 @@ Common enums:
   "claim_type": ["manager_gap", "customer_signal", "follow_up", "business_outcome", "strong_practice"],
   "proof_type": ["direct_quote", "sequence_inference", "absence_based"],
   "proof_status": ["proven", "softened", "rejected", "insufficient"],
+  "coaching_decision": ["improve", "maintain", "no_comment"],
+  "sales_scoring_scope": ["full", "partial", "none", "unclear"],
+  "scope_reason": [
+    "edo_sales",
+    "edo_service",
+    "legal_direction",
+    "tech_support",
+    "internal_or_wrong_call",
+    "mixed",
+    "insufficient_data",
+    "other"
+  ],
+  "expected_manager_action": [
+    "sell",
+    "transfer",
+    "support",
+    "clarify",
+    "close_service_issue",
+    "keep_relationship",
+    "no_action",
+    "other"
+  ],
   "reject_reason": [
     "no_scene",
     "no_evidence",
@@ -121,6 +143,13 @@ Required output:
     "evidence_ids": ["ev_001"],
     "reason": "string"
   },
+  "edo_scope": {
+    "sales_scoring_scope": "full|partial|none|unclear",
+    "scope_reason": "edo_sales|edo_service|legal_direction|tech_support|internal_or_wrong_call|mixed|insufficient_data|other",
+    "applicable_part": "string|null",
+    "expected_manager_action": "sell|transfer|support|clarify|close_service_issue|keep_relationship|no_action|other",
+    "evidence_ids": ["ev_001"]
+  },
   "fail_closed": {
     "insufficient_transcript": false,
     "speaker_roles_uncertain": false,
@@ -155,6 +184,15 @@ Fail-closed behavior:
   admitted commercial call.
 - If a quote is not exact, set `is_exact_transcript_quote=false` and do not use
   it later as direct proof.
+- `edo_scope` is a compact applicability contract for EDO sales scoring. It
+  must not duplicate `business_outcome_signal`, future `business_outcome`,
+  `status_details`, `analysis_eligibility`, full quotes, or the full
+  `evidence_ledger`.
+- LLM-2A must not assume every call is sales-applicable by default. Use
+  `full`, `partial`, `none`, or `unclear` based on transcript evidence and
+  LLM-1 only as a prior hint. For mixed or unusual scenarios, preserve nuance
+  with `partial`, `other`, `unclear`, `applicable_part`, and
+  `expected_manager_action` instead of forcing one narrow label.
 
 ## LLM-2B: Scoring / Gaps
 
@@ -166,6 +204,7 @@ Input:
 {
   "call_id": "string",
   "llm2a_artifact": {},
+  "edo_scope": {},
   "checklist_definition": {},
   "mvp1_contract_shape": {}
 }
@@ -195,6 +234,7 @@ Required output:
   "stage_scores": [
     {
       "stage_code": "string",
+      "applicable": true,
       "score": 0,
       "max_score": 2,
       "criterion_codes": ["string"],
@@ -243,6 +283,7 @@ Optional fields:
 
 Forbidden:
 
+- redefining, overriding, or narrowing LLM-2A `edo_scope`;
 - creating a gap without `scene_ids` and `evidence_ids`;
 - recommendations;
 - proof status beyond preliminary confidence;
@@ -258,6 +299,19 @@ Fail-closed behavior:
   criterion/stage that is applicable to those scenes. For non-observed stages,
   mark criteria not applicable or explain missing evidence; do not invent a
   gap and do not force a zero.
+- Use LLM-2A `edo_scope` to decide EDO sales applicability. If
+  `sales_scoring_scope=none`, mark sales criteria/stages non-applicable and do
+  not create sales penalties. If `sales_scoring_scope=unclear`, avoid hard
+  sales scoring without evidence and record cautious applicability notes. If
+  `sales_scoring_scope=partial`, score only the sales part described in
+  `applicable_part` and mark the rest non-applicable.
+- For `tech_support`, `legal_direction`, `edo_service`,
+  `internal_or_wrong_call`, insufficient-data, or out-of-scope `other`, record
+  service/transfer/support context as non-coachable where appropriate rather
+  than turning it into an EDO sales gap.
+- Do not duplicate `business_outcome`, `status_details`, or the full
+  `evidence_ledger` in scoring output. Reference ids and keep the scenario's
+  full meaning; use `partial`, `other`, and `unclear` when needed.
 - Empty `stage_scores` is allowed only when the input is technically unusable:
   no scenes, no usable evidence, or an artifact shape that prevents scoring. In
   that case, add a diagnostic retry reason to `fail_closed.reject_reasons`.
@@ -345,7 +399,7 @@ Fail-closed behavior:
 ## LLM-2D: Recommendations / Universal Evidence Pack
 
 Purpose: produce final normalized analysis using only proven or softened proof
-cards.
+cards, and choose one compact coaching decision for the call.
 
 Input:
 
@@ -355,6 +409,7 @@ Input:
   "llm2a_artifact": {},
   "llm2b_artifact": {},
   "llm2c_artifact": {},
+  "edo_scope": {},
   "mvp1_contract_shape": {},
   "report_evidence_contract_v1": {}
 }
@@ -378,6 +433,18 @@ Required output:
       "stage_code": "string"
     }
   ],
+  "coaching_decision": {
+    "decision": "improve|maintain|no_comment",
+    "title": "Улучшить|Поддерживать|Корректно|null",
+    "text": "string|null",
+    "reason": "string",
+    "based_on": {
+      "stage_code": "string|null",
+      "criterion_codes": ["string"],
+      "proof_ids": ["proof_001"],
+      "evidence_ids": ["ev_001"]
+    }
+  },
   "universal_evidence_pack": {
     "proof_cards": [],
     "scenes": [],
@@ -395,6 +462,14 @@ Required output:
     "recommendations": [],
     "agreements": [],
     "follow_up": {},
+    "status_details": {
+      "status": "agreement|rescheduled|refusal|open|service",
+      "agreement": null,
+      "rescheduled": null,
+      "refusal": null,
+      "open": null,
+      "service": null
+    },
     "evidence_fragments": [],
     "report_evidence_version": "v1",
     "report_evidence": {}
@@ -418,20 +493,111 @@ Optional fields:
 - `downstream_validation_hints`
 - `legacy_field_mapping`
 
+Use LLM-2A `edo_scope` when producing recommendations and compatibility
+analysis. Do not redefine scope. Do not apply sales-push recommendations to
+`tech_support`, `legal_direction`, `edo_service`, internal/wrong-call,
+out-of-scope `other`, or unclear calls. For `partial`, address only the sales
+portion named in `applicable_part` and preserve the non-sales context. For
+`none` or `unclear`, recommendations should focus on transfer, support,
+clarification, service closure, relationship maintenance, or cautious review as
+appropriate.
+
+Recommendations and compatibility fields must not duplicate
+`business_outcome`, `status_details`, or the full `evidence_ledger`; use proof
+ids and `edo_scope.evidence_ids`. Do not narrow the call meaning: keep mixed,
+other, and uncertain cases explicit instead of forcing them into a simple sales
+failure.
+
+`coaching_decision` is the manager-facing coaching source of truth:
+
+- `decision=improve` is allowed only when an important manager gap is proven or
+  safely softened, is applicable to the manager's role and the call scope, and
+  could plausibly affect the call result. Use `title="Улучшить"` and link the
+  decision to concrete `proof_ids`/`evidence_ids`.
+- `decision=maintain` is used when no important applicable gap is proven, but a
+  proven or safely softened `strong_practice` or useful manager action is worth
+  reinforcing. Use `title="Поддерживать"` for commercial best practice or
+  `title="Корректно"` for confirmed service, transfer, support,
+  clarification, relationship, or service-closure behavior.
+- `decision=no_comment` is used when there is neither a proven important gap nor
+  a specific strong action worth reinforcing. Set `title=null`, `text=null`,
+  and explain the reason briefly.
+
+Decision logic:
+
+```text
+Proven important gap? -> improve
+No gap, useful action? -> maintain
+Neither gap nor strong action? -> no_comment
+```
+
+Scores, low stage values, weak-stage counts, gap candidates, report columns,
+open status, `status_details`, proof cards, and `edo_scope` are input signals;
+they never automatically create a recommendation. Do not force
+`Улучшить`/`decision=improve` because a score is low or a report field expects a
+recommendation. If the relevant proof card is `rejected` or `insufficient`, the
+gap cannot become `Улучшить`.
+
+For `edo_scope.sales_scoring_scope=none|unclear`, do not create a sales-push
+decision or compatibility recommendation. A `maintain`/`Корректно` decision is
+allowed only when supported by confirmed service, transfer, support,
+clarification, relationship, or service-closure evidence.
+
+Legacy `recommendations` are the compatibility view for
+`coaching_decision.decision=improve`. When the decision is `maintain` or
+`no_comment`, do not invent a legacy improvement recommendation.
+
+`final_normalized_analysis.status_details` must describe the factual details
+of the final status for the report "Итог" line. Use the LLM-2A
+`business_outcome_signal.status` as source of truth, map `tech_service` to
+`service`, fill only the matching status structure, and keep all other status
+structures `null`. Unknown facts stay `null`.
+
+Status structures:
+
+- `agreement`: `type`, `what_agreed`, `manager_commitment`,
+  `client_commitment`, `owner`, `deadline`, `evidence`
+- `rescheduled`: `reason`, `return_when`, `return_owner`,
+  `preparation_needed`, `evidence`
+- `refusal`: `type`, `reason`, `finality`, `return_condition`,
+  `recommended_next_action`, `evidence`
+- `open`: `why_open`, `missing_to_close`, `next_action`, `owner`, `deadline`,
+  `evidence`
+- `service`: `type`, `request`, `action_taken`, `follow_up_needed`,
+  `follow_up_action`, `owner`, `sales_scoring_applicability`, `evidence`
+  Use `edo_scope.sales_scoring_scope` for `sales_scoring_applicability`; do not
+  infer a different value from `status_details`.
+
 Forbidden:
 
 - creating new gaps or claims;
 - using rejected or insufficient proof cards for confident recommendations;
+- creating `Улучшить` only because a score is low, a gap candidate exists, a
+  call ended open, or a report column needs text;
+- converting service, legal-direction, technical-support, internal/wrong-call,
+  out-of-scope, or unclear calls into "did not sell" recommendations;
 - choosing report sections such as `situation_day`, `call_breakdown`,
   `voice_of_customer`, or `tomorrow_follow_up`;
 - strengthening a softened claim back into a hard claim.
 
 Fail-closed behavior:
 
-- No proven or softened proof card means no confident coaching
-  recommendation.
+- No proven or softened manager-gap proof card means no confident improvement
+  recommendation. Use `maintain` only for confirmed strong practice; otherwise
+  use `no_comment`.
 - Rejected and insufficient proof cards may remain in audit output, but must not
   appear as verified manager-facing guidance.
+
+Downstream boundary:
+
+- Report Layer must display only the prepared `coaching_decision`; it must not
+  build a fallback recommendation from scores, gaps, statuses, or templates.
+- LLM-3 may group, shorten, deduplicate, or select existing LLM-2D
+  `improve`/`maintain` decisions for day-level reporting.
+- LLM-3 must not invent `Улучшить` when LLM-2D returned `maintain` or
+  `no_comment`, upgrade `maintain` into a criticism, create a recommendation
+  when LLM-2D gave none, or add sales-push advice for service/out-of-scope
+  scenarios.
 
 ## Prompt Split
 
@@ -455,8 +621,9 @@ Instruction boundaries:
   preliminary claims.
 - `analyze_claim_proof`: evaluate preliminary claims against supporting and
   counter evidence.
-- `analyze_recommendations`: generate recommendations and compatibility output
-  only from accepted proof cards.
+- `analyze_recommendations`: generate `coaching_decision`, recommendations,
+  and compatibility output only from accepted proof cards and grounded
+  evidence.
 
 ## Final Assembly Mapping
 
@@ -486,10 +653,17 @@ Mapping:
   consistency check.
 - `LLM-2B.gap_claims` + `LLM-2C.proof_cards` -> current `gaps` only when
   proof is `proven` or safely `softened`.
-- `LLM-2D.recommendations` -> current `recommendations`, each linked to a
-  `proof_id`.
+- `LLM-2D.coaching_decision` -> source of truth for manager-facing coaching
+  display (`Улучшить`, `Поддерживать`/`Корректно`, or no comment).
+- `LLM-2D.recommendations` -> current legacy improvement `recommendations`,
+  each linked to a `proof_id` and consistent with
+  `coaching_decision.decision=improve`.
 - `LLM-2D.universal_evidence_pack.proof_cards` -> future normalized proof
   pool for validators, registry, router, and report layer.
 
 Compatibility views may be generated from proof cards, but they must never be
 treated as stronger than their source proof.
+
+LLM-3 may consume compatibility views for aggregation, but must not treat them
+as permission to create new coaching advice beyond the LLM-2D
+`coaching_decision`.

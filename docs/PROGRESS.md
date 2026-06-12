@@ -4,9 +4,52 @@
 **Этап:** MVP-1 pilot operations
 **Статус фазы:** этап правок закрыт, начат пилотный операционный цикл
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-04
+**Последнее обновление:** 2026-06-12
 
 ## Что сделано
+- [x] 2026-06-12 — Внедрен first pass `PILOT-22`: manager-facing
+  `manager_daily` теперь строго ограничен выбранным report day и не добирает
+  прошлые рабочие дни при низком coverage. **Изменение:** `_build_manager_daily_windows()`
+  возвращает только `anchor_day -> anchor_day`, `skip_accumulate` получает
+  только artifacts отчетного дня, перед business email добавлен
+  `strict_report_day_gate` (`window_days_used=1`, period/window/effective
+  period совпадают с report day, `included_in_report_total <=
+  meaningful_calls_total`). **Причина:** прогон `2026-06-11` отправил Тимуру
+  расширенный отчет `2026-06-10 - 2026-06-11` с невозможной математикой
+  `Из 1 содержательных ... вошло — 18`. **Verification:** `py_compile`
+  `core/app/agents/calls/reporting.py` OK; focused pytest
+  `/app/tests/test_manual_reporting.py -k "manager_daily_group_result_does_not_expand_to_previous_workday or expanded_window_payload_is_not_manager_email_safe or manager_daily_group_result_returns_full_report_when_day_is_ready"`
+  -> `3 passed, 238 deselected`. **Следующий шаг:** controlled rerender Тимура
+  за `2026-06-11` в preview/operator mode, затем review перед любой business
+  email delivery.
+- [x] 2026-06-05 — Закрыта правка формата дневного отчета после review
+  Толегена за `2026-06-03`. **Воронка:** верхний блок теперь выводит две
+  понятные строки: найдено в телефонии / содержательных / исключено из списка
+  дня с причиной `слишком короткие / без речи`, затем сколько содержательных
+  не вошло в коучинговый разбор из-за отсутствия готового разбора и сколько
+  вошло. **Все звонки дня:** видимая таблица фильтруется по
+  `call_list_analysis_ready=true`, поэтому строки без готового неошибочного
+  анализа больше не попадают в PDF; payload сохраняет полный список
+  содержательных звонков для диагностики и счетчиков. **Контакты:** Report
+  Layer больше не извлекает ФИО из STT, Bitrix/telephony metadata или других
+  fallback-источников; ФИО отображается только если LLM1/analysis уже сохранил
+  его в `scores_detail.call.contact_name` / `client_name`; отсутствие ФИО для
+  части телефонов зафиксировано как upstream-задача `PILOT-13` по LLM1/STT.
+  **Layout:** `ВСЕ ЗВОНКИ ДНЯ` начинается с новой страницы и рендерится
+  отдельной landscape-секцией в DOCX/PDF; после приложения документ
+  возвращается в portrait. В landscape-таблице расширен только столбец
+  `Суть звонка`, остальные основные столбцы оставлены компактными.
+  **Feedback:** комментарии Алишера добавлены в `MANAGER_REPORT_FEEDBACK` и
+  `PILOT_BACKLOG`: `PILOT-14` рамки обязанностей ЭДО/out-of-scope звонки,
+  `PILOT-15` объяснение оценок в таблице звонков. По `PILOT-15` подготовлено
+  и внедрено первым pass мини-ТЗ
+  `docs/MANAGER_DAILY_CALL_FEEDBACK_MINI_TZ.md`: 4-я колонка compact
+  call-list стала `Итог / обратная связь`, feedback собирается из существующих
+  LLM2 `scores_detail` без новых LLM-вызовов.
+  **Delivery/Verification:** последний контрольный rerender Толегена отправлен
+  только в Telegram `message_id=398`; render model подтвердил `rows=14`,
+  `compact=14`; `py_compile`, `node --check`, `git diff --check` OK; focused
+  container pytest `19 passed, 212 deselected`.
 - [x] 2026-06-04 — Выполнена repo hygiene уборка перед пилотом. **Docs:**
   `ACTIVE_WORK_STATE` и `CONTEXT_INDEX` сокращены до актуального pilot handoff;
   добавлен `docs/PILOT_OPERATIONS.md` с ежедневным порядком запуска, review,
@@ -543,6 +586,12 @@
 - На 2026-06-02 выполнен controlled Kimi K2.6 rerun по готовым STT Толегена за `2026-06-01`, но прогон остановлен по просьбе пользователя до отчета. Route-plan подтвердил `LLM2=kimi_llm2_main/kimi-k2.6` и `LLM3=kimi_llm3_main/kimi-k2.6`; однако текущий layered `LLM2A/B/C/D` contract для K2.6 показал блокер: при `8192` completion tokens `LLM2A` ломал JSON или возвращал пустой ответ, при `16384` / `32768` запросы становились слишком долгими, а единственный сохраненный analysis имел `score=0.0`, `stages=0`, `criteria=0`. Отчет через `LLM3` не строился и в Telegram не отправлялся. Итог закреплен в `docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md` и `ADR-093`: Kimi K2.6 не принимать как `LLM2` runtime для полного дня без отдельного упрощения layered contract.
 - На 2026-06-04 добавлен локальный рабочий реестр замеров MVP-1 `docs/MVP1_PILOT_METRICS_MEASUREMENTS.md`: актуальные KPI из Google Doc section 7, ежедневные операционные замеры, еженедельный AI-аудит, feedback РОП/менеджеров, baseline бизнес-метрик, GO/NO-GO scorecard и правила снятия замеров до 15 июня. Дополнительно внедрен системный estimated cost accounting в USDT: `core/app/agents/calls/ai_costs.py`, `openai_usage.py`, `observability.ai_costs` с разбивкой STT/LLM1/LLM2/LLM3, `total_current_run_cost_usdt`, `cost_per_analyzed_call_usdt`, `budget_status`; STT сохраняет `duration_sec/billable_minutes`, LLM2 сохраняет per-node history, LLM3 composers сохраняют token usage. Проверки: `py_compile` по измененным модулям — OK, `git diff --check` — OK, container pytest `/app/tests/test_ai_costs.py /app/tests/test_manual_reporting.py -k "ai_costs or observability_reports_stage_summary"` — `4 passed, 217 deselected`. Runtime check перед следующим прогоном: контейнер видит cost catalog `ai_cost_pricing_usdt_2026-06-04_v1`, `AI_LLM_EXECUTION_MODE=openai_compatible`, subagent/simulation выключены, active aliases `llm2_main`/`llm3_main`; при этом `AI_LLM2_INPUT_PROFILE=full`, то есть compact input optimization реализован в коде, но не включен как активный runtime profile без отдельного решения.
 - На 2026-06-04 после решения пользователя `AI_LLM2_INPUT_PROFILE=compact` принят как новый default runtime profile для будущих прогонов. `settings.ai_llm2_input_profile` и analyzer fallback теперь возвращают `compact`; `full` сохранен только как явный legacy/debug override для временного сравнения, а не как стандартный контур. Перед прогоном 3 менеджеров за `2026-06-03` runtime containers нужно пересоздать и проверить `CallsAnalyzer._llm2_input_profile() == "compact"`.
+- На 2026-06-04 зафиксирован актуальный pilot backlog после отказа от UI как обязательного операторного интерфейса: создан `docs/PILOT_BACKLOG.md`, добавлены ссылки в `docs/ACTIVE_WORK_STATE.md`, `docs/CONTEXT_INDEX.md`, `docs/PILOT_OPERATIONS.md`, а `docs/MANAGER_REPORT_FEEDBACK.md` теперь явно связывает комментарии менеджеров/РОП с backlog-задачами. Приоритет P1: Bitrix manager sync preflight без UI, проверка scheduled reviewable flow без UI, математика первого блока отчета и применимость этапов в `БАЛЛЫ ПО ЭТАПАМ`. После P1 следующий слой: ежедневный РОП-дайджест с manager_daily PDF, затем weekly/monthly для РОП и постепенный возврат скрытых блоков.
+- На 2026-06-04 выполнен P1 pilot-stabilization baseline из `docs/PILOT_BACKLOG.md`. **PILOT-04:** `applicable=false` критерии больше не создают `score_by_stage` в `llm2_layered_analysis.py` и не попадают в дневную агрегацию `reporting.py`; слабые наблюдаемые этапы с `applicable=true, score=0` остаются в расчете. **PILOT-03:** `selection_model` разделяет day-funnel exclusions (`too_short`, `ivr`) и processing/coaching reasons (`support`, `not_enough_analysis`, `not_selected`); `not_enough_analysis` считается только по содержательным звонкам; DOCX/PDF note больше не называет отсутствие анализа причиной исключения из списка дня. **PILOT-01:** добавлен CLI `core/report_scripts/bitrix_manager_sync_preflight.py`; live sync `[ЭДО] Отдел Продаж` (`472cda28-ce71-494c-9068-25d3ffbf7399`) показал `synced=6`, `deactivated=7`, active managers email OK, warning только `active_manager_missing_extension:Робот Договор24`. **PILOT-02:** добавлен CLI `core/report_scripts/scheduled_reporting_preflight.py`; `status` и безопасный `scan-due` проверены без UI, активных schedules сейчас нет, `processed_count=0`, старые review batches относятся к Manual Live Validation. Проверки: container focused pytest `18 passed, 213 deselected`; `py_compile` changed Python/scripts OK; `node --check scripts/generate_docx_report.js` OK; `git diff --check` OK. Следующий слой: `PILOT-05` ежедневный РОП-дайджест с приложениями manager_daily PDF; отдельным решением можно сделать controlled create -> draft -> approve/delivery smoke для schedule.
+- На 2026-06-05 внедрен первый pass `PILOT-16` по статусным деталям звонка для `LLM2D` и таблицы `ВСЕ ЗВОНКИ ДНЯ`. `LLM2D` prompt/contract теперь требует `final_normalized_analysis.status_details`; compact payload `llm2d_recommendations` передает короткий `status_details_contract`; `llm2_layered_analysis.py` нормализует и сохраняет блок в `scores_detail`; `llm_simulation.py` возвращает deterministic `status_details`; Report Layer предпочитает `scores_detail.status_details` для строки `Итог` при совпадении статуса и падает в старый fallback при отсутствии/mismatch. Это должно дать конкретику по договоренностям, переносам, отказам, open и service-статусам без дублирования `Суть звонка`. Проверки: `py_compile` по измененным Python-файлам OK, `git diff --check` OK, container focused pytest: `test_llm2_layered_analysis.py/test_llm2_layered_runtime.py` — `19 passed, 2 subtests passed`, `test_manual_reporting.py -k "status_details or call_list_feedback"` — `4 passed, 5 subtests passed`, `test_ai_provider_routing.py -k "llm2d_compact or compact_llm2d or llm2_compact_profile"` — `2 passed`. Следующий шаг: проверить на реальном `LLM2`/`LLM2D` прогоне, что новые анализы получают `status_details`; старые анализы продолжают работать через fallback.
+- На 2026-06-05 внедрен первый pass `PILOT-14` по рамкам обязанностей ЭДО и честной применимости sales scoring. По временному ТЗ `TMP_PILOT14_EDO_SCOPE_SCORING_TZ.md` `LLM2A` теперь формирует компактный `edo_scope` (`full/partial/none/unclear`, reason, applicable part, expected action, evidence ids); `LLM2B` использует этот scope для применимости критериев и этапов, не переопределяя его; `LLM2D` учитывает scope в рекомендациях; runtime передает `edo_scope` между LLM2 узлами; adapter сохраняет `scores_detail.edo_scope`; Report Layer только отображает/считает scope, исключает `none/unclear` из продажной stage-агрегации и не подставляет sales-push feedback для service/out-of-scope/unclear звонков. Проверки: container focused pytest `23 passed, 2 subtests passed`, `git diff --check` OK, `py_compile` OK, `node --check scripts/generate_docx_report.js` OK. Полный pipeline не запускался; следующий шаг - контрольный реальный LLM2/Report прогон на техподдержке, юр-направлении и mixed calls.
+- На 2026-06-08 внедрен первый pass `PILOT-18` по balanced coaching без forced improvement. По `docs/PILOT18_BALANCED_COACHING_TZ.md` `LLM2D` prompt/contract теперь возвращает `coaching_decision` с тремя решениями `improve|maintain|no_comment`; analyzer передает `coaching_decision_context` в `LLM2D`; `llm2_layered_analysis.py` нормализует и сохраняет `scores_detail.coaching_decision`; simulation возвращает representative decision; Report Layer показывает `Улучшить` только при `decision=improve`, `Поддерживать/Корректно` при `decision=maintain`, и не добавляет coaching-рекомендацию при `decision=no_comment`. Дневная агрегация рекомендаций не берет legacy recommendations, если LLM2D уже дала `no_comment`. Проверки: container focused pytest `31 passed, 2 subtests passed`, `git diff --check` OK, `py_compile` OK, `node --check scripts/generate_docx_report.js` OK. Полный pipeline не запускался; следующий шаг - контрольный LLM2/Report rerender на реальных звонках и review PDF.
+- На 2026-06-10 внедрен первый pass `PILOT-17` по LLM-only semantic reporting. В manager_daily видимый `call_list_status` / `final_manager_status` теперь строится только из LLM semantic fields (`scores_detail.status_details.status` или `report_evidence.business_outcome.status`); `BusinessOutcomeResolver` оставлен только diagnostic-only и больше не может дать manager-facing `Договорённость` / `Открыт` / `Отказ`. Для отсутствующего LLM-статуса добавлены нейтральные поля `call_list_display_status=status_not_confirmed`, `call_list_display_status_label=Статус не подтвержден`, `semantic_status_quality=missing`, счетчики `status_not_confirmed_*` в `call_outcomes_summary` и `call_list_status_quality`, а верхняя сводка/email показывают отдельную строку `СТАТУС НЕ ПОДТВЕРЖДЕН`. `business_outcome.status=agreement` теперь требует LLM action anchor + evidence quote; одного `reason + quote` недостаточно и дает `agreement_missing_evidence`. Проверки: `py_compile` OK; `core.tests.test_report_templates_situation_day` — `8 OK`; container focused pytest `/app/tests/test_manual_reporting.py -k "llm_only or status_details or call_list_status or call_outcomes_summary or render_report_email or unclassified_bucket"` — `13 passed, 5 subtests passed`; `/app/tests/test_report_templates_situation_day.py` — `8 passed`; `git diff --check` OK; `node --check scripts/generate_docx_report.js` OK. Следующий шаг - контрольный rerender/прогон Толегена за `2026-06-04`.
 
 ## Стек решений
 | Компонент | Решение | Статус |

@@ -566,6 +566,15 @@ def _simulate_llm2(
         "outcome_text": "Контакт остается открытым, требуется следующий шаг.",
         "next_step_text": "Менеджеру нужно вернуться к клиенту с уточнением.",
     }
+    result["edo_scope"] = {
+        "sales_scoring_scope": "full" if transcript else "unclear",
+        "scope_reason": "edo_sales" if transcript else "insufficient_data",
+        "applicable_part": "Весь симулированный разговор относится к коммерческому обсуждению ЭДО."
+        if transcript
+        else "",
+        "expected_manager_action": "sell" if transcript else "clarify",
+        "evidence_ids": ["ev_001"] if transcript else [],
+    }
     score_by_stage = _build_simulated_score_by_stage(checklist, transcript)
     result["score_by_stage"] = score_by_stage
     result["strengths"] = [
@@ -597,6 +606,20 @@ def _simulate_llm2(
             "evidence": _evidence_text(transcript),
         }
     ]
+    result["coaching_decision"] = {
+        "decision": "improve" if transcript else "no_comment",
+        "title": "Улучшить" if transcript else None,
+        "text": "Закрепить владельца и срок следующего контакта." if transcript else None,
+        "reason": "Симулятор видит открытый коммерческий следующий шаг без конкретного срока."
+        if transcript
+        else "Нет grounded материала для coaching-комментария.",
+        "based_on": {
+            "stage_code": "completion_next_step",
+            "criterion_codes": ["cn_owner_and_deadline"],
+            "proof_ids": ["proof_001"] if transcript else [],
+            "evidence_ids": ["ev_001"] if transcript else [],
+        },
+    }
     result["agreements"] = [
         {
             "agreement_type": "callback",
@@ -718,6 +741,15 @@ def _simulate_llm2a(context: dict[str, Any]) -> dict[str, Any]:
             "evidence_ids": evidence_ids[:1],
             "reason": "Симулированный открытый исход по grounded-фрагменту.",
         },
+        "edo_scope": {
+            "sales_scoring_scope": "full" if transcript else "unclear",
+            "scope_reason": "edo_sales" if transcript else "insufficient_data",
+            "applicable_part": "Весь симулированный разговор относится к коммерческому обсуждению ЭДО."
+            if transcript
+            else "",
+            "expected_manager_action": "sell" if transcript else "clarify",
+            "evidence_ids": evidence_ids[:1],
+        },
         "fail_closed": {
             "insufficient_transcript": not bool(transcript),
             "speaker_roles_uncertain": True,
@@ -731,6 +763,13 @@ def _simulate_llm2b(context: dict[str, Any]) -> dict[str, Any]:
     """Return a deterministic LLM-2B scoring/gaps artifact."""
     previous = _as_dict(context.get("previous_artifacts"))
     llm2a = _as_dict(previous.get("llm2a") or context.get("llm2a_artifact"))
+    if not llm2a:
+        llm2a = {
+            "call_id": context.get("call_id"),
+            "evidence_ledger": _as_list(context.get("evidence_ledger")),
+            "business_outcome_signal": _as_dict(context.get("business_outcome_signal")),
+            "edo_scope": _as_dict(context.get("edo_scope")),
+        }
     call_id = _first_text(llm2a.get("call_id"), context.get("call_id")) or "simulated_call"
     evidence_ids = [
         str(item.get("evidence_id"))
@@ -846,6 +885,13 @@ def _simulate_llm2d(context: dict[str, Any]) -> dict[str, Any]:
     llm2a = _as_dict(previous.get("llm2a") or context.get("llm2a_artifact"))
     llm2b = _as_dict(previous.get("llm2b") or context.get("llm2b_artifact"))
     llm2c = _as_dict(previous.get("llm2c") or context.get("llm2c_artifact"))
+    if not llm2a:
+        llm2a = {
+            "call_id": context.get("call_id"),
+            "evidence_ledger": _as_list(context.get("evidence_ledger")),
+            "business_outcome_signal": _as_dict(context.get("business_outcome_signal")),
+            "edo_scope": _as_dict(context.get("edo_scope")),
+        }
     call_id = _first_text(llm2a.get("call_id"), llm2b.get("call_id"), llm2c.get("call_id")) or "simulated_call"
     admission_gate = _as_dict(
         context.get("llm2_admission_gate") or llm2a.get("llm2_admission_gate")
@@ -868,11 +914,20 @@ def _simulate_llm2d(context: dict[str, Any]) -> dict[str, Any]:
         for index, card in enumerate(accepted_cards, start=1)
         if card.get("claim_type") == "manager_gap"
     ]
+    status_details = _simulate_llm2d_status_details(
+        business_outcome=_as_dict(llm2a.get("business_outcome_signal")),
+        recommendations=recommendations,
+    )
+    coaching_decision = _simulate_llm2d_coaching_decision(
+        accepted_cards=accepted_cards,
+        recommendations=recommendations,
+    )
     return {
         "pass": "LLM-2D",
         "artifact_version": "llm2_pass_2d_v1",
         "call_id": call_id,
         "recommendations": recommendations,
+        "coaching_decision": coaching_decision,
         "universal_evidence_pack": {
             "proof_cards": _as_list(llm2c.get("proof_cards")),
             "scenes": _as_list(llm2a.get("scenes")),
@@ -908,8 +963,10 @@ def _simulate_llm2d(context: dict[str, Any]) -> dict[str, Any]:
             "strengths": [],
             "gaps": _as_list(llm2b.get("gap_claims")),
             "recommendations": recommendations,
+            "coaching_decision": coaching_decision,
             "agreements": [],
             "follow_up": {},
+            "status_details": status_details,
             "evidence_fragments": [],
             "report_evidence_version": "v1",
             "report_evidence": {},
@@ -925,6 +982,117 @@ def _simulate_llm2d(context: dict[str, Any]) -> dict[str, Any]:
             "reject_reasons": [],
         },
     }
+
+
+def _simulate_llm2d_coaching_decision(
+    *,
+    accepted_cards: list[dict[str, Any]],
+    recommendations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    first_recommendation = _as_dict(recommendations[0]) if recommendations else {}
+    first_card = _as_dict(accepted_cards[0]) if accepted_cards else {}
+    evidence_ids = [
+        str(item)
+        for item in (
+            first_card.get("supporting_evidence_ids")
+            or first_card.get("evidence_ids")
+            or []
+        )
+        if item
+    ]
+    if first_recommendation and first_card:
+        return {
+            "decision": "improve",
+            "title": "Улучшить",
+            "text": first_recommendation.get("next_action"),
+            "reason": "Есть accepted proof card для manager_gap, связанная с финальной рекомендацией.",
+            "based_on": {
+                "stage_code": first_recommendation.get("stage_code")
+                or first_card.get("stage_code"),
+                "criterion_codes": ["cn_owner_and_deadline"],
+                "proof_ids": [first_card.get("proof_id")] if first_card.get("proof_id") else [],
+                "evidence_ids": evidence_ids,
+            },
+        }
+    return {
+        "decision": "no_comment",
+        "title": None,
+        "text": None,
+        "reason": "Нет accepted proof card для улучшения и нет отдельного strong action.",
+        "based_on": {"proof_ids": [], "evidence_ids": []},
+    }
+
+
+def _simulate_llm2d_status_details(
+    *,
+    business_outcome: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    status = str(business_outcome.get("status") or "open").strip().lower()
+    status = "service" if status == "tech_service" else status
+    if status not in {"agreement", "rescheduled", "refusal", "open", "service"}:
+        status = "open"
+    details: dict[str, Any] = {
+        "status": status,
+        "agreement": None,
+        "rescheduled": None,
+        "refusal": None,
+        "open": None,
+        "service": None,
+    }
+    reason = _first_text(business_outcome.get("reason"), business_outcome.get("evidence_quote"))
+    next_action = _first_text(
+        (_as_dict(recommendations[0]).get("next_action") if recommendations else None),
+        "Закрепить следующий шаг по итогам разговора.",
+    )
+    if status == "agreement":
+        details["agreement"] = {
+            "type": "other",
+            "what_agreed": reason or "Есть договоренность по следующему шагу.",
+            "manager_commitment": next_action,
+            "client_commitment": None,
+            "owner": "manager",
+            "deadline": None,
+            "evidence": business_outcome.get("evidence_quote"),
+        }
+    elif status == "rescheduled":
+        details["rescheduled"] = {
+            "reason": reason or "Клиент попросил вернуться позже.",
+            "return_when": None,
+            "return_owner": "manager",
+            "preparation_needed": None,
+            "evidence": business_outcome.get("evidence_quote"),
+        }
+    elif status == "refusal":
+        details["refusal"] = {
+            "type": "other",
+            "reason": reason or "Клиент отказался продолжать обсуждение.",
+            "finality": "unknown",
+            "return_condition": None,
+            "recommended_next_action": None,
+            "evidence": business_outcome.get("evidence_quote"),
+        }
+    elif status == "service":
+        details["service"] = {
+            "type": "support",
+            "request": reason or "Сервисный вопрос клиента.",
+            "action_taken": None,
+            "follow_up_needed": False,
+            "follow_up_action": None,
+            "owner": "manager",
+            "sales_scoring_applicability": "limited",
+            "evidence": business_outcome.get("evidence_quote"),
+        }
+    else:
+        details["open"] = {
+            "why_open": reason or "Контакт остается открытым.",
+            "missing_to_close": "Не закреплен финальный следующий шаг.",
+            "next_action": next_action,
+            "owner": "manager",
+            "deadline": None,
+            "evidence": business_outcome.get("evidence_quote"),
+        }
+    return details
 
 
 def _build_simulated_score_by_stage(

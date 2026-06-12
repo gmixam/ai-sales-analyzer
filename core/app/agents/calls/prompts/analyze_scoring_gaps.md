@@ -42,14 +42,21 @@ The input is one JSON object:
   "scenes": [],
   "evidence_ledger": [],
   "business_outcome_signal": {},
+  "edo_scope": {
+    "sales_scoring_scope": "full|partial|none|unclear",
+    "scope_reason": "edo_sales|edo_service|legal_direction|tech_support|internal_or_wrong_call|mixed|insufficient_data|other",
+    "applicable_part": "string|null",
+    "expected_manager_action": "sell|transfer|support|clarify|close_service_issue|keep_relationship|no_action|other",
+    "evidence_ids": ["ev_001"]
+  },
   "compact_scoring_rubric": [],
   "task_contract": {}
 }
 ```
 
-Use only the supplied scenes, evidence ledger, business outcome signal, compact
-scoring rubric, admission gate, and task contract. Do not use outside knowledge
-to fill missing scenes or evidence.
+Use only the supplied scenes, evidence ledger, business outcome signal,
+`edo_scope`, compact scoring rubric, admission gate, and task contract. Do not
+use outside knowledge to fill missing scenes or evidence.
 
 ## Global Rules
 
@@ -66,11 +73,43 @@ to fill missing scenes or evidence.
   `stage_scores` covering the applicable scored stages.
 - If the checklist expectation is not observable in the scenes, mark the
   criterion as not applicable or explain missing evidence; do not invent a gap.
+- Consume `edo_scope` from LLM-2A as the scope constraint for EDO sales scoring.
+  Do not redefine, override, or reinterpret the call scope in LLM-2B.
 - Do not emit recommendations.
 - Do not assign proof status or proof cards.
 - Do not select, name, fit, route, or prepare report blocks.
 - Do not emit `semantic_case`, `block_candidates`, `report_block_fit`, or
   legacy report-routing arrays.
+
+## EDO Sales Scoring Applicability
+
+Apply checklist criteria and stages only within
+`edo_scope.sales_scoring_scope`:
+
+- `full`: evaluate all sales criteria/stages that are applicable to the
+  observed scenes.
+- `partial`: evaluate only the sales portion described in
+  `edo_scope.applicable_part`; mark criteria/stages outside that part
+  `applicable=false`.
+- `none`: do not create sales-stage penalties or manager-gap claims for EDO
+  sales behavior. Mark sales criteria/stages `applicable=false` with a clear
+  reason tied to `edo_scope.scope_reason`.
+- `unclear`: avoid hard sales scoring without evidence. Mark unsupported
+  criteria/stages `applicable=false` or explain the uncertainty in
+  `missing_evidence_reason` and `applicability_notes`.
+
+For `tech_support`, `legal_direction`, `edo_service`,
+`internal_or_wrong_call`, `insufficient_data`, or out-of-scope `other`, do not
+penalize the manager for not pushing an EDO sale. Record service, transfer,
+clarification, or relationship-preserving observations as applicable/non-
+coachable context instead of sales gaps.
+
+Do not duplicate or restate `business_outcome_signal`, future
+`business_outcome`, `status_details`, or the full `evidence_ledger` inside
+scoring comments. Reference the evidence ids and preserve the full meaning of
+the call. If the scenario is mixed or unusual, keep the nuance through
+`partial`, `other`, `unclear`, applicability notes, and criterion-level
+comments.
 
 ## Scoring Guidance
 
@@ -120,6 +159,7 @@ Return this JSON shape:
   "stage_scores": [
     {
       "stage_code": "string",
+      "applicable": true,
       "score": 0,
       "max_score": 2,
       "criterion_codes": ["string"],
@@ -182,3 +222,6 @@ Return this JSON shape:
 - If the evidence shows a non-coachable service, technical, or suitability
   issue rather than a manager behavior gap, record it in
   `non_coachable_reasons` instead of creating a manager gap.
+- If `edo_scope.sales_scoring_scope` is `none` or `unclear`, sales criteria and
+  stages may all be non-applicable without treating that as a technical
+  fail-closed condition, provided the applicability reason is recorded.

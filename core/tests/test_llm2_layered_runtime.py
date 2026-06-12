@@ -28,6 +28,7 @@ if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
 from app.agents.calls.analyzer import APPROVED_INSTRUCTION_VERSION, CallsAnalyzer  # noqa: E402
+from app.agents.calls.llm_simulation import request_simulated_llm_content  # noqa: E402
 from app.core_shared.exceptions import LLMResponseError, SemanticAnalysisError  # noqa: E402
 
 
@@ -100,6 +101,13 @@ def _pass_artifacts(*, proof_status: str = "proven") -> dict[str, dict]:
             "confidence": "medium",
             "evidence_ids": ["ev_001"],
             "reason": "Client asked to receive materials before deciding.",
+        },
+        "edo_scope": {
+            "sales_scoring_scope": "full",
+            "scope_reason": "edo_sales",
+            "applicable_part": "The whole call is a commercial EDO follow-up.",
+            "expected_manager_action": "sell",
+            "evidence_ids": ["ev_001", "ev_002"],
         },
     }
     llm2b = {
@@ -192,8 +200,39 @@ def _pass_artifacts(*, proof_status: str = "proven") -> dict[str, dict]:
                 "analysis_confidence": "medium",
             },
             "summary": {"short_summary": "Client asked for materials."},
+            "coaching_decision": {
+                "decision": "improve" if not rejected else "no_comment",
+                "title": "Улучшить" if not rejected else None,
+                "text": "Add a concrete date or condition to the final step."
+                if not rejected
+                else None,
+                "reason": "Accepted proof card supports the coaching decision."
+                if not rejected
+                else "No accepted proof card.",
+                "based_on": {
+                    "stage_code": "completion_next_step",
+                    "criterion_codes": ["cn_owner_and_deadline"],
+                    "proof_ids": ["proof_001"] if not rejected else [],
+                    "evidence_ids": ["ev_001", "ev_002"] if not rejected else [],
+                },
+            },
             "agreements": [],
             "follow_up": {},
+            "status_details": {
+                "status": "open",
+                "agreement": None,
+                "rescheduled": None,
+                "refusal": None,
+                "open": {
+                    "why_open": "Клиент попросил материалы перед решением.",
+                    "missing_to_close": "Не закреплена дата следующего контакта.",
+                    "next_action": "Отправить материалы и согласовать дату возврата.",
+                    "owner": "manager",
+                    "deadline": None,
+                    "evidence": "Please send the materials in WhatsApp.",
+                },
+                "service": None,
+            },
         },
     }
     return {
@@ -234,6 +273,208 @@ class LLM2LayeredRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["llm2_layered_runtime"]["pass_artifact_keys"], ["llm2a", "llm2b", "llm2c", "llm2d"])
+        self.assertEqual(result["status_details"]["status"], "open")
+        self.assertIn("согласовать дату", result["status_details"]["open"]["next_action"])
+        self.assertEqual(result["coaching_decision"]["decision"], "improve")
+
+    def test_compact_payload_passes_coaching_context_to_llm2d(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = _interaction()
+        responses = _pass_artifacts()
+        captured_payloads: dict[str, dict] = {}
+
+        def fake_request(**kwargs):
+            request_kind = kwargs["request_kind"]
+            captured_payloads[request_kind] = json.loads(
+                kwargs["messages"][-1]["content"]
+            )
+            return json.dumps(deepcopy(responses[request_kind]), ensure_ascii=False)
+
+        with patch.dict(
+            os.environ,
+            {"AI_LLM2_ANALYSIS_MODE": "layered", "AI_LLM2_INPUT_PROFILE": "compact"},
+            clear=False,
+        ), patch.object(
+            analyzer,
+            "_request_llm1_first_pass",
+            return_value={"analysis_focus": []},
+        ), patch.object(analyzer, "_request_llm_content", side_effect=fake_request):
+            result = analyzer.analyze_call(
+                interaction=interaction,
+                instruction_version=APPROVED_INSTRUCTION_VERSION,
+            )
+
+        expected_scope = responses["llm2a_facts_scenes"]["edo_scope"]
+        self.assertEqual(
+            captured_payloads["llm2b_scoring_gaps"]["edo_scope"],
+            expected_scope,
+        )
+        self.assertEqual(
+            captured_payloads["llm2d_recommendations"]["edo_scope"],
+            expected_scope,
+        )
+        decision_context = captured_payloads["llm2d_recommendations"][
+            "coaching_decision_context"
+        ]
+        self.assertEqual(decision_context["edo_scope"], expected_scope)
+        self.assertEqual(
+            decision_context["accepted_proof_cards"][0]["proof_id"],
+            "proof_001",
+        )
+        self.assertEqual(
+            decision_context["gaps"][0]["claim_id"],
+            "claim_001",
+        )
+        self.assertIn("score_stage_summary", decision_context)
+        self.assertIn("status_details", decision_context)
+        self.assertEqual(result["edo_scope"], expected_scope)
+
+    def test_full_payload_passes_coaching_context_to_llm2d(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = _interaction()
+        responses = _pass_artifacts()
+        captured_payloads: dict[str, dict] = {}
+
+        def fake_request(**kwargs):
+            request_kind = kwargs["request_kind"]
+            captured_payloads[request_kind] = json.loads(kwargs["messages"][-1]["content"])
+            return json.dumps(deepcopy(responses[request_kind]), ensure_ascii=False)
+
+        with patch.dict(
+            os.environ,
+            {"AI_LLM2_ANALYSIS_MODE": "layered", "AI_LLM2_INPUT_PROFILE": "full"},
+            clear=False,
+        ), patch.object(
+            analyzer,
+            "_request_llm1_first_pass",
+            return_value={"analysis_focus": []},
+        ), patch.object(analyzer, "_request_llm_content", side_effect=fake_request):
+            analyzer.analyze_call(
+                interaction=interaction,
+                instruction_version=APPROVED_INSTRUCTION_VERSION,
+            )
+
+        payload = captured_payloads["llm2d_recommendations"]
+        self.assertIn("llm2a_artifact", payload)
+        self.assertIn("llm2b_artifact", payload)
+        self.assertIn("llm2c_artifact", payload)
+        decision_context = payload["coaching_decision_context"]
+        self.assertEqual(
+            decision_context["accepted_proof_cards"][0]["proof_id"],
+            "proof_001",
+        )
+        self.assertEqual(decision_context["gaps"][0]["claim_id"], "claim_001")
+
+    def test_simulated_llm2a_includes_representative_edo_scope(self) -> None:
+        content = request_simulated_llm_content(
+            layer="llm2",
+            request_kind="llm2a_facts_scenes",
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "call_id": "simulated-edo-scope",
+                            "transcript": TRANSCRIPT,
+                            "llm2_admission_gate": {"admitted": True},
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            subject_key="simulated-edo-scope",
+            instruction_version=APPROVED_INSTRUCTION_VERSION,
+        )
+
+        result = json.loads(content)
+
+        self.assertEqual(result["edo_scope"]["sales_scoring_scope"], "full")
+        self.assertEqual(result["edo_scope"]["scope_reason"], "edo_sales")
+        self.assertEqual(result["edo_scope"]["expected_manager_action"], "sell")
+        self.assertTrue(result["edo_scope"]["evidence_ids"])
+
+    def test_simulated_llm2d_includes_representative_coaching_decision(self) -> None:
+        llm2a = request_simulated_llm_content(
+            layer="llm2",
+            request_kind="llm2a_facts_scenes",
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "call_id": "simulated-coaching-decision",
+                            "transcript": TRANSCRIPT,
+                            "llm2_admission_gate": {"admitted": True},
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            subject_key="simulated-coaching-decision",
+            instruction_version=APPROVED_INSTRUCTION_VERSION,
+        )
+        llm2b = request_simulated_llm_content(
+            layer="llm2",
+            request_kind="llm2b_scoring_gaps",
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"previous_artifacts": {"llm2a": json.loads(llm2a)}},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            subject_key="simulated-coaching-decision",
+            instruction_version=APPROVED_INSTRUCTION_VERSION,
+        )
+        llm2c = request_simulated_llm_content(
+            layer="llm2",
+            request_kind="llm2c_claim_proof",
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"previous_artifacts": {"llm2b": json.loads(llm2b)}},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            subject_key="simulated-coaching-decision",
+            instruction_version=APPROVED_INSTRUCTION_VERSION,
+        )
+        content = request_simulated_llm_content(
+            layer="llm2",
+            request_kind="llm2d_recommendations",
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "previous_artifacts": {
+                                "llm2a": json.loads(llm2a),
+                                "llm2b": json.loads(llm2b),
+                                "llm2c": json.loads(llm2c),
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            subject_key="simulated-coaching-decision",
+            instruction_version=APPROVED_INSTRUCTION_VERSION,
+        )
+
+        result = json.loads(content)
+
+        self.assertEqual(result["coaching_decision"]["decision"], "improve")
+        self.assertEqual(result["coaching_decision"]["title"], "Улучшить")
+        self.assertEqual(
+            result["final_normalized_analysis"]["coaching_decision"]["based_on"][
+                "proof_ids"
+            ],
+            ["proof_001"],
+        )
 
     def test_explicit_monolithic_llm2_mode_remains_available(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)

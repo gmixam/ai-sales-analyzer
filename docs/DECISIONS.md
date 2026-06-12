@@ -979,3 +979,27 @@
 - **Scope:** repo hygiene and documentation routing. Это не меняет runtime,
   analyzer, prompts, renderer, delivery semantics или scheduler.
 - **Дата:** 2026-06-04
+
+## ADR-096: Manager-facing `manager_daily` строго ограничен report day
+- **Решение:** `manager_daily` для менеджера больше не использует rolling
+  window `1 -> 2 -> 3` рабочих дня как visible/content базу. PDF, email,
+  верхняя воронка, call list, coaching blocks, readiness metrics и delivery
+  gate должны строиться только по выбранному report day.
+- **Решение:** Если в выбранном дне мало готовых анализов, система должна
+  честно вернуть `signal_report`, `review_required` или `skip_accumulate` по
+  этому дню, а не добирать кейсы из прошлых дней.
+- **Решение:** Business email для `manager_daily` блокируется, если payload
+  period/window расширился, `window_days_used != 1`, effective period не
+  совпадает с report day или `included_in_report_total >
+  meaningful_calls_total`.
+- **Решение:** Rolling/expanded periods остаются допустимыми для РОП
+  weekly/monthly, внутренних сравнений и специальных исследований, но не для
+  manager-facing daily.
+- **Причина:** Прогон за `2026-06-11` показал, что при низком покрытии Тимура
+  система расширила отчет до `2026-06-10 - 2026-06-11` и отправила менеджеру
+  некорректную математику: `Из 1 содержательных ... в коучинговый разбор
+  вошло — 18`.
+- **Scope:** manager_daily readiness/grouping/render-delivery invariant. Это
+  не меняет LLM2 admission, STT/LLM runtime, weekly/monthly/ROP отчеты или
+  критерии смыслового анализа.
+- **Дата:** 2026-06-12
