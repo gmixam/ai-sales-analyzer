@@ -2,7 +2,7 @@
 
 Date: 2026-06-13  
 Branch: `feat/call-processing-analysis-split`  
-Last verified implementation commit: `fc6ec42`
+Last verified implementation commit: `a26d9cd`
 
 ## Purpose
 
@@ -15,12 +15,15 @@ This pack makes release checks reproducible for the service split:
 
 Do not mark an item green unless the command was actually run.
 
+Latest acceptance audit:
+`docs/call_processing_split/RELEASE_ACCEPTANCE_AUDIT_2026-06-13.md`.
+
 ## Acceptance Matrix
 
 | Area | Required checks | Current coverage |
 | --- | --- | --- |
 | DB | additive schemas, tables, views, no destructive legacy changes | `test_call_processing_db_contract.py` |
-| Processing | ensure idempotency, transcript backfill, dry-run no writes, retry/stale helpers | `test_call_processing_service.py` |
+| Processing | ensure idempotency, transcript backfill, dry-run no writes, retry/stale helpers, quota/budget blocking | `test_call_processing_service.py` |
 | API/Auth | health, ensure, run status, artifact read, admin/reader grant matrix | `test_call_processing_api.py`, `test_call_processing_cli.py` |
 | LLM1 contract | external mode requires ready `llm1_first_pass_v1`, invalid/missing fail closed | `test_call_processing_llm1_external_mode.py`, `test_call_processing_client.py` |
 | Analysis integration | reporting external mode does not run local STT/LLM1, partial LLM1 missing is visible, late artifacts are marked | `test_call_processing_reporting_integration.py` |

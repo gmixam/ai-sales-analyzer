@@ -3,6 +3,8 @@
 Date started: 2026-06-13  
 Branch: `feat/call-processing-analysis-split`  
 Source task pack: `docs/call_processing_split/IMPLEMENTATION_TASK_PACK_FOR_AGENTS.md`
+Latest acceptance audit:
+`docs/call_processing_split/RELEASE_ACCEPTANCE_AUDIT_2026-06-13.md`
 
 ## Current Rule
 
