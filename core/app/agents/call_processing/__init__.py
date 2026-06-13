@@ -28,6 +28,12 @@ from app.agents.call_processing.schemas import (
     RequiredArtifactKind,
     stable_scope_hash,
 )
+from app.agents.call_processing.client import (
+    CallProcessingArtifactError,
+    CallProcessingClient,
+    LocalCallProcessingClient,
+    llm1_first_pass_payload_from_artifact,
+)
 from app.agents.call_processing.service import (
     MAX_PROVIDER_ATTEMPTS,
     STALE_RUN_AFTER,
@@ -48,11 +54,14 @@ __all__ = [
     "ArtifactError",
     "ArtifactKind",
     "ArtifactStatus",
+    "CallProcessingArtifactError",
+    "CallProcessingClient",
     "CallProcessingMode",
     "EnsureMode",
     "EnsureRequest",
     "EnsureResponse",
     "LLM1FirstPassPayload",
+    "LocalCallProcessingClient",
     "ProcessingClientRole",
     "ProcessingClientType",
     "ProcessingErrorClass",
@@ -64,6 +73,7 @@ __all__ = [
     "CallProcessingService",
     "is_retryable_error",
     "is_stale_run",
+    "llm1_first_pass_payload_from_artifact",
     "should_retry_error",
     "stable_scope_hash",
 ]

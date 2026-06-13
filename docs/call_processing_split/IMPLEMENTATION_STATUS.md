@@ -20,7 +20,7 @@ explicit operator approval.
 | 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
 | 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
 | 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
-| 5. CallProcessingClient and analysis refactor | `pending` | Depends on Tasks 3-4. |
+| 5. CallProcessingClient and analysis refactor | `first_pass_client_done` | Added local client abstraction and LLM-1 artifact adapter; reporting/orchestrator wiring remains pending. |
 | 6. Reporting and orchestrator refactor | `pending` | Depends on Task 5. |
 | 7. Runtime split | `pending` | Depends on Tasks 2-5. |
 | 8. Test matrix and verification pack | `pending` | Starts early, final pass after Tasks 1-7. |
@@ -242,3 +242,48 @@ Residual risk:
 - Task 5 still needs to resolve/persist/fetch the artifact from the
   call-processing service; this first pass only supports the injected artifact
   path and fail-closed analyzer behavior.
+
+## Task 5 CallProcessingClient First Pass
+
+First pass added the analysis-facing client boundary without changing
+reporting/orchestrator call sites yet.
+
+Changed:
+
+- `core/app/agents/call_processing/client.py`
+  - Added `CallProcessingClient` protocol with
+    `ensure_processed_calls`, `get_processed_artifacts`, and
+    `get_llm1_first_pass_artifact`.
+  - Added `LocalCallProcessingClient` backed by `CallProcessingService`,
+    `ArtifactRepository`, and the existing DB session.
+  - Added `llm1_first_pass_payload_from_artifact()` adapter from durable
+    `call_core.call_artifacts` rows to `LLM1FirstPassPayload`.
+  - Adapter requires `llm1_first_pass_v1`, active ready artifact status, object
+    payload, valid payload metadata, and ready payload status.
+  - `ensure_processed_calls()` delegates to the current planner service, which
+    still reports zero provider calls made.
+- `core/app/agents/call_processing/__init__.py`
+  - Exported the client protocol, local client, adapter, and artifact error.
+- `core/tests/test_call_processing_client.py`
+  - Mirrored to `tests/test_call_processing_client.py`.
+  - Covers ready artifact adaptation, missing artifact as `None`, ensure
+    delegation, scoped artifact reads, and invalid artifact fail-closed behavior.
+
+Verification:
+
+- `python3 -m py_compile core/app/agents/call_processing/client.py core/app/agents/call_processing/__init__.py core/tests/test_call_processing_client.py tests/test_call_processing_client.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_client.py`
+  -> `5 passed`
+- `git diff --check`
+
+Verification note:
+
+- Host `python3 -m pytest ...` could not run because host Python does not have
+  `pytest` installed; focused pytest passed in the running API container.
+
+Residual risk:
+
+- Reporting/orchestrator are intentionally untouched in this first pass per
+  current write scope. Task 5 still needs the integration pass that builds
+  report scopes, calls the client from analysis/reporting flows, persists
+  partial/missing source status, and marks late artifacts.

@@ -81,6 +81,27 @@
   `3 passed`; legacy regression `/app/tests/test_llm2_layered_runtime.py` ->
   `11 passed`. **Residual:** Task 5 должен доставить artifact из
   `CallProcessingClient`; пока реализован injected artifact path.
+- [x] 2026-06-13 — Выполнен first pass Task 5 для analysis-facing
+  `CallProcessingClient`. **Изменение:** добавлен протокол клиента,
+  `LocalCallProcessingClient` поверх текущего `CallProcessingService` /
+  `ArtifactRepository`, а также строгий адаптер durable
+  `llm1_first_pass_v1` artifact -> `LLM1FirstPassPayload`. Клиент умеет
+  делегировать `ensure_processed_calls`, читать latest active artifacts по
+  scope и возвращать ready LLM1 payload для одного `interaction_id`.
+  **Safety:** reporting/orchestrator entrypoints пока не переключались;
+  provider calls не добавлялись. **Verification:** `py_compile`,
+  `git diff --check`, контейнерный
+  `/app/tests/test_call_processing_client.py` -> `5 passed`; полный focused
+  pack call-processing/analyzer `/app/tests/test_call_processing_contracts.py
+  /app/tests/test_call_processing_db_contract.py
+  /app/tests/test_call_processing_service.py
+  /app/tests/test_call_processing_api.py
+  /app/tests/test_call_processing_cli.py
+  /app/tests/test_call_processing_llm1_external_mode.py
+  /app/tests/test_call_processing_client.py
+  /app/tests/test_llm2_layered_runtime.py` -> `45 passed`. **Residual:**
+  следующий шаг - Task 6: интеграция client boundary в reporting/orchestrator
+  и режим добора missing artifacts без смешивания с delivery.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки
