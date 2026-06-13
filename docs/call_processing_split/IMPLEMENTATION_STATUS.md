@@ -20,8 +20,8 @@ explicit operator approval.
 | 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
 | 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
 | 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
-| 5. CallProcessingClient and analysis refactor | `first_pass_client_done` | Added local client abstraction and LLM-1 artifact adapter; reporting/orchestrator wiring remains pending. |
-| 6. Reporting and orchestrator refactor | `pending` | Depends on Task 5. |
+| 5. CallProcessingClient and analysis refactor | `first_pass_client_done` | Added local client abstraction and LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
+| 6. Reporting and orchestrator refactor | `first_pass_manager_daily_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. ROP/manual pilot wiring remains pending. |
 | 7. Runtime split | `pending` | Depends on Tasks 2-5. |
 | 8. Test matrix and verification pack | `pending` | Starts early, final pass after Tasks 1-7. |
 | 9. Cutover, rollback, runbook | `pending` | Depends on Tasks 1-8. |
@@ -287,3 +287,61 @@ Residual risk:
   current write scope. Task 5 still needs the integration pass that builds
   report scopes, calls the client from analysis/reporting flows, persists
   partial/missing source status, and marks late artifacts.
+
+## Task 6 Reporting/Orchestrator First Pass
+
+First pass wired `manager_daily` reporting to the call-processing boundary while
+preserving the legacy pilot path.
+
+Changed:
+
+- `core/app/agents/calls/reporting.py`
+  - `CallsManualReportingOrchestrator` now owns a `CallProcessingClient`
+    instance backed by `LocalCallProcessingClient`.
+  - In `CALL_PROCESSING_MODE=external_service`,
+    `manager_daily/build_missing_and_report` calls
+    `ensure_processed_calls()` for `transcript`, `transcript_segments`, and
+    `llm1_first_pass` instead of doing reporting-local source discovery.
+  - Reporting hydrates missing `interaction.text` from ready upstream
+    transcript artifacts before analysis.
+  - Reporting runs EDO analysis only when a ready `llm1_first_pass_v1` artifact
+    is available and passes that artifact into `CallsAnalyzer.analyze_call()`.
+  - Missing/invalid upstream LLM1 artifacts stay visible as partial source
+    status (`llm1_first_pass_missing` / `llm1_first_pass_invalid`) and do not
+    make the call disappear from report artifacts.
+  - Legacy mode keeps the previous direct STT and runtime LLM1 path; the new
+    `llm1_first_pass_artifact` keyword is not passed in legacy mode.
+  - Observability now separates external upstream LLM1 reuse/missing counters
+    from EDO LLM2 analysis builds.
+- `core/tests/test_call_processing_reporting_integration.py`
+  - Mirrored to `tests/test_call_processing_reporting_integration.py`.
+  - Covers ready LLM1 artifact injection without reporting-local STT and
+    missing LLM1 artifact as partial/no-analysis rather than a crash or hidden
+    provider call.
+
+Verification:
+
+- `python3 -m py_compile core/app/agents/calls/reporting.py core/tests/test_call_processing_reporting_integration.py tests/test_call_processing_reporting_integration.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_reporting_integration.py`
+  -> `2 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_llm2_layered_runtime.py`
+  -> `47 passed`
+- Legacy focused reporting checks for contract/quota/source-audio branches:
+  `5 passed, 287 deselected`
+- `git diff --check`
+
+Verification note:
+
+- Broad semantic-empty reporting tests still depend on runtime semantic
+  validation config in the current container; they were not used as acceptance
+  for this integration pass.
+
+Residual risk:
+
+- Current local `CallProcessingService.ensure()` is still planner/backfill-only
+  and does not yet perform OnlinePBX discovery or real STT/LLM1 provider work.
+  In `external_service` mode reporting therefore does not hide missing upstream
+  source ingestion; it reports partial/no-data until upstream artifacts exist.
+- ROP weekly, manual pilot orchestration, late artifact markers, manual rerun
+  marker clearing, and full scheduled flow checks remain for the next Task 6/8
+  passes.

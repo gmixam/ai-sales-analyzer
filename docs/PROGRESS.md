@@ -102,6 +102,24 @@
   /app/tests/test_llm2_layered_runtime.py` -> `45 passed`. **Residual:**
   следующий шаг - Task 6: интеграция client boundary в reporting/orchestrator
   и режим добора missing artifacts без смешивания с delivery.
+- [x] 2026-06-13 — Выполнен first pass Task 6 для `manager_daily` reporting
+  integration. **Изменение:** в `CALL_PROCESSING_MODE=external_service`
+  `CallsManualReportingOrchestrator` вызывает `CallProcessingClient.ensure`
+  для `transcript`, `transcript_segments`, `llm1_first_pass`, гидратирует
+  transcript из upstream artifact, передает ready `llm1_first_pass_v1` в
+  `CallsAnalyzer.analyze_call()` и не запускает reporting-local STT/LLM1.
+  Missing/invalid upstream LLM1 остается видимым как partial source status, а
+  звонок не исчезает из report artifacts. Legacy mode сохранен и не получает
+  новый keyword. **Observability:** LLM1 reuse/missing в external mode
+  отделен от EDO LLM2 analysis builds. **Verification:** `py_compile`,
+  `git diff --check`, контейнерный
+  `/app/tests/test_call_processing_reporting_integration.py` -> `2 passed`;
+  call-processing focused pack с новым reporting integration -> `47 passed`;
+  legacy prepare-artifacts checks -> `5 passed, 287 deselected`. **Residual:**
+  локальный `CallProcessingService.ensure()` пока planner/backfill-only без
+  реального OnlinePBX discovery/STT/LLM1 provider work; ROP weekly, manual
+  pilot, late-artifact marker and full scheduled smoke остаются следующими
+  passes.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

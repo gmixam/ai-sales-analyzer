@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -55,6 +56,17 @@ from app.agents.calls.situation_day_daily_composer import (
 from app.agents.calls.situation_day_daily_input import build_situation_day_daily_input
 from app.agents.calls.situation_day_writer import compose_situation_day_view
 from app.agents.calls.voice_of_customer_composer import compose_voice_of_customer
+from app.agents.call_processing import (
+    ArtifactKind,
+    ArtifactStatus,
+    CallProcessingArtifactError,
+    CallProcessingClient,
+    CallProcessingMode,
+    EnsureMode,
+    LocalCallProcessingClient,
+    ProcessingScope,
+    RequiredArtifactKind,
+)
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
 from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError, SemanticAnalysisError
@@ -925,6 +937,10 @@ class CallsManualReportingOrchestrator:
         self.extractor = CallsExtractor(department_id=department_id, db=db)
         self.analyzer = CallsAnalyzer(department_id=department_id, db=db)
         self.delivery = CallsDelivery(department_id=department_id, db=db)
+        self.call_processing_client: CallProcessingClient = LocalCallProcessingClient(
+            db,
+            requested_by="edo-analysis-reporting",
+        )
         self.call_orchestrator = CallsManualPilotOrchestrator(
             department_id=department_id,
             db=db,
@@ -972,36 +988,73 @@ class CallsManualReportingOrchestrator:
         source_summary = self._empty_source_summary(period=source_period, execution_model=execution_model)
         source_discovery_errors: list[str] = []
         if self._allows_source_discovery(preset=preset):
-            try:
-                source_summary = self._discover_and_persist_source_calls(
-                    filters=filters,
-                    period=source_period,
-                    mode=normalized_mode,
-                )
-                source_summary["execution_model"] = execution_model
-            except ASAError as exc:
-                error_token = f"source_discovery_failed:{exc}"
-                if normalized_mode == "report_from_ready_data_only":
-                    # Non-fatal in ready-only mode: report from whatever is already persisted.
-                    source_discovery_errors.append(error_token)
-                else:
-                    return self._build_terminal_run_result(
-                        preset=preset,
-                        mode=normalized_mode,
-                        period=period,
-                        source_period=source_period,
-                        diagnostics_context=diagnostics_context,
+            if self._call_processing_external_service_mode_enabled():
+                try:
+                    source_summary = self._ensure_call_processing_source_artifacts(
                         filters=filters,
-                        source_summary=self._empty_source_summary(period=source_period, execution_model=execution_model),
-                        build_summary=self._empty_build_summary(),
-                        reports=[],
-                        selected_interactions_count=0,
-                        final_selected_interactions_count=0,
-                        overall_status="blocked",
-                        errors=[error_token],
-                        artifacts=[],
-                        delivery_options=delivery_options,
+                        period=source_period,
+                        mode=normalized_mode,
                     )
+                    source_summary["execution_model"] = execution_model
+                except ASAError as exc:
+                    error_token = f"call_processing_ensure_failed:{exc}"
+                    if normalized_mode == "report_from_ready_data_only":
+                        source_discovery_errors.append(error_token)
+                    else:
+                        return self._build_terminal_run_result(
+                            preset=preset,
+                            mode=normalized_mode,
+                            period=period,
+                            source_period=source_period,
+                            diagnostics_context=diagnostics_context,
+                            filters=filters,
+                            source_summary=self._empty_source_summary(
+                                period=source_period,
+                                execution_model=execution_model,
+                            ),
+                            build_summary=self._empty_build_summary(),
+                            reports=[],
+                            selected_interactions_count=0,
+                            final_selected_interactions_count=0,
+                            overall_status="blocked",
+                            errors=[error_token],
+                            artifacts=[],
+                            delivery_options=delivery_options,
+                        )
+            else:
+                try:
+                    source_summary = self._discover_and_persist_source_calls(
+                        filters=filters,
+                        period=source_period,
+                        mode=normalized_mode,
+                    )
+                    source_summary["execution_model"] = execution_model
+                except ASAError as exc:
+                    error_token = f"source_discovery_failed:{exc}"
+                    if normalized_mode == "report_from_ready_data_only":
+                        # Non-fatal in ready-only mode: report from whatever is already persisted.
+                        source_discovery_errors.append(error_token)
+                    else:
+                        return self._build_terminal_run_result(
+                            preset=preset,
+                            mode=normalized_mode,
+                            period=period,
+                            source_period=source_period,
+                            diagnostics_context=diagnostics_context,
+                            filters=filters,
+                            source_summary=self._empty_source_summary(
+                                period=source_period,
+                                execution_model=execution_model,
+                            ),
+                            build_summary=self._empty_build_summary(),
+                            reports=[],
+                            selected_interactions_count=0,
+                            final_selected_interactions_count=0,
+                            overall_status="blocked",
+                            errors=[error_token],
+                            artifacts=[],
+                            delivery_options=delivery_options,
+                        )
         interactions = self._select_interactions(filters=filters, period=source_period)
         if not interactions:
             if preset.code == "manager_daily":
@@ -1231,6 +1284,16 @@ class CallsManualReportingOrchestrator:
         """Return True when the preset may perform source discovery and ingest."""
         return cls._resolve_execution_model(preset=preset) == "source_aware_full_manual"
 
+    @staticmethod
+    def _call_processing_external_service_mode_enabled() -> bool:
+        """Return True when reporting must consume upstream call-processing artifacts."""
+        raw = (
+            os.environ.get("CALL_PROCESSING_MODE")
+            or getattr(settings, "call_processing_mode", "")
+            or CallProcessingMode.LEGACY.value
+        )
+        return str(raw).strip().lower() == CallProcessingMode.EXTERNAL_SERVICE.value
+
     @classmethod
     def _allows_build_missing(cls, *, preset: ReportPreset, mode: str) -> bool:
         """Return True when the preset may build missing transcript/analysis artifacts."""
@@ -1259,7 +1322,82 @@ class CallsManualReportingOrchestrator:
             "skipped_due_to_quota": 0,
             "quota_blocked_previous_run": 0,
             "quota_blocker": None,
+            "call_processing_mode": "legacy",
+            "call_processing_ensure_status": None,
+            "call_processing_run_id": None,
+            "call_processing_artifacts_ready": 0,
+            "call_processing_artifacts_missing": 0,
+            "call_processing_artifacts_backfilled": 0,
+            "llm1_first_pass_reused_for_analysis": 0,
+            "missing_llm1_first_pass_before_analysis": 0,
+            "invalid_llm1_first_pass_before_analysis": 0,
         }
+
+    def _build_call_processing_scope(
+        self,
+        *,
+        filters: ReportRunFilters,
+        period: dict[str, str],
+    ) -> ProcessingScope:
+        """Build the upstream call-processing scope for the selected report window."""
+        return ProcessingScope(
+            department_id=str(self.department_id),
+            manager_ids=sorted(filters.manager_ids),
+            extensions=sorted(filters.manager_extensions),
+            date_from=date.fromisoformat(period["date_from"]),
+            date_to=date.fromisoformat(period["date_to"]),
+            source="onlinepbx",
+            min_duration_sec=filters.min_duration_sec,
+            max_duration_sec=filters.max_duration_sec,
+        )
+
+    def _ensure_call_processing_source_artifacts(
+        self,
+        *,
+        filters: ReportRunFilters,
+        period: dict[str, str],
+        mode: str,
+    ) -> dict[str, Any]:
+        """Ask call-processing to prepare source/STT/LLM1 artifacts for the scope."""
+        summary = self._empty_source_summary(
+            period=period,
+            execution_model=self._resolve_execution_model(
+                preset=resolve_report_preset("manager_daily"),
+            ),
+        )
+        client = getattr(self, "call_processing_client", None)
+        if client is None:
+            raise ASAError("CALL_PROCESSING_MODE=external_service requires CallProcessingClient.")
+        ensure_mode = EnsureMode.ENSURE if mode == "build_missing_and_report" else EnsureMode.DRY_RUN
+        response = client.ensure_processed_calls(
+            self._build_call_processing_scope(filters=filters, period=period),
+            [
+                RequiredArtifactKind.TRANSCRIPT,
+                RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
+                RequiredArtifactKind.LLM1_FIRST_PASS,
+            ],
+            mode=ensure_mode,
+        )
+        planned = dict(response.planned or {})
+        interactions_total = int(planned.get("interactions_total") or 0)
+        summary.update(
+            {
+                "call_processing_mode": CallProcessingMode.EXTERNAL_SERVICE.value,
+                "call_processing_run_id": response.run_id,
+                "call_processing_status": str(response.status),
+                "call_processing_scope_hash": response.scope_hash,
+                "call_processing_artifacts_ready": int(planned.get("artifacts_ready") or 0),
+                "call_processing_artifacts_missing": int(planned.get("artifacts_missing") or 0),
+                "call_processing_artifacts_backfilled": int(planned.get("artifacts_backfilled") or 0),
+                "call_processing_provider_calls_made": int(
+                    (response.quota or {}).get("provider_calls_made") or 0
+                ),
+                "targeted_source_records_total": interactions_total,
+                "already_persisted_source_records_total": interactions_total,
+                "missing_source_records_total": int(planned.get("artifacts_missing") or 0),
+            }
+        )
+        return summary
 
     def _discover_and_persist_source_calls(
         self,
@@ -1497,6 +1635,82 @@ class CallsManualReportingOrchestrator:
             or datetime.min.replace(tzinfo=UTC),
         )
 
+    def _build_scope_from_selected_interactions(
+        self,
+        *,
+        interactions: list[Interaction],
+    ) -> ProcessingScope | None:
+        """Build a narrow call-processing read scope from already selected calls."""
+        dated: list[tuple[Interaction, date]] = []
+        for interaction in interactions:
+            started_at = parse_call_started_at(dict(interaction.metadata_ or {}))
+            if started_at is not None:
+                dated.append((interaction, started_at.date()))
+        if not dated:
+            return None
+        manager_ids = sorted(
+            {
+                str(item.manager_id)
+                for item, _day in dated
+                if getattr(item, "manager_id", None) is not None
+            }
+        )
+        extensions = sorted(
+            {
+                str((item.metadata_ or {}).get("extension") or "").strip()
+                for item, _day in dated
+                if str((item.metadata_ or {}).get("extension") or "").strip()
+            }
+        )
+        days = [day for _item, day in dated]
+        return ProcessingScope(
+            department_id=str(self.department_id),
+            manager_ids=manager_ids,
+            extensions=extensions,
+            date_from=min(days),
+            date_to=max(days),
+            source="onlinepbx",
+        )
+
+    def _hydrate_transcripts_from_call_processing(
+        self,
+        *,
+        interactions: list[Interaction],
+        client: CallProcessingClient,
+    ) -> dict[str, int]:
+        """Fill missing `interaction.text` from ready upstream transcript artifacts."""
+        scope = self._build_scope_from_selected_interactions(interactions=interactions)
+        if scope is None:
+            return {"artifacts_ready": 0, "artifacts_missing": 0, "artifacts_backfilled": 0}
+        rows = client.get_processed_artifacts(scope, [RequiredArtifactKind.TRANSCRIPT])
+        by_interaction = {
+            str(getattr(row, "interaction_id", "")): row
+            for row in rows
+            if getattr(row, "artifact_kind", None) == ArtifactKind.TRANSCRIPT.value
+            and getattr(row, "status", None) == ArtifactStatus.READY.value
+            and getattr(row, "is_active", False)
+        }
+        ready = 0
+        hydrated = 0
+        selected_ids = {str(item.id) for item in interactions}
+        for interaction in interactions:
+            row = by_interaction.get(str(interaction.id))
+            if row is None:
+                continue
+            ready += 1
+            text_value = str(getattr(row, "text_value", "") or "").strip()
+            if text_value and not str(getattr(interaction, "text", "") or "").strip():
+                interaction.text = text_value
+                metadata = dict(interaction.metadata_ or {})
+                metadata["transcript_source"] = "call_processing_artifact"
+                interaction.metadata_ = metadata
+                hydrated += 1
+        return {
+            "artifacts_ready": ready,
+            "artifacts_missing": max(len(selected_ids) - ready, 0),
+            "artifacts_backfilled": hydrated,
+        }
+
     async def _prepare_artifacts(
         self,
         *,
@@ -1517,6 +1731,20 @@ class CallsManualReportingOrchestrator:
             analysis_instruction_version=required_analysis_instruction_version,
         )
         managers_by_id = self._load_managers_by_id(interactions=interactions)
+        call_processing_external_mode = self._call_processing_external_service_mode_enabled()
+        call_processing_client = getattr(self, "call_processing_client", None)
+        call_processing_artifact_stats: dict[str, int] = {
+            "artifacts_ready": 0,
+            "artifacts_missing": 0,
+            "artifacts_backfilled": 0,
+        }
+        if call_processing_external_mode:
+            if call_processing_client is None:
+                raise ASAError("CALL_PROCESSING_MODE=external_service requires CallProcessingClient.")
+            call_processing_artifact_stats = self._hydrate_transcripts_from_call_processing(
+                interactions=interactions,
+                client=call_processing_client,
+            )
 
         built_transcripts = 0
         reused_transcripts = 0
@@ -1531,6 +1759,9 @@ class CallsManualReportingOrchestrator:
         skipped_due_to_quota = 0
         quota_blocked_previous_run = 0
         quota_blocker: dict[str, Any] | None = None
+        llm1_first_pass_reused_for_analysis = 0
+        missing_llm1_first_pass_before_analysis = 0
+        invalid_llm1_first_pass_before_analysis = 0
         build_errors: list[str] = []
         artifacts: list[ReportArtifact] = []
         for interaction in interactions:
@@ -1563,7 +1794,12 @@ class CallsManualReportingOrchestrator:
                     analysis = None
             if self._allows_build_missing(preset=preset, mode=mode):
                 if not interaction.text:
-                    if _is_interaction_source_build_eligible(interaction):
+                    if call_processing_external_mode:
+                        if _is_interaction_source_build_eligible(interaction):
+                            build_errors.append(
+                                f"transcript_missing_external_service:{interaction.id}"
+                            )
+                    elif _is_interaction_source_build_eligible(interaction):
                         previous_blocker = _previous_quota_blocker(interaction)
                         if previous_blocker and not force_retry_quota_blocked:
                             quota_blocked_previous_run += 1
@@ -1637,36 +1873,79 @@ class CallsManualReportingOrchestrator:
                             interaction_id=str(interaction.id),
                         )
                         try:
-                            if required_analysis_instruction_version:
+                            llm1_first_pass_artifact = None
+                            skip_analysis_build = False
+                            llm1_artifact_invalid = False
+                            if call_processing_external_mode:
+                                try:
+                                    llm1_first_pass_artifact = (
+                                        call_processing_client.get_llm1_first_pass_artifact(
+                                            interaction.id
+                                        )
+                                    )
+                                except CallProcessingArtifactError as exc:
+                                    invalid_llm1_first_pass_before_analysis += 1
+                                    build_errors.append(
+                                        f"llm1_first_pass_invalid:{interaction.id}:{exc}"
+                                    )
+                                    analysis_reuse_reason = "llm1_first_pass_invalid"
+                                    skip_analysis_build = True
+                                    llm1_artifact_invalid = True
+                                if llm1_first_pass_artifact is None and not llm1_artifact_invalid:
+                                    missing_llm1_first_pass_before_analysis += 1
+                                    build_errors.append(
+                                        f"llm1_first_pass_missing:{interaction.id}"
+                                    )
+                                    analysis_reuse_reason = "llm1_first_pass_missing"
+                                    skip_analysis_build = True
+                                elif llm1_first_pass_artifact is not None:
+                                    llm1_first_pass_reused_for_analysis += 1
+                            if skip_analysis_build:
+                                result = None
+                            elif call_processing_external_mode and required_analysis_instruction_version:
+                                result = self.analyzer.analyze_call(
+                                    interaction,
+                                    instruction_version=required_analysis_instruction_version,
+                                    llm1_first_pass_artifact=llm1_first_pass_artifact,
+                                )
+                            elif call_processing_external_mode:
+                                result = self.analyzer.analyze_call(
+                                    interaction,
+                                    llm1_first_pass_artifact=llm1_first_pass_artifact,
+                                )
+                            elif required_analysis_instruction_version:
                                 result = self.analyzer.analyze_call(
                                     interaction,
                                     instruction_version=required_analysis_instruction_version,
                                 )
                             else:
                                 result = self.analyzer.analyze_call(interaction)
-                            analysis = self.call_orchestrator.persist_analysis(
-                                interaction=interaction,
-                                result=result,
-                            )
-                            built_analyses += 1
-                            reusable_analysis, analysis_reuse_reason = (
-                                _is_analysis_reusable_for_reporting(
-                                    analysis,
-                                    required_instruction_version=(
-                                        required_analysis_instruction_version
-                                    ),
+                            if result is not None:
+                                analysis = self.call_orchestrator.persist_analysis(
+                                    interaction=interaction,
+                                    result=result,
                                 )
-                            )
-                            if not reusable_analysis:
-                                original_analysis = analysis
-                                analyses_rejected_for_reuse += 1
-                                if _is_instruction_version_mismatch_reason(analysis_reuse_reason):
-                                    analyses_rejected_for_instruction_version += 1
-                                analysis = None
-                                build_errors.append(
-                                    "analysis_reuse_rejected:"
-                                    f"{interaction.id}:{analysis_reuse_reason}"
+                                built_analyses += 1
+                                reusable_analysis, analysis_reuse_reason = (
+                                    _is_analysis_reusable_for_reporting(
+                                        analysis,
+                                        required_instruction_version=(
+                                            required_analysis_instruction_version
+                                        ),
+                                    )
                                 )
+                                if not reusable_analysis:
+                                    original_analysis = analysis
+                                    analyses_rejected_for_reuse += 1
+                                    if _is_instruction_version_mismatch_reason(
+                                        analysis_reuse_reason
+                                    ):
+                                        analyses_rejected_for_instruction_version += 1
+                                    analysis = None
+                                    build_errors.append(
+                                        "analysis_reuse_rejected:"
+                                        f"{interaction.id}:{analysis_reuse_reason}"
+                                    )
                         except SemanticAnalysisError as exc:
                             failed_analyses += 1
                             original_analysis = self.call_orchestrator.persist_failed_analysis(
@@ -1748,6 +2027,27 @@ class CallsManualReportingOrchestrator:
                 "skipped_due_to_quota": skipped_due_to_quota,
                 "quota_blocked_previous_run": quota_blocked_previous_run,
                 "quota_blocker": quota_blocker,
+                "call_processing_mode": (
+                    CallProcessingMode.EXTERNAL_SERVICE.value
+                    if call_processing_external_mode
+                    else CallProcessingMode.LEGACY.value
+                ),
+                "call_processing_artifacts_ready": int(
+                    call_processing_artifact_stats.get("artifacts_ready", 0)
+                ),
+                "call_processing_artifacts_missing": int(
+                    call_processing_artifact_stats.get("artifacts_missing", 0)
+                ),
+                "call_processing_artifacts_backfilled": int(
+                    call_processing_artifact_stats.get("artifacts_backfilled", 0)
+                ),
+                "llm1_first_pass_reused_for_analysis": llm1_first_pass_reused_for_analysis,
+                "missing_llm1_first_pass_before_analysis": (
+                    missing_llm1_first_pass_before_analysis
+                ),
+                "invalid_llm1_first_pass_before_analysis": (
+                    invalid_llm1_first_pass_before_analysis
+                ),
             },
             build_errors,
         )
@@ -2996,6 +3296,12 @@ class CallsManualReportingOrchestrator:
         artifacts: list[ReportArtifact],
     ) -> list[dict[str, Any]]:
         """Return per-layer execution/reuse/skip observability for the current run."""
+        external_mode = (
+            build_summary.get("call_processing_mode") == CallProcessingMode.EXTERNAL_SERVICE.value
+        )
+        llm1_missing_or_invalid = int(
+            build_summary.get("missing_llm1_first_pass_before_analysis", 0)
+        ) + int(build_summary.get("invalid_llm1_first_pass_before_analysis", 0))
         return [
             self._build_ai_layer_entry(
                 layer="stt",
@@ -3012,9 +3318,17 @@ class CallsManualReportingOrchestrator:
                 label="LLM-1",
                 preset=preset,
                 mode=mode,
-                executed_count=build_summary.get("analyses_built", 0),
-                reused_count=build_summary.get("analyses_reused", 0),
-                not_activated_count=build_summary.get("missing_analyses_before_build", 0),
+                executed_count=0 if external_mode else build_summary.get("analyses_built", 0),
+                reused_count=(
+                    build_summary.get("llm1_first_pass_reused_for_analysis", 0)
+                    if external_mode
+                    else build_summary.get("analyses_reused", 0)
+                ),
+                not_activated_count=(
+                    llm1_missing_or_invalid
+                    if external_mode
+                    else build_summary.get("missing_analyses_before_build", 0)
+                ),
                 artifacts=artifacts,
             ),
             self._build_ai_layer_entry(
