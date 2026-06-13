@@ -7,6 +7,22 @@
 **Последнее обновление:** 2026-06-13
 
 ## Что сделано
+- [x] 2026-06-13 — Стартован большой проект разделения `call-processing` и
+  `analysis` services в отдельной ветке `feat/call-processing-analysis-split`.
+  **Baseline:** task pack из ветки `docs/call-processing-split-task-pack`
+  добавлен в repo: `docs/call_processing_split/FULL_CALL_PROCESSING_SERVICE_SPLIT_TZ.md`,
+  `IMPLEMENTATION_TASK_PACK_FOR_AGENTS.md`,
+  `SERVICE_SPLIT_OPEN_QUESTIONS_AUDIT.md`. **Task 0:** добавлен первый
+  contract skeleton `app.agents.call_processing` без изменения runtime:
+  artifact/status/error enums, retryable classes, `APP_SERVICE`,
+  `CALL_PROCESSING_MODE`, `llm1_first_pass_v1`, processing scope/hash,
+  ensure request/response и access grant admin/reader gate. **Agents:**
+  explorer-агенты завершили read-only карты ingestion/STT, analyzer LLM1/LLM2,
+  reporting/orchestrator и DB/migrations. **Verification:** `py_compile`,
+  `git diff --check`, контейнерный
+  `/app/tests/test_call_processing_contracts.py` -> `6 passed`. **Следующий
+  шаг:** Task 1 - DB schemas/models/migrations/compatibility views без
+  production cutover и без destructive DB operations.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

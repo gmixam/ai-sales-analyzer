@@ -1003,3 +1003,34 @@
   не меняет LLM2 admission, STT/LLM runtime, weekly/monthly/ROP отчеты или
   критерии смыслового анализа.
 - **Дата:** 2026-06-12
+
+## ADR-097: `call-processing` становится upstream-сервисом STT/LLM1, `analysis` - downstream-клиентом
+- **Решение:** Реализовать production-ready split текущего monolith path на
+  два сервисных ownership слоя: `call-processing` владеет OnlinePBX/source
+  discovery, source-call persistence, audio/STT, transcript artifacts,
+  `llm1_first_pass_v1`, retry/reconciliation и read API/views; `analysis`
+  владеет EDO LLM2/LLM3, manager/ROP reporting, rendering и delivery.
+- **Решение:** Физически допускается одна PostgreSQL, но логическое ownership
+  разделение идет через schemas/read surfaces: `call_core`, `call_public`,
+  `analysis`, `org`. Downstream-клиенты не получают write-доступ в
+  `call_core`.
+- **Решение:** Текущий EDO pilot должен сохранить существующие flows
+  `manager_daily`, `rop_weekly`, scheduled reviewable reporting и delivery, но
+  после cutover идти через `CallProcessingClient` и
+  `CALL_PROCESSING_MODE=external_service`; rollback остается через
+  `CALL_PROCESSING_MODE=legacy`.
+- **Решение:** Доступ к call-processing actions настраивается по
+  service/employee client grants с ролями `admin|reader`; billable `ensure`,
+  `dry_run`, `force_retry_failed` доступны только `admin`.
+- **Решение:** Production cutover, реальные production migrations, secret/env
+  изменения и destructive DB/FS operations требуют отдельного подтверждения
+  оператора. Локальная реализация, тесты, non-destructive migrations/docs и
+  dry-run/smoke checks выполняются автономно.
+- **Причина:** Reporting/analysis layer сейчас владеет source/audio/STT/LLM1,
+  из-за чего другие команды не могут безопасно использовать единые STT/LLM1
+  артефакты, а добор missing artifacts смешан с EDO отчетами и delivery.
+- **Scope:** архитектурная линия full release по документам
+  `docs/call_processing_split/`. Это не меняет бизнес-логику scoring/report
+  templates само по себе; изменения внедряются task cards 0-9 с отдельными
+  tests и compatibility gates.
+- **Дата:** 2026-06-13
