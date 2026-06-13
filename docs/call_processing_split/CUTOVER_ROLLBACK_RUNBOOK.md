@@ -212,7 +212,7 @@ docker compose exec -T api env CALL_PROCESSING_MODE=legacy \
 | `transcript_missing_external_service` | Analysis saw a call without transcript in external mode | Repair call-processing STT/source artifact; reporting must not run local STT |
 | `source_artifacts_updated_after_analysis` | Upstream artifact changed after EDO analysis was created | Admin decides whether to rerun analysis for that scope |
 | `call_processing_ensure_failed` | Client/service ensure failed before report build | Check call-processing API/service logs and run dry-run manually |
-| quota/provider blocker | Provider quota or rate limit stopped upstream work | Resolve provider/account issue, then force retry through approved admin flow |
+| quota/provider blocker | Provider quota, per-run provider-call budget, or rate limit stopped upstream work | Resolve provider/account issue or increase grant `rate_limits.provider_calls_per_run`, then force retry through approved admin flow |
 
 ## Admin Rerun Rule
 

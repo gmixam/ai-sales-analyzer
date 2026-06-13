@@ -114,6 +114,28 @@ def test_access_grant_roles_gate_processing_actions() -> None:
     assert reader.can_run_processing is False
 
 
+def test_access_grant_exposes_provider_call_budget_per_run() -> None:
+    grant = AccessGrant(
+        client_id="edo-analysis",
+        client_type=ProcessingClientType.SERVICE,
+        role=ProcessingClientRole.ADMIN,
+        allowed_artifact_kinds=[ArtifactKind.TRANSCRIPT],
+        rate_limits={"provider_calls_per_run": 7},
+        created_by_admin="operator",
+    )
+    legacy_key_grant = AccessGrant(
+        client_id="edo-analysis",
+        client_type=ProcessingClientType.SERVICE,
+        role=ProcessingClientRole.ADMIN,
+        allowed_artifact_kinds=[ArtifactKind.TRANSCRIPT],
+        rate_limits={"max_provider_calls_per_run": 3},
+        created_by_admin="operator",
+    )
+
+    assert grant.provider_call_budget_per_run == 7
+    assert legacy_key_grant.provider_call_budget_per_run == 3
+
+
 def test_artifact_error_retryable_flag_follows_structured_error_class() -> None:
     retryable = ArtifactError(**{"class": ProcessingErrorClass.RATE_LIMITED})
     non_retryable = ArtifactError(**{"class": ProcessingErrorClass.AUTH_ERROR, "retryable": True})

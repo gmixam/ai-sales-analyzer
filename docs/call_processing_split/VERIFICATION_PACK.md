@@ -126,7 +126,8 @@ Latest checks run during implementation:
 | `test_call_processing_manual_pilot_boundary.py` | `1 passed` |
 | `test_call_processing_manual_reporting_runner.py` | `1 passed` |
 | `test_call_processing_runtime_split.py` | `4 passed` |
-| focused call-processing/analyzer pack after read-only grant-pattern pass | `68 passed` |
+| call-processing contracts/service/API/CLI quota gate | `34 passed` |
+| focused call-processing/analyzer pack after quota gate pass | `73 passed` |
 | DB contract, including optional `call_public` read-only grants | `11 passed` |
 | focused AI routing/settings pack | `48 passed` |
 | legacy prepare-artifacts + scheduled/reviewable focused checks | `28 passed, 217 deselected` |

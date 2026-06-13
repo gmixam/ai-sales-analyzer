@@ -29,9 +29,10 @@ def _print_json(payload: dict[str, Any], *, exit_code: int = 0) -> int:
 
 def _load_json_arg(value: str) -> dict[str, Any]:
     text = value.strip()
-    path = Path(text)
-    if path.exists():
-        text = path.read_text(encoding="utf-8")
+    if not text.startswith("{"):
+        path = Path(text)
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
         raise ValueError("JSON value must be an object")
@@ -76,6 +77,7 @@ def run_ensure(args: argparse.Namespace, mode: EnsureMode) -> int:
             mode=mode,
             requested_by=grant.client_id,
             force_retry_failed=getattr(args, "force_retry_failed", False),
+            provider_call_budget=grant.provider_call_budget_per_run,
         )
     return _print_json(response.model_dump(mode="json"))
 
@@ -129,6 +131,7 @@ def retry_failed(args: argparse.Namespace) -> int:
             mode=EnsureMode.ENSURE,
             requested_by=grant.client_id,
             force_retry_failed=True,
+            provider_call_budget=grant.provider_call_budget_per_run,
         )
     return _print_json(
         {

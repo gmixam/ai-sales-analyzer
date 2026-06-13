@@ -11,7 +11,7 @@ from app.core_shared.api.main import app
 from app.core_shared.api.routes import call_processing as call_processing_routes
 
 
-def _grant(role: str = "admin") -> str:
+def _grant(role: str = "admin", *, rate_limits: dict[str, int] | None = None) -> str:
     return json.dumps(
         {
             "client_id": "edo-analysis",
@@ -28,6 +28,7 @@ def _grant(role: str = "admin") -> str:
                 "llm1_artifacts_v1",
                 "processing_runs_v1",
             ],
+            "rate_limits": rate_limits or {},
             "created_by_admin": "operator",
             "active": True,
         }
@@ -44,6 +45,8 @@ def _scope() -> dict[str, object]:
 
 
 class _FakeCallProcessingService:
+    calls: list[dict[str, object]] = []
+
     def __init__(self, _db: object, *, requested_by: str = "tester") -> None:
         self.requested_by = requested_by
 
@@ -55,7 +58,15 @@ class _FakeCallProcessingService:
         *,
         requested_by: str,
         force_retry_failed: bool = False,
+        provider_call_budget: int | None = None,
     ) -> EnsureResponse:
+        self.calls.append(
+            {
+                "requested_by": requested_by,
+                "force_retry_failed": force_retry_failed,
+                "provider_call_budget": provider_call_budget,
+            }
+        )
         return EnsureResponse(
             run_id="run-1",
             status=ProcessingRunStatus.READY,
@@ -76,6 +87,7 @@ class _FakeCallProcessingService:
         *,
         requested_by: str,
         force_retry_failed: bool = False,
+        provider_call_budget: int | None = None,
     ) -> EnsureResponse:
         return self.ensure(
             scope,
@@ -83,6 +95,7 @@ class _FakeCallProcessingService:
             mode,
             requested_by=requested_by,
             force_retry_failed=force_retry_failed,
+            provider_call_budget=provider_call_budget,
         )
 
 
@@ -118,6 +131,7 @@ def test_ensure_requires_admin_grant() -> None:
 
 
 def test_ensure_uses_service_and_requires_requested_by_match(monkeypatch) -> None:
+    _FakeCallProcessingService.calls = []
     client = TestClient(app)
     app.dependency_overrides[call_processing_routes.get_session] = _override_session
     monkeypatch.setattr(
@@ -144,6 +158,38 @@ def test_ensure_uses_service_and_requires_requested_by_match(monkeypatch) -> Non
     assert payload["status"] == "ready"
     assert payload["requested_by"] == "edo-analysis"
     assert payload["planned"]["artifact_requirements_total"] == 2
+
+
+def test_ensure_passes_provider_call_budget_from_grant_rate_limits(monkeypatch) -> None:
+    _FakeCallProcessingService.calls = []
+    client = TestClient(app)
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+    monkeypatch.setattr(
+        call_processing_routes,
+        "CallProcessingService",
+        _FakeCallProcessingService,
+    )
+    try:
+        response = client.post(
+            "/call-processing/ensure",
+            headers={
+                "X-Call-Processing-Grant": _grant(
+                    "admin",
+                    rate_limits={"provider_calls_per_run": 3},
+                )
+            },
+            json={
+                "scope": _scope(),
+                "required_artifacts": ["transcript"],
+                "mode": "ensure",
+                "requested_by": "edo-analysis",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert _FakeCallProcessingService.calls[0]["provider_call_budget"] == 3
 
 
 def test_ensure_rejects_requested_by_different_from_grant() -> None:

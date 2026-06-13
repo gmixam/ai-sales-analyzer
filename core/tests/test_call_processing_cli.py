@@ -9,7 +9,7 @@ from app.agents.call_processing import EnsureResponse, ProcessingRunStatus, Proc
 from app.agents.call_processing import cli as call_processing_cli
 
 
-def _grant(role: str = "admin") -> str:
+def _grant(role: str = "admin", *, rate_limits: dict[str, int] | None = None) -> str:
     return json.dumps(
         {
             "client_id": "edo-analysis",
@@ -17,6 +17,7 @@ def _grant(role: str = "admin") -> str:
             "role": role,
             "allowed_artifact_kinds": ["transcript", "llm1_first_pass"],
             "read_surfaces": ["processed_calls_v1", "transcripts_v1"],
+            "rate_limits": rate_limits or {},
             "created_by_admin": "operator",
             "active": True,
         }
@@ -48,6 +49,7 @@ class _FakeCallProcessingService:
         *,
         requested_by: str,
         force_retry_failed: bool = False,
+        provider_call_budget: int | None = None,
     ) -> EnsureResponse:
         self.calls.append(
             {
@@ -56,6 +58,7 @@ class _FakeCallProcessingService:
                 "mode": mode,
                 "requested_by": requested_by,
                 "force_retry_failed": force_retry_failed,
+                "provider_call_budget": provider_call_budget,
             }
         )
         return EnsureResponse(
@@ -108,6 +111,7 @@ def test_cli_dry_run_requires_admin_grant(capsys) -> None:
 
 
 def test_cli_dry_run_prints_json_response(monkeypatch, capsys) -> None:
+    _FakeCallProcessingService.calls = []
     monkeypatch.setattr(call_processing_cli, "get_db", _fake_db)
     monkeypatch.setattr(call_processing_cli, "CallProcessingService", _FakeCallProcessingService)
 
@@ -128,6 +132,29 @@ def test_cli_dry_run_prints_json_response(monkeypatch, capsys) -> None:
     assert payload["status"] == "ready"
     assert payload["requested_by"] == "edo-analysis"
     assert payload["planned"]["artifact_requirements_total"] == 2
+    assert _FakeCallProcessingService.calls[0]["provider_call_budget"] is None
+
+
+def test_cli_passes_provider_call_budget_from_grant_rate_limits(monkeypatch, capsys) -> None:
+    _FakeCallProcessingService.calls = []
+    monkeypatch.setattr(call_processing_cli, "get_db", _fake_db)
+    monkeypatch.setattr(call_processing_cli, "CallProcessingService", _FakeCallProcessingService)
+
+    exit_code = call_processing_cli.main(
+        [
+            "--grant",
+            _grant("admin", rate_limits={"max_provider_calls_per_run": 2}),
+            "ensure",
+            "--scope",
+            _scope(),
+            "--required-artifacts",
+            "transcript",
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out)
+    assert _FakeCallProcessingService.calls[0]["provider_call_budget"] == 2
 
 
 def test_cli_retry_failed_is_admin_only(capsys) -> None:

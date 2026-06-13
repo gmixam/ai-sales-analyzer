@@ -282,6 +282,17 @@ class AccessGrant(BaseModel):
     created_by_admin: str
     active: bool = True
 
+    @property
+    def provider_call_budget_per_run(self) -> int | None:
+        for key in ("provider_calls_per_run", "max_provider_calls_per_run", "provider_calls"):
+            raw = self.rate_limits.get(key)
+            if raw is None:
+                continue
+            limit = int(raw)
+            if limit >= 0:
+                return limit
+        return None
+
     @field_validator("client_id", "created_by_admin", mode="before")
     @classmethod
     def normalize_required_text(cls, value: Any) -> str:

@@ -32,6 +32,36 @@ STALE_RUN_AFTER = timedelta(minutes=30)
 MAX_PROVIDER_ATTEMPTS = 3
 
 
+class ProviderCallBudget:
+    """Small per-run billable provider-call budget guard."""
+
+    def __init__(self, limit: int | None = None) -> None:
+        self.limit = limit if limit is None or limit >= 0 else None
+        self.made = 0
+        self.blocked = False
+
+    @property
+    def exhausted(self) -> bool:
+        return self.blocked or (self.limit is not None and self.made >= self.limit)
+
+    @property
+    def remaining(self) -> int | None:
+        if self.limit is None:
+            return None
+        return max(self.limit - self.made, 0)
+
+    def try_spend(self) -> bool:
+        if self.limit is not None and self.made >= self.limit:
+            self.blocked = True
+            return False
+        self.made += 1
+        return True
+
+    def mark_blocked(self, counts: dict[str, Any]) -> None:
+        self.blocked = True
+        counts["quota_blocked"] = int(counts.get("quota_blocked", 0)) + 1
+
+
 def is_retryable_error(error_class: ProcessingErrorClass | str | None) -> bool:
     """Return whether an error class is eligible for automatic retry."""
     if error_class is None:
@@ -91,6 +121,7 @@ class CallProcessingService:
         *,
         requested_by: str | None = None,
         force_retry_failed: bool = False,
+        provider_call_budget: int | None = None,
     ) -> EnsureResponse:
         try:
             asyncio.get_running_loop()
@@ -102,6 +133,7 @@ class CallProcessingService:
                     mode,
                     requested_by=requested_by,
                     force_retry_failed=force_retry_failed,
+                    provider_call_budget=provider_call_budget,
                 )
             )
         raise RuntimeError("CallProcessingService.ensure() cannot run inside an active event loop; use ensure_async().")
@@ -114,6 +146,7 @@ class CallProcessingService:
         *,
         requested_by: str | None = None,
         force_retry_failed: bool = False,
+        provider_call_budget: int | None = None,
     ) -> EnsureResponse:
         scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
         mode_model = EnsureMode(mode)
@@ -127,14 +160,18 @@ class CallProcessingService:
             requested_by=requester,
             status=ProcessingRunStatus.RUNNING,
         )
-        source_counts = self._discover_and_persist_source_calls(scope_model, mode_model)
+        budget = ProviderCallBudget(provider_call_budget)
+        source_counts = self._discover_and_persist_source_calls(scope_model, mode_model, budget)
         interactions = self._find_interactions(scope_model)
         counts = await self._ensure_artifacts(
             interactions,
             required,
             mode_model,
             force_retry_failed=force_retry_failed,
+            budget=budget,
         )
+        source_quota_blocked = int(source_counts.pop("quota_blocked", 0) or 0)
+        counts["quota_blocked"] = int(counts.get("quota_blocked", 0) or 0) + source_quota_blocked
         counts["provider_calls_made"] = int(counts.get("provider_calls_made", 0)) + int(
             source_counts.pop("provider_calls_made", 0)
         )
@@ -155,10 +192,7 @@ class CallProcessingService:
             scope_hash=stable_scope_hash(scope_model),
             requested_by=requester,
             planned=counts,
-            quota={
-                "provider_calls_made": counts.get("provider_calls_made", 0),
-                "provider_calls_allowed": mode_model != EnsureMode.DRY_RUN,
-            },
+            quota=self._quota_summary(counts, mode_model, budget),
         )
 
     def _normalize_required_artifacts(
@@ -234,6 +268,7 @@ class CallProcessingService:
         self,
         scope: ProcessingScope,
         mode: EnsureMode,
+        budget: ProviderCallBudget,
     ) -> dict[str, int]:
         """Discover OnlinePBX source calls for the scope when the session supports it."""
         counts = {
@@ -244,11 +279,15 @@ class CallProcessingService:
             "source_ingest_skipped": 0,
             "source_provider_calls_made": 0,
             "provider_calls_made": 0,
+            "quota_blocked": 0,
         }
         if mode is EnsureMode.DRY_RUN or not scope.department_id or not hasattr(self.session, "query"):
             return counts
         intake = self._build_intake(scope.department_id)
         for day in self._iter_period_days(scope):
+            if not budget.try_spend():
+                budget.mark_blocked(counts)
+                break
             counts["source_days_scanned"] += 1
             records = intake.get_cdr_list(day.isoformat())
             counts["source_provider_calls_made"] += 1
@@ -263,9 +302,14 @@ class CallProcessingService:
             counts["source_targeted_total"] += len(targeted)
             for record in targeted:
                 if self._record_is_build_eligible(intake, record) and not getattr(record, "record_url", None):
+                    if not budget.try_spend():
+                        budget.mark_blocked(counts)
+                        break
                     record.record_url = intake.get_recording_url(record.call_id)
                     counts["source_provider_calls_made"] += 1
                     counts["provider_calls_made"] += 1
+            if budget.blocked:
+                break
             created, skipped = intake.save_interactions(targeted)
             counts["source_ingest_created"] += created
             counts["source_ingest_skipped"] += skipped
@@ -338,7 +382,9 @@ class CallProcessingService:
         mode: EnsureMode,
         *,
         force_retry_failed: bool = False,
+        budget: ProviderCallBudget | None = None,
     ) -> dict[str, int]:
+        budget = budget or ProviderCallBudget()
         counts = {
             "interactions_total": len(interactions),
             "artifact_requirements_total": len(interactions) * len(required),
@@ -351,6 +397,7 @@ class CallProcessingService:
             "llm1_first_pass_built": 0,
             "artifact_build_failed": 0,
             "artifact_retry_blocked": 0,
+            "quota_blocked": 0,
         }
         for interaction in interactions:
             for kind in required:
@@ -379,6 +426,15 @@ class CallProcessingService:
                     continue
 
                 if kind is RequiredArtifactKind.TRANSCRIPT:
+                    counts["provider_calls_planned"] += 1
+                    if (
+                        mode is not EnsureMode.DRY_RUN
+                        and self._transcript_provider_input_available(interaction)
+                        and not budget.try_spend()
+                    ):
+                        budget.mark_blocked(counts)
+                        counts["artifacts_missing"] += 1
+                        continue
                     if mode is not EnsureMode.DRY_RUN:
                         built = await self._build_transcript_artifacts(interaction)
                         if built:
@@ -387,7 +443,6 @@ class CallProcessingService:
                             counts["provider_calls_made"] += 1
                             continue
                     counts["artifacts_missing"] += 1
-                    counts["provider_calls_planned"] += 1
                     continue
 
                 if kind is RequiredArtifactKind.TRANSCRIPT_SEGMENTS:
@@ -396,6 +451,14 @@ class CallProcessingService:
 
                 if kind is RequiredArtifactKind.LLM1_FIRST_PASS:
                     counts["provider_calls_planned"] += 1
+                    if (
+                        mode is not EnsureMode.DRY_RUN
+                        and self._llm1_provider_input_available(interaction)
+                        and not budget.try_spend()
+                    ):
+                        budget.mark_blocked(counts)
+                        counts["artifacts_missing"] += 1
+                        continue
                     if mode is not EnsureMode.DRY_RUN:
                         built = self._build_llm1_first_pass_artifact(interaction)
                         if built:
@@ -417,6 +480,18 @@ class CallProcessingService:
     ) -> dict[str, int]:
         """Compatibility wrapper for older unit tests."""
         return asyncio.run(self._ensure_artifacts(interactions, required, mode))
+
+    @staticmethod
+    def _transcript_provider_input_available(interaction: Interaction) -> bool:
+        return bool(str(getattr(interaction, "raw_ref", "") or "").strip()) and bool(
+            str(getattr(interaction, "department_id", "") or "").strip()
+        )
+
+    @staticmethod
+    def _llm1_provider_input_available(interaction: Interaction) -> bool:
+        return bool(str(getattr(interaction, "text", "") or "").strip()) and bool(
+            str(getattr(interaction, "department_id", "") or "").strip()
+        )
 
     async def _build_transcript_artifacts(self, interaction: Interaction) -> bool:
         """Run STT for one interaction and persist transcript artifacts."""
@@ -604,6 +679,8 @@ class CallProcessingService:
         return False
 
     def _status_from_counts(self, counts: dict[str, int]) -> ProcessingRunStatus:
+        if int(counts.get("quota_blocked", 0) or 0) > 0:
+            return ProcessingRunStatus.BLOCKED
         if counts["artifact_requirements_total"] == 0:
             return ProcessingRunStatus.READY
         if counts["artifacts_missing"] == 0:
@@ -611,6 +688,30 @@ class CallProcessingService:
         if counts["artifacts_ready"] > 0:
             return ProcessingRunStatus.PARTIAL
         return ProcessingRunStatus.BLOCKED
+
+    def _quota_summary(
+        self,
+        counts: dict[str, Any],
+        mode: EnsureMode,
+        budget: ProviderCallBudget,
+    ) -> dict[str, Any]:
+        exhausted = int(counts.get("quota_blocked", 0) or 0) > 0
+        summary: dict[str, Any] = {
+            "provider_calls_made": counts.get("provider_calls_made", 0),
+            "provider_calls_planned": counts.get("provider_calls_planned", 0),
+            "provider_calls_allowed": mode is not EnsureMode.DRY_RUN and not exhausted,
+            "provider_call_budget": budget.limit,
+            "provider_calls_remaining": budget.remaining,
+            "quota_exhausted": exhausted,
+        }
+        if exhausted:
+            summary.update(
+                {
+                    "error_class": ProcessingErrorClass.QUOTA_INSUFFICIENT.value,
+                    "admin_action_required": "increase_provider_call_budget_or_retry_after_provider_quota_reset",
+                }
+            )
+        return summary
 
     def _commit_if_available(self) -> None:
         commit = getattr(self.session, "commit", None)

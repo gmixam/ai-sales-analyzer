@@ -240,8 +240,10 @@ class _FakeIntake:
             allowed_directions={"out"},
         )
         self.recording_requests: list[str] = []
+        self.cdr_requests: list[str] = []
 
     def get_cdr_list(self, day: str) -> list[CDRRecord]:
+        self.cdr_requests.append(day)
         return [
             CDRRecord(
                 call_id="call-1",
@@ -313,6 +315,40 @@ def test_ensure_discovers_and_persists_source_calls_in_ensure_mode() -> None:
     assert len(session.scalars_rows) == 1
 
 
+def test_ensure_blocks_source_discovery_when_provider_budget_is_exhausted() -> None:
+    scope = ProcessingScope(
+        department_id=str(uuid.uuid4()),
+        extensions=["322"],
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake_holder: dict[str, _FakeIntake] = {}
+
+    def _intake_factory(_department_id: str, db: _FakeSession) -> _FakeIntake:
+        intake = _FakeIntake(db, scope)
+        intake_holder["intake"] = intake
+        return intake
+
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=_intake_factory,
+    )
+
+    response = service.ensure(scope, [], mode=EnsureMode.ENSURE, provider_call_budget=0)
+
+    assert response.status == ProcessingRunStatus.BLOCKED
+    assert response.planned["quota_blocked"] == 1
+    assert response.planned["source_provider_calls_made"] == 0
+    assert response.planned["provider_calls_made"] == 0
+    assert response.quota["quota_exhausted"] is True
+    assert intake_holder["intake"].cdr_requests == []
+    assert intake_holder["intake"].recording_requests == []
+    assert session.scalars_rows == []
+
+
 class _FakeExtractor:
     async def process(self, interaction: Interaction) -> TranscriptResult:
         interaction.text = "Клиент попросил материалы."
@@ -377,6 +413,35 @@ def test_ensure_builds_transcript_and_segments_artifacts_via_stt() -> None:
     assert active["transcript"].text_value == "Клиент попросил материалы."
     assert active["transcript"].provider == "assemblyai"
     assert active["transcript_segments"].payload_json["segments"][0]["text"] == "Клиент попросил материалы."
+
+
+def test_ensure_blocks_billable_provider_work_when_quota_exhausted() -> None:
+    scope = _scope()
+    interaction = _interaction(scope)
+    interaction.raw_ref = "https://recordings.test/call.mp3"
+    artifacts = _MemoryArtifactRepository()
+    extractor = _CountingExtractor()
+    service = CallProcessingService(
+        _FakeSession([interaction]),
+        artifacts=artifacts,
+        extractor_factory=lambda _department_id, _db: extractor,
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT],
+        provider_call_budget=0,
+    )
+
+    assert response.status == ProcessingRunStatus.BLOCKED
+    assert response.planned["quota_blocked"] == 1
+    assert response.planned["provider_calls_planned"] == 1
+    assert response.planned["provider_calls_made"] == 0
+    assert response.quota["quota_exhausted"] is True
+    assert response.quota["error_class"] == ProcessingErrorClass.QUOTA_INSUFFICIENT.value
+    assert response.quota["admin_action_required"]
+    assert extractor.calls == 0
+    assert artifacts.rows == []
 
 
 def test_ensure_does_not_retry_non_retryable_failed_artifact_without_force() -> None:

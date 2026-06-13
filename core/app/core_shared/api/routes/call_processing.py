@@ -199,6 +199,7 @@ async def ensure_call_processing(
         request.mode,
         requested_by=request.requested_by,
         force_retry_failed=request.force_retry_failed,
+        provider_call_budget=grant.provider_call_budget_per_run,
     )
     return response.model_dump(mode="json")
 

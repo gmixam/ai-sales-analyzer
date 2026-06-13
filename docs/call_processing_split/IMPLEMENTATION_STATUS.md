@@ -155,7 +155,11 @@ Changed:
   - Dependency-aware artifact order is now
     `transcript -> transcript_segments -> llm1_first_pass`.
   - Supports `dry_run` planning without provider calls or artifact writes.
-  - Returns `EnsureResponse` with planned counts and provider call counts.
+  - Returns `EnsureResponse` with planned counts, provider call counts, and
+    quota status.
+  - Enforces optional per-run provider-call budget from admin grant
+    `rate_limits`; quota exhaustion stops further billable provider calls and
+    exposes `quota_insufficient` plus required admin action in the response.
   - Added retry policy helpers and 30-minute stale run detection.
 - `core/app/agents/call_processing/__init__.py`
   - Exported service and retry/stale helpers.
@@ -164,7 +168,8 @@ Changed:
   - Covers idempotent artifact reuse, dry-run behavior, run persistence,
     scope date filtering, legacy transcript backfill, source discovery,
     STT transcript/segments artifact build, LLM1 first-pass artifact build
-    without LLM2, failed-artifact retry policy, and stale detection.
+    without LLM2, quota blocking, failed-artifact retry policy, and stale
+    detection.
 
 Verification:
 
@@ -172,7 +177,7 @@ Verification:
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_client.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py`
   -> `27 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
-  -> `67 passed`
+  -> `73 passed`
 - `git diff --check`
 
 Residual risk:
@@ -204,6 +209,8 @@ Changed:
     `run-status`, `artifacts`, and admin-gated `retry-failed`.
   - `retry-failed --run-id` loads the original run scope/required artifacts and
     starts a new ensure run with `force_retry_failed=True`.
+  - Passes optional provider-call budget from `AccessGrant.rate_limits` to the
+    service for `ensure`, `dry-run`, and `retry-failed`.
 - `core/report_scripts/call_processing_cli.py`
   - Added host wrapper around package CLI.
 - `core/tests/test_call_processing_api.py`
@@ -213,7 +220,8 @@ Changed:
 - `core/tests/test_call_processing_cli.py`
   - Mirrored to `tests/test_call_processing_cli.py`.
   - Covers admin gate, dry-run JSON output, retry-failed admin-only behavior,
-    and retry-failed force replay of the original run scope.
+    retry-failed force replay of the original run scope, and rate-limit budget
+    forwarding.
 
 Verification:
 
@@ -394,7 +402,7 @@ Verification:
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_manual_reporting_runner.py`
   -> `1 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_manual_pilot_boundary.py /app/tests/test_call_processing_manual_reporting_runner.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
-  -> `67 passed`
+  -> `73 passed`
 - Legacy focused reporting checks for contract/quota/source-audio branches:
   `5 passed, 287 deselected`
 - `git diff --check`
@@ -504,8 +512,8 @@ Verification:
   -> `3 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py`
   -> `4 passed`
-- Focused call-processing/analyzer pack after retry-failed recovery pass:
-  `67 passed`
+- Focused call-processing/analyzer pack after quota gate pass:
+  `73 passed`
 - Focused AI routing/settings pack:
   `48 passed`
 - Legacy prepare-artifacts + scheduled/reviewable focused checks:
