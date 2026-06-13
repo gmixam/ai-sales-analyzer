@@ -227,3 +227,19 @@ async def get_artifacts(
         grant=grant,
         artifact_kinds=_parse_artifact_kinds(artifact_kinds),
     )
+
+
+@router.get("/artifacts/{interaction_id}/{artifact_kind}")
+async def get_interaction_artifact(
+    interaction_id: str,
+    artifact_kind: ArtifactKind,
+    grant: AccessGrant = Depends(require_reader),
+    db: Any = Depends(get_session),
+) -> dict[str, Any]:
+    allowed = _allowed_artifact_kinds(grant, [artifact_kind])
+    if artifact_kind not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="artifact kind not allowed")
+    artifact = ArtifactRepository(db).latest_active(interaction_id, artifact_kind)
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="artifact not found")
+    return _artifact_to_dict(artifact)

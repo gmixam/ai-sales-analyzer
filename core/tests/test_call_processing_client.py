@@ -12,12 +12,14 @@ from app.agents.call_processing import (
     CallProcessingArtifactError,
     EnsureMode,
     EnsureResponse,
+    HttpCallProcessingClient,
     LocalCallProcessingClient,
     ProcessingRunStatus,
     ProcessingScope,
     RequiredArtifactKind,
     llm1_first_pass_payload_from_artifact,
 )
+from app.agents.call_processing import client as call_processing_client_module
 
 
 class _FakeArtifactRepository:
@@ -219,3 +221,104 @@ def test_llm1_artifact_adapter_fails_for_invalid_artifact() -> None:
 
     with pytest.raises(CallProcessingArtifactError, match="not ready"):
         llm1_first_pass_payload_from_artifact(failed_artifact)
+
+
+def _grant() -> dict:
+    return {
+        "client_id": "edo-analysis",
+        "client_type": "service",
+        "role": "admin",
+        "allowed_artifact_kinds": ["transcript", "transcript_segments", "llm1_first_pass"],
+        "read_surfaces": ["processed_calls_v1", "transcripts_v1", "llm1_artifacts_v1"],
+        "created_by_admin": "operator",
+    }
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeHttpClient:
+    calls: list[tuple[str, str, dict]] = []
+
+    def __init__(self, *, timeout: int) -> None:
+        self.timeout = timeout
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def post(self, url: str, *, json: dict, headers: dict):
+        self.calls.append(("POST", url, {"json": json, "headers": headers}))
+        return _FakeResponse(
+            200,
+            {
+                "run_id": "run-http",
+                "status": "ready",
+                "scope_hash": "hash-http",
+                "requested_by": json["requested_by"],
+                "planned": {"interactions_total": 1},
+                "quota": {"provider_calls_made": 0},
+            },
+        )
+
+    def get(self, url: str, *, headers: dict, params: dict | None = None):
+        self.calls.append(("GET", url, {"headers": headers, "params": params or {}}))
+        if url.endswith("/llm1_first_pass"):
+            return _FakeResponse(
+                200,
+                {
+                    "artifact_id": str(uuid.uuid4()),
+                    "department_id": str(uuid.uuid4()),
+                    "interaction_id": url.split("/")[-2],
+                    "artifact_kind": "llm1_first_pass",
+                    "artifact_version": "llm1_first_pass_v1",
+                    "status": "ready",
+                    "is_active": True,
+                    "payload": {
+                        "prompt_version": "llm1_v1",
+                        "classification": {"call_type": "sales_primary"},
+                        "summary": {"brief": "Client asked for materials."},
+                        "follow_up": {"next_step": "Send materials."},
+                        "data_quality": {"transcript_quality": "sufficient"},
+                        "analysis_focus": ["Verify concrete next step."],
+                    },
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "account_alias": "primary",
+                },
+            )
+        return _FakeResponse(200, {"artifacts": []})
+
+
+def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
+    _FakeHttpClient.calls = []
+    monkeypatch.setattr(call_processing_client_module.httpx, "Client", _FakeHttpClient)
+    client = HttpCallProcessingClient(
+        base_url="http://call-processing.test",
+        access_grant=_grant(),
+        requested_by="edo-analysis",
+    )
+
+    ensure_response = client.ensure_processed_calls(
+        _scope(),
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+        mode=EnsureMode.DRY_RUN,
+    )
+    llm1_payload = client.get_llm1_first_pass_artifact(uuid.uuid4())
+
+    assert ensure_response.run_id == "run-http"
+    assert llm1_payload is not None
+    assert llm1_payload.provider == "openai"
+    assert _FakeHttpClient.calls[0][0] == "POST"
+    assert _FakeHttpClient.calls[0][1] == "http://call-processing.test/call-processing/ensure"
+    assert _FakeHttpClient.calls[1][0] == "GET"
+    assert _FakeHttpClient.calls[1][1].endswith("/llm1_first_pass")

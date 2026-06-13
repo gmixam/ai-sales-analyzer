@@ -169,6 +169,8 @@ services:
     environment:
       APP_SERVICE: analysis
       CALL_PROCESSING_MODE: external_service
+      CALL_PROCESSING_API_BASE_URL: ${CALL_PROCESSING_API_BASE_URL:-http://asa_call_processing_api:8000}
+      CALL_PROCESSING_ACCESS_GRANT_JSON: ${CALL_PROCESSING_ACCESS_GRANT_JSON:-{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1"],"created_by_admin":"local-compose"}}
     volumes:
       - ./core:/app
       - ./scripts:/app/report_scripts:ro
@@ -221,6 +223,8 @@ services:
     environment:
       APP_SERVICE: analysis
       CALL_PROCESSING_MODE: external_service
+      CALL_PROCESSING_API_BASE_URL: ${CALL_PROCESSING_API_BASE_URL:-http://asa_call_processing_api:8000}
+      CALL_PROCESSING_ACCESS_GRANT_JSON: ${CALL_PROCESSING_ACCESS_GRANT_JSON:-{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1"],"created_by_admin":"local-compose"}}
     volumes:
       - ./core:/app
       - ./scripts:/app/report_scripts:ro
@@ -243,6 +247,8 @@ services:
     environment:
       APP_SERVICE: analysis
       CALL_PROCESSING_MODE: external_service
+      CALL_PROCESSING_API_BASE_URL: ${CALL_PROCESSING_API_BASE_URL:-http://asa_call_processing_api:8000}
+      CALL_PROCESSING_ACCESS_GRANT_JSON: ${CALL_PROCESSING_ACCESS_GRANT_JSON:-{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1"],"created_by_admin":"local-compose"}}
     volumes:
       - ./core:/app
       - ./scripts:/app/report_scripts:ro

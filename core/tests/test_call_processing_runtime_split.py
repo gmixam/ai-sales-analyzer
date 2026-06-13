@@ -46,6 +46,12 @@ def test_analysis_external_service_starts_without_upstream_provider_secrets() ->
     settings = _base_settings(
         app_service="analysis",
         call_processing_mode="external_service",
+        call_processing_api_base_url="http://call-processing.test",
+        call_processing_access_grant_json=(
+            '{"client_id":"edo-analysis","client_type":"service","role":"admin",'
+            '"allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],'
+            '"read_surfaces":["processed_calls_v1"],"created_by_admin":"operator"}'
+        ),
         openai_api_key="",
         assemblyai_api_key="",
         onlinepbx_domain="",
@@ -80,7 +86,12 @@ def test_call_processing_requires_source_and_stt_secrets_but_not_delivery() -> N
 
 def test_analysis_service_rejects_legacy_call_processing_mode() -> None:
     with pytest.raises(ConfigurationError, match="APP_SERVICE=analysis requires"):
-        _base_settings(app_service="analysis", call_processing_mode="legacy")
+        _base_settings(
+            app_service="analysis",
+            call_processing_mode="legacy",
+            call_processing_api_base_url="http://call-processing.test",
+            call_processing_access_grant_json='{"client_id":"edo-analysis","client_type":"service","role":"admin","created_by_admin":"operator"}',
+        )
 
 
 def test_celery_queue_routing_is_split_by_service_identity() -> None:

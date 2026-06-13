@@ -152,6 +152,16 @@
   `git diff --check`. **Residual:** full production cutover, real
   provider-backed split workers, ROP weekly external smoke and scheduled
   reviewable external smoke остаются Task 9/release execution.
+- [x] 2026-06-13 — Закрыт ключевой split-boundary gap по
+  `CallProcessingClient`: добавлен `HttpCallProcessingClient`,
+  single-artifact API endpoint
+  `/call-processing/artifacts/{interaction_id}/llm1_first_pass` и factory
+  `build_call_processing_client()`. В monolith/default mode остается local
+  client, а в `APP_SERVICE=analysis` + `CALL_PROCESSING_MODE=external_service`
+  используется HTTP client с `CALL_PROCESSING_API_BASE_URL` и
+  `CALL_PROCESSING_ACCESS_GRANT_JSON`. **Verification:** client/API/runtime
+  focused tests -> `16 passed`; `py_compile`, split compose config,
+  `git diff --check` OK.
 - [x] 2026-06-13 — Выполнен first pass Task 9 cutover/rollback runbook.
   **Изменение:** добавлен
   `docs/call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md` с pre-cutover

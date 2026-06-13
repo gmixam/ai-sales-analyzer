@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any, Protocol
 
+import httpx
 from pydantic import ValidationError
 
 from app.agents.call_processing.repositories import (
@@ -12,16 +14,21 @@ from app.agents.call_processing.repositories import (
     ArtifactRepository,
 )
 from app.agents.call_processing.schemas import (
+    AccessGrant,
     LLM1_FIRST_PASS_SCHEMA_VERSION,
     ArtifactKind,
     ArtifactStatus,
+    CallProcessingMode,
     EnsureMode,
+    EnsureRequest,
     EnsureResponse,
     LLM1FirstPassPayload,
     ProcessingScope,
     RequiredArtifactKind,
 )
 from app.agents.call_processing.service import CallProcessingService
+from app.core_shared.config.settings import settings
+from app.core_shared.exceptions import ASAError
 
 
 class CallProcessingArtifactError(ValueError):
@@ -167,3 +174,134 @@ class LocalCallProcessingClient:
         if artifact is None:
             return None
         return llm1_first_pass_payload_from_artifact(artifact)
+
+
+def _artifact_row_from_api(payload: dict[str, Any]) -> SimpleNamespace:
+    """Adapt API artifact JSON to the row-like shape used by the local adapter."""
+    return SimpleNamespace(
+        id=payload.get("artifact_id"),
+        department_id=payload.get("department_id"),
+        interaction_id=payload.get("interaction_id"),
+        artifact_kind=payload.get("artifact_kind"),
+        artifact_version=payload.get("artifact_version"),
+        status=payload.get("status"),
+        is_active=payload.get("is_active"),
+        payload_json=payload.get("payload"),
+        text_value=payload.get("text"),
+        provider=payload.get("provider"),
+        model=payload.get("model"),
+        account_alias=payload.get("account_alias"),
+        raw_response_ref=payload.get("raw_response_ref"),
+        error_class=payload.get("error_class"),
+        error_reason=payload.get("error_reason"),
+        retryable=payload.get("retryable"),
+        source_updated_at=payload.get("source_updated_at"),
+        created_at=payload.get("created_at"),
+        updated_at=payload.get("updated_at"),
+    )
+
+
+class HttpCallProcessingClient:
+    """HTTP client implementation for split analysis deployments."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        access_grant: AccessGrant | dict[str, Any] | str,
+        timeout_sec: int = 30,
+        requested_by: str | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        if not self.base_url:
+            raise ASAError("CALL_PROCESSING_API_BASE_URL must not be empty.")
+        if isinstance(access_grant, AccessGrant):
+            self.access_grant = access_grant
+        elif isinstance(access_grant, str):
+            self.access_grant = AccessGrant.model_validate_json(access_grant)
+        else:
+            self.access_grant = AccessGrant.model_validate(access_grant)
+        self.requested_by = requested_by or self.access_grant.client_id
+        self.timeout_sec = timeout_sec
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "X-Call-Processing-Grant": self.access_grant.model_dump_json(),
+        }
+
+    def ensure_processed_calls(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+        mode: EnsureMode | str = EnsureMode.ENSURE,
+    ) -> EnsureResponse:
+        request = EnsureRequest(
+            scope=scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope),
+            required_artifacts=_coerce_required_artifacts(required_artifacts),
+            mode=EnsureMode(mode),
+            requested_by=self.requested_by,
+        )
+        with httpx.Client(timeout=self.timeout_sec) as client:
+            response = client.post(
+                f"{self.base_url}/call-processing/ensure",
+                json=request.model_dump(mode="json"),
+                headers=self._headers(),
+            )
+        if response.status_code >= 400:
+            raise ASAError(f"call-processing ensure failed: status={response.status_code} body={response.text[:500]}")
+        return EnsureResponse.model_validate(response.json())
+
+    def get_processed_artifacts(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> list[Any]:
+        scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
+        kinds = _coerce_required_artifacts(required_artifacts)
+        with httpx.Client(timeout=self.timeout_sec) as client:
+            response = client.get(
+                f"{self.base_url}/call-processing/artifacts",
+                params={
+                    "scope": scope_model.model_dump_json(exclude_none=True),
+                    "artifact_kinds": ",".join(kind.value for kind in kinds),
+                },
+                headers=self._headers(),
+            )
+        if response.status_code >= 400:
+            raise ASAError(f"call-processing artifact read failed: status={response.status_code} body={response.text[:500]}")
+        payload = response.json()
+        return [_artifact_row_from_api(item) for item in payload.get("artifacts", [])]
+
+    def get_llm1_first_pass_artifact(
+        self,
+        interaction_id: uuid.UUID | str,
+    ) -> LLM1FirstPassPayload | None:
+        with httpx.Client(timeout=self.timeout_sec) as client:
+            response = client.get(
+                f"{self.base_url}/call-processing/artifacts/{interaction_id}/llm1_first_pass",
+                headers=self._headers(),
+            )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise ASAError(f"call-processing llm1 artifact read failed: status={response.status_code} body={response.text[:500]}")
+        return llm1_first_pass_payload_from_artifact(_artifact_row_from_api(response.json()))
+
+
+def build_call_processing_client(
+    session: Any,
+    *,
+    requested_by: str = "edo-analysis-reporting",
+) -> CallProcessingClient:
+    """Build the right client implementation for current runtime settings."""
+    if (
+        settings.app_service == "analysis"
+        and settings.call_processing_mode == CallProcessingMode.EXTERNAL_SERVICE.value
+    ):
+        return HttpCallProcessingClient(
+            base_url=settings.call_processing_api_base_url,
+            access_grant=settings.call_processing_access_grant_json,
+            timeout_sec=settings.call_processing_client_timeout_sec,
+            requested_by=requested_by,
+        )
+    return LocalCallProcessingClient(session, requested_by=requested_by)

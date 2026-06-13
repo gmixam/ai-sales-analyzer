@@ -63,9 +63,9 @@ from app.agents.call_processing import (
     CallProcessingClient,
     CallProcessingMode,
     EnsureMode,
-    LocalCallProcessingClient,
     ProcessingScope,
     RequiredArtifactKind,
+    build_call_processing_client,
 )
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
@@ -937,7 +937,7 @@ class CallsManualReportingOrchestrator:
         self.extractor = CallsExtractor(department_id=department_id, db=db)
         self.analyzer = CallsAnalyzer(department_id=department_id, db=db)
         self.delivery = CallsDelivery(department_id=department_id, db=db)
-        self.call_processing_client: CallProcessingClient = LocalCallProcessingClient(
+        self.call_processing_client: CallProcessingClient = build_call_processing_client(
             db,
             requested_by="edo-analysis-reporting",
         )

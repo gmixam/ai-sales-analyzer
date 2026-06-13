@@ -31,7 +31,9 @@ from app.agents.call_processing.schemas import (
 from app.agents.call_processing.client import (
     CallProcessingArtifactError,
     CallProcessingClient,
+    HttpCallProcessingClient,
     LocalCallProcessingClient,
+    build_call_processing_client,
     llm1_first_pass_payload_from_artifact,
 )
 from app.agents.call_processing.service import (
@@ -56,6 +58,7 @@ __all__ = [
     "ArtifactStatus",
     "CallProcessingArtifactError",
     "CallProcessingClient",
+    "HttpCallProcessingClient",
     "CallProcessingMode",
     "EnsureMode",
     "EnsureRequest",
@@ -71,6 +74,7 @@ __all__ = [
     "MAX_PROVIDER_ATTEMPTS",
     "STALE_RUN_AFTER",
     "CallProcessingService",
+    "build_call_processing_client",
     "is_retryable_error",
     "is_stale_run",
     "llm1_first_pass_payload_from_artifact",

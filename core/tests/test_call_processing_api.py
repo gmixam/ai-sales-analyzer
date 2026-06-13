@@ -173,3 +173,56 @@ def test_artifacts_route_allows_reader_and_filters_allowed_kinds(monkeypatch) ->
 
     assert response.status_code == 200
     assert response.json()["artifact_kinds"] == ["transcript", "llm1_first_pass"]
+
+
+def test_single_artifact_route_returns_latest_active_for_reader(monkeypatch) -> None:
+    client = TestClient(app)
+    interaction_id = uuid4()
+
+    class FakeArtifactRepository:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        def latest_active(self, requested_interaction_id: str, artifact_kind: object):
+            assert requested_interaction_id == str(interaction_id)
+            assert str(artifact_kind.value if hasattr(artifact_kind, "value") else artifact_kind) == "llm1_first_pass"
+            return type(
+                "Artifact",
+                (),
+                {
+                    "id": uuid4(),
+                    "department_id": uuid4(),
+                    "interaction_id": interaction_id,
+                    "artifact_kind": "llm1_first_pass",
+                    "artifact_version": "llm1_first_pass_v1",
+                    "status": "ready",
+                    "is_active": True,
+                    "payload_json": {"prompt_version": "llm1_v1"},
+                    "text_value": None,
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "account_alias": "primary",
+                    "raw_response_ref": None,
+                    "error_class": None,
+                    "error_reason": None,
+                    "retryable": None,
+                    "source_updated_at": None,
+                    "created_at": None,
+                    "updated_at": None,
+                },
+            )()
+
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+    monkeypatch.setattr(call_processing_routes, "ArtifactRepository", FakeArtifactRepository)
+    try:
+        response = client.get(
+            f"/call-processing/artifacts/{interaction_id}/llm1_first_pass",
+            headers={"X-Call-Processing-Grant": _grant("reader")},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interaction_id"] == str(interaction_id)
+    assert payload["artifact_kind"] == "llm1_first_pass"

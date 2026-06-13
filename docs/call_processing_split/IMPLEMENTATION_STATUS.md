@@ -20,7 +20,7 @@ explicit operator approval.
 | 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
 | 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
 | 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
-| 5. CallProcessingClient and analysis refactor | `first_pass_client_done` | Added local client abstraction and LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
+| 5. CallProcessingClient and analysis refactor | `first_pass_http_client_done` | Added local and HTTP client implementations plus LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
 | 6. Reporting and orchestrator refactor | `first_pass_manager_daily_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. ROP/manual pilot wiring remains pending. |
 | 7. Runtime split | `first_pass_compose_done` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. |
 | 8. Test matrix and verification pack | `first_pass_done` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
@@ -256,6 +256,12 @@ Changed:
     `get_llm1_first_pass_artifact`.
   - Added `LocalCallProcessingClient` backed by `CallProcessingService`,
     `ArtifactRepository`, and the existing DB session.
+  - Added `HttpCallProcessingClient` for split analysis deployments; it calls
+    `/call-processing/ensure`, `/call-processing/artifacts`, and
+    `/call-processing/artifacts/{interaction_id}/llm1_first_pass`.
+  - Added `build_call_processing_client()` factory: monolith/default uses the
+    local client, while `APP_SERVICE=analysis` +
+    `CALL_PROCESSING_MODE=external_service` uses the HTTP client.
   - Added `llm1_first_pass_payload_from_artifact()` adapter from durable
     `call_core.call_artifacts` rows to `LLM1FirstPassPayload`.
   - Adapter requires `llm1_first_pass_v1`, active ready artifact status, object
@@ -263,11 +269,15 @@ Changed:
   - `ensure_processed_calls()` delegates to the current planner service, which
     still reports zero provider calls made.
 - `core/app/agents/call_processing/__init__.py`
-  - Exported the client protocol, local client, adapter, and artifact error.
+  - Exported the client protocol, local/HTTP clients, factory, adapter, and
+    artifact error.
+- `core/app/core_shared/api/routes/call_processing.py`
+  - Added single-artifact read endpoint for HTTP client LLM1 lookup.
 - `core/tests/test_call_processing_client.py`
   - Mirrored to `tests/test_call_processing_client.py`.
   - Covers ready artifact adaptation, missing artifact as `None`, ensure
-    delegation, scoped artifact reads, and invalid artifact fail-closed behavior.
+    delegation, scoped artifact reads, HTTP client ensure/read calls, and
+    invalid artifact fail-closed behavior.
 
 Verification:
 
@@ -297,7 +307,8 @@ Changed:
 
 - `core/app/agents/calls/reporting.py`
   - `CallsManualReportingOrchestrator` now owns a `CallProcessingClient`
-    instance backed by `LocalCallProcessingClient`.
+    instance built by `build_call_processing_client()`: local in monolith mode,
+    HTTP in split `APP_SERVICE=analysis` mode.
   - In `CALL_PROCESSING_MODE=external_service`,
     `manager_daily/build_missing_and_report` calls
     `ensure_processed_calls()` for `transcript`, `transcript_segments`, and
@@ -359,6 +370,9 @@ Changed:
   - Added `APP_SERVICE=monolith_legacy|call_processing|analysis`.
   - Kept `CALL_PROCESSING_MODE=legacy|external_service` validation.
   - `APP_SERVICE=analysis` requires `CALL_PROCESSING_MODE=external_service`.
+  - `APP_SERVICE=analysis` requires `CALL_PROCESSING_API_BASE_URL` and
+    `CALL_PROCESSING_ACCESS_GRANT_JSON`, so split analysis uses the
+    call-processing API instead of a local DB-backed client.
   - `APP_SERVICE=analysis` can start without OnlinePBX/STT provider secrets.
   - `APP_SERVICE=call_processing` requires OnlinePBX and active STT provider
     secrets, but does not require SMTP/Telegram/LLM2/LLM3 delivery secrets.
