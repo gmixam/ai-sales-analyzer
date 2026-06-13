@@ -85,19 +85,35 @@ The final switch to split mode must be explicit.
 
 1. Stop or pause scheduled reporting if it could run during migration.
 2. Apply additive DB migration in the approved deployment process.
-3. Start call-processing service first:
+3. Optional SQL read-only access for analysis/external readers:
+
+```sql
+-- Run only if SQL read access is intentionally enabled.
+-- The migration grants read-only call_public access automatically when this
+-- role exists before/at migration time; otherwise run these grants manually.
+CREATE ROLE asa_analysis_reader NOLOGIN;
+GRANT USAGE ON SCHEMA call_public TO asa_analysis_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA call_public TO asa_analysis_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA call_public
+  GRANT SELECT ON TABLES TO asa_analysis_reader;
+```
+
+Do not grant analysis/external readers write access or direct `call_core`
+access. The default service path should still use the call-processing API.
+
+4. Start call-processing service first:
 
 ```bash
 docker compose --profile split up -d call_processing_api call_processing_worker
 ```
 
-4. Run call-processing health:
+5. Run call-processing health:
 
 ```bash
 docker compose exec -T call_processing_api curl -f http://localhost:8000/call-processing/health
 ```
 
-5. Run dry-run for the pilot scope:
+6. Run dry-run for the pilot scope:
 
 ```bash
 export CALL_PROCESSING_GRANT_JSON='{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1","processing_runs_v1"],"created_by_admin":"operator","active":true}'
@@ -110,7 +126,7 @@ docker compose exec -T call_processing_api python -m app.agents.call_processing.
   --required-artifacts transcript,transcript_segments,llm1_first_pass
 ```
 
-6. Run ensure for the same scope only after dry-run looks sane:
+7. Run ensure for the same scope only after dry-run looks sane:
 
 ```bash
 docker compose exec -T call_processing_api python -m app.agents.call_processing.cli \
@@ -120,13 +136,13 @@ docker compose exec -T call_processing_api python -m app.agents.call_processing.
   --required-artifacts transcript,transcript_segments,llm1_first_pass
 ```
 
-7. Start analysis service in external mode:
+8. Start analysis service in external mode:
 
 ```bash
 docker compose --profile split up -d analysis_api analysis_worker analysis_beat
 ```
 
-8. Run manager_daily preview smoke:
+9. Run manager_daily preview smoke:
 
 ```bash
 docker compose exec -T analysis_api env CALL_PROCESSING_MODE=external_service \
@@ -139,14 +155,14 @@ docker compose exec -T analysis_api env CALL_PROCESSING_MODE=external_service \
   --delivery-mode preview_only
 ```
 
-9. Review `observability`:
+10. Review `observability`:
    - source completeness;
    - `call_processing_mode=external_service`;
    - no reporting-local STT/LLM1 execution;
    - no unexpected `llm1_first_pass_missing`;
    - no unexpected `source_artifacts_updated_after_analysis`.
 
-10. Only after preview approval, resume scheduled/report delivery.
+11. Only after preview approval, resume scheduled/report delivery.
 
 ## Rollback Steps
 

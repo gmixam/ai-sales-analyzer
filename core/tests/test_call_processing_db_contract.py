@@ -112,3 +112,24 @@ def test_migration_creates_required_schemas_tables_views_and_backfill() -> None:
     assert "'backfilled_from', 'public.interactions.metadata.segments'" in migration_sql
     assert "WHERE artifact_kind = 'llm1_first_pass'" in migration_sql
     assert "'llm1_first_pass'," not in migration_sql
+
+
+def test_migration_defines_optional_call_public_read_only_grant_pattern() -> None:
+    migration_sql = MIGRATION_PATH.read_text()
+
+    assert (
+        migration_sql.index("_create_call_public_views()")
+        < migration_sql.index("_grant_call_public_read_only_if_role_exists()")
+    )
+    assert migration_sql.index("CREATE OR REPLACE VIEW call_public.processing_runs_v1") < migration_sql.index(
+        "GRANT USAGE ON SCHEMA call_public TO asa_analysis_reader"
+    )
+    assert "pg_roles" in migration_sql
+    assert "rolname = 'asa_analysis_reader'" in migration_sql
+    assert "GRANT USAGE ON SCHEMA call_public TO asa_analysis_reader" in migration_sql
+    assert "GRANT SELECT ON ALL TABLES IN SCHEMA call_public TO asa_analysis_reader" in migration_sql
+    assert "GRANT SELECT ON TABLES TO asa_analysis_reader" in migration_sql
+    assert "GRANT INSERT" not in migration_sql
+    assert "GRANT UPDATE" not in migration_sql
+    assert "GRANT DELETE" not in migration_sql
+    assert "GRANT SELECT ON ALL TABLES IN SCHEMA call_core" not in migration_sql

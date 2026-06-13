@@ -16,15 +16,15 @@ explicit operator approval.
 | Task | Status | Notes |
 | --- | --- | --- |
 | 0. Repo baseline and contract skeleton | `done` | Branch created; task pack copied into repo; contract skeleton added in `app.agents.call_processing`; focused contract tests pass. |
-| 1. DB schemas, models, migrations, compatibility | `first_pass_done` | Added additive `call_core` models/tables, schema creation, transcript/transcript_segments backfill, and `call_public` compatibility views. |
-| 2. Call-processing domain service | `provider_backed_first_pass_done` | Added repositories, ensure, source discovery, legacy backfill, STT artifact build, LLM1 first-pass artifact build, retry/stale helpers. |
-| 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
-| 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
-| 5. CallProcessingClient and analysis refactor | `first_pass_http_client_done` | Added local and HTTP client implementations plus LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
-| 6. Reporting and orchestrator refactor | `first_pass_manager_daily_rop_manual_boundary_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. `rop_weekly` is explicitly persisted-only in both modes. Manual live pilot is legacy-only in external-service split. |
-| 7. Runtime split | `first_pass_compose_done` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. |
-| 8. Test matrix and verification pack | `first_pass_done` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
-| 9. Cutover, rollback, runbook | `first_pass_runbook_done` | Added cutover/rollback runbook and next-agent handoff. Production cutover not executed. |
+| 1. DB schemas, models, migrations, compatibility | `implemented_local` | Added additive `call_core` models/tables, schema creation, transcript/transcript_segments backfill, `call_public` compatibility views, and optional read-only grant pattern for `asa_analysis_reader`. Live migration smoke remains release-time. |
+| 2. Call-processing domain service | `implemented_local_provider_backed` | Added repositories, ensure, source discovery, legacy backfill, STT artifact build, LLM1 first-pass artifact build, retry/stale helpers. Live provider smoke remains release-time. |
+| 3. API, CLI, auth, read grants | `implemented_local` | Added header-grant API routes, package CLI, read-only `call_public` grant pattern, and admin/reader gates. Dry-run, artifacts, and retry-failed are covered by focused tests. |
+| 4. Extract LLM-1 from analyzer runtime | `implemented_local` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected/fetched `llm1_first_pass_v1` before LLM2. |
+| 5. CallProcessingClient and analysis refactor | `implemented_local` | Added local/HTTP clients, LLM-1 artifact adapter, async boundary, and reporting integration through Task 6. |
+| 6. Reporting and orchestrator refactor | `implemented_local` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. `rop_weekly` is explicitly persisted-only in both modes. Manual live pilot is legacy-only in external-service split. |
+| 7. Runtime split | `implemented_local_compose` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. Live split deployment remains release-time. |
+| 8. Test matrix and verification pack | `implemented_local` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
+| 9. Cutover, rollback, runbook | `runbook_ready_cutover_not_executed` | Added cutover/rollback runbook and next-agent handoff. Production cutover not executed. |
 
 ## Task 0 Contract Skeleton
 
@@ -89,12 +89,18 @@ Changed:
     `call_public.transcripts_v1`,
     `call_public.llm1_artifacts_v1`,
     `call_public.processing_runs_v1`.
+  - If operator-created role `asa_analysis_reader` exists, grants only
+    `USAGE` on `call_public` and `SELECT` on `call_public` views/default
+    tables. The migration does not create production roles and does not grant
+    write access or direct `call_core` reads.
 - `core/tests/test_call_processing_db_contract.py`
   - Mirrored to `tests/test_call_processing_db_contract.py`.
   - Validates schema-qualified model metadata.
   - Validates partial unique active artifact index SQL shape.
   - Validates migration SQL/view/backfill contract without requiring a
     production DB.
+  - Validates the optional `call_public` read-only grant pattern and guards
+    against write grants.
 
 Rollback note:
 
@@ -260,14 +266,12 @@ Verification:
 
 Residual risk:
 
-- Task 5 still needs to resolve/persist/fetch the artifact from the
-  call-processing service; this first pass only supports the injected artifact
-  path and fail-closed analyzer behavior.
+- This analyzer pass only introduced the fail-closed external-artifact input.
+  The later Task 5/6 passes now fetch and inject artifacts through
+  `CallProcessingClient`; live external-service smoke with real artifacts
+  remains release-time evidence.
 
-## Task 5 CallProcessingClient First Pass
-
-First pass added the analysis-facing client boundary without changing
-reporting/orchestrator call sites yet.
+## Task 5 CallProcessingClient Implementation
 
 Changed:
 
@@ -318,12 +322,11 @@ Verification note:
 
 Residual risk:
 
-- Reporting/orchestrator are intentionally untouched in this first pass per
-  current write scope. Task 5 still needs the integration pass that builds
-  report scopes, calls the client from analysis/reporting flows, persists
-  partial/missing source status, and marks late artifacts.
+- The local and HTTP client boundaries are covered with fake/local tests. Full
+  external-service smoke through separate running services with real artifacts
+  remains release-time evidence.
 
-## Task 6 Reporting/Orchestrator First Pass
+## Task 6 Reporting/Orchestrator Implementation
 
 First pass wired `manager_daily` reporting to the call-processing boundary while
 preserving the legacy pilot path.

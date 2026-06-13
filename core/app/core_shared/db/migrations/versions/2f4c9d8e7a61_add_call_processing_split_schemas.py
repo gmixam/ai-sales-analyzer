@@ -282,6 +282,7 @@ def upgrade() -> None:
     )
 
     _create_call_public_views()
+    _grant_call_public_read_only_if_role_exists()
 
 
 def downgrade() -> None:
@@ -430,5 +431,21 @@ def _create_call_public_views() -> None:
             created_at,
             updated_at
         FROM call_core.call_processing_runs;
+        """
+    )
+
+
+def _grant_call_public_read_only_if_role_exists() -> None:
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'asa_analysis_reader') THEN
+                GRANT USAGE ON SCHEMA call_public TO asa_analysis_reader;
+                GRANT SELECT ON ALL TABLES IN SCHEMA call_public TO asa_analysis_reader;
+                ALTER DEFAULT PRIVILEGES IN SCHEMA call_public
+                    GRANT SELECT ON TABLES TO asa_analysis_reader;
+            END IF;
+        END $$;
         """
     )

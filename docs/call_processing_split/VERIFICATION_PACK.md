@@ -126,7 +126,8 @@ Latest checks run during implementation:
 | `test_call_processing_manual_pilot_boundary.py` | `1 passed` |
 | `test_call_processing_manual_reporting_runner.py` | `1 passed` |
 | `test_call_processing_runtime_split.py` | `4 passed` |
-| focused call-processing/analyzer pack after retry-failed recovery pass | `67 passed` |
+| focused call-processing/analyzer pack after read-only grant-pattern pass | `68 passed` |
+| DB contract, including optional `call_public` read-only grants | `11 passed` |
 | focused AI routing/settings pack | `48 passed` |
 | legacy prepare-artifacts + scheduled/reviewable focused checks | `28 passed, 217 deselected` |
 | `docker compose config` | passed |
@@ -136,6 +137,9 @@ Latest checks run during implementation:
 Known non-green / not-yet-final items:
 
 - Production cutover was not executed.
+- Optional SQL read-only access is implemented as a grant pattern for
+  operator-created role `asa_analysis_reader`; production role creation/grant
+  application was not executed.
 - Provider-backed OnlinePBX/STT/LLM1 first pass is implemented in the local
   call-processing service and covered with fake providers; live split-worker
   smoke and production scheduling remain.
