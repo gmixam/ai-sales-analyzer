@@ -2,7 +2,7 @@
 
 Date: 2026-06-13  
 Branch: `feat/call-processing-analysis-split`  
-Last committed baseline at creation: `b4382f6`
+Last verified implementation commit: `80ed71e`
 
 ## Purpose
 
@@ -118,7 +118,7 @@ Latest checks run during implementation:
 | --- | --- |
 | `test_call_processing_reporting_integration.py` | `3 passed` |
 | `test_call_processing_runtime_split.py` | `4 passed` |
-| focused call-processing/analyzer pack before late marker | `51 passed` |
+| focused call-processing/analyzer pack after HTTP boundary | `54 passed` |
 | focused AI routing/settings pack | `7 passed, 41 deselected` |
 | legacy prepare-artifacts focused checks | `5 passed, 240 deselected` |
 | `docker compose config` | passed |
