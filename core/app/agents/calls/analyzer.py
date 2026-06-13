@@ -17,6 +17,7 @@ import structlog
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
+from app.agents.call_processing import ArtifactStatus, CallProcessingMode, LLM1FirstPassPayload
 from app.core_shared.ai_routing import AIProviderRouter
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Interaction
@@ -609,6 +610,16 @@ class CallsAnalyzer:
         return normalized if normalized in {"full", "compact"} else "compact"
 
     @staticmethod
+    def _call_processing_external_service_mode_enabled() -> bool:
+        """Return whether analysis must consume persisted call-processing artifacts."""
+        mode = (
+            os.getenv("CALL_PROCESSING_MODE")
+            or getattr(settings, "call_processing_mode", "")
+            or CallProcessingMode.LEGACY.value
+        )
+        return str(mode).strip().lower() == CallProcessingMode.EXTERNAL_SERVICE.value
+
+    @staticmethod
     def _llm2_output_max_tokens() -> int:
         """Return the bounded LLM-2 response token limit."""
         raw_value = os.getenv("AI_LLM2_OUTPUT_MAX_TOKENS", "").strip()
@@ -932,12 +943,20 @@ class CallsAnalyzer:
         self,
         interaction: Interaction,
         instruction_version: str = APPROVED_INSTRUCTION_VERSION,
+        llm1_first_pass_artifact: LLM1FirstPassPayload | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run the approved MVP-1 LLM analysis and return contract JSON."""
-        llm1_first_pass = self._request_llm1_first_pass(
-            interaction=interaction,
-            instruction_version=instruction_version,
-        )
+        if self._call_processing_external_service_mode_enabled():
+            llm1_first_pass = self._load_external_llm1_first_pass_artifact(
+                interaction=interaction,
+                instruction_version=instruction_version,
+                llm1_first_pass_artifact=llm1_first_pass_artifact,
+            )
+        else:
+            llm1_first_pass = self._request_llm1_first_pass(
+                interaction=interaction,
+                instruction_version=instruction_version,
+            )
         if self._llm2_layered_analysis_enabled():
             return self._analyze_call_with_layered_llm2(
                 interaction=interaction,
@@ -2982,6 +3001,58 @@ class CallsAnalyzer:
             "analyzer.llm1_done",
             interaction_id=str(interaction.id),
             instruction_version=instruction_version,
+            focus_items=len(normalized.get("analysis_focus") or []),
+        )
+        return normalized
+
+    def _load_external_llm1_first_pass_artifact(
+        self,
+        *,
+        interaction: Interaction,
+        instruction_version: str,
+        llm1_first_pass_artifact: LLM1FirstPassPayload | dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Validate a persisted LLM-1 artifact and map it to the LLM-2 context shape."""
+        if llm1_first_pass_artifact is None:
+            raise AnalysisError(
+                "CALL_PROCESSING_MODE=external_service requires llm1_first_pass_v1 artifact "
+                "before LLM-2 (partial-missing: llm1_first_pass_v1).",
+                interaction_id=str(interaction.id),
+            )
+        try:
+            if isinstance(llm1_first_pass_artifact, LLM1FirstPassPayload):
+                payload = llm1_first_pass_artifact
+            else:
+                payload = LLM1FirstPassPayload.model_validate(llm1_first_pass_artifact)
+        except Exception as exc:
+            raise AnalysisError(
+                "Invalid llm1_first_pass_v1 artifact for external call processing mode: "
+                f"{exc}",
+                interaction_id=str(interaction.id),
+                original=exc,
+            ) from exc
+
+        if ArtifactStatus(payload.status) != ArtifactStatus.READY:
+            error_message = payload.error.message or "artifact is not ready"
+            raise AnalysisError(
+                "CALL_PROCESSING_MODE=external_service requires ready llm1_first_pass_v1 "
+                f"artifact before LLM-2 (partial-missing: status={payload.status}, "
+                f"error={error_message}).",
+                interaction_id=str(interaction.id),
+            )
+
+        normalized = self._load_and_normalize_llm1_first_pass(
+            content=payload.model_dump_json(by_alias=True),
+            interaction=interaction,
+            instruction_version=instruction_version,
+        )
+        self.logger.info(
+            "analyzer.llm1_external_artifact_loaded",
+            interaction_id=str(interaction.id),
+            instruction_version=instruction_version,
+            prompt_version=payload.prompt_version,
+            provider=payload.provider,
+            model=payload.model,
             focus_items=len(normalized.get("analysis_focus") or []),
         )
         return normalized

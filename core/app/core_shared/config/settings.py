@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     ai_cost_manager_day_budget_usdt: float = Field(default=0.0, ge=0)
     ai_cost_warning_threshold_ratio: float = Field(default=0.8, ge=0)
     ai_cost_over_budget_threshold_ratio: float = Field(default=1.0, ge=0)
+    call_processing_mode: str = Field(default="legacy")
 
     # OnlinePBX
     onlinepbx_domain: str
@@ -174,6 +175,19 @@ class Settings(BaseSettings):
     def normalize_ai_llm2_analysis_mode(cls, value: str) -> str:
         """Normalize the LLM-2 analysis orchestration mode."""
         return value.strip().lower()
+
+    @field_validator("call_processing_mode")
+    @classmethod
+    def validate_call_processing_mode(cls, value: str) -> str:
+        """Normalize and validate analysis-side call-processing ownership mode."""
+        normalized = value.strip().lower()
+        allowed = {"legacy", "external_service"}
+        if normalized not in allowed:
+            allowed_values = ", ".join(sorted(allowed))
+            raise ConfigurationError(
+                f"Invalid CALL_PROCESSING_MODE value '{value}'. Expected one of: {allowed_values}."
+            )
+        return normalized
 
     @field_validator(
         "manual_pilot_extensions",

@@ -68,6 +68,19 @@
   -> `8 passed`. **Residual:** header JSON grant - временный contract/test
   mechanism; persistent service-account auth и worker-backed retry остаются для
   следующих task cards.
+- [x] 2026-06-13 — Выполнен first pass Task 4: LLM1 выведен из обязательного
+  analyzer runtime в `external_service` режиме. **Изменение:** добавлен setting
+  `CALL_PROCESSING_MODE=legacy|external_service`; `legacy` сохраняет прежнее
+  поведение и вызывает `_request_llm1_first_pass`, а `external_service`
+  требует переданный `llm1_first_pass_v1` artifact, валидирует его через
+  `LLM1FirstPassPayload`, мапит в текущий внутренний LLM1 dict для LLM2 и
+  fail-closed падает до LLM2 при missing/invalid/non-ready artifact.
+  **Safety:** LLM2 business rules/prompts не менялись; reporting/client wiring
+  еще не включались. **Verification:** `py_compile`, `git diff --check`,
+  контейнерный `/app/tests/test_call_processing_llm1_external_mode.py` ->
+  `3 passed`; legacy regression `/app/tests/test_llm2_layered_runtime.py` ->
+  `11 passed`. **Residual:** Task 5 должен доставить artifact из
+  `CallProcessingClient`; пока реализован injected artifact path.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

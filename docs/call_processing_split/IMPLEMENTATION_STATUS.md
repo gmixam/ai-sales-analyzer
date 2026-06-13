@@ -19,7 +19,7 @@ explicit operator approval.
 | 1. DB schemas, models, migrations, compatibility | `first_pass_done` | Added additive `call_core` models/tables, schema creation, transcript/transcript_segments backfill, and `call_public` compatibility views. |
 | 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
 | 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
-| 4. Extract LLM-1 from analyzer runtime | `pending` | Depends on Task 2. |
+| 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
 | 5. CallProcessingClient and analysis refactor | `pending` | Depends on Tasks 3-4. |
 | 6. Reporting and orchestrator refactor | `pending` | Depends on Task 5. |
 | 7. Runtime split | `pending` | Depends on Tasks 2-5. |
@@ -203,3 +203,42 @@ Residual risk:
   production auth. Service-account secret validation and persistent grants
   remain for runtime/security hardening.
 - `retry-failed` is CLI/API-reserved but not worker-backed yet.
+
+## Task 4 Extract LLM-1 From Analyzer Runtime
+
+First pass added the analysis-side ownership switch without changing LLM-2
+business logic.
+
+Changed:
+
+- `core/app/core_shared/config/settings.py`
+  - Added `CALL_PROCESSING_MODE=legacy|external_service`, defaulting to
+    `legacy`.
+- `core/app/agents/calls/analyzer.py`
+  - Added optional `analyze_call(..., llm1_first_pass_artifact=None)` input for
+    Task 5 client/resolver wiring.
+  - In legacy mode, `analyze_call()` still calls `_request_llm1_first_pass()`.
+  - In `external_service` mode, `analyze_call()` validates the provided
+    `LLM1FirstPassPayload` / dict artifact and maps it back to the existing
+    internal LLM-1 dict shape before LLM-2.
+  - Missing, invalid, or non-ready artifacts fail with `AnalysisError` before
+    LLM-2 and include a `partial-missing` style reason.
+- `core/tests/test_call_processing_llm1_external_mode.py`
+  - Mirrored to `tests/test_call_processing_llm1_external_mode.py`.
+  - Covers legacy LLM-1 invocation, external artifact consumption without
+    LLM-1 runtime calls, and missing artifact fail-closed behavior before LLM-2.
+
+Verification:
+
+- `python3 -m py_compile core/app/agents/calls/analyzer.py core/app/core_shared/config/settings.py core/tests/test_call_processing_llm1_external_mode.py tests/test_call_processing_llm1_external_mode.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_llm1_external_mode.py`
+  -> `3 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_llm2_layered_runtime.py`
+  -> `11 passed`
+- `git diff --check`
+
+Residual risk:
+
+- Task 5 still needs to resolve/persist/fetch the artifact from the
+  call-processing service; this first pass only supports the injected artifact
+  path and fail-closed analyzer behavior.
