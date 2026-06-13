@@ -17,7 +17,7 @@ explicit operator approval.
 | --- | --- | --- |
 | 0. Repo baseline and contract skeleton | `done` | Branch created; task pack copied into repo; contract skeleton added in `app.agents.call_processing`; focused contract tests pass. |
 | 1. DB schemas, models, migrations, compatibility | `first_pass_done` | Added additive `call_core` models/tables, schema creation, transcript/transcript_segments backfill, and `call_public` compatibility views. |
-| 2. Call-processing domain service | `pending` | Depends on Task 1. |
+| 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
 | 3. API, CLI, auth, read grants | `pending` | Depends on Tasks 1-2. |
 | 4. Extract LLM-1 from analyzer runtime | `pending` | Depends on Task 2. |
 | 5. CallProcessingClient and analysis refactor | `pending` | Depends on Tasks 3-4. |
@@ -113,3 +113,47 @@ Residual risk:
 
 - Migration was not applied to a live database in this pass. Live up/down smoke
   remains part of Task 8/cutover verification.
+
+## Task 2 Call-processing Domain Service
+
+First pass added the domain-service shell without provider calls or current
+analyzer/intake rewrites.
+
+Changed:
+
+- `core/app/agents/call_processing/repositories.py`
+  - Added `ArtifactRepository` for active artifact read/write/latest lookup.
+  - Added `ProcessingRunRepository` for durable run create/update/status.
+  - Centralized first artifact version names.
+- `core/app/agents/call_processing/service.py`
+  - Added `CallProcessingService.ensure(scope, required_artifacts, mode)`.
+  - Creates a durable run for every ensure/dry-run request.
+  - Reuses existing active ready artifacts.
+  - Backfills transcript artifacts from `Interaction.text`.
+  - Backfills transcript segment artifacts from
+    `Interaction.metadata_.segments`.
+  - Supports `dry_run` planning without provider calls or artifact writes.
+  - Returns `EnsureResponse` with planned counts and zero provider calls made.
+  - Added retry policy helpers and 30-minute stale run detection.
+- `core/app/agents/call_processing/__init__.py`
+  - Exported service and retry/stale helpers.
+- `core/tests/test_call_processing_service.py`
+  - Mirrored to `tests/test_call_processing_service.py`.
+  - Covers idempotent artifact reuse, dry-run behavior, run persistence,
+    scope date filtering, legacy transcript backfill, retry policy, and stale
+    detection.
+
+Verification:
+
+- `python3 -m py_compile core/app/agents/call_processing/__init__.py core/app/agents/call_processing/schemas.py core/app/agents/call_processing/repositories.py core/app/agents/call_processing/service.py core/tests/test_call_processing_service.py tests/test_call_processing_service.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_service.py`
+  -> `8 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py`
+  -> `18 passed`
+- `git diff --check`
+
+Residual risk:
+
+- This first pass does not discover missing calls from OnlinePBX, perform STT,
+  perform LLM-1, or update analyzer/reporting call sites. Those are intentionally
+  deferred to later task cards.

@@ -16,6 +16,7 @@ from app.agents.call_processing.schemas import (
     ArtifactKind,
     ArtifactStatus,
     CallProcessingMode,
+    EnsureMode,
     EnsureRequest,
     EnsureResponse,
     LLM1FirstPassPayload,
@@ -26,6 +27,14 @@ from app.agents.call_processing.schemas import (
     ProcessingScope,
     RequiredArtifactKind,
     stable_scope_hash,
+)
+from app.agents.call_processing.service import (
+    MAX_PROVIDER_ATTEMPTS,
+    STALE_RUN_AFTER,
+    CallProcessingService,
+    is_retryable_error,
+    is_stale_run,
+    should_retry_error,
 )
 
 __all__ = [
@@ -40,6 +49,7 @@ __all__ = [
     "ArtifactKind",
     "ArtifactStatus",
     "CallProcessingMode",
+    "EnsureMode",
     "EnsureRequest",
     "EnsureResponse",
     "LLM1FirstPassPayload",
@@ -49,5 +59,11 @@ __all__ = [
     "ProcessingRunStatus",
     "ProcessingScope",
     "RequiredArtifactKind",
+    "MAX_PROVIDER_ATTEMPTS",
+    "STALE_RUN_AFTER",
+    "CallProcessingService",
+    "is_retryable_error",
+    "is_stale_run",
+    "should_retry_error",
     "stable_scope_hash",
 ]

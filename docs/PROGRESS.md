@@ -38,6 +38,22 @@
   /app/tests/test_call_processing_db_contract.py` -> `10 passed`. **Residual:**
   live DB migration up/down smoke не выполнялся в этом pass; это остается
   частью Task 8/cutover verification.
+- [x] 2026-06-13 — Выполнен first pass Task 2 для call-processing domain
+  service. **Изменение:** добавлены `ArtifactRepository`,
+  `ProcessingRunRepository` и `CallProcessingService.ensure(...)` в
+  `app.agents.call_processing`; ensure создает durable run, планирует
+  required artifacts, переиспользует active ready artifacts, backfill-ит legacy
+  transcript и transcript_segments из `Interaction`, поддерживает dry-run без
+  artifact writes/provider calls, фильтрует scope по report date/extension/
+  manager_ids и возвращает `EnsureResponse` с counts. **Recovery helpers:**
+  добавлены retryable/non-retryable helper functions, `MAX_PROVIDER_ATTEMPTS=3`
+  и 30-minute stale-run detection. **Safety:** OnlinePBX/STT/LLM1 provider
+  calls, analyzer/reporting entrypoints и runtime cutover не трогались.
+  **Verification:** `py_compile`, `git diff --check`, контейнерный
+  `/app/tests/test_call_processing_contracts.py
+  /app/tests/test_call_processing_db_contract.py
+  /app/tests/test_call_processing_service.py` -> `18 passed`. **Residual:**
+  real source discovery/STT/LLM1 wiring остается для Task 4-6.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки
