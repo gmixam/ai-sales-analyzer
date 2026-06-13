@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,7 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy.orm import Session
 
+from app.agents.call_processing.schemas import CallProcessingMode
 from app.agents.calls.analysis_purpose import (
     ANALYSIS_PURPOSE_PRODUCTION,
     is_controlled_analysis,
@@ -164,6 +166,12 @@ class CallsManualPilotOrchestrator:
         send_notification: bool = True,
     ) -> dict[str, Any]:
         """Execute a manual live run for a narrow, explicit pilot target."""
+        if self._call_processing_external_service_mode_enabled():
+            raise ASAError(
+                "Manual live pilot run owns OnlinePBX/STT/LLM1 and is available only in "
+                "CALL_PROCESSING_MODE=legacy. In external_service mode use call-processing "
+                "ensure for upstream artifacts and manual_reporting_runner for report delivery."
+            )
         if not settings.manual_pilot_enabled:
             raise ASAError("Manual pilot mode is disabled. Set MANUAL_PILOT_ENABLED=true.")
 
@@ -218,6 +226,15 @@ class CallsManualPilotOrchestrator:
         }
         self.logger.info("manual_live.done", processed=len(results))
         return response
+
+    @staticmethod
+    def _call_processing_external_service_mode_enabled() -> bool:
+        raw = (
+            os.environ.get("CALL_PROCESSING_MODE")
+            or getattr(settings, "call_processing_mode", "")
+            or CallProcessingMode.LEGACY.value
+        )
+        return str(raw).strip().lower() == CallProcessingMode.EXTERNAL_SERVICE.value
 
     async def _run_single_interaction(
         self,

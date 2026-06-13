@@ -149,9 +149,21 @@
   **Verification:** `python3 -m py_compile
   core/tests/test_call_processing_reporting_integration.py`; контейнерный
   `/app/tests/test_call_processing_reporting_integration.py` -> `5 passed`;
-  focused split pack -> `61 passed`. **Residual:** manual pilot orchestration,
-  manual rerun marker clearing and scheduled full-flow smoke remain before
-  cutover.
+  focused split pack -> `61 passed`. **Residual at the time:** manual live
+  pilot boundary, manual rerun marker clearing and scheduled full-flow smoke
+  remained before cutover; manual live pilot boundary was addressed by the next
+  2026-06-13 pass.
+- [x] 2026-06-13 — Закрыта split-граница для manual live pilot. **Изменение:**
+  `CallsManualPilotOrchestrator.run_live()` теперь fail-closed в
+  `CALL_PROCESSING_MODE=external_service`, потому что этот старый путь владеет
+  OnlinePBX/STT/LLM1. В split mode оператор должен использовать
+  call-processing `ensure` для upstream artifacts и `manual_reporting_runner`
+  для отчета/доставки; persisted delivery replay не блокируется. **Verification:**
+  `python3 -m py_compile core/app/agents/calls/orchestrator.py
+  core/tests/test_call_processing_manual_pilot_boundary.py`; контейнерный
+  `/app/tests/test_call_processing_manual_pilot_boundary.py` -> `1 passed`;
+  focused split pack -> `62 passed`. **Residual:** manual rerun marker clearing
+  and scheduled full-flow smoke remain before cutover.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`
