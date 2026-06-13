@@ -24,7 +24,7 @@ explicit operator approval.
 | 6. Reporting and orchestrator refactor | `first_pass_manager_daily_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. ROP/manual pilot wiring remains pending. |
 | 7. Runtime split | `first_pass_compose_done` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. |
 | 8. Test matrix and verification pack | `first_pass_done` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
-| 9. Cutover, rollback, runbook | `pending` | Depends on Tasks 1-8. |
+| 9. Cutover, rollback, runbook | `first_pass_runbook_done` | Added cutover/rollback runbook and next-agent handoff. Production cutover not executed. |
 
 ## Task 0 Contract Skeleton
 
@@ -446,3 +446,28 @@ Residual risk:
 - This is a local verification pack. Production cutover, real provider-backed
   split workers, full ROP weekly external smoke, and scheduled reviewable
   external smoke remain for Task 9/release execution.
+
+## Task 9 Cutover/Rollback Runbook First Pass
+
+First pass added:
+
+- `docs/call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md`
+  - current release state;
+  - pre-cutover backup/config/test checklist;
+  - cutover sequence;
+  - rollback sequence;
+  - known failure modes and operator actions;
+  - admin rerun rule for `source_artifacts_updated_after_analysis`;
+  - next-agent handoff route.
+
+Important status:
+
+- Production cutover was not executed.
+- Destructive DB actions were not executed.
+- The runbook preserves rollback through `APP_SERVICE=monolith_legacy` and
+  `CALL_PROCESSING_MODE=legacy`.
+
+Residual risk:
+
+- Real provider-backed split workers and full external-service live smoke are
+  still required before production cutover can be called complete.

@@ -152,6 +152,17 @@
   `git diff --check`. **Residual:** full production cutover, real
   provider-backed split workers, ROP weekly external smoke and scheduled
   reviewable external smoke остаются Task 9/release execution.
+- [x] 2026-06-13 — Выполнен first pass Task 9 cutover/rollback runbook.
+  **Изменение:** добавлен
+  `docs/call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md` с pre-cutover
+  checklist, DB backup/export командой, cutover steps, rollback steps, known
+  failure modes, admin rerun rule для
+  `source_artifacts_updated_after_analysis` и next-agent handoff route.
+  **Safety:** production cutover не выполнялся, destructive DB actions не
+  выполнялись; rollback закреплен через `APP_SERVICE=monolith_legacy` и
+  `CALL_PROCESSING_MODE=legacy`. **Residual:** real provider-backed split
+  workers and full external-service live smoke still required before production
+  cutover can be called complete.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки
