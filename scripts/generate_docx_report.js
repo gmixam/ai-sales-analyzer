@@ -67,26 +67,66 @@ function safeNumber(value, fallback) {
 
 function buildUnclassifiedNote(byBucket) {
   const entries = byBucket || {};
-  const preferred = [
-    "Без транскрипта",
-    "Без анализа",
-    "Не подходит для разбора",
-    "Ошибка анализа",
-    "Нет итога",
-    "Нет классификации",
-    "Без разбора",
-  ];
+  const labelMap = {
+    "Без транскрипта": "без транскрипта",
+    "Без анализа": "без анализа",
+    "Не подходит для разбора": "не подходит",
+    "Ошибка анализа": "ошибка анализа",
+    "Нет итога": "нет итога",
+    "Нет классификации": "нет классификации",
+    "Без разбора": "без разбора",
+  };
+  const preferred = Object.keys(labelMap);
   const parts = [];
   for (const label of preferred) {
     const count = safeNumber(entries[label], 0);
-    if (count > 0) parts.push(`${count} ${label.toLowerCase()}`);
+    if (count > 0) parts.push(`${count} ${labelMap[label]}`);
   }
   for (const label of Object.keys(entries).sort()) {
     if (preferred.includes(label)) continue;
     const count = safeNumber(entries[label], 0);
     if (count > 0) parts.push(`${count} ${label.toLowerCase()}`);
   }
-  return parts.length ? `Без разбора: ${parts.join(", ")}.` : "";
+  return parts.length ? `Статусы без разбора: ${parts.join("; ")}.` : "";
+}
+
+function compactCallWord(count) {
+  const n = Math.abs(Number(count) || 0);
+  if (n % 100 >= 11 && n % 100 <= 14) return "звонков";
+  const last = n % 10;
+  if (last === 1) return "звонок";
+  if (last >= 2 && last <= 4) return "звонка";
+  return "звонков";
+}
+
+function compactStageNotScoredReason(stageScope, count) {
+  const labels = (stageScope?.edo_scope_summary?.scope_reason_labels || [])
+    .map((item) => String(item || "").toLowerCase())
+    .filter(Boolean);
+  const joined = labels.join(" / ");
+  const hasService = ["сервис", "техподдерж", "внутрен", "ошибоч"].some((token) => joined.includes(token));
+  const hasMixed = joined.includes("смешан");
+  const word = compactCallWord(count);
+  if (hasService && hasMixed) return count === 1 ? `сервисный/смешанный ${word}` : `сервисных/смешанных ${word}`;
+  if (hasService) return count === 1 ? `сервисный ${word}` : `сервисных ${word}`;
+  if (hasMixed) return count === 1 ? `смешанный ${word}` : `смешанных ${word}`;
+  return `${word} вне продажной оценки`;
+}
+
+function compactStageScopeNote(stageScope) {
+  const scope = stageScope || {};
+  const meaningful = safeNumber(scope.meaningful_calls_total, 0);
+  const scored = safeNumber(scope.scored_calls_total, 0);
+  if (meaningful <= 0 && !cleanText(scope.note)) return "";
+  if (meaningful <= 0) return "Нет содержательных звонков дня для оценки этапов.";
+  if (scored <= 0) return `Оценено: 0 из ${meaningful} содержательных.`;
+  const parts = [`Оценено: ${scored} из ${meaningful} содержательных.`];
+  const notScored = safeNumber(scope.edo_scope_summary?.not_sales_scored_calls_total, 0);
+  if (notScored > 0) {
+    parts.push(`Не оценивалось: ${notScored} ${compactStageNotScoredReason(scope, notScored)}.`);
+    parts.push("Непродажные сценарии не штрафуются.");
+  }
+  return parts.join(" ");
 }
 
 function formatRussianDate(dateStr) {
@@ -1378,13 +1418,8 @@ function buildDayFunnelNote() {
   if (!f || f.raw === null) return null;
   const excluded = f.raw - f.meaningful;
   const reasonLabels = {
-    too_short_or_no_speech: "слишком короткие / без речи",
+    too_short_or_no_speech: "коротких / без речи",
     ivr_or_autoanswer: "IVR / автоответчик",
-  };
-  const processingLabels = {
-    support_internal: "служебные / внутренние",
-    not_enough_analysis: "нет готового разбора",
-    not_selected_for_core_review: "не вошли в коучинговый отбор",
   };
   const legacyReasons = f.reasons || {};
   const reasons = Object.keys(f.day_reasons || {}).length > 0
@@ -1396,25 +1431,14 @@ function buildDayFunnelNote() {
   const reasonSum = reasonParts.reduce((s, r) => s + r.count, 0);
   let reasonSuffix = "";
   if (excluded > 0 && reasonParts.length > 0 && reasonSum <= excluded) {
-    reasonSuffix = ` (${reasonParts.map((r) => r.label).join(" / ")})`;
+    reasonSuffix = ` ${reasonParts.map((r) => r.label).join(" / ")}`;
   }
-  const processingReasons = Object.keys(f.processing_reasons || {}).length > 0
-    ? f.processing_reasons
-    : Object.fromEntries(Object.keys(processingLabels).map((code) => [code, legacyReasons[code] || 0]));
-  const processingParts = Object.entries(processingLabels)
-    .map(([code, label]) => ({ label, count: safeNumber(processingReasons[code], 0) }))
-    .filter((r) => r.count > 0);
-  const processingSuffix = processingParts.length > 0
-    ? ` (${processingParts.map((r) => r.label).join(" / ")})`
-    : "";
   const inReport = safeNumber(f.in_report, 0);
   const notInCoaching = Math.max(0, safeNumber(f.meaningful, 0) - inReport);
-  const notInCoachingSuffix = notInCoaching > 0 ? processingSuffix : "";
-  const line = `Воронка дня: найдено в телефонии — ${f.raw}; содержательных — ${f.meaningful}; исключено из списка дня — ${excluded}${reasonSuffix}.`;
-  const processingLine = `Из ${f.meaningful} содержательных: не вошло в коучинговый разбор — ${notInCoaching}${notInCoachingSuffix}, в коучинговый разбор вошло — ${inReport}.`;
-  const edoScopeLine = cleanText(f.edo_scope_line || DATA.edo_scope_summary?.summary_line);
+  const line = `Воронка дня: найдено — ${f.raw}; содержательных — ${f.meaningful}; исключено — ${excluded}${reasonSuffix}.`;
+  const processingLine = `В коучинговый разбор вошло — ${inReport} из ${f.meaningful}; без готового разбора — ${notInCoaching}.`;
 
-  return { line, reasonLine: null, processingLine, edoScopeLine };
+  return { line, reasonLine: null, processingLine, edoScopeLine: "" };
 }
 
 function buildCoachingWindowNote() {
@@ -1584,10 +1608,6 @@ function buildSvodnaya() {
       rows: [new TableRow({ children: cells })],
     }),
     spacer(4),
-    bodyPara(
-      "Итог дня — все содержательные звонки отчётного дня; коучинговый разбор ведётся по отдельной базе.",
-      { color: COLORS.gray, size: SZ.meta },
-    ),
     ...(unclassifiedNote ? [bodyPara(unclassifiedNote, { color: COLORS.gray, size: SZ.meta })] : []),
     spacer(4),
   ];
@@ -1723,8 +1743,9 @@ function buildBally() {
   const block = [
     blockHeading("📈", "БАЛЛЫ ПО ЭТАПАМ"),
   ];
-  if (DATA.stage_scope?.note) {
-    block.push(bodyPara(DATA.stage_scope.note, { color: COLORS.gray, size: SZ.meta }));
+  const stageScopeNote = compactStageScopeNote(DATA.stage_scope);
+  if (stageScopeNote) {
+    block.push(bodyPara(stageScopeNote, { color: COLORS.gray, size: SZ.meta }));
     block.push(spacer(3));
   }
   block.push(

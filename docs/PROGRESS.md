@@ -4,9 +4,24 @@
 **Этап:** MVP-1 pilot operations
 **Статус фазы:** этап правок закрыт, начат пилотный операционный цикл
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-12
+**Последнее обновление:** 2026-06-13
 
 ## Что сделано
+- [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
+  краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
+  email теперь использует короткие manager-facing формулировки
+  `найдено / содержательных / исключено`, без длинной stage-score scope строки;
+  фраза про отдельную базу коучингового разбора убрана; `Статусы без разбора`
+  выводятся коротко; `БАЛЛЫ ПО ЭТАПАМ` получили одну компактную scope-строку
+  без изменения readiness/selection/scoring расчетов. **Docs:** добавлено ТЗ
+  `docs/PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md`, обновлены
+  `docs/PILOT_BACKLOG.md` и `docs/ACTIVE_WORK_STATE.md`. **Verification:**
+  `py_compile`, `node --check scripts/generate_docx_report.js`,
+  `git diff --check` OK; focused pytest
+  `/app/tests/test_manual_reporting.py -k "pilot23 or sm4_full_report_note or sm4_signal_report_note or sm4_note_shows_exclusion or render_report_email_uses_short_body or empty_state_email_uses_readiness_selection_math or edo_scope_controls_sales_scoring_display"`
+  -> `7 passed, 238 deselected`. **Следующий шаг:** controlled rerender
+  Толегена за `2026-06-11` и визуальная проверка первой страницы /
+  `БАЛЛЫ ПО ЭТАПАМ` перед переводом задачи в `done`.
 - [x] 2026-06-12 — Внедрен first pass `PILOT-22`: manager-facing
   `manager_daily` теперь строго ограничен выбранным report day и не добирает
   прошлые рабочие дни при низком coverage. **Изменение:** `_build_manager_daily_windows()`

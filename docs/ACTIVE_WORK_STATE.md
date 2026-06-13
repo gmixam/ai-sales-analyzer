@@ -129,7 +129,11 @@ Source of truth по очередности задач: `docs/PILOT_BACKLOG.md`.
    и admission reasons.
 3. `PILOT-22` - строгий report-day для manager_daily: first pass внедрен,
    нужен controlled rerender Тимура за `2026-06-11`.
-4. `PILOT-19` - прозрачность scoring для менеджера.
+4. `PILOT-23` - компактный верхний блок и краткие пояснения: first pass
+   внедрен, focused pytest `7 passed`; следующий шаг - controlled rerender
+   Толегена за `2026-06-11` и визуальная проверка верхнего блока /
+   `БАЛЛЫ ПО ЭТАПАМ`.
+5. `PILOT-19` - прозрачность scoring для менеджера.
 
 P1 baseline закрыт:
 
@@ -193,6 +197,8 @@ manager_daily PDF.
   по оценкам в таблице звонков.
 - `docs/LLM2_STATUS_DETAILS_MINI_TZ.md` - draft статусных министруктур для
   `LLM2D` и строки `Итог` в таблице звонков.
+- `docs/PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md` - draft задачи по
+  сокращению служебного текста в верхнем блоке и `БАЛЛЫ ПО ЭТАПАМ`.
 
 ## Архив
 

@@ -269,20 +269,12 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
     processing_reasons = dict(selection.get("processing_reasons") or {})
     not_in_coaching = max(0, int(meaningful_calls or 0) - int(included_in_report or 0))
     exclusion_reason_text = (
-        _selection_reason_suffix(
+        _selection_compact_reason_text(
             reasons=day_exclusion_reasons,
-            labels=_EXCLUSION_REASON_LABELS,
+            labels=_EXCLUSION_REASON_COMPACT_LABELS,
             allowed_codes={"too_short_or_no_speech", "ivr_or_autoanswer"},
         )
         if int(excluded_calls or 0) > 0
-        else ""
-    )
-    processing_reason_text = (
-        _selection_reason_suffix(
-            reasons=processing_reasons,
-            labels=_PROCESSING_REASON_LABELS,
-        )
-        if not_in_coaching > 0
         else ""
     )
     day_score = _manager_reader_value(_resolve_manager_day_score(payload=payload), "Нет базы")
@@ -291,19 +283,17 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
     greeting = f"Добрый день, {greeting_name}." if greeting_name else "Добрый день."
     funnel_lines = [
         (
-            f"Воронка дня: найдено в телефонии — {_manager_reader_value(raw_calls, '0')}; "
+            f"Воронка дня: найдено — {_manager_reader_value(raw_calls, '0')}; "
             f"содержательных — {_manager_reader_value(meaningful_calls, '0')}; "
-            f"исключено из списка дня — {_manager_reader_value(excluded_calls, '0')}"
-            f"{exclusion_reason_text}."
+            f"исключено — {_manager_reader_value(excluded_calls, '0')}"
+            f"{' ' + exclusion_reason_text if exclusion_reason_text else ''}."
         ),
     ]
     coaching_line = (
-        f"Из {_manager_reader_value(meaningful_calls, '0')} содержательных: "
-        f"не вошло в коучинговый разбор — {_manager_reader_value(not_in_coaching, '0')}"
-        f"{processing_reason_text}, "
-        f"в коучинговый разбор вошло — {_manager_reader_value(included_in_report, '0')}."
+        f"В коучинговый разбор вошло — {_manager_reader_value(included_in_report, '0')} "
+        f"из {_manager_reader_value(meaningful_calls, '0')}; "
+        f"без готового разбора — {_manager_reader_value(not_in_coaching, '0')}."
     )
-    edo_scope_line = str((payload.get("edo_scope_summary") or {}).get("summary_line") or "").strip()
     status_lines = [
         f"{_manager_reader_value(outcomes.get('agreed_count'), '0')} ДОГОВОРЁННОСТЬ",
         f"{_manager_reader_value(outcomes.get('rescheduled_count'), '0')} ПЕРЕНОС",
@@ -314,6 +304,7 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
     status_not_confirmed = int(outcomes.get("status_not_confirmed_with_analysis_count") or outcomes.get("status_not_confirmed_count") or 0)
     if status_not_confirmed > 0:
         status_lines.append(f"{status_not_confirmed} СТАТУС НЕ ПОДТВЕРЖДЕН")
+    unclassified_summary_line = _build_unclassified_summary_note(outcomes)
     text = "\n".join(
         [
             greeting,
@@ -322,7 +313,7 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
             *funnel_lines,
             "",
             coaching_line,
-            *(["", edo_scope_line] if edo_scope_line else []),
+            *(["", unclassified_summary_line] if unclassified_summary_line else []),
             "",
             *status_lines,
             "",
@@ -335,7 +326,7 @@ def _build_manager_daily_email_summary(*, payload: dict[str, Any], report: dict[
         intro=f"Во вложении ежедневный отчет по звонкам за {date_label}:",
         funnel_lines=funnel_lines,
         coaching_line=coaching_line,
-        edo_scope_line=edo_scope_line,
+        unclassified_summary_line=unclassified_summary_line,
         status_lines=status_lines,
         day_score=f"Балл дня: {day_score} / 5",
     )
@@ -358,6 +349,22 @@ def _selection_reason_suffix(
     return f" ({' / '.join(parts)})" if parts else ""
 
 
+def _selection_compact_reason_text(
+    *,
+    reasons: dict[str, Any],
+    labels: dict[str, str],
+    allowed_codes: set[str] | None = None,
+) -> str:
+    parts: list[str] = []
+    for code, label in labels.items():
+        if allowed_codes is not None and code not in allowed_codes:
+            continue
+        count = int(reasons.get(code) or 0)
+        if count > 0:
+            parts.append(label)
+    return " / ".join(parts)
+
+
 def _manager_daily_email_html(
     *,
     subject: str,
@@ -367,22 +374,17 @@ def _manager_daily_email_html(
     coaching_line: str,
     status_lines: list[str],
     day_score: str,
-    edo_scope_line: str = "",
+    unclassified_summary_line: str = "",
 ) -> str:
     funnel_html = "<br>".join(html.escape(item) for item in funnel_lines if str(item).strip())
     status_html = "<br>".join(html.escape(item) for item in status_lines if str(item).strip())
-    edo_scope_html = (
-        f"<p>{html.escape(edo_scope_line)}</p>"
-        if str(edo_scope_line or "").strip()
-        else ""
-    )
     return (
         "<html><head><meta charset=\"utf-8\"></head><body>"
         f"<h2>{html.escape(subject)}</h2>"
         f"<p>{html.escape(greeting)}</p>"
         f"<p>{html.escape(intro)}<br>{funnel_html}</p>"
         f"<p>{html.escape(coaching_line)}</p>"
-        f"{edo_scope_html}"
+        f"{f'<p>{html.escape(unclassified_summary_line)}</p>' if str(unclassified_summary_line or '').strip() else ''}"
         f"<p>{status_html}</p>"
         f"<p><strong>{html.escape(day_score)}</strong></p>"
         "</body></html>"
@@ -937,7 +939,10 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
             **_section_meta(template, "review_block"),
             "stage_rows": _build_stage_score_rows(payload.get("score_by_stage") or []),
             "stage_score_scope": dict(payload.get("stage_score_scope") or {}),
-            "note": str((payload.get("stage_score_scope") or {}).get("note") or ""),
+            "note": _build_compact_stage_score_scope_note(
+                stage_score_scope=dict(payload.get("stage_score_scope") or {}),
+                edo_scope_summary=dict(payload.get("edo_scope_summary") or {}),
+            ),
         },
         {
             **_section_meta(template, "main_focus_for_tomorrow"),
@@ -3208,6 +3213,11 @@ _EXCLUSION_REASON_LABELS: dict[str, str] = {
     "ivr_or_autoanswer": "IVR / автоответчик",
 }
 
+_EXCLUSION_REASON_COMPACT_LABELS: dict[str, str] = {
+    "too_short_or_no_speech": "коротких / без речи",
+    "ivr_or_autoanswer": "IVR / автоответчик",
+}
+
 _PROCESSING_REASON_LABELS: dict[str, str] = {
     "support_internal": "тех/сервисные",
     "not_enough_analysis": "нет готового разбора",
@@ -3219,14 +3229,13 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
     """Build a compact manager-facing funnel note for signal and full reports.
 
     Uses selection_model counters (SM-4) for honest day funnel:
-      Найдено в телефонии · Содержательных · Вошло в разбор
+      Найдено · Содержательных · Вошло в разбор
     Falls back to readiness-derived counts when selection_model absent.
     """
     readiness = dict((payload.get("meta") or {}).get("readiness") or {})
     outcome = readiness.get("readiness_outcome")
     sm = dict(payload.get("selection_model") or {})
-    edo_scope_line = str((payload.get("edo_scope_summary") or {}).get("summary_line") or "").strip()
-    if outcome not in {"signal_report", "full_report"} and not sm and not edo_scope_line:
+    if outcome not in {"signal_report", "full_report"} and not sm:
         return None
 
     window_days = int(readiness.get("window_days_used") or 1)
@@ -3243,26 +3252,23 @@ def _build_manager_daily_selection_note(*, payload: dict[str, Any], total_calls:
             code: legacy_reasons.get(code, 0)
             for code in _EXCLUSION_REASON_LABELS
         })
-        processing_reasons = dict(sm.get("processing_reasons") or {
-            code: legacy_reasons.get(code, 0)
-            for code in _PROCESSING_REASON_LABELS
-        })
+        exclusion_reason_text = _selection_compact_reason_text(
+            reasons=exclusion_reasons,
+            labels=_EXCLUSION_REASON_COMPACT_LABELS,
+            allowed_codes={"too_short_or_no_speech", "ivr_or_autoanswer"},
+        )
 
         line1 = (
-            f"Воронка дня: найдено в телефонии — {raw_total}; "
+            f"Воронка дня: найдено — {raw_total}; "
             f"содержательных — {meaningful_total}; "
-            f"исключено из списка дня — {excluded_total}"
-            f"{_selection_reason_suffix(reasons=exclusion_reasons, labels=_EXCLUSION_REASON_LABELS, allowed_codes={'too_short_or_no_speech', 'ivr_or_autoanswer'}) if excluded_total > 0 else ''}."
+            f"исключено — {excluded_total}"
+            f"{' ' + exclusion_reason_text if excluded_total > 0 and exclusion_reason_text else ''}."
         )
         line2 = (
-            f"Из {meaningful_total} содержательных: "
-            f"не вошло в коучинговый разбор — {not_in_coaching}"
-            f"{_selection_reason_suffix(reasons=processing_reasons, labels=_PROCESSING_REASON_LABELS) if not_in_coaching > 0 else ''}, "
-            f"в коучинговый разбор вошло — {in_report}."
+            f"В коучинговый разбор вошло — {in_report} из {meaningful_total}; "
+            f"без готового разбора — {not_in_coaching}."
         )
         lines = [line1, line2]
-        if edo_scope_line:
-            lines.append(edo_scope_line)
         if window_note:
             lines.append(window_note)
     else:
@@ -3745,27 +3751,80 @@ def _build_unclassified_summary_note(call_outcomes: dict[str, Any]) -> str:
     total = sum(int(value or 0) for value in by_bucket.values())
     if total <= 0:
         return ""
-    preferred_order = [
-        "Без транскрипта",
-        "Без анализа",
-        "Не подходит для разбора",
-        "Ошибка анализа",
-        "Нет итога",
-        "Нет классификации",
-        "Без разбора",
-    ]
+    label_map = {
+        "Без транскрипта": "без транскрипта",
+        "Без анализа": "без анализа",
+        "Не подходит для разбора": "не подходит",
+        "Ошибка анализа": "ошибка анализа",
+        "Нет итога": "нет итога",
+        "Нет классификации": "нет классификации",
+        "Без разбора": "без разбора",
+    }
+    preferred_order = list(label_map)
     parts: list[str] = []
     for label in preferred_order:
         count = int(by_bucket.get(label) or 0)
         if count:
-            parts.append(f"{count} {label.lower()}")
+            parts.append(f"{count} {label_map[label]}")
     for label, raw_count in sorted(by_bucket.items()):
         if label in preferred_order:
             continue
         count = int(raw_count or 0)
         if count:
             parts.append(f"{count} {str(label).lower()}")
-    return f"Без разбора: {', '.join(parts)}." if parts else ""
+    return f"Статусы без разбора: {'; '.join(parts)}." if parts else ""
+
+
+def _build_compact_stage_score_scope_note(
+    *,
+    stage_score_scope: dict[str, Any],
+    edo_scope_summary: dict[str, Any],
+) -> str:
+    meaningful_total = int(stage_score_scope.get("meaningful_calls_total") or 0)
+    scored_total = int(stage_score_scope.get("scored_calls_total") or 0)
+    if meaningful_total <= 0:
+        return "Нет содержательных звонков дня для оценки этапов."
+    if scored_total <= 0:
+        return f"Оценено: 0 из {meaningful_total} содержательных."
+
+    sentences = [f"Оценено: {scored_total} из {meaningful_total} содержательных."]
+    not_scored_total = int(edo_scope_summary.get("not_sales_scored_calls_total") or 0)
+    if not_scored_total > 0:
+        reason = _compact_stage_not_scored_reason(edo_scope_summary, count=not_scored_total)
+        sentences.append(f"Не оценивалось: {not_scored_total} {reason}.")
+        sentences.append("Непродажные сценарии не штрафуются.")
+    return " ".join(sentences)
+
+
+def _compact_stage_not_scored_reason(edo_scope_summary: dict[str, Any], *, count: int) -> str:
+    word = _compact_call_word(count)
+    labels = [
+        str(item or "").lower()
+        for item in edo_scope_summary.get("scope_reason_labels") or []
+        if str(item or "").strip()
+    ]
+    joined = " / ".join(labels)
+    has_service = any(token in joined for token in ("сервис", "техподдерж", "внутрен", "ошибоч"))
+    has_mixed = "смешан" in joined
+    if has_service and has_mixed:
+        return f"сервисный/смешанный {word}" if count == 1 else f"сервисных/смешанных {word}"
+    if has_service:
+        return f"сервисный {word}" if count == 1 else f"сервисных {word}"
+    if has_mixed:
+        return f"смешанный {word}" if count == 1 else f"смешанных {word}"
+    return f"{word} вне продажной оценки"
+
+
+def _compact_call_word(count: int) -> str:
+    count_abs = abs(int(count))
+    if 11 <= count_abs % 100 <= 14:
+        return "звонков"
+    last_digit = count_abs % 10
+    if last_digit == 1:
+        return "звонок"
+    if 2 <= last_digit <= 4:
+        return "звонка"
+    return "звонков"
 
 
 def _build_warm_pipeline_data(

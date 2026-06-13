@@ -26,6 +26,8 @@ delivery.
   покрытия анализа до `full_report`.
 - `docs/PILOT22_MANAGER_DAILY_STRICT_REPORT_DAY_TZ.md` - ТЗ по запрету
   подмешивания прошлых дней в менеджерский daily-отчет.
+- `docs/PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md` - draft мини-ТЗ по
+  сокращению служебного текста в верхнем блоке и `БАЛЛЫ ПО ЭТАПАМ`.
 
 ## Правило работы
 
@@ -61,6 +63,7 @@ delivery.
 | PILOT-20 | Повышение покрытия анализа до `full_report` | `implemented_first_pass` | Фаза 1 выполнена по `docs/PILOT20_FULL_REPORT_COVERAGE_AUDIT_TZ.md`; audit package: `review_packages/pilot20_full_report_coverage_audit_2026-06-04_2026-06-05/`. First pass фазы 2 внедрен: `_evaluate_manager_daily_readiness` считает `full_report` coverage по содержательным звонкам (`meaningful_ready_analysis_total / meaningful_calls_total`), raw coverage сохранен как диагностика | Проверено focused tests: readiness/group-result `6 passed`, selection_model `9 passed`, `py_compile` и `git diff --check` OK. Следующий шаг: controlled rerender/ready-only проверка на реальных отчетах; `llm2_admission_non_commercial_or_unusable` пока не чинить, а фиксировать на новых звонках |
 | PILOT-21 | `КОНТАКТЫ В РАБОТУ` в `signal_report` | `new` | Во время PILOT-20 sweep найден соседний дефект: `test_signal_report_model_uses_manager_facing_polish_rules` падает, потому что `call_tomorrow.rows` пустой в `signal_report`, хотя тест ожидает 1 hot contact. Нужно разобрать, это устаревший тест после LLM-only/status gates или реальный regression в сборке `call_tomorrow` для сигнального отчета | Сначала провести bounded audit без правок: воспроизвести fixture, проверить `payload.call_tomorrow.contacts`, `selection_diagnostics`, `call_tomorrow_quality`, source final status/evidence. Затем либо обновить устаревшее ожидание теста, либо исправить `_build_call_tomorrow` / render path так, чтобы только доказанные контакты попадали в блок |
 | PILOT-22 | Строгий отчетный день в `manager_daily` | `implemented_first_pass` | ТЗ: [`docs/PILOT22_MANAGER_DAILY_STRICT_REPORT_DAY_TZ.md`](PILOT22_MANAGER_DAILY_STRICT_REPORT_DAY_TZ.md). Внедрено: `manager_daily` строит только окно report day (`window_days_used=1`), `skip_accumulate` не получает прошлые artifacts, business email блокируется `strict_report_day_gate`, если period/window расширился или `included_in_report_total > meaningful_calls_total` | Проверено focused pytest: strict-day group result, expanded-window email safety, normal full_report path -> `3 passed`. Следующий шаг: controlled rerender Тимура за `2026-06-11`: отчет и письмо должны быть строго за `2026-06-11`, без `10-11 июня`; при `1` содержательном и `0` готовых разборах текст не должен показывать `в разбор вошло — 18` |
+| PILOT-23 | Компактный верхний блок и краткие пояснения | `implemented_first_pass` | ТЗ: [`docs/PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md`](PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md). First pass внедрен: сокращены selection/header note, email summary, строка `Статусы без разбора` и scope note в `БАЛЛЫ ПО ЭТАПАМ`; расчеты readiness/selection/scoring не менялись | Focused pytest `7 passed`, `py_compile`, `node --check scripts/generate_docx_report.js`, `git diff --check` OK. Следующий шаг: controlled rerender Толегена за `2026-06-11` и визуальная проверка верхнего блока/`БАЛЛЫ ПО ЭТАПАМ`; после подтверждения перевести в `done` |
 
 ### P2 - Ежедневный отчет для РОП
 
@@ -129,6 +132,7 @@ delivery.
 | 2026-06-05-Толеген-02 | PILOT-15 | `positive_feedback` | Менеджер считает правки по `Итог / обратная связь` эффективными |
 | 2026-06-05-Толеген-03 | PILOT-18 | `implemented_first_pass` | Не везде есть целесообразность натягивать “что улучшить”; нужен balanced coaching. First pass внедрен: `LLM2D` выбирает `improve/maintain/no_comment`; Report Layer не достраивает рекомендацию, `LLM3` только компонуeт уже данные LLM2-сигналы |
 | 2026-06-05-Тимур-01 | PILOT-19 | `new` | Баллы вызывают вопросы, потому что непонятно, как считается и что считается |
+| 2026-06-12-Толеген-01 | PILOT-23 | `implemented_first_pass` | В отчете за `2026-06-11` верхний блок и `БАЛЛЫ ПО ЭТАПАМ` слишком многословны и дублируют объяснение механизма. First pass внедрен, нужна визуальная проверка на rerender отчета |
 
 ## Operational findings
 
@@ -149,13 +153,16 @@ delivery.
 2. PILOT-22 - controlled rerender после first pass: проверить Тимура за
    `2026-06-11`, что отчет и письмо отражают только выбранный день, даже если
    данных мало.
-3. PILOT-21 - bounded audit `call_tomorrow` в `signal_report`: понять, это
+3. PILOT-23 - controlled rerender после first pass: проверить Толегена за
+   `2026-06-11`, что верхний блок и `БАЛЛЫ ПО ЭТАПАМ` стали компактными без
+   изменения цифр.
+4. PILOT-21 - bounded audit `call_tomorrow` в `signal_report`: понять, это
    устаревший тест или реальный дефект блока `КОНТАКТЫ В РАБОТУ`.
-4. PILOT-17 - контрольный rerender/прогон после first pass, потому что false
+5. PILOT-17 - контрольный rerender/прогон после first pass, потому что false
    `Договорённость` напрямую бьет по доверию к отчету.
-5. PILOT-19 - прозрачность scoring, потому что менеджеры должны понимать,
+6. PILOT-19 - прозрачность scoring, потому что менеджеры должны понимать,
    какие звонки и критерии реально вошли в баллы.
-6. PILOT-13 - ФИО контакта, чтобы Report Layer не пытался достраивать имя.
-7. PILOT-02 / PILOT-06 - controlled schedule flow без UI.
+7. PILOT-13 - ФИО контакта, чтобы Report Layer не пытался достраивать имя.
+8. PILOT-02 / PILOT-06 - controlled schedule flow без UI.
 
 После закрытия P1 переходить к `rop_daily_digest`.

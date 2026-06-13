@@ -74,6 +74,7 @@ from app.agents.calls.report_evidence import validate_report_evidence  # noqa: E
 from app.agents.calls.schemas import CDRRecord  # noqa: E402
 from app.agents.calls.report_templates import (  # noqa: E402
     _call_context_label,
+    _build_unclassified_summary_note,
     build_report_render_model,
 )
 from app.agents.calls.verification_report_runner import (  # noqa: E402
@@ -1329,8 +1330,13 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         report = build_report_render_model(payload)
         sections = {section["id"]: section for section in report["sections"]}
-        self.assertIn("Оценено по продажным этапам — 2 звонков", sections["report_header"]["selection_note"])
-        self.assertIn("Не оценивались по продажным этапам — 2", sections["review_block"]["note"])
+        self.assertNotIn("Оценено по продажным этапам", sections["report_header"]["selection_note"])
+        self.assertNotIn("коучинговый разбор ведётся по отдельной базе", sections["report_header"]["selection_note"])
+        self.assertEqual(
+            sections["review_block"]["note"],
+            "Оценено: 2 из 4 содержательных. Не оценивалось: 2 сервисных/смешанных звонка. "
+            "Непродажные сценарии не штрафуются.",
+        )
         feedback_cells = "\n".join(str(row[3]) for row in sections["call_list"]["compact_rows"])
         self.assertIn("Продажная оценка не применяется", feedback_cells)
         self.assertIn("применима только к части звонка", feedback_cells)
@@ -7595,6 +7601,20 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
     # --- SM-4 acceptance tests ---
 
+    def test_pilot23_unclassified_summary_uses_compact_status_wording(self) -> None:
+        self.assertEqual(
+            _build_unclassified_summary_note(
+                {"unclassified_by_bucket": {"Не подходит для разбора": 2, "Без разбора": 4}}
+            ),
+            "Статусы без разбора: 2 не подходит; 4 без разбора.",
+        )
+        self.assertEqual(
+            _build_unclassified_summary_note(
+                {"unclassified_by_bucket": {"Не подходит для разбора": 0, "Без разбора": 0}}
+            ),
+            "",
+        )
+
     def test_sm4_full_report_note_uses_selection_model_funnel(self) -> None:
         """SM-4: full_report selection_note uses selection_model counters for honest funnel."""
         coaching = _artifact(82.0, "strong")
@@ -7625,11 +7645,10 @@ class ManualReportingPayloadTests(unittest.TestCase):
         report = build_report_render_model(payload)
         sections = {s["id"]: s for s in report["sections"]}
         note = sections["report_header"].get("selection_note") or ""
-        self.assertIn("Воронка дня: найдено в телефонии — 2", note)
+        self.assertIn("Воронка дня: найдено — 2", note)
         self.assertIn("содержательных — 1", note)
-        self.assertIn("исключено из списка дня — 1", note)
-        self.assertIn("Из 1 содержательных:", note)
-        self.assertIn("в коучинговый разбор вошло — 1", note)
+        self.assertIn("исключено — 1", note)
+        self.assertIn("В коучинговый разбор вошло — 1 из 1; без готового разбора — 0.", note)
         self.assertNotIn("Сигнальный отчёт", note)
         self.assertNotIn("too_short_or_no_speech", note)
         self.assertNotIn("ivr_or_autoanswer", note)
@@ -7658,7 +7677,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         note = sections["report_header"].get("selection_note") or ""
         self.assertIn("Сигнальный отчёт", note)
         self.assertIn("Воронка дня:", note)
-        self.assertIn("в коучинговый разбор вошло", note)
+        self.assertIn("В коучинговый разбор вошло", note)
         self.assertNotIn("too_short_or_no_speech", note)
 
     def test_sm4_note_shows_exclusion_reasons_as_manager_labels(self) -> None:
@@ -7691,10 +7710,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
         report = build_report_render_model(payload)
         sections = {s["id"]: s for s in report["sections"]}
         note = sections["report_header"].get("selection_note") or ""
-        self.assertIn("нет готового разбора", note)
+        self.assertIn("без готового разбора", note)
         self.assertNotIn("not_enough_analysis", note)
         self.assertNotIn("Исключено из списка дня: нет готового разбора", note)
-        self.assertIn("не вошло в коучинговый разбор", note)
 
     def test_sm4_skip_accumulate_has_no_selection_note(self) -> None:
         """SM-4: skip_accumulate does not produce a selection_note (not a deliverable report)."""
@@ -7868,11 +7886,12 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("Ежедневный отчет по звонкам", rendered["subject"])
         self.assertIn("Ежедневный отчет -", rendered["artifact"]["filename"])
         self.assertTrue(rendered["artifact"]["filename"].endswith(".pdf"))
-        self.assertIn("найдено в телефонии", rendered["text"])
+        self.assertIn("Воронка дня: найдено", rendered["text"])
+        self.assertNotIn("найдено в телефонии", rendered["text"])
         self.assertIn("содержательных", rendered["text"])
-        self.assertIn("Из 1 содержательных", rendered["text"])
-        self.assertIn("в коучинговый разбор вошло", rendered["text"])
+        self.assertIn("В коучинговый разбор вошло", rendered["text"])
         self.assertIn("Балл дня:", rendered["text"])
+        self.assertNotIn("Оценено по продажным этапам", rendered["text"])
         self.assertNotIn("СИТУАЦИЯ ДНЯ", rendered["text"])
         self.assertNotIn("РАЗБОР ЗВОНКА", rendered["text"])
         self.assertNotIn("СПИСОК ВСЕХ ЗВОНКОВ ДНЯ", rendered["text"])
@@ -9145,9 +9164,8 @@ class ManualReportingStatusTests(unittest.TestCase):
         )
 
         text = result["preview"]["text"]
-        self.assertIn("Воронка дня: найдено в телефонии — 2; содержательных — 1; исключено из списка дня — 1", text)
-        self.assertIn("Из 1 содержательных: не вошло в коучинговый разбор — 1", text)
-        self.assertIn("в коучинговый разбор вошло — 0", text)
+        self.assertIn("Воронка дня: найдено — 2; содержательных — 1; исключено — 1", text)
+        self.assertIn("В коучинговый разбор вошло — 0 из 1; без готового разбора — 1.", text)
         self.assertEqual(result["payload"]["selection_model"]["meaningful_calls_total"], 1)
         self.assertEqual(result["payload"]["selection_model"]["included_in_report_total"], 0)
 
