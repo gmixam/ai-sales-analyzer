@@ -66,6 +66,8 @@ docker compose exec -T api python -m pytest -q \
   /app/tests/test_call_processing_llm1_external_mode.py \
   /app/tests/test_call_processing_client.py \
   /app/tests/test_call_processing_reporting_integration.py \
+  /app/tests/test_call_processing_manual_pilot_boundary.py \
+  /app/tests/test_call_processing_manual_reporting_runner.py \
   /app/tests/test_call_processing_runtime_split.py \
   /app/tests/test_llm2_layered_runtime.py
 ```
@@ -98,25 +100,24 @@ docker compose exec -T call_processing_api curl -f http://localhost:8000/call-pr
 5. Run dry-run for the pilot scope:
 
 ```bash
-docker compose exec -T call_processing_api python /app/report_scripts/call_processing_cli.py \
+export CALL_PROCESSING_GRANT_JSON='{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1","processing_runs_v1"],"created_by_admin":"operator","active":true}'
+export CALL_PROCESSING_SCOPE_JSON="{\"department_id\":\"$DEPARTMENT_ID\",\"date_from\":\"$REPORT_DATE\",\"date_to\":\"$REPORT_DATE\",\"source\":\"onlinepbx\"}"
+
+docker compose exec -T call_processing_api python -m app.agents.call_processing.cli \
+  --grant "$CALL_PROCESSING_GRANT_JSON" \
   dry-run \
-  --department-id "$DEPARTMENT_ID" \
-  --date-from "$REPORT_DATE" \
-  --date-to "$REPORT_DATE" \
-  --required-artifacts transcript,transcript_segments,llm1_first_pass \
-  --requested-by edo-analysis-reporting
+  --scope "$CALL_PROCESSING_SCOPE_JSON" \
+  --required-artifacts transcript,transcript_segments,llm1_first_pass
 ```
 
 6. Run ensure for the same scope only after dry-run looks sane:
 
 ```bash
-docker compose exec -T call_processing_api python /app/report_scripts/call_processing_cli.py \
+docker compose exec -T call_processing_api python -m app.agents.call_processing.cli \
+  --grant "$CALL_PROCESSING_GRANT_JSON" \
   ensure \
-  --department-id "$DEPARTMENT_ID" \
-  --date-from "$REPORT_DATE" \
-  --date-to "$REPORT_DATE" \
-  --required-artifacts transcript,transcript_segments,llm1_first_pass \
-  --requested-by edo-analysis-reporting
+  --scope "$CALL_PROCESSING_SCOPE_JSON" \
+  --required-artifacts transcript,transcript_segments,llm1_first_pass
 ```
 
 7. Start analysis service in external mode:

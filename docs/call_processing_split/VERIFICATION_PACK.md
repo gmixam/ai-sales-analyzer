@@ -2,7 +2,7 @@
 
 Date: 2026-06-13  
 Branch: `feat/call-processing-analysis-split`  
-Last verified implementation commit: `80ed71e`
+Last verified implementation commit: `fc6ec42`
 
 ## Purpose
 
@@ -36,7 +36,10 @@ Run from repo root.
 python3 -m py_compile \
   core/app/agents/call_processing/*.py \
   core/app/agents/calls/reporting.py \
+  core/app/agents/calls/manual_reporting_runner.py \
+  core/app/agents/calls/orchestrator.py \
   core/app/agents/calls/analyzer.py \
+  core/report_scripts/call_processing_cli.py \
   core/app/core_shared/config/settings.py \
   core/app/core_shared/workers/celery_app.py
 ```
@@ -51,6 +54,8 @@ docker compose exec -T api python -m pytest -q \
   /app/tests/test_call_processing_llm1_external_mode.py \
   /app/tests/test_call_processing_client.py \
   /app/tests/test_call_processing_reporting_integration.py \
+  /app/tests/test_call_processing_manual_pilot_boundary.py \
+  /app/tests/test_call_processing_manual_reporting_runner.py \
   /app/tests/test_call_processing_runtime_split.py \
   /app/tests/test_llm2_layered_runtime.py
 ```
@@ -87,13 +92,14 @@ docker compose --profile split up -d \
 Call-processing contract smoke:
 
 ```bash
-docker compose exec -T api python /app/report_scripts/call_processing_cli.py \
+export CALL_PROCESSING_GRANT_JSON='{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1","processing_runs_v1"],"created_by_admin":"operator","active":true}'
+export CALL_PROCESSING_SCOPE_JSON="{\"department_id\":\"$DEPARTMENT_ID\",\"date_from\":\"2026-06-03\",\"date_to\":\"2026-06-03\",\"source\":\"onlinepbx\"}"
+
+docker compose exec -T api python -m app.agents.call_processing.cli \
+  --grant "$CALL_PROCESSING_GRANT_JSON" \
   dry-run \
-  --department-id "$DEPARTMENT_ID" \
-  --date-from 2026-06-03 \
-  --date-to 2026-06-03 \
-  --required-artifacts transcript,transcript_segments,llm1_first_pass \
-  --requested-by edo-analysis-reporting
+  --scope "$CALL_PROCESSING_SCOPE_JSON" \
+  --required-artifacts transcript,transcript_segments,llm1_first_pass
 ```
 
 Manager daily external-service smoke must be run only after upstream artifacts

@@ -199,6 +199,17 @@
   provider-backed split-worker smoke, full ROP weekly external smoke and
   scheduled reviewable external smoke with real artifacts remain release-time
   execution steps, not local unit acceptance.
+- [x] 2026-06-13 — Исправлены call-processing CLI smoke/runbook команды.
+  **Контекст:** verification pack и cutover runbook ссылались на устаревший
+  `/app/report_scripts/call_processing_cli.py` интерфейс с
+  `--department-id/--date-from/--requested-by`, тогда как актуальный CLI
+  работает через `python -m app.agents.call_processing.cli --grant ... dry-run
+  --scope ...`. **Изменение:** Docker smoke-команды переведены на module CLI,
+  `--grant` и JSON `--scope`; host wrapper `core/report_scripts/call_processing_cli.py`
+  теперь сам добавляет `core` в `sys.path`. **Verification:** container CLI
+  help for `dry-run` OK; `/app/tests/test_call_processing_cli.py
+  /app/tests/test_call_processing_runtime_split.py` -> `8 passed`; focused
+  split pack -> `67 passed`; compose config and `git diff --check` OK.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`
