@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -102,6 +103,77 @@ class Interaction(Base):
         back_populates="interaction",
         primaryjoin="foreign(Insight.interaction_id) == Interaction.id",
         viewonly=True,
+    )
+
+
+class CallProcessingRun(Base):
+    __tablename__ = "call_processing_runs"
+    __table_args__ = (
+        Index("ix_call_processing_runs_scope_hash_status", "scope_hash", "status"),
+        Index("ix_call_processing_runs_status_updated", "status", "updated_at"),
+        {"schema": "call_core"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    requested_by: Mapped[str | None] = mapped_column(String(255))
+    scope_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    scope_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    required_artifacts: Mapped[list] = mapped_column(JSON, default=list)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued", index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    counts_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    errors_json: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CallArtifact(Base):
+    __tablename__ = "call_artifacts"
+    __table_args__ = (
+        Index("ix_call_artifacts_department_kind_status", "department_id", "artifact_kind", "status"),
+        Index("ix_call_artifacts_interaction_kind", "interaction_id", "artifact_kind"),
+        Index("ix_call_artifacts_source_updated", "source_updated_at"),
+        Index(
+            "uq_call_artifacts_active_kind_version",
+            "interaction_id",
+            "artifact_kind",
+            "artifact_version",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+        {"schema": "call_core"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    interaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    artifact_kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    artifact_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="missing", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON)
+    text_value: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(120))
+    account_alias: Mapped[str | None] = mapped_column(String(120))
+    api_key_env: Mapped[str | None] = mapped_column(String(120))
+    raw_response_ref: Mapped[str | None] = mapped_column(Text)
+    error_class: Mapped[str | None] = mapped_column(String(80))
+    error_reason: Mapped[str | None] = mapped_column(Text)
+    retryable: Mapped[bool | None] = mapped_column(Boolean)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

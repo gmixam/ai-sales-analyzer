@@ -23,6 +23,21 @@
   `/app/tests/test_call_processing_contracts.py` -> `6 passed`. **Следующий
   шаг:** Task 1 - DB schemas/models/migrations/compatibility views без
   production cutover и без destructive DB operations.
+- [x] 2026-06-13 — Выполнен first pass Task 1 для DB split. **Изменение:**
+  добавлены schema-qualified ORM модели `call_core.call_processing_runs` и
+  `call_core.call_artifacts`; добавлена additive Alembic migration
+  `2f4c9d8e7a61_add_call_processing_split_schemas`, которая создает schemas
+  `call_core`, `call_public`, `analysis`, `org`, новые `call_core` tables,
+  `call_public` views `processed_calls_v1`, `transcripts_v1`,
+  `llm1_artifacts_v1`, `processing_runs_v1`, а также backfill-ит legacy
+  transcript и transcript_segments artifacts из `public.interactions.text` и
+  `public.interactions.metadata.segments`. **Safety:** legacy `public.*`
+  таблицы не двигаются, не переименовываются и не удаляются; старые LLM1
+  artifacts не фабрикуются. **Verification:** `py_compile`, `git diff --check`,
+  контейнерный `/app/tests/test_call_processing_contracts.py
+  /app/tests/test_call_processing_db_contract.py` -> `10 passed`. **Residual:**
+  live DB migration up/down smoke не выполнялся в этом pass; это остается
+  частью Task 8/cutover verification.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки
