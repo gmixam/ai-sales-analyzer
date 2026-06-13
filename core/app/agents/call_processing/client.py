@@ -46,6 +46,14 @@ class CallProcessingClient(Protocol):
     ) -> EnsureResponse:
         """Ensure the requested artifacts exist or are planned for the scope."""
 
+    async def ensure_processed_calls_async(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+        mode: EnsureMode | str = EnsureMode.ENSURE,
+    ) -> EnsureResponse:
+        """Async variant for report runs that already execute inside an event loop."""
+
     def get_processed_artifacts(
         self,
         scope: ProcessingScope | dict[str, Any],
@@ -151,6 +159,19 @@ class LocalCallProcessingClient:
             requested_by=self.requested_by,
         )
 
+    async def ensure_processed_calls_async(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+        mode: EnsureMode | str = EnsureMode.ENSURE,
+    ) -> EnsureResponse:
+        return await self.service.ensure_async(
+            scope,
+            _coerce_required_artifacts(required_artifacts),
+            mode,
+            requested_by=self.requested_by,
+        )
+
     def get_processed_artifacts(
         self,
         scope: ProcessingScope | dict[str, Any],
@@ -243,6 +264,28 @@ class HttpCallProcessingClient:
         )
         with httpx.Client(timeout=self.timeout_sec) as client:
             response = client.post(
+                f"{self.base_url}/call-processing/ensure",
+                json=request.model_dump(mode="json"),
+                headers=self._headers(),
+            )
+        if response.status_code >= 400:
+            raise ASAError(f"call-processing ensure failed: status={response.status_code} body={response.text[:500]}")
+        return EnsureResponse.model_validate(response.json())
+
+    async def ensure_processed_calls_async(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+        mode: EnsureMode | str = EnsureMode.ENSURE,
+    ) -> EnsureResponse:
+        request = EnsureRequest(
+            scope=scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope),
+            required_artifacts=_coerce_required_artifacts(required_artifacts),
+            mode=EnsureMode(mode),
+            requested_by=self.requested_by,
+        )
+        async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
+            response = await client.post(
                 f"{self.base_url}/call-processing/ensure",
                 json=request.model_dump(mode="json"),
                 headers=self._headers(),

@@ -64,6 +64,7 @@ class _FakeService:
     def __init__(self, interactions: list[SimpleNamespace] | None = None) -> None:
         self.interactions = interactions or []
         self.ensure_calls: list[dict[str, object]] = []
+        self.ensure_async_calls: list[dict[str, object]] = []
 
     def ensure(
         self,
@@ -85,6 +86,31 @@ class _FakeService:
             run_id="run-1",
             status=ProcessingRunStatus.READY,
             scope_hash="hash",
+            requested_by=requested_by or "unknown",
+            planned={"provider_calls_made": 0},
+            quota={"provider_calls_made": 0},
+        )
+
+    async def ensure_async(
+        self,
+        scope: ProcessingScope | dict,
+        required_artifacts: list[RequiredArtifactKind],
+        mode: EnsureMode | str = EnsureMode.ENSURE,
+        *,
+        requested_by: str | None = None,
+    ) -> EnsureResponse:
+        self.ensure_async_calls.append(
+            {
+                "scope": scope,
+                "required_artifacts": required_artifacts,
+                "mode": mode,
+                "requested_by": requested_by,
+            }
+        )
+        return EnsureResponse(
+            run_id="run-async",
+            status=ProcessingRunStatus.READY,
+            scope_hash="hash-async",
             requested_by=requested_by or "unknown",
             planned={"provider_calls_made": 0},
             quota={"provider_calls_made": 0},
@@ -188,6 +214,38 @@ def test_ensure_processed_calls_delegates_to_service_without_provider_call() -> 
                 RequiredArtifactKind.LLM1_FIRST_PASS,
             ],
             "mode": EnsureMode.DRY_RUN,
+            "requested_by": "analysis-test",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_processed_calls_async_delegates_to_service_async() -> None:
+    service = _FakeService()
+    client = LocalCallProcessingClient(
+        object(),
+        service=service,
+        artifacts=_FakeArtifactRepository(),
+        requested_by="analysis-test",
+    )
+    scope = _scope()
+
+    response = await client.ensure_processed_calls_async(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, "llm1_first_pass"],
+        mode=EnsureMode.ENSURE,
+    )
+
+    assert response.run_id == "run-async"
+    assert service.ensure_calls == []
+    assert service.ensure_async_calls == [
+        {
+            "scope": scope,
+            "required_artifacts": [
+                RequiredArtifactKind.TRANSCRIPT,
+                RequiredArtifactKind.LLM1_FIRST_PASS,
+            ],
+            "mode": EnsureMode.ENSURE,
             "requested_by": "analysis-test",
         }
     ]
@@ -299,6 +357,17 @@ class _FakeHttpClient:
         return _FakeResponse(200, {"artifacts": []})
 
 
+class _FakeAsyncHttpClient(_FakeHttpClient):
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def post(self, url: str, *, json: dict, headers: dict):
+        return super().post(url, json=json, headers=headers)
+
+
 def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
     _FakeHttpClient.calls = []
     monkeypatch.setattr(call_processing_client_module.httpx, "Client", _FakeHttpClient)
@@ -322,3 +391,26 @@ def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
     assert _FakeHttpClient.calls[0][1] == "http://call-processing.test/call-processing/ensure"
     assert _FakeHttpClient.calls[1][0] == "GET"
     assert _FakeHttpClient.calls[1][1].endswith("/llm1_first_pass")
+
+
+@pytest.mark.asyncio
+async def test_http_client_posts_ensure_async(monkeypatch) -> None:
+    _FakeAsyncHttpClient.calls = []
+    monkeypatch.setattr(call_processing_client_module.httpx, "AsyncClient", _FakeAsyncHttpClient)
+    client = HttpCallProcessingClient(
+        base_url="http://call-processing.test",
+        access_grant=_grant(),
+        requested_by="edo-analysis",
+    )
+
+    ensure_response = await client.ensure_processed_calls_async(
+        _scope(),
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+        mode=EnsureMode.DRY_RUN,
+    )
+
+    assert ensure_response.run_id == "run-http"
+    assert len(_FakeAsyncHttpClient.calls) == 1
+    assert _FakeAsyncHttpClient.calls[0][0] == "POST"
+    assert _FakeAsyncHttpClient.calls[0][1] == "http://call-processing.test/call-processing/ensure"
+    assert _FakeAsyncHttpClient.calls[0][2]["json"]["mode"] == "dry_run"

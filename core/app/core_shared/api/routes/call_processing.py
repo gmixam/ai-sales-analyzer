@@ -193,7 +193,7 @@ async def ensure_call_processing(
             detail="requested_by must match access grant client_id",
         )
     service = CallProcessingService(db, requested_by=grant.client_id)
-    response = service.ensure(
+    response = await service.ensure_async(
         request.scope,
         request.required_artifacts,
         request.mode,

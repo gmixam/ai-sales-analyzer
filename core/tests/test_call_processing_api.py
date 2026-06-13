@@ -67,6 +67,21 @@ class _FakeCallProcessingService:
             quota={"provider_calls_made": 0},
         )
 
+    async def ensure_async(
+        self,
+        scope: ProcessingScope,
+        required_artifacts: list[object],
+        mode: object,
+        *,
+        requested_by: str,
+    ) -> EnsureResponse:
+        return self.ensure(
+            scope,
+            required_artifacts,
+            mode,
+            requested_by=requested_by,
+        )
+
 
 def _override_session():
     yield object()

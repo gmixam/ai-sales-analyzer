@@ -115,11 +115,31 @@
   `git diff --check`, контейнерный
   `/app/tests/test_call_processing_reporting_integration.py` -> `2 passed`;
   call-processing focused pack с новым reporting integration -> `47 passed`;
-  legacy prepare-artifacts checks -> `5 passed, 287 deselected`. **Residual:**
-  локальный `CallProcessingService.ensure()` пока planner/backfill-only без
-  реального OnlinePBX discovery/STT/LLM1 provider work; ROP weekly, manual
-  pilot, late-artifact marker and full scheduled smoke остаются следующими
-  passes.
+  legacy prepare-artifacts checks -> `5 passed, 287 deselected`. **Residual at
+  the time:** provider-backed OnlinePBX discovery/STT/LLM1 wiring was still
+  pending and was addressed by the later 2026-06-13 provider-backed first pass;
+  ROP weekly, manual pilot, late-artifact marker and full scheduled smoke
+  remain separate release checks.
+- [x] 2026-06-13 — Добавлен provider-backed first pass для
+  `CallProcessingService.ensure()`. **Изменение:** в `ensure` mode сервис
+  теперь discovery-ит OnlinePBX source calls через intake, пишет source
+  interactions, строит `transcript`/`transcript_segments` через STT extractor и
+  строит `llm1_first_pass_v1` через LLM1 analyzer private first-pass method, не
+  вызывая LLM2/reporting analysis. OnlinePBX CDR/recording-url обращения входят
+  в `source_provider_calls_made` и общий `provider_calls_made`; `dry_run`
+  остался no-provider/no-write.
+  Добавлен `ensure_async`, API route перешел на async service call, а
+  `CallProcessingClient` получил sync/async boundary для local и HTTP
+  deployments. **Safety:** LLM2, report layer semantic logic and production
+  cutover не менялись; provider coverage выполнен через fake
+  intake/extractor/analyzer tests. **Verification:** `py_compile`; контейнерный
+  `/app/tests/test_call_processing_client.py
+  /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py`
+  -> `25 passed`; focused split pack -> `59 passed`; legacy
+  prepare-artifacts checks -> `5 passed, 240 deselected`; `docker compose
+  --profile split config`; `git diff --check`. **Residual:** live
+  provider-backed split-worker smoke, production scheduling and full
+  external-service smoke remain before cutover.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`
@@ -170,9 +190,9 @@
   `source_artifacts_updated_after_analysis` и next-agent handoff route.
   **Safety:** production cutover не выполнялся, destructive DB actions не
   выполнялись; rollback закреплен через `APP_SERVICE=monolith_legacy` и
-  `CALL_PROCESSING_MODE=legacy`. **Residual:** real provider-backed split
-  workers and full external-service live smoke still required before production
-  cutover can be called complete.
+  `CALL_PROCESSING_MODE=legacy`. **Residual:** live provider-backed
+  split-worker smoke, production scheduling and full external-service smoke
+  are still required before production cutover can be called complete.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

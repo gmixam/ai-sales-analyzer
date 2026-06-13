@@ -990,7 +990,7 @@ class CallsManualReportingOrchestrator:
         if self._allows_source_discovery(preset=preset):
             if self._call_processing_external_service_mode_enabled():
                 try:
-                    source_summary = self._ensure_call_processing_source_artifacts(
+                    source_summary = await self._ensure_call_processing_source_artifacts(
                         filters=filters,
                         period=source_period,
                         mode=normalized_mode,
@@ -1352,7 +1352,7 @@ class CallsManualReportingOrchestrator:
             max_duration_sec=filters.max_duration_sec,
         )
 
-    def _ensure_call_processing_source_artifacts(
+    async def _ensure_call_processing_source_artifacts(
         self,
         *,
         filters: ReportRunFilters,
@@ -1370,15 +1370,17 @@ class CallsManualReportingOrchestrator:
         if client is None:
             raise ASAError("CALL_PROCESSING_MODE=external_service requires CallProcessingClient.")
         ensure_mode = EnsureMode.ENSURE if mode == "build_missing_and_report" else EnsureMode.DRY_RUN
-        response = client.ensure_processed_calls(
-            self._build_call_processing_scope(filters=filters, period=period),
-            [
-                RequiredArtifactKind.TRANSCRIPT,
-                RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
-                RequiredArtifactKind.LLM1_FIRST_PASS,
-            ],
-            mode=ensure_mode,
-        )
+        scope = self._build_call_processing_scope(filters=filters, period=period)
+        required_artifacts = [
+            RequiredArtifactKind.TRANSCRIPT,
+            RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
+            RequiredArtifactKind.LLM1_FIRST_PASS,
+        ]
+        ensure_async = getattr(client, "ensure_processed_calls_async", None)
+        if callable(ensure_async):
+            response = await ensure_async(scope, required_artifacts, mode=ensure_mode)
+        else:
+            response = client.ensure_processed_calls(scope, required_artifacts, mode=ensure_mode)
         planned = dict(response.planned or {})
         interactions_total = int(planned.get("interactions_total") or 0)
         summary.update(

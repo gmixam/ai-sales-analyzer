@@ -12,6 +12,8 @@ Implemented locally:
 
 - call-processing contracts, schemas, API/CLI, local service planner, DB models
   and additive migration;
+- provider-backed first pass in the call-processing service for OnlinePBX
+  discovery, STT transcript/segments, and LLM1 first-pass artifacts;
 - analysis `CALL_PROCESSING_MODE=external_service` path for LLM1 artifact
   injection;
 - manager_daily reporting integration through `CallProcessingClient`;
@@ -20,7 +22,7 @@ Implemented locally:
 
 Not yet production-complete:
 
-- provider-backed call-processing worker jobs for OnlinePBX discovery/STT/LLM1;
+- live provider-backed split-worker smoke and production scheduling;
 - full external-service smoke for ROP weekly and scheduled reviewable reporting;
 - production secret partitioning;
 - real cutover execution.

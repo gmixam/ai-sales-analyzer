@@ -17,7 +17,7 @@ explicit operator approval.
 | --- | --- | --- |
 | 0. Repo baseline and contract skeleton | `done` | Branch created; task pack copied into repo; contract skeleton added in `app.agents.call_processing`; focused contract tests pass. |
 | 1. DB schemas, models, migrations, compatibility | `first_pass_done` | Added additive `call_core` models/tables, schema creation, transcript/transcript_segments backfill, and `call_public` compatibility views. |
-| 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
+| 2. Call-processing domain service | `provider_backed_first_pass_done` | Added repositories, ensure, source discovery, legacy backfill, STT artifact build, LLM1 first-pass artifact build, retry/stale helpers. |
 | 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
 | 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
 | 5. CallProcessingClient and analysis refactor | `first_pass_http_client_done` | Added local and HTTP client implementations plus LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
@@ -116,8 +116,9 @@ Residual risk:
 
 ## Task 2 Call-processing Domain Service
 
-First pass added the domain-service shell without provider calls or current
-analyzer/intake rewrites.
+First pass added the domain-service shell. The current pass adds provider-backed
+source discovery, STT artifact build, and LLM1 first-pass artifact build while
+preserving `dry_run` as no-provider/no-write planning.
 
 Changed:
 
@@ -126,37 +127,49 @@ Changed:
   - Added `ProcessingRunRepository` for durable run create/update/status.
   - Centralized first artifact version names.
 - `core/app/agents/call_processing/service.py`
-  - Added `CallProcessingService.ensure(scope, required_artifacts, mode)`.
+  - Added `CallProcessingService.ensure(scope, required_artifacts, mode)` and
+    async `ensure_async(...)` for API/FastAPI usage.
   - Creates a durable run for every ensure/dry-run request.
+  - In `ensure` mode, discovers OnlinePBX source calls for the scope and
+    persists missing interactions through `OnlinePBXIntake`.
+  - Counts OnlinePBX CDR/recording-url requests in both
+    `source_provider_calls_made` and total `provider_calls_made`.
   - Reuses existing active ready artifacts.
   - Backfills transcript artifacts from `Interaction.text`.
   - Backfills transcript segment artifacts from
     `Interaction.metadata_.segments`.
+  - Builds missing `transcript` and `transcript_segments` artifacts through
+    `CallsExtractor.process()` when a source interaction has audio.
+  - Builds missing `llm1_first_pass_v1` artifacts through
+    `CallsAnalyzer._request_llm1_first_pass()` only; call-processing does not
+    call LLM2 `analyze_call()`.
+  - Dependency-aware artifact order is now
+    `transcript -> transcript_segments -> llm1_first_pass`.
   - Supports `dry_run` planning without provider calls or artifact writes.
-  - Returns `EnsureResponse` with planned counts and zero provider calls made.
+  - Returns `EnsureResponse` with planned counts and provider call counts.
   - Added retry policy helpers and 30-minute stale run detection.
 - `core/app/agents/call_processing/__init__.py`
   - Exported service and retry/stale helpers.
 - `core/tests/test_call_processing_service.py`
   - Mirrored to `tests/test_call_processing_service.py`.
   - Covers idempotent artifact reuse, dry-run behavior, run persistence,
-    scope date filtering, legacy transcript backfill, retry policy, and stale
-    detection.
+    scope date filtering, legacy transcript backfill, source discovery,
+    STT transcript/segments artifact build, LLM1 first-pass artifact build
+    without LLM2, retry policy, and stale detection.
 
 Verification:
 
-- `python3 -m py_compile core/app/agents/call_processing/__init__.py core/app/agents/call_processing/schemas.py core/app/agents/call_processing/repositories.py core/app/agents/call_processing/service.py core/tests/test_call_processing_service.py tests/test_call_processing_service.py`
-- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_service.py`
-  -> `8 passed`
-- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py`
-  -> `18 passed`
+- `python3 -m py_compile core/app/agents/call_processing/client.py core/app/agents/call_processing/service.py core/app/agents/calls/reporting.py core/app/core_shared/api/routes/call_processing.py core/tests/test_call_processing_client.py core/tests/test_call_processing_service.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_client.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py`
+  -> `25 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
+  -> `59 passed`
 - `git diff --check`
 
 Residual risk:
 
-- This first pass does not discover missing calls from OnlinePBX, perform STT,
-  perform LLM-1, or update analyzer/reporting call sites. Those are intentionally
-  deferred to later task cards.
+- Real provider execution still requires live environment smoke; unit coverage
+  uses fake intake/extractor/analyzer to avoid billable calls.
 
 ## Task 3 API, CLI, Auth, Read Grants
 
@@ -259,6 +272,9 @@ Changed:
   - Added `HttpCallProcessingClient` for split analysis deployments; it calls
     `/call-processing/ensure`, `/call-processing/artifacts`, and
     `/call-processing/artifacts/{interaction_id}/llm1_first_pass`.
+  - Added async `ensure_processed_calls_async()` for local and HTTP clients so
+    async report runs can request upstream artifacts without falling back to a
+    sync call inside the active event loop.
   - Added `build_call_processing_client()` factory: monolith/default uses the
     local client, while `APP_SERVICE=analysis` +
     `CALL_PROCESSING_MODE=external_service` uses the HTTP client.
@@ -266,8 +282,9 @@ Changed:
     `call_core.call_artifacts` rows to `LLM1FirstPassPayload`.
   - Adapter requires `llm1_first_pass_v1`, active ready artifact status, object
     payload, valid payload metadata, and ready payload status.
-  - `ensure_processed_calls()` delegates to the current planner service, which
-    still reports zero provider calls made.
+  - `ensure_processed_calls()` delegates to the local/HTTP call-processing
+    service boundary; the provider-backed first pass is implemented by the
+    service in `ensure` mode, while `dry_run` remains no-provider/no-write.
 - `core/app/agents/call_processing/__init__.py`
   - Exported the client protocol, local/HTTP clients, factory, adapter, and
     artifact error.
@@ -275,8 +292,8 @@ Changed:
   - Added single-artifact read endpoint for HTTP client LLM1 lookup.
 - `core/tests/test_call_processing_client.py`
   - Mirrored to `tests/test_call_processing_client.py`.
-  - Covers ready artifact adaptation, missing artifact as `None`, ensure
-    delegation, scoped artifact reads, HTTP client ensure/read calls, and
+  - Covers ready artifact adaptation, missing artifact as `None`, sync/async
+    ensure delegation, scoped artifact reads, HTTP client ensure/read calls, and
     invalid artifact fail-closed behavior.
 
 Verification:
@@ -352,9 +369,11 @@ Verification note:
 
 Residual risk:
 
-- Current local `CallProcessingService.ensure()` is still planner/backfill-only
-  and does not yet perform OnlinePBX discovery or real STT/LLM1 provider work.
-  In `external_service` mode reporting therefore does not hide missing upstream
+- `CallProcessingService.ensure()` now has provider-backed OnlinePBX
+  discovery/STT/LLM1 first-pass behavior in `ensure` mode, but this pass used
+  fake intake/extractor/analyzer unit coverage. Live provider smoke and
+  production worker scheduling remain before cutover.
+- In `external_service` mode reporting still does not hide missing upstream
   source ingestion; it reports partial/no-data until upstream artifacts exist.
 - ROP weekly, manual pilot orchestration, manual rerun marker clearing, and
   full scheduled flow checks remain for the next Task 6/8 passes.
@@ -457,8 +476,8 @@ Verification:
 
 Residual risk:
 
-- This is a local verification pack. Production cutover, real provider-backed
-  split workers, full ROP weekly external smoke, and scheduled reviewable
+- This is a local verification pack. Production cutover, live provider-backed
+  split-worker smoke, full ROP weekly external smoke, and scheduled reviewable
   external smoke remain for Task 9/release execution.
 
 ## Task 9 Cutover/Rollback Runbook First Pass
@@ -483,5 +502,6 @@ Important status:
 
 Residual risk:
 
-- Real provider-backed split workers and full external-service live smoke are
-  still required before production cutover can be called complete.
+- Live provider-backed split-worker smoke, production scheduling, and full
+  external-service smoke are still required before production cutover can be
+  called complete.

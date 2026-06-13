@@ -20,6 +20,7 @@ from app.agents.call_processing import (
     should_retry_error,
 )
 from app.agents.call_processing.repositories import ArtifactRepository, ProcessingRunRepository
+from app.agents.calls.schemas import CDRRecord, SpeakerSegment, TranscriptResult
 from app.core_shared.db.models import Interaction
 
 
@@ -217,6 +218,208 @@ def test_missing_llm1_is_planned_without_provider_call() -> None:
     assert response.planned["artifacts_missing"] == 1
     assert response.planned["provider_calls_planned"] == 1
     assert response.planned["provider_calls_made"] == 0
+
+
+class _DiscoverySession(_FakeSession):
+    def query(self, *_args: object):
+        return self
+
+    def filter(self, *_args: object):
+        return self
+
+    def first(self):
+        return None
+
+
+class _FakeIntake:
+    def __init__(self, session: _FakeSession, scope: ProcessingScope) -> None:
+        self.session = session
+        self.scope = scope
+        self.config = SimpleNamespace(
+            allowed_statuses={"answered"},
+            allowed_directions={"out"},
+        )
+        self.recording_requests: list[str] = []
+
+    def get_cdr_list(self, day: str) -> list[CDRRecord]:
+        return [
+            CDRRecord(
+                call_id="call-1",
+                call_date=f"{day}T10:00:00+00:00",
+                duration=180,
+                talk_duration=150,
+                direction="out",
+                status="answered",
+                extension="322",
+                phone="+77070000000",
+                record_url=None,
+            )
+        ]
+
+    def get_recording_url(self, call_id: str) -> str:
+        self.recording_requests.append(call_id)
+        return f"https://recordings.test/{call_id}.mp3"
+
+    def save_interactions(self, records: list[CDRRecord]) -> tuple[int, int]:
+        for record in records:
+            self.session.scalars_rows.append(
+                _interaction(
+                    self.scope,
+                    text=None,
+                    segments=[],
+                )
+            )
+            self.session.scalars_rows[-1].external_id = record.call_id
+            self.session.scalars_rows[-1].raw_ref = record.record_url
+            self.session.scalars_rows[-1].metadata_ = {
+                "call_date": record.call_date,
+                "extension": record.extension,
+            }
+        return len(records), 0
+
+
+def test_ensure_discovers_and_persists_source_calls_in_ensure_mode() -> None:
+    scope = ProcessingScope(
+        department_id=str(uuid.uuid4()),
+        extensions=["322"],
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake_holder: dict[str, _FakeIntake] = {}
+
+    def _intake_factory(_department_id: str, db: _FakeSession) -> _FakeIntake:
+        intake = _FakeIntake(db, scope)
+        intake_holder["intake"] = intake
+        return intake
+
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=_intake_factory,
+    )
+
+    response = service.ensure(scope, [], mode=EnsureMode.ENSURE)
+
+    assert response.planned["source_days_scanned"] == 1
+    assert response.planned["source_records_total"] == 1
+    assert response.planned["source_targeted_total"] == 1
+    assert response.planned["source_ingest_created"] == 1
+    assert response.planned["source_provider_calls_made"] == 2
+    assert response.planned["provider_calls_made"] == 2
+    assert response.quota["provider_calls_made"] == 2
+    assert intake_holder["intake"].recording_requests == ["call-1"]
+    assert len(session.scalars_rows) == 1
+
+
+class _FakeExtractor:
+    async def process(self, interaction: Interaction) -> TranscriptResult:
+        interaction.text = "Клиент попросил материалы."
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "segments": [{"speaker": "A", "text": "Клиент попросил материалы.", "start_ms": 0, "end_ms": 1000}],
+            "ai_routing": {
+                "stt": {
+                    "provider": "assemblyai",
+                    "model": "best",
+                    "account_alias": "stt_main",
+                    "api_key_env": "ASSEMBLYAI_API_KEY",
+                    "provider_request_id": "stt-request-1",
+                }
+            },
+        }
+        return TranscriptResult(
+            interaction_id=str(interaction.id),
+            full_text=interaction.text,
+            segments=[
+                SpeakerSegment(
+                    speaker="A",
+                    text="Клиент попросил материалы.",
+                    start_ms=0,
+                    end_ms=1000,
+                )
+            ],
+            confidence=0.91,
+            duration_sec=60,
+        )
+
+
+def test_ensure_builds_transcript_and_segments_artifacts_via_stt() -> None:
+    scope = _scope()
+    interaction = _interaction(scope)
+    interaction.raw_ref = "https://recordings.test/call.mp3"
+    artifacts = _MemoryArtifactRepository()
+    service = CallProcessingService(
+        _FakeSession([interaction]),
+        artifacts=artifacts,
+        extractor_factory=lambda _department_id, _db: _FakeExtractor(),
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.TRANSCRIPT_SEGMENTS],
+    )
+
+    assert response.status == ProcessingRunStatus.READY
+    assert response.planned["transcripts_built"] == 1
+    assert response.planned["provider_calls_made"] == 1
+    active = {row.artifact_kind: row for row in artifacts.rows if row.is_active}
+    assert active["transcript"].text_value == "Клиент попросил материалы."
+    assert active["transcript"].provider == "assemblyai"
+    assert active["transcript_segments"].payload_json["segments"][0]["text"] == "Клиент попросил материалы."
+
+
+class _FakeAnalyzer:
+    def _request_llm1_first_pass(self, *, interaction: Interaction, instruction_version: str) -> dict:
+        interaction.metadata_ = {
+            **dict(interaction.metadata_ or {}),
+            "ai_routing": {
+                "llm1": {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "account_alias": "llm1_main",
+                    "api_key_env": "OPENAI_API_KEY_LLM1_MAIN",
+                    "provider_request_id": "llm1-request-1",
+                }
+            },
+        }
+        return {
+            "classification": {"call_type": "sales_primary"},
+            "summary": {"brief": "Клиент попросил материалы."},
+            "follow_up": {"next_step": "Отправить материалы."},
+            "data_quality": {"transcript_quality": "sufficient"},
+            "analysis_focus": ["Проверить договоренность."],
+        }
+
+    def analyze_call(self, *_args, **_kwargs):
+        raise AssertionError("call-processing LLM1 artifact build must not run LLM2 analyze_call")
+
+
+def test_ensure_builds_llm1_first_pass_artifact_without_llm2() -> None:
+    scope = _scope()
+    interaction = _interaction(scope, text="Клиент попросил материалы.")
+    artifacts = _MemoryArtifactRepository()
+    service = CallProcessingService(
+        _FakeSession([interaction]),
+        artifacts=artifacts,
+        analyzer_factory=lambda _department_id, _db: _FakeAnalyzer(),
+    )
+
+    response = service.ensure(scope, [RequiredArtifactKind.LLM1_FIRST_PASS])
+
+    assert response.status == ProcessingRunStatus.READY
+    assert response.planned["llm1_first_pass_built"] == 1
+    assert response.planned["provider_calls_made"] == 1
+    artifact = artifacts.latest_active(
+        interaction.id,
+        RequiredArtifactKind.LLM1_FIRST_PASS,
+        "llm1_first_pass_v1",
+    )
+    assert artifact is not None
+    assert artifact.provider == "openai"
+    assert artifact.payload_json["schema_version"] == "llm1_first_pass_v1"
+    assert artifact.payload_json["summary"]["brief"] == "Клиент попросил материалы."
 
 
 def test_ensure_filters_interactions_by_scope_date() -> None:

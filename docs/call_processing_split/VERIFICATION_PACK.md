@@ -118,7 +118,7 @@ Latest checks run during implementation:
 | --- | --- |
 | `test_call_processing_reporting_integration.py` | `3 passed` |
 | `test_call_processing_runtime_split.py` | `4 passed` |
-| focused call-processing/analyzer pack after HTTP boundary | `54 passed` |
+| focused call-processing/analyzer pack after provider-backed first pass | `59 passed` |
 | focused AI routing/settings pack | `7 passed, 41 deselected` |
 | legacy prepare-artifacts focused checks | `5 passed, 240 deselected` |
 | `docker compose config` | passed |
@@ -128,8 +128,9 @@ Latest checks run during implementation:
 Known non-green / not-yet-final items:
 
 - Production cutover was not executed.
-- Real split workers do not yet perform provider-backed OnlinePBX/STT/LLM1 jobs;
-  current call-processing service is planner/backfill-first.
+- Provider-backed OnlinePBX/STT/LLM1 first pass is implemented in the local
+  call-processing service and covered with fake providers; live split-worker
+  smoke and production scheduling remain.
 - ROP weekly and scheduled reviewable reporting have not yet had a full
   external-service live smoke with real artifacts.
 - Broad semantic-empty reporting tests depend on current runtime config and are
