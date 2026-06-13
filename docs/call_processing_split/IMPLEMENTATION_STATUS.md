@@ -22,7 +22,7 @@ explicit operator approval.
 | 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
 | 5. CallProcessingClient and analysis refactor | `first_pass_client_done` | Added local client abstraction and LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
 | 6. Reporting and orchestrator refactor | `first_pass_manager_daily_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. ROP/manual pilot wiring remains pending. |
-| 7. Runtime split | `pending` | Depends on Tasks 2-5. |
+| 7. Runtime split | `first_pass_compose_done` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. |
 | 8. Test matrix and verification pack | `pending` | Starts early, final pass after Tasks 1-7. |
 | 9. Cutover, rollback, runbook | `pending` | Depends on Tasks 1-8. |
 
@@ -345,3 +345,67 @@ Residual risk:
 - ROP weekly, manual pilot orchestration, late artifact markers, manual rerun
   marker clearing, and full scheduled flow checks remain for the next Task 6/8
   passes.
+
+## Task 7 Runtime Split First Pass
+
+First pass added service identity and queue separation without changing the
+default local monolith startup.
+
+Changed:
+
+- `core/app/core_shared/config/settings.py`
+  - Added `APP_SERVICE=monolith_legacy|call_processing|analysis`.
+  - Kept `CALL_PROCESSING_MODE=legacy|external_service` validation.
+  - `APP_SERVICE=analysis` requires `CALL_PROCESSING_MODE=external_service`.
+  - `APP_SERVICE=analysis` can start without OnlinePBX/STT provider secrets.
+  - `APP_SERVICE=call_processing` requires OnlinePBX and active STT provider
+    secrets, but does not require SMTP/Telegram/LLM2/LLM3 delivery secrets.
+  - Avoided importing `app.agents.call_processing` from settings to keep config
+    below DB/runtime layers.
+- `core/app/core_shared/workers/celery_app.py`
+  - Added queue constants and helpers:
+    `call_processing`, `analysis`, `calls`, `default`.
+  - Scheduled EDO reporting routes to `analysis` in split mode and `default` in
+    monolith mode.
+- `docker-compose.yml`
+  - Existing `api`, `worker`, `beat` remain the default monolith startup.
+  - Added profile `split` services:
+    `call_processing_api`, `analysis_api`,
+    `call_processing_worker`, `analysis_worker`, `analysis_beat`.
+  - Split workers listen to isolated queues:
+    `call_processing_worker -> call_processing`,
+    `analysis_worker -> analysis,default`.
+  - Added service-specific healthchecks:
+    call-processing API uses `/call-processing/health`; analysis API uses
+    `/health`.
+- `.env.example`
+  - Added `APP_SERVICE=monolith_legacy` and `CALL_PROCESSING_MODE=legacy`.
+- `core/tests/test_call_processing_runtime_split.py`
+  - Mirrored to `tests/test_call_processing_runtime_split.py`.
+  - Covers service secret boundaries and queue routing helpers.
+
+Verification:
+
+- `python3 -m py_compile core/app/core_shared/config/settings.py core/app/core_shared/workers/celery_app.py core/tests/test_call_processing_runtime_split.py tests/test_call_processing_runtime_split.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py`
+  -> `4 passed`
+- `docker compose config`
+- `git diff --check`
+
+Smoke commands for QA/release agent:
+
+```bash
+docker compose config
+docker compose up -d api worker beat
+docker compose --profile split up -d call_processing_api call_processing_worker analysis_api analysis_worker analysis_beat
+docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py
+```
+
+Residual risk:
+
+- Split services are compose-profile definitions only; production deployment,
+  real secret partitioning, real call-processing workers, and source/STT/LLM1
+  task implementation still require later Task 7/8 passes.
+- Existing unprofiled monolith services still start unless the operator targets
+  split services explicitly. This preserves pilot rollback but is not yet a
+  production deployment topology.

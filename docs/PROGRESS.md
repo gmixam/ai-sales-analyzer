@@ -120,6 +120,22 @@
   реального OnlinePBX discovery/STT/LLM1 provider work; ROP weekly, manual
   pilot, late-artifact marker and full scheduled smoke остаются следующими
   passes.
+- [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
+  добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
+  service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`
+  стартует только с `CALL_PROCESSING_MODE=external_service` и не требует
+  OnlinePBX/STT secrets, `APP_SERVICE=call_processing` требует source/STT
+  secrets, но не требует SMTP/Telegram/LLM2/LLM3. В `docker-compose.yml`
+  добавлены profile `split` сервисы `call_processing_api`,
+  `analysis_api`, `call_processing_worker`, `analysis_worker`,
+  `analysis_beat`; default monolith services сохранены. **Queues:**
+  `call_processing_worker -> call_processing`, `analysis_worker ->
+  analysis,default`, scheduled EDO scan routes to `analysis` in split mode.
+  **Verification:** `py_compile`, `docker compose config`, контейнерный
+  `/app/tests/test_call_processing_runtime_split.py` -> `4 passed`,
+  `git diff --check`. **Residual:** это compose/config first pass, не
+  production cutover; реальные call-processing worker tasks и secret
+  partitioning остаются следующими passes.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

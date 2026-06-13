@@ -41,6 +41,9 @@ services:
     command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
+    environment:
+      APP_SERVICE: ${APP_SERVICE:-monolith_legacy}
+      CALL_PROCESSING_MODE: ${CALL_PROCESSING_MODE:-legacy}
     restart: unless-stopped
     volumes:
       - ./core:/app
@@ -65,9 +68,12 @@ services:
   worker:
     build: ./core
     container_name: ${COMPOSE_PROJECT_NAME}_worker
-    command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=4 -Q calls,default
+    command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=4 -Q calls,default,analysis,call_processing
     env_file:
       - .env
+    environment:
+      APP_SERVICE: ${APP_SERVICE:-monolith_legacy}
+      CALL_PROCESSING_MODE: ${CALL_PROCESSING_MODE:-legacy}
     restart: unless-stopped
     volumes:
       - ./core:/app
@@ -87,6 +93,9 @@ services:
     command: celery -A app.core_shared.workers.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
     env_file:
       - .env
+    environment:
+      APP_SERVICE: ${APP_SERVICE:-monolith_legacy}
+      CALL_PROCESSING_MODE: ${CALL_PROCESSING_MODE:-legacy}
     restart: unless-stopped
     volumes:
       - ./core:/app
@@ -117,6 +126,134 @@ services:
     depends_on:
       worker:
         condition: service_started
+    networks:
+      - asa_network
+
+  call_processing_api:
+    profiles: ["split"]
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_call_processing_api
+    command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      APP_SERVICE: call_processing
+      CALL_PROCESSING_MODE: legacy
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/call-processing/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      asa_network:
+        aliases:
+          - asa_call_processing_api
+
+  analysis_api:
+    profiles: ["split"]
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_analysis_api
+    command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      APP_SERVICE: analysis
+      CALL_PROCESSING_MODE: external_service
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      asa_network:
+        aliases:
+          - asa_analysis_api
+
+  call_processing_worker:
+    profiles: ["split"]
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_call_processing_worker
+    command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=2 -Q call_processing
+    env_file:
+      - .env
+    environment:
+      APP_SERVICE: call_processing
+      CALL_PROCESSING_MODE: legacy
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - asa_network
+
+  analysis_worker:
+    profiles: ["split"]
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_analysis_worker
+    command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=4 -Q analysis,default
+    env_file:
+      - .env
+    environment:
+      APP_SERVICE: analysis
+      CALL_PROCESSING_MODE: external_service
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - asa_network
+
+  analysis_beat:
+    profiles: ["split"]
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_analysis_beat
+    command: celery -A app.core_shared.workers.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
+    env_file:
+      - .env
+    environment:
+      APP_SERVICE: analysis
+      CALL_PROCESSING_MODE: external_service
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
+      - asa_beat_data:/var/run/celery
+    depends_on:
+      analysis_worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - asa_network
 

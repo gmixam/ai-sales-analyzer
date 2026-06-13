@@ -10,6 +10,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core_shared.exceptions import ConfigurationError
 
+APP_SERVICE_CALL_PROCESSING = "call_processing"
+APP_SERVICE_ANALYSIS = "analysis"
+APP_SERVICE_MONOLITH_LEGACY = "monolith_legacy"
+APP_SERVICE_VALUES = (
+    APP_SERVICE_CALL_PROCESSING,
+    APP_SERVICE_ANALYSIS,
+    APP_SERVICE_MONOLITH_LEGACY,
+)
+CALL_PROCESSING_MODE_VALUES = ("legacy", "external_service")
+
 
 class Settings(BaseSettings):
     """Centralized application settings for AI Sales Analyzer."""
@@ -22,6 +32,7 @@ class Settings(BaseSettings):
     )
 
     # App
+    app_service: str = Field(default=APP_SERVICE_MONOLITH_LEGACY)
     app_env: str = Field(default="production")
     log_level: str = Field(default="INFO")
     compose_project_name: str = Field(default="asa")
@@ -37,7 +48,7 @@ class Settings(BaseSettings):
     redis_password: str
 
     # OpenAI
-    openai_api_key: str
+    openai_api_key: str = Field(default="")
     openai_model_classify: str = Field(default="gpt-4o-mini")
     openai_model_analyze: str = Field(default="gpt-4o")
     openai_model_stt: str = Field(default="whisper-1")
@@ -51,7 +62,7 @@ class Settings(BaseSettings):
     stt_language: str = Field(default="ru")
 
     # AssemblyAI
-    assemblyai_api_key: str
+    assemblyai_api_key: str = Field(default="")
     assemblyai_language: str = Field(default="ru")
 
     # AI routing
@@ -92,8 +103,8 @@ class Settings(BaseSettings):
     call_processing_mode: str = Field(default="legacy")
 
     # OnlinePBX
-    onlinepbx_domain: str
-    onlinepbx_api_key: str
+    onlinepbx_domain: str = Field(default="")
+    onlinepbx_api_key: str = Field(default="")
     onlinepbx_base_url: str = Field(default="")
     onlinepbx_api_base_url: str = Field(default="")
     onlinepbx_cdr_url: str = Field(default="")
@@ -127,6 +138,18 @@ class Settings(BaseSettings):
     calls_min_duration_sec: int = Field(default=180, ge=1)
     calls_max_daily_per_manager: int = Field(default=20, ge=1)
     calls_weekly_pack_size: int = Field(default=15, ge=1)
+
+    @field_validator("app_service")
+    @classmethod
+    def validate_app_service(cls, value: str) -> str:
+        """Normalize and validate the runtime service identity."""
+        normalized = value.strip().lower()
+        if normalized not in APP_SERVICE_VALUES:
+            allowed_values = ", ".join(sorted(APP_SERVICE_VALUES))
+            raise ConfigurationError(
+                f"Invalid APP_SERVICE value '{value}'. Expected one of: {allowed_values}."
+            )
+        return normalized
 
     @field_validator("app_env")
     @classmethod
@@ -181,13 +204,46 @@ class Settings(BaseSettings):
     def validate_call_processing_mode(cls, value: str) -> str:
         """Normalize and validate analysis-side call-processing ownership mode."""
         normalized = value.strip().lower()
-        allowed = {"legacy", "external_service"}
-        if normalized not in allowed:
-            allowed_values = ", ".join(sorted(allowed))
+        if normalized not in CALL_PROCESSING_MODE_VALUES:
+            allowed_values = ", ".join(sorted(CALL_PROCESSING_MODE_VALUES))
             raise ConfigurationError(
                 f"Invalid CALL_PROCESSING_MODE value '{value}'. Expected one of: {allowed_values}."
             )
         return normalized
+
+    @model_validator(mode="after")
+    def validate_service_secret_boundaries(self) -> Settings:
+        """Enforce only the secrets required by the selected service identity."""
+        if self.app_service in {
+            APP_SERVICE_CALL_PROCESSING,
+            APP_SERVICE_MONOLITH_LEGACY,
+        }:
+            if not self.onlinepbx_domain.strip():
+                raise ConfigurationError(
+                    "ONLINEPBX_DOMAIN is required for APP_SERVICE=call_processing or monolith_legacy."
+                )
+            if not self.onlinepbx_api_key.strip():
+                raise ConfigurationError(
+                    "ONLINEPBX_API_KEY is required for APP_SERVICE=call_processing or monolith_legacy."
+                )
+            if self.stt_provider == "assemblyai" and not self.assemblyai_api_key.strip():
+                raise ConfigurationError(
+                    "ASSEMBLYAI_API_KEY is required when STT_PROVIDER=assemblyai for "
+                    "APP_SERVICE=call_processing or monolith_legacy."
+                )
+            if self.stt_provider == "openai" and not self.openai_api_key.strip():
+                raise ConfigurationError(
+                    "OPENAI_API_KEY is required when STT_PROVIDER=openai for "
+                    "APP_SERVICE=call_processing or monolith_legacy."
+                )
+        if (
+            self.app_service == APP_SERVICE_ANALYSIS
+            and self.call_processing_mode != "external_service"
+        ):
+            raise ConfigurationError(
+                "APP_SERVICE=analysis requires CALL_PROCESSING_MODE=external_service."
+            )
+        return self
 
     @field_validator(
         "manual_pilot_extensions",
@@ -213,6 +269,9 @@ class Settings(BaseSettings):
             return self
 
         domain = self.onlinepbx_domain.strip()
+        if not domain:
+            self.onlinepbx_base_url = ""
+            return self
         host = self._extract_host(domain)
         if host.endswith(".onlinepbx.ru") or host.endswith(".onpbx.ru"):
             self.onlinepbx_base_url = f"https://{host}/api"
