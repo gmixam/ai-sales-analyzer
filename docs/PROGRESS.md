@@ -136,6 +136,22 @@
   `git diff --check`. **Residual:** это compose/config first pass, не
   production cutover; реальные call-processing worker tasks и secret
   partitioning остаются следующими passes.
+- [x] 2026-06-13 — Выполнен first pass Task 8 verification pack. **Изменение:**
+  добавлен `docs/call_processing_split/VERIFICATION_PACK.md` с acceptance
+  matrix, copy-paste командами pytest/py_compile/compose/diff-check, legacy
+  rollback smoke, split compose smoke, call-processing dry-run smoke и
+  manager_daily external-service preview smoke через реальный
+  `app.agents.calls.manual_reporting_runner`. Дополнительно внедрен late
+  artifact marker: если ready upstream artifact обновился после сохраненного
+  EDO analysis, build summary/errors получает
+  `source_artifacts_updated_after_analysis`, но автоматический rerun не
+  запускается. **Verification:** reporting integration -> `3 passed`,
+  runtime split -> `4 passed`, focused call-processing/analyzer pack ->
+  `51 passed`, AI routing/settings focused -> `7 passed, 41 deselected`,
+  `docker compose config`, `docker compose --profile split config`,
+  `git diff --check`. **Residual:** full production cutover, real
+  provider-backed split workers, ROP weekly external smoke and scheduled
+  reviewable external smoke остаются Task 9/release execution.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

@@ -23,7 +23,7 @@ explicit operator approval.
 | 5. CallProcessingClient and analysis refactor | `first_pass_client_done` | Added local client abstraction and LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
 | 6. Reporting and orchestrator refactor | `first_pass_manager_daily_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. ROP/manual pilot wiring remains pending. |
 | 7. Runtime split | `first_pass_compose_done` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. |
-| 8. Test matrix and verification pack | `pending` | Starts early, final pass after Tasks 1-7. |
+| 8. Test matrix and verification pack | `first_pass_done` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
 | 9. Cutover, rollback, runbook | `pending` | Depends on Tasks 1-8. |
 
 ## Task 0 Contract Skeleton
@@ -309,6 +309,9 @@ Changed:
   - Missing/invalid upstream LLM1 artifacts stay visible as partial source
     status (`llm1_first_pass_missing` / `llm1_first_pass_invalid`) and do not
     make the call disappear from report artifacts.
+  - Late ready upstream artifacts with `source_updated_at` later than reused
+    EDO analysis `created_at` mark the affected call as
+    `source_artifacts_updated_after_analysis` without automatic rerun.
   - Legacy mode keeps the previous direct STT and runtime LLM1 path; the new
     `llm1_first_pass_artifact` keyword is not passed in legacy mode.
   - Observability now separates external upstream LLM1 reuse/missing counters
@@ -342,9 +345,8 @@ Residual risk:
   and does not yet perform OnlinePBX discovery or real STT/LLM1 provider work.
   In `external_service` mode reporting therefore does not hide missing upstream
   source ingestion; it reports partial/no-data until upstream artifacts exist.
-- ROP weekly, manual pilot orchestration, late artifact markers, manual rerun
-  marker clearing, and full scheduled flow checks remain for the next Task 6/8
-  passes.
+- ROP weekly, manual pilot orchestration, manual rerun marker clearing, and
+  full scheduled flow checks remain for the next Task 6/8 passes.
 
 ## Task 7 Runtime Split First Pass
 
@@ -409,3 +411,38 @@ Residual risk:
 - Existing unprofiled monolith services still start unless the operator targets
   split services explicitly. This preserves pilot rollback but is not yet a
   production deployment topology.
+
+## Task 8 Verification Pack First Pass
+
+First pass added a reproducible release-check document:
+
+- `docs/call_processing_split/VERIFICATION_PACK.md`
+  - Acceptance matrix for DB, processing, API/auth, LLM1 contract, analysis
+    integration, reporting, runtime, and rollback.
+  - Copy-paste pytest, `py_compile`, compose config, and diff-check commands.
+  - Local legacy rollback smoke and split compose smoke commands.
+  - Call-processing dry-run CLI smoke command.
+  - Manager-daily external-service preview smoke command using the real
+    `app.agents.calls.manual_reporting_runner` module.
+  - Current verification report with run results and non-green/not-yet-final
+    items.
+
+Verification:
+
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_reporting_integration.py`
+  -> `3 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py`
+  -> `4 passed`
+- Focused call-processing/analyzer pack after runtime split:
+  `51 passed`
+- Focused AI routing/settings pack:
+  `7 passed, 41 deselected`
+- `docker compose config`
+- `docker compose --profile split config`
+- `git diff --check`
+
+Residual risk:
+
+- This is a local verification pack. Production cutover, real provider-backed
+  split workers, full ROP weekly external smoke, and scheduled reviewable
+  external smoke remain for Task 9/release execution.

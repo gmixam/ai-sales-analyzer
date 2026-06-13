@@ -1331,6 +1331,7 @@ class CallsManualReportingOrchestrator:
             "llm1_first_pass_reused_for_analysis": 0,
             "missing_llm1_first_pass_before_analysis": 0,
             "invalid_llm1_first_pass_before_analysis": 0,
+            "source_artifacts_updated_after_analysis": 0,
         }
 
     def _build_call_processing_scope(
@@ -1677,12 +1678,49 @@ class CallsManualReportingOrchestrator:
         *,
         interactions: list[Interaction],
         client: CallProcessingClient,
+        artifact_rows: list[Any] | None = None,
     ) -> dict[str, int]:
         """Fill missing `interaction.text` from ready upstream transcript artifacts."""
+        rows = artifact_rows
+        if rows is None:
+            rows = self._load_call_processing_artifacts_from_client(
+                interactions=interactions,
+                client=client,
+                required_artifacts=[RequiredArtifactKind.TRANSCRIPT],
+            )
+        return self._hydrate_transcripts_from_call_processing_rows(
+            interactions=interactions,
+            rows=rows,
+        )
+
+    def _load_call_processing_artifacts_from_client(
+        self,
+        *,
+        interactions: list[Interaction],
+        client: CallProcessingClient,
+        required_artifacts: list[RequiredArtifactKind] | None = None,
+    ) -> list[Any]:
+        """Load ready/missing upstream artifact rows for the selected report calls."""
         scope = self._build_scope_from_selected_interactions(interactions=interactions)
         if scope is None:
-            return {"artifacts_ready": 0, "artifacts_missing": 0, "artifacts_backfilled": 0}
-        rows = client.get_processed_artifacts(scope, [RequiredArtifactKind.TRANSCRIPT])
+            return []
+        return client.get_processed_artifacts(
+            scope,
+            required_artifacts
+            or [
+                RequiredArtifactKind.TRANSCRIPT,
+                RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
+                RequiredArtifactKind.LLM1_FIRST_PASS,
+            ],
+        )
+
+    @staticmethod
+    def _hydrate_transcripts_from_call_processing_rows(
+        *,
+        interactions: list[Interaction],
+        rows: list[Any],
+    ) -> dict[str, int]:
+        """Fill missing `interaction.text` from already loaded transcript rows."""
         by_interaction = {
             str(getattr(row, "interaction_id", "")): row
             for row in rows
@@ -1710,6 +1748,57 @@ class CallsManualReportingOrchestrator:
             "artifacts_missing": max(len(selected_ids) - ready, 0),
             "artifacts_backfilled": hydrated,
         }
+
+    @staticmethod
+    def _coerce_aware_utc(value: Any) -> datetime | None:
+        """Normalize persisted timestamps before late-artifact comparisons."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    @classmethod
+    def _latest_source_update_by_interaction(cls, rows: list[Any]) -> dict[str, datetime]:
+        """Return latest upstream artifact update timestamp by interaction id."""
+        latest: dict[str, datetime] = {}
+        for row in rows:
+            if getattr(row, "status", None) != ArtifactStatus.READY.value:
+                continue
+            interaction_id = str(getattr(row, "interaction_id", "") or "")
+            if not interaction_id:
+                continue
+            timestamp = cls._coerce_aware_utc(
+                getattr(row, "source_updated_at", None) or getattr(row, "updated_at", None)
+            )
+            if timestamp is None:
+                continue
+            if interaction_id not in latest or timestamp > latest[interaction_id]:
+                latest[interaction_id] = timestamp
+        return latest
+
+    @classmethod
+    def _analysis_has_late_source_update(
+        cls,
+        *,
+        analysis: Analysis | None,
+        latest_source_update: datetime | None,
+    ) -> bool:
+        """Return True when upstream source artifacts are newer than EDO analysis."""
+        if analysis is None or latest_source_update is None:
+            return False
+        created_at = cls._coerce_aware_utc(getattr(analysis, "created_at", None))
+        if created_at is None:
+            return False
+        return latest_source_update > created_at
 
     async def _prepare_artifacts(
         self,
@@ -1741,10 +1830,20 @@ class CallsManualReportingOrchestrator:
         if call_processing_external_mode:
             if call_processing_client is None:
                 raise ASAError("CALL_PROCESSING_MODE=external_service requires CallProcessingClient.")
-            call_processing_artifact_stats = self._hydrate_transcripts_from_call_processing(
+            call_processing_artifact_rows = self._load_call_processing_artifacts_from_client(
                 interactions=interactions,
                 client=call_processing_client,
             )
+            call_processing_artifact_stats = self._hydrate_transcripts_from_call_processing(
+                interactions=interactions,
+                client=call_processing_client,
+                artifact_rows=call_processing_artifact_rows,
+            )
+            late_source_updates_by_interaction = self._latest_source_update_by_interaction(
+                call_processing_artifact_rows
+            )
+        else:
+            late_source_updates_by_interaction = {}
 
         built_transcripts = 0
         reused_transcripts = 0
@@ -1762,6 +1861,7 @@ class CallsManualReportingOrchestrator:
         llm1_first_pass_reused_for_analysis = 0
         missing_llm1_first_pass_before_analysis = 0
         invalid_llm1_first_pass_before_analysis = 0
+        source_artifacts_updated_after_analysis = 0
         build_errors: list[str] = []
         artifacts: list[ReportArtifact] = []
         for interaction in interactions:
@@ -1778,6 +1878,17 @@ class CallsManualReportingOrchestrator:
             )
             if reusable_analysis:
                 reused_analyses += 1
+                if self._analysis_has_late_source_update(
+                    analysis=analysis,
+                    latest_source_update=late_source_updates_by_interaction.get(
+                        str(interaction.id)
+                    ),
+                ):
+                    source_artifacts_updated_after_analysis += 1
+                    analysis_reuse_reason = "source_artifacts_updated_after_analysis"
+                    build_errors.append(
+                        f"source_artifacts_updated_after_analysis:{interaction.id}"
+                    )
             else:
                 missing_analyses_before_build += 1
                 if analysis is not None:
@@ -2047,6 +2158,9 @@ class CallsManualReportingOrchestrator:
                 ),
                 "invalid_llm1_first_pass_before_analysis": (
                     invalid_llm1_first_pass_before_analysis
+                ),
+                "source_artifacts_updated_after_analysis": (
+                    source_artifacts_updated_after_analysis
                 ),
             },
             build_errors,

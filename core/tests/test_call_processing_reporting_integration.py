@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.agents.call_processing import LLM1FirstPassPayload
+from app.agents.call_processing import ArtifactKind, ArtifactStatus, LLM1FirstPassPayload
 from app.agents.calls.reporting import (
     CallsManualReportingOrchestrator,
     ReportRunFilters,
@@ -40,6 +41,7 @@ def _analysis() -> SimpleNamespace:
         score_total=80.0,
         is_failed=False,
         fail_reason=None,
+        created_at=datetime(2026, 6, 3, 10, 10, tzinfo=UTC),
         scores_detail={
             "classification": {"call_type": "sales_primary"},
             "score": {"checklist_score": {"score_percent": 80.0}},
@@ -67,8 +69,14 @@ def _llm1_payload() -> LLM1FirstPassPayload:
 
 
 class _FakeCallProcessingClient:
-    def __init__(self, *, payload: LLM1FirstPassPayload | None) -> None:
+    def __init__(
+        self,
+        *,
+        payload: LLM1FirstPassPayload | None,
+        rows: list[SimpleNamespace] | None = None,
+    ) -> None:
         self.payload = payload
+        self.rows = rows or []
         self.artifact_reads = 0
         self.llm1_reads: list[str] = []
 
@@ -77,7 +85,7 @@ class _FakeCallProcessingClient:
 
     def get_processed_artifacts(self, *_args, **_kwargs):
         self.artifact_reads += 1
-        return []
+        return self.rows
 
     def get_llm1_first_pass_artifact(self, interaction_id):
         self.llm1_reads.append(str(interaction_id))
@@ -174,3 +182,49 @@ def test_prepare_artifacts_external_service_missing_llm1_is_partial_not_provider
     assert build_summary["analyses_built"] == 0
     assert build_summary["missing_llm1_first_pass_before_analysis"] == 1
     assert build_errors == [f"llm1_first_pass_missing:{interaction.id}"]
+
+
+def test_prepare_artifacts_marks_late_source_artifacts_without_auto_rerun() -> None:
+    interaction = _interaction()
+    ready_analysis = _analysis()
+    ready_analysis.interaction_id = interaction.id
+    ready_analysis.created_at = datetime(2026, 6, 3, 10, 10, tzinfo=UTC)
+    late_row = SimpleNamespace(
+        interaction_id=interaction.id,
+        artifact_kind=ArtifactKind.LLM1_FIRST_PASS.value,
+        status=ArtifactStatus.READY.value,
+        is_active=True,
+        source_updated_at=datetime(2026, 6, 3, 10, 30, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 3, 10, 30, tzinfo=UTC),
+    )
+    client = _FakeCallProcessingClient(payload=_llm1_payload(), rows=[late_row])
+    orchestrator = _make_orchestrator(client)
+    orchestrator.analyzer = SimpleNamespace(
+        analyze_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("late marker must not automatically rerun analysis")
+        )
+    )
+    setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **_kwargs: {interaction.id: ready_analysis})
+
+    previous = os.environ.get("CALL_PROCESSING_MODE")
+    os.environ["CALL_PROCESSING_MODE"] = "external_service"
+    try:
+        artifacts, build_summary, build_errors = asyncio.run(
+            CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+            )
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("CALL_PROCESSING_MODE", None)
+        else:
+            os.environ["CALL_PROCESSING_MODE"] = previous
+
+    assert artifacts[0].analysis is ready_analysis
+    assert artifacts[0].analysis_reuse_reason == "source_artifacts_updated_after_analysis"
+    assert build_summary["analyses_reused"] == 1
+    assert build_summary["source_artifacts_updated_after_analysis"] == 1
+    assert build_errors == [f"source_artifacts_updated_after_analysis:{interaction.id}"]
