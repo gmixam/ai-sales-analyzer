@@ -21,7 +21,7 @@ explicit operator approval.
 | 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
 | 4. Extract LLM-1 from analyzer runtime | `first_pass_done` | `CALL_PROCESSING_MODE=legacy` keeps runtime LLM-1; `external_service` consumes injected `llm1_first_pass_v1`. |
 | 5. CallProcessingClient and analysis refactor | `first_pass_http_client_done` | Added local and HTTP client implementations plus LLM-1 artifact adapter; reporting/orchestrator wiring continues through Task 6. |
-| 6. Reporting and orchestrator refactor | `first_pass_manager_daily_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. ROP/manual pilot wiring remains pending. |
+| 6. Reporting and orchestrator refactor | `first_pass_manager_daily_rop_done` | `manager_daily` external mode calls `CallProcessingClient`, consumes transcript/LLM1 artifacts, and keeps legacy path intact. `rop_weekly` is explicitly persisted-only in both modes. Manual pilot wiring remains pending. |
 | 7. Runtime split | `first_pass_compose_done` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. |
 | 8. Test matrix and verification pack | `first_pass_done` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
 | 9. Cutover, rollback, runbook | `first_pass_runbook_done` | Added cutover/rollback runbook and next-agent handoff. Production cutover not executed. |
@@ -344,19 +344,25 @@ Changed:
     `llm1_first_pass_artifact` keyword is not passed in legacy mode.
   - Observability now separates external upstream LLM1 reuse/missing counters
     from EDO LLM2 analysis builds.
+  - `rop_weekly` remains persisted-only in both legacy and `external_service`
+    modes: weekly reporting does not call call-processing `ensure`, does not
+    source-discover, and does not build new STT/LLM1/LLM2 artifacts.
 - `core/tests/test_call_processing_reporting_integration.py`
   - Mirrored to `tests/test_call_processing_reporting_integration.py`.
   - Covers ready LLM1 artifact injection without reporting-local STT and
     missing LLM1 artifact as partial/no-analysis rather than a crash or hidden
     provider call.
+  - Covers manager_daily async `ensure` source summary mapping and
+    `rop_weekly` external mode persisted-only behavior without call-processing
+    `ensure`.
 
 Verification:
 
 - `python3 -m py_compile core/app/agents/calls/reporting.py core/tests/test_call_processing_reporting_integration.py tests/test_call_processing_reporting_integration.py`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_reporting_integration.py`
-  -> `2 passed`
-- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_llm2_layered_runtime.py`
-  -> `47 passed`
+  -> `5 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
+  -> `61 passed`
 - Legacy focused reporting checks for contract/quota/source-audio branches:
   `5 passed, 287 deselected`
 - `git diff --check`
@@ -375,8 +381,8 @@ Residual risk:
   production worker scheduling remain before cutover.
 - In `external_service` mode reporting still does not hide missing upstream
   source ingestion; it reports partial/no-data until upstream artifacts exist.
-- ROP weekly, manual pilot orchestration, manual rerun marker clearing, and
-  full scheduled flow checks remain for the next Task 6/8 passes.
+- Manual pilot orchestration, manual rerun marker clearing, and full scheduled
+  flow checks remain for the next Task 6/8 passes.
 
 ## Task 7 Runtime Split First Pass
 

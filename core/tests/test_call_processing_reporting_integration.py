@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.agents.call_processing import ArtifactKind, ArtifactStatus, LLM1FirstPassPayload
+from app.agents.call_processing.schemas import EnsureMode, EnsureResponse, ProcessingRunStatus
 from app.agents.calls.reporting import (
     CallsManualReportingOrchestrator,
     ReportRunFilters,
@@ -90,6 +91,44 @@ class _FakeCallProcessingClient:
     def get_llm1_first_pass_artifact(self, interaction_id):
         self.llm1_reads.append(str(interaction_id))
         return self.payload
+
+
+class _FakeEnsureClient:
+    def __init__(self) -> None:
+        self.ensure_calls: list[dict[str, object]] = []
+
+    def ensure_processed_calls(self, *_args, **_kwargs):
+        raise AssertionError("reporting should use async ensure in async run path")
+
+    async def ensure_processed_calls_async(self, scope, required_artifacts, mode=EnsureMode.ENSURE):
+        self.ensure_calls.append(
+            {
+                "scope": scope,
+                "required_artifacts": list(required_artifacts),
+                "mode": mode,
+            }
+        )
+        return EnsureResponse(
+            run_id="run-ensure",
+            status=ProcessingRunStatus.READY,
+            scope_hash="hash-ensure",
+            requested_by="edo-analysis-reporting",
+            planned={
+                "interactions_total": 3,
+                "artifacts_ready": 6,
+                "artifacts_missing": 1,
+                "artifacts_backfilled": 2,
+            },
+            quota={"provider_calls_made": 4},
+        )
+
+
+class _NoEnsureClient:
+    def ensure_processed_calls(self, *_args, **_kwargs):
+        raise AssertionError("rop_weekly must not call call-processing ensure")
+
+    async def ensure_processed_calls_async(self, *_args, **_kwargs):
+        raise AssertionError("rop_weekly must not call call-processing ensure")
 
 
 def _make_orchestrator(client: _FakeCallProcessingClient) -> CallsManualReportingOrchestrator:
@@ -228,3 +267,89 @@ def test_prepare_artifacts_marks_late_source_artifacts_without_auto_rerun() -> N
     assert build_summary["analyses_reused"] == 1
     assert build_summary["source_artifacts_updated_after_analysis"] == 1
     assert build_errors == [f"source_artifacts_updated_after_analysis:{interaction.id}"]
+
+
+def test_manager_daily_external_service_ensure_uses_async_client_and_exposes_source_summary() -> None:
+    client = _FakeEnsureClient()
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    orchestrator.call_processing_client = client
+
+    summary = asyncio.run(
+        CallsManualReportingOrchestrator._ensure_call_processing_source_artifacts(
+            orchestrator,
+            filters=ReportRunFilters(
+                manager_extensions={"322"},
+                date_from="2026-06-03",
+                date_to="2026-06-03",
+                min_duration_sec=30,
+            ),
+            period={"date_from": "2026-06-03", "date_to": "2026-06-03"},
+            mode="build_missing_and_report",
+        )
+    )
+
+    assert len(client.ensure_calls) == 1
+    assert client.ensure_calls[0]["mode"] == EnsureMode.ENSURE
+    assert summary["call_processing_mode"] == "external_service"
+    assert summary["call_processing_run_id"] == "run-ensure"
+    assert summary["call_processing_artifacts_ready"] == 6
+    assert summary["call_processing_artifacts_missing"] == 1
+    assert summary["call_processing_artifacts_backfilled"] == 2
+    assert summary["call_processing_provider_calls_made"] == 4
+    assert summary["targeted_source_records_total"] == 3
+
+
+def test_rop_weekly_external_service_remains_persisted_only_and_does_not_ensure() -> None:
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    orchestrator.call_processing_client = _NoEnsureClient()
+    orchestrator.db = SimpleNamespace()
+    setattr(
+        orchestrator,
+        "_collect_run_diagnostics_context",
+        lambda **kwargs: {
+            "department_id": str(orchestrator.department_id),
+            "department_name": "Pilot Department",
+            "preset": kwargs["preset"].code,
+            "execution_model": CallsManualReportingOrchestrator._resolve_execution_model(
+                preset=kwargs["preset"]
+            ),
+            "mode": kwargs["mode"],
+            "period": kwargs["period"],
+            "analysis_instruction_version": None,
+            "selected_manager_ids": [],
+            "selected_manager_extensions": [],
+            "manager_filter_logic": "department_scope",
+            "missing_local_manager_ids": [],
+            "period_only_interactions_count": 0,
+            "manager_only_interactions_count": 0,
+            "extension_only_interactions_count": 0,
+        },
+    )
+    setattr(orchestrator, "_select_interactions", lambda **_kwargs: [])
+
+    previous = os.environ.get("CALL_PROCESSING_MODE")
+    os.environ["CALL_PROCESSING_MODE"] = "external_service"
+    try:
+        result = asyncio.run(
+            CallsManualReportingOrchestrator.run_report(
+                orchestrator,
+                preset_code="rop_weekly",
+                mode="build_missing_and_report",
+                filters=ReportRunFilters(date_from="2026-06-01", date_to="2026-06-07"),
+                delivery_mode="preview_only",
+            )
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("CALL_PROCESSING_MODE", None)
+        else:
+            os.environ["CALL_PROCESSING_MODE"] = previous
+
+    assert result["preset"] == "rop_weekly"
+    assert result["status"] == "no_data"
+    assert result["observability"]["summary"]["source"]["execution_model"] == "persisted_only"
+    assert "call_processing_mode" not in result["observability"]["summary"]["source"]
+    assert result["diagnostics"]["execution_model"] == "persisted_only"
+    assert any("rop_weekly uses persisted-only execution" in note for note in result["diagnostics"]["notes"])

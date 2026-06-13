@@ -140,6 +140,18 @@
   --profile split config`; `git diff --check`. **Residual:** live
   provider-backed split-worker smoke, production scheduling and full
   external-service smoke remain before cutover.
+- [x] 2026-06-13 — Доработан Task 6 reporting/orchestrator split coverage.
+  **Изменение:** закреплено, что `manager_daily` в `external_service` вызывает
+  async `CallProcessingClient.ensure_processed_calls_async()` и переносит
+  source/quota summary в observability, а `rop_weekly` остается persisted-only
+  даже в `CALL_PROCESSING_MODE=external_service`: не вызывает call-processing
+  ensure, не делает source discovery и не запускает новые STT/LLM1/LLM2 builds.
+  **Verification:** `python3 -m py_compile
+  core/tests/test_call_processing_reporting_integration.py`; контейнерный
+  `/app/tests/test_call_processing_reporting_integration.py` -> `5 passed`;
+  focused split pack -> `61 passed`. **Residual:** manual pilot orchestration,
+  manual rerun marker clearing and scheduled full-flow smoke remain before
+  cutover.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`
