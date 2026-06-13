@@ -187,8 +187,18 @@
   `py_compile` по service/cli/api/tests; контейнерный
   `/app/tests/test_call_processing_service.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_api.py`
   -> `23 passed`; focused split pack -> `67 passed`. **Residual:** queue-backed
-  retry workers remain optional operational hardening; scheduled full-flow smoke
-  remains before cutover.
+  retry workers remain optional operational hardening; scheduled focused checks
+  and live-smoke status are captured by the next 2026-06-13 verification sweep.
+- [x] 2026-06-13 — Выполнен финальный local verification sweep для
+  call-processing / analysis split branch. **Проверки:** focused split pack
+  (`contracts/db/service/api/cli/llm1/client/reporting/manual-boundary/manual-runner/runtime/llm2`)
+  -> `67 passed`; AI routing/settings pack -> `48 passed`; legacy
+  prepare-artifacts + scheduled/reviewable focused checks -> `28 passed, 217
+  deselected`; `docker compose config`; `docker compose --profile split
+  config`; `git diff --check`. **Residual:** production cutover, live
+  provider-backed split-worker smoke, full ROP weekly external smoke and
+  scheduled reviewable external smoke with real artifacts remain release-time
+  execution steps, not local unit acceptance.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`

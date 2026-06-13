@@ -410,7 +410,8 @@ Residual risk:
   production worker scheduling remain before cutover.
 - In `external_service` mode reporting still does not hide missing upstream
   source ingestion; it reports partial/no-data until upstream artifacts exist.
-- Full scheduled flow checks remain for the next Task 6/8 passes.
+- Scheduled/reviewable focused checks are green; full external-service live
+  smoke with real artifacts remains for release execution.
 
 ## Task 7 Runtime Split First Pass
 
@@ -500,10 +501,12 @@ Verification:
   -> `3 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py`
   -> `4 passed`
-- Focused call-processing/analyzer pack after runtime split:
-  `51 passed`
+- Focused call-processing/analyzer pack after retry-failed recovery pass:
+  `67 passed`
 - Focused AI routing/settings pack:
-  `7 passed, 41 deselected`
+  `48 passed`
+- Legacy prepare-artifacts + scheduled/reviewable focused checks:
+  `28 passed, 217 deselected`
 - `docker compose config`
 - `docker compose --profile split config`
 - `git diff --check`

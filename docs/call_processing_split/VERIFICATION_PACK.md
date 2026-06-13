@@ -121,8 +121,8 @@ Latest checks run during implementation:
 | `test_call_processing_manual_reporting_runner.py` | `1 passed` |
 | `test_call_processing_runtime_split.py` | `4 passed` |
 | focused call-processing/analyzer pack after retry-failed recovery pass | `67 passed` |
-| focused AI routing/settings pack | `7 passed, 41 deselected` |
-| legacy prepare-artifacts focused checks | `5 passed, 240 deselected` |
+| focused AI routing/settings pack | `48 passed` |
+| legacy prepare-artifacts + scheduled/reviewable focused checks | `28 passed, 217 deselected` |
 | `docker compose config` | passed |
 | `docker compose --profile split config` | passed |
 | `git diff --check` | passed |
@@ -133,7 +133,7 @@ Known non-green / not-yet-final items:
 - Provider-backed OnlinePBX/STT/LLM1 first pass is implemented in the local
   call-processing service and covered with fake providers; live split-worker
   smoke and production scheduling remain.
-- ROP weekly and scheduled reviewable reporting have not yet had a full
-  external-service live smoke with real artifacts.
+- ROP weekly and scheduled reviewable reporting have focused tests green, but
+  have not yet had a full external-service live smoke with real artifacts.
 - Broad semantic-empty reporting tests depend on current runtime config and are
   not the acceptance gate for this split.
