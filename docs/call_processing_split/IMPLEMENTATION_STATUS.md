@@ -18,7 +18,7 @@ explicit operator approval.
 | 0. Repo baseline and contract skeleton | `done` | Branch created; task pack copied into repo; contract skeleton added in `app.agents.call_processing`; focused contract tests pass. |
 | 1. DB schemas, models, migrations, compatibility | `first_pass_done` | Added additive `call_core` models/tables, schema creation, transcript/transcript_segments backfill, and `call_public` compatibility views. |
 | 2. Call-processing domain service | `first_pass_done` | Added repositories, planner-style ensure, legacy transcript backfill, retry/stale helpers. Provider calls intentionally not wired yet. |
-| 3. API, CLI, auth, read grants | `pending` | Depends on Tasks 1-2. |
+| 3. API, CLI, auth, read grants | `first_pass_done` | Added header-grant API routes and package CLI; admin/reader gates covered by focused tests. |
 | 4. Extract LLM-1 from analyzer runtime | `pending` | Depends on Task 2. |
 | 5. CallProcessingClient and analysis refactor | `pending` | Depends on Tasks 3-4. |
 | 6. Reporting and orchestrator refactor | `pending` | Depends on Task 5. |
@@ -157,3 +157,49 @@ Residual risk:
 - This first pass does not discover missing calls from OnlinePBX, perform STT,
   perform LLM-1, or update analyzer/reporting call sites. Those are intentionally
   deferred to later task cards.
+
+## Task 3 API, CLI, Auth, Read Grants
+
+First pass added a CLI/API surface for the planning-first call-processing
+service. It is intentionally header/contract based and does not introduce UI or
+production secret changes.
+
+Changed:
+
+- `core/app/core_shared/api/routes/call_processing.py`
+  - Added `/call-processing/health`.
+  - Added `POST /call-processing/ensure`.
+  - Added `GET /call-processing/runs/{run_id}`.
+  - Added `GET /call-processing/artifacts`.
+  - Added simple `X-Call-Processing-Grant` header parsing based on the
+    `AccessGrant` contract.
+  - Enforces `admin` for ensure/dry-run style processing and `reader|admin` for
+    read endpoints.
+- `core/app/core_shared/api/main.py`
+  - Mounted the call-processing router.
+- `core/app/agents/call_processing/cli.py`
+  - Added package-owned CLI implementation for `ensure`, `dry-run`,
+    `run-status`, `artifacts`, and admin-gated placeholder `retry-failed`.
+- `core/report_scripts/call_processing_cli.py`
+  - Added host wrapper around package CLI.
+- `core/tests/test_call_processing_api.py`
+  - Mirrored to `tests/test_call_processing_api.py`.
+  - Covers route mount, admin requirement, requested_by/grant match, and reader
+    artifact access.
+- `core/tests/test_call_processing_cli.py`
+  - Mirrored to `tests/test_call_processing_cli.py`.
+  - Covers admin gate, dry-run JSON output, and retry-failed placeholder.
+
+Verification:
+
+- `python3 -m py_compile core/app/core_shared/api/routes/call_processing.py core/app/agents/call_processing/cli.py core/report_scripts/call_processing_cli.py core/tests/test_call_processing_api.py core/tests/test_call_processing_cli.py tests/test_call_processing_api.py tests/test_call_processing_cli.py`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py`
+  -> `8 passed`
+- `git diff --check`
+
+Residual risk:
+
+- Header JSON grant is a first-pass contract/test mechanism, not final
+  production auth. Service-account secret validation and persistent grants
+  remain for runtime/security hardening.
+- `retry-failed` is CLI/API-reserved but not worker-backed yet.

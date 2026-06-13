@@ -54,6 +54,20 @@
   /app/tests/test_call_processing_db_contract.py
   /app/tests/test_call_processing_service.py` -> `18 passed`. **Residual:**
   real source discovery/STT/LLM1 wiring остается для Task 4-6.
+- [x] 2026-06-13 — Выполнен first pass Task 3 для call-processing API/CLI/auth.
+  **Изменение:** добавлен router `/call-processing` с health, ensure,
+  run-status и artifact read endpoints; router подключен в FastAPI app; добавлен
+  package CLI `app.agents.call_processing.cli` и host-wrapper
+  `core/report_scripts/call_processing_cli.py`. **Auth:** first-pass
+  `X-Call-Processing-Grant` использует contract `AccessGrant`; `admin`
+  требуется для ensure/dry-run/retry-failed, `reader|admin` для run/artifact
+  reads; `requested_by` должен совпадать с grant `client_id`. **Safety:** UI,
+  production secrets, provider calls и runtime cutover не трогались.
+  **Verification:** `py_compile`, `git diff --check`, контейнерный
+  `/app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py`
+  -> `8 passed`. **Residual:** header JSON grant - временный contract/test
+  mechanism; persistent service-account auth и worker-backed retry остаются для
+  следующих task cards.
 - [x] 2026-06-13 — Внедрен first pass `PILOT-23`: компактный верхний блок и
   краткие пояснения в `manager_daily`. **Изменение:** воронка дня в шапке и
   email теперь использует короткие manager-facing формулировки

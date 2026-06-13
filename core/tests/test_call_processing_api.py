@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import json
+from datetime import date
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from app.agents.call_processing import EnsureResponse, ProcessingRunStatus, ProcessingScope
+from app.core_shared.api.main import app
+from app.core_shared.api.routes import call_processing as call_processing_routes
+
+
+def _grant(role: str = "admin") -> str:
+    return json.dumps(
+        {
+            "client_id": "edo-analysis",
+            "client_type": "service",
+            "role": role,
+            "allowed_artifact_kinds": [
+                "transcript",
+                "transcript_segments",
+                "llm1_first_pass",
+            ],
+            "read_surfaces": [
+                "processed_calls_v1",
+                "transcripts_v1",
+                "llm1_artifacts_v1",
+                "processing_runs_v1",
+            ],
+            "created_by_admin": "operator",
+            "active": True,
+        }
+    )
+
+
+def _scope() -> dict[str, object]:
+    return {
+        "department_id": str(uuid4()),
+        "date_from": date(2026, 6, 1).isoformat(),
+        "date_to": date(2026, 6, 1).isoformat(),
+        "source": "onlinepbx",
+    }
+
+
+class _FakeCallProcessingService:
+    def __init__(self, _db: object, *, requested_by: str = "tester") -> None:
+        self.requested_by = requested_by
+
+    def ensure(
+        self,
+        scope: ProcessingScope,
+        required_artifacts: list[object],
+        mode: object,
+        *,
+        requested_by: str,
+    ) -> EnsureResponse:
+        return EnsureResponse(
+            run_id="run-1",
+            status=ProcessingRunStatus.READY,
+            scope_hash="scope-hash",
+            requested_by=requested_by,
+            planned={
+                "interactions_total": 1,
+                "artifact_requirements_total": len(required_artifacts),
+            },
+            quota={"provider_calls_made": 0},
+        )
+
+
+def _override_session():
+    yield object()
+
+
+def test_call_processing_health_route_is_mounted() -> None:
+    client = TestClient(app)
+
+    response = client.get("/call-processing/health")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "call_processing"
+
+
+def test_ensure_requires_admin_grant() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/call-processing/ensure",
+        headers={"X-Call-Processing-Grant": _grant("reader")},
+        json={
+            "scope": _scope(),
+            "required_artifacts": ["transcript"],
+            "mode": "dry_run",
+            "requested_by": "edo-analysis",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "admin grant required"
+
+
+def test_ensure_uses_service_and_requires_requested_by_match(monkeypatch) -> None:
+    client = TestClient(app)
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+    monkeypatch.setattr(
+        call_processing_routes,
+        "CallProcessingService",
+        _FakeCallProcessingService,
+    )
+    try:
+        response = client.post(
+            "/call-processing/ensure",
+            headers={"X-Call-Processing-Grant": _grant("admin")},
+            json={
+                "scope": _scope(),
+                "required_artifacts": ["transcript", "llm1_first_pass"],
+                "mode": "dry_run",
+                "requested_by": "edo-analysis",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["requested_by"] == "edo-analysis"
+    assert payload["planned"]["artifact_requirements_total"] == 2
+
+
+def test_ensure_rejects_requested_by_different_from_grant() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/call-processing/ensure",
+        headers={"X-Call-Processing-Grant": _grant("admin")},
+        json={
+            "scope": _scope(),
+            "required_artifacts": ["transcript"],
+            "mode": "dry_run",
+            "requested_by": "other-client",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "requested_by must match access grant client_id"
+
+
+def test_artifacts_route_allows_reader_and_filters_allowed_kinds(monkeypatch) -> None:
+    client = TestClient(app)
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+
+    def fake_list_artifacts(_db: object, *, scope: ProcessingScope, grant: object, artifact_kinds: list[object]):
+        return {
+            "scope_hash": "scope-hash",
+            "artifact_kinds": [str(item.value if hasattr(item, "value") else item) for item in artifact_kinds],
+            "artifacts": [],
+            "department_id": scope.department_id,
+        }
+
+    monkeypatch.setattr(call_processing_routes, "_list_artifacts", fake_list_artifacts)
+    try:
+        response = client.get(
+            "/call-processing/artifacts",
+            headers={"X-Call-Processing-Grant": _grant("reader")},
+            params={
+                "scope": json.dumps(_scope()),
+                "artifact_kinds": "transcript,llm1_first_pass",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["artifact_kinds"] == ["transcript", "llm1_first_pass"]

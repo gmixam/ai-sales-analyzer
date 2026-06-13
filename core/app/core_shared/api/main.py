@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from app.core_shared.api.routes import health, pipeline, status
+from app.core_shared.api.routes import call_processing, health, pipeline, status
 
 app = FastAPI(
     title="AI Sales Analyzer",
@@ -11,5 +11,6 @@ app = FastAPI(
 )
 
 app.include_router(health.router)
+app.include_router(call_processing.router)
 app.include_router(pipeline.router)
 app.include_router(status.router)
