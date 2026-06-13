@@ -35,6 +35,8 @@ def _scope() -> str:
 
 
 class _FakeCallProcessingService:
+    calls: list[dict[str, object]] = []
+
     def __init__(self, _db: object, *, requested_by: str = "tester") -> None:
         self.requested_by = requested_by
 
@@ -45,7 +47,17 @@ class _FakeCallProcessingService:
         mode: object,
         *,
         requested_by: str,
+        force_retry_failed: bool = False,
     ) -> EnsureResponse:
+        self.calls.append(
+            {
+                "scope": scope,
+                "required_artifacts": required_artifacts,
+                "mode": mode,
+                "requested_by": requested_by,
+                "force_retry_failed": force_retry_failed,
+            }
+        )
         return EnsureResponse(
             run_id="run-1",
             status=ProcessingRunStatus.READY,
@@ -54,6 +66,23 @@ class _FakeCallProcessingService:
             planned={"artifact_requirements_total": len(required_artifacts)},
             quota={"provider_calls_made": 0},
         )
+
+
+class _FakeProcessingRunRepository:
+    def __init__(self, _db: object) -> None:
+        pass
+
+    def get(self, run_id: str):
+        if run_id != "run-1":
+            return None
+        return type(
+            "Run",
+            (),
+            {
+                "scope_json": json.loads(_scope()),
+                "required_artifacts": ["transcript", "llm1_first_pass"],
+            },
+        )()
 
 
 @contextmanager
@@ -101,7 +130,27 @@ def test_cli_dry_run_prints_json_response(monkeypatch, capsys) -> None:
     assert payload["planned"]["artifact_requirements_total"] == 2
 
 
-def test_cli_retry_failed_is_admin_only_and_not_yet_worker_backed(capsys) -> None:
+def test_cli_retry_failed_is_admin_only(capsys) -> None:
+    exit_code = call_processing_cli.main(
+        [
+            "--grant",
+            _grant("reader"),
+            "retry-failed",
+            "--run-id",
+            "run-1",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "admin grant required" in capsys.readouterr().out
+
+
+def test_cli_retry_failed_replays_run_scope_with_force(monkeypatch, capsys) -> None:
+    _FakeCallProcessingService.calls = []
+    monkeypatch.setattr(call_processing_cli, "get_db", _fake_db)
+    monkeypatch.setattr(call_processing_cli, "CallProcessingService", _FakeCallProcessingService)
+    monkeypatch.setattr(call_processing_cli, "ProcessingRunRepository", _FakeProcessingRunRepository)
+
     exit_code = call_processing_cli.main(
         [
             "--grant",
@@ -112,7 +161,9 @@ def test_cli_retry_failed_is_admin_only_and_not_yet_worker_backed(capsys) -> Non
         ]
     )
 
-    assert exit_code == 2
+    assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "unsupported"
-    assert payload["run_id"] == "run-1"
+    assert payload["retried_from_run_id"] == "run-1"
+    assert payload["retry_run"]["status"] == "ready"
+    assert _FakeCallProcessingService.calls[0]["force_retry_failed"] is True
+    assert len(_FakeCallProcessingService.calls[0]["required_artifacts"]) == 2

@@ -198,6 +198,7 @@ async def ensure_call_processing(
         request.required_artifacts,
         request.mode,
         requested_by=request.requested_by,
+        force_retry_failed=request.force_retry_failed,
     )
     return response.model_dump(mode="json")
 

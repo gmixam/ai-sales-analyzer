@@ -90,6 +90,7 @@ class CallProcessingService:
         mode: EnsureMode | str = EnsureMode.ENSURE,
         *,
         requested_by: str | None = None,
+        force_retry_failed: bool = False,
     ) -> EnsureResponse:
         try:
             asyncio.get_running_loop()
@@ -100,6 +101,7 @@ class CallProcessingService:
                     required_artifacts,
                     mode,
                     requested_by=requested_by,
+                    force_retry_failed=force_retry_failed,
                 )
             )
         raise RuntimeError("CallProcessingService.ensure() cannot run inside an active event loop; use ensure_async().")
@@ -111,6 +113,7 @@ class CallProcessingService:
         mode: EnsureMode | str = EnsureMode.ENSURE,
         *,
         requested_by: str | None = None,
+        force_retry_failed: bool = False,
     ) -> EnsureResponse:
         scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
         mode_model = EnsureMode(mode)
@@ -126,7 +129,12 @@ class CallProcessingService:
         )
         source_counts = self._discover_and_persist_source_calls(scope_model, mode_model)
         interactions = self._find_interactions(scope_model)
-        counts = await self._ensure_artifacts(interactions, required, mode_model)
+        counts = await self._ensure_artifacts(
+            interactions,
+            required,
+            mode_model,
+            force_retry_failed=force_retry_failed,
+        )
         counts["provider_calls_made"] = int(counts.get("provider_calls_made", 0)) + int(
             source_counts.pop("provider_calls_made", 0)
         )
@@ -328,6 +336,8 @@ class CallProcessingService:
         interactions: list[Interaction],
         required: list[RequiredArtifactKind],
         mode: EnsureMode,
+        *,
+        force_retry_failed: bool = False,
     ) -> dict[str, int]:
         counts = {
             "interactions_total": len(interactions),
@@ -340,6 +350,7 @@ class CallProcessingService:
             "transcripts_built": 0,
             "llm1_first_pass_built": 0,
             "artifact_build_failed": 0,
+            "artifact_retry_blocked": 0,
         }
         for interaction in interactions:
             for kind in required:
@@ -350,6 +361,15 @@ class CallProcessingService:
                 )
                 if artifact is not None and artifact.status == ArtifactStatus.READY.value:
                     counts["artifacts_ready"] += 1
+                    continue
+                if (
+                    artifact is not None
+                    and artifact.status == ArtifactStatus.FAILED.value
+                    and not force_retry_failed
+                    and not bool(getattr(artifact, "retryable", False))
+                ):
+                    counts["artifacts_missing"] += 1
+                    counts["artifact_retry_blocked"] += 1
                     continue
 
                 backfilled = self._backfill_from_legacy(interaction, kind, mode)

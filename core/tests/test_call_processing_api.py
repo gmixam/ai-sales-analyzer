@@ -54,6 +54,7 @@ class _FakeCallProcessingService:
         mode: object,
         *,
         requested_by: str,
+        force_retry_failed: bool = False,
     ) -> EnsureResponse:
         return EnsureResponse(
             run_id="run-1",
@@ -74,12 +75,14 @@ class _FakeCallProcessingService:
         mode: object,
         *,
         requested_by: str,
+        force_retry_failed: bool = False,
     ) -> EnsureResponse:
         return self.ensure(
             scope,
             required_artifacts,
             mode,
             requested_by=requested_by,
+            force_retry_failed=force_retry_failed,
         )
 
 

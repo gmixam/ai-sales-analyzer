@@ -143,6 +143,9 @@ Changed:
   - Builds missing `llm1_first_pass_v1` artifacts through
     `CallsAnalyzer._request_llm1_first_pass()` only; call-processing does not
     call LLM2 `analyze_call()`.
+  - Ordinary `ensure` does not retry active failed artifacts marked
+    non-retryable; retryable failed artifacts can be rebuilt, and admin
+    `force_retry_failed` can explicitly retry failed artifacts.
   - Dependency-aware artifact order is now
     `transcript -> transcript_segments -> llm1_first_pass`.
   - Supports `dry_run` planning without provider calls or artifact writes.
@@ -155,15 +158,15 @@ Changed:
   - Covers idempotent artifact reuse, dry-run behavior, run persistence,
     scope date filtering, legacy transcript backfill, source discovery,
     STT transcript/segments artifact build, LLM1 first-pass artifact build
-    without LLM2, retry policy, and stale detection.
+    without LLM2, failed-artifact retry policy, and stale detection.
 
 Verification:
 
 - `python3 -m py_compile core/app/agents/call_processing/client.py core/app/agents/call_processing/service.py core/app/agents/calls/reporting.py core/app/core_shared/api/routes/call_processing.py core/tests/test_call_processing_client.py core/tests/test_call_processing_service.py`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_client.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py`
-  -> `25 passed`
+  -> `27 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
-  -> `59 passed`
+  -> `67 passed`
 - `git diff --check`
 
 Residual risk:
@@ -192,7 +195,9 @@ Changed:
   - Mounted the call-processing router.
 - `core/app/agents/call_processing/cli.py`
   - Added package-owned CLI implementation for `ensure`, `dry-run`,
-    `run-status`, `artifacts`, and admin-gated placeholder `retry-failed`.
+    `run-status`, `artifacts`, and admin-gated `retry-failed`.
+  - `retry-failed --run-id` loads the original run scope/required artifacts and
+    starts a new ensure run with `force_retry_failed=True`.
 - `core/report_scripts/call_processing_cli.py`
   - Added host wrapper around package CLI.
 - `core/tests/test_call_processing_api.py`
@@ -201,13 +206,14 @@ Changed:
     artifact access.
 - `core/tests/test_call_processing_cli.py`
   - Mirrored to `tests/test_call_processing_cli.py`.
-  - Covers admin gate, dry-run JSON output, and retry-failed placeholder.
+  - Covers admin gate, dry-run JSON output, retry-failed admin-only behavior,
+    and retry-failed force replay of the original run scope.
 
 Verification:
 
 - `python3 -m py_compile core/app/core_shared/api/routes/call_processing.py core/app/agents/call_processing/cli.py core/report_scripts/call_processing_cli.py core/tests/test_call_processing_api.py core/tests/test_call_processing_cli.py tests/test_call_processing_api.py tests/test_call_processing_cli.py`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py`
-  -> `8 passed`
+  -> `11 passed`
 - `git diff --check`
 
 Residual risk:
@@ -215,7 +221,9 @@ Residual risk:
 - Header JSON grant is a first-pass contract/test mechanism, not final
   production auth. Service-account secret validation and persistent grants
   remain for runtime/security hardening.
-- `retry-failed` is CLI/API-reserved but not worker-backed yet.
+- `retry-failed` is implemented as synchronous admin replay of the original
+  run scope; queue-backed retry workers remain a later operational hardening
+  option, not a blocker for local/admin recovery.
 
 ## Task 4 Extract LLM-1 From Analyzer Runtime
 
@@ -383,7 +391,7 @@ Verification:
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_manual_reporting_runner.py`
   -> `1 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_manual_pilot_boundary.py /app/tests/test_call_processing_manual_reporting_runner.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
-  -> `64 passed`
+  -> `67 passed`
 - Legacy focused reporting checks for contract/quota/source-audio branches:
   `5 passed, 287 deselected`
 - `git diff --check`

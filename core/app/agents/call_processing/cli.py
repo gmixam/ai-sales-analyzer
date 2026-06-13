@@ -75,6 +75,7 @@ def run_ensure(args: argparse.Namespace, mode: EnsureMode) -> int:
             _required_artifacts(args.required_artifacts),
             mode=mode,
             requested_by=grant.client_id,
+            force_retry_failed=getattr(args, "force_retry_failed", False),
         )
     return _print_json(response.model_dump(mode="json"))
 
@@ -118,13 +119,22 @@ def run_artifacts(args: argparse.Namespace) -> int:
 def retry_failed(args: argparse.Namespace) -> int:
     grant = _load_grant(args.grant)
     _require_admin(grant)
+    with get_db() as db:
+        run = ProcessingRunRepository(db).get(args.run_id)
+        if run is None:
+            return _print_json({"error": "run not found", "run_id": args.run_id}, exit_code=1)
+        response = CallProcessingService(db, requested_by=grant.client_id).ensure(
+            ProcessingScope.model_validate(run.scope_json or {}),
+            [RequiredArtifactKind(item) for item in (run.required_artifacts or [])],
+            mode=EnsureMode.ENSURE,
+            requested_by=grant.client_id,
+            force_retry_failed=True,
+        )
     return _print_json(
         {
-            "run_id": args.run_id,
-            "status": "unsupported",
-            "error": "retry-failed is reserved for the worker-backed implementation",
-        },
-        exit_code=2,
+            "retried_from_run_id": args.run_id,
+            "retry_run": response.model_dump(mode="json"),
+        }
     )
 
 
@@ -140,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--scope", required=True, help="ProcessingScope JSON object or path")
         subparser.add_argument("--required-artifacts", default="")
+        subparser.add_argument("--force-retry-failed", action="store_true")
 
     status_parser = subparsers.add_parser("run-status")
     status_parser.add_argument("--run-id", required=True)

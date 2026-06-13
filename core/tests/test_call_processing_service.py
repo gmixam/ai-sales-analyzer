@@ -345,6 +345,15 @@ class _FakeExtractor:
         )
 
 
+class _CountingExtractor(_FakeExtractor):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def process(self, interaction: Interaction) -> TranscriptResult:
+        self.calls += 1
+        return await super().process(interaction)
+
+
 def test_ensure_builds_transcript_and_segments_artifacts_via_stt() -> None:
     scope = _scope()
     interaction = _interaction(scope)
@@ -368,6 +377,76 @@ def test_ensure_builds_transcript_and_segments_artifacts_via_stt() -> None:
     assert active["transcript"].text_value == "Клиент попросил материалы."
     assert active["transcript"].provider == "assemblyai"
     assert active["transcript_segments"].payload_json["segments"][0]["text"] == "Клиент попросил материалы."
+
+
+def test_ensure_does_not_retry_non_retryable_failed_artifact_without_force() -> None:
+    scope = _scope()
+    interaction = _interaction(scope)
+    interaction.raw_ref = "https://recordings.test/call.mp3"
+    artifacts = _MemoryArtifactRepository()
+    artifacts.write_active(
+        department_id=interaction.department_id,
+        interaction_id=interaction.id,
+        artifact_kind=ArtifactKind.TRANSCRIPT,
+        artifact_version="transcript_v1",
+        status=ArtifactStatus.FAILED,
+        error_class=ProcessingErrorClass.AUTH_ERROR.value,
+        error_reason="bad key",
+        retryable=False,
+    )
+    extractor = _CountingExtractor()
+    service = CallProcessingService(
+        _FakeSession([interaction]),
+        artifacts=artifacts,
+        extractor_factory=lambda _department_id, _db: extractor,
+    )
+
+    response = service.ensure(scope, [RequiredArtifactKind.TRANSCRIPT])
+
+    assert response.status == ProcessingRunStatus.BLOCKED
+    assert response.planned["artifact_retry_blocked"] == 1
+    assert response.planned["provider_calls_made"] == 0
+    assert extractor.calls == 0
+    assert artifacts.latest_active(interaction.id, ArtifactKind.TRANSCRIPT).status == ArtifactStatus.FAILED.value
+
+
+def test_ensure_force_retries_failed_artifact_and_replaces_active_row() -> None:
+    scope = _scope()
+    interaction = _interaction(scope)
+    interaction.raw_ref = "https://recordings.test/call.mp3"
+    artifacts = _MemoryArtifactRepository()
+    failed = artifacts.write_active(
+        department_id=interaction.department_id,
+        interaction_id=interaction.id,
+        artifact_kind=ArtifactKind.TRANSCRIPT,
+        artifact_version="transcript_v1",
+        status=ArtifactStatus.FAILED,
+        error_class=ProcessingErrorClass.AUTH_ERROR.value,
+        error_reason="bad key",
+        retryable=False,
+    )
+    extractor = _CountingExtractor()
+    service = CallProcessingService(
+        _FakeSession([interaction]),
+        artifacts=artifacts,
+        extractor_factory=lambda _department_id, _db: extractor,
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT],
+        force_retry_failed=True,
+    )
+
+    assert response.status == ProcessingRunStatus.READY
+    assert response.planned["artifact_retry_blocked"] == 0
+    assert response.planned["transcripts_built"] == 1
+    assert response.planned["provider_calls_made"] == 1
+    assert extractor.calls == 1
+    assert failed.is_active is False
+    active = artifacts.latest_active(interaction.id, ArtifactKind.TRANSCRIPT)
+    assert active.status == ArtifactStatus.READY.value
+    assert active.text_value == "Клиент попросил материалы."
 
 
 class _FakeAnalyzer:

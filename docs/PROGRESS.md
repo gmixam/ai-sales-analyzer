@@ -178,6 +178,17 @@
   `/app/tests/test_call_processing_reporting_integration.py` -> `6 passed`;
   focused split pack -> `64 passed`. **Residual:** scheduled full-flow smoke
   remains before cutover.
+- [x] 2026-06-13 — Реализован `call-processing retry-failed` recovery pass.
+  **Изменение:** обычный `ensure` больше не ретраит active failed artifacts,
+  если они non-retryable; retryable failed artifacts могут быть перестроены, а
+  admin `retry-failed --run-id` запускает новый ensure по scope/required
+  artifacts исходного run с `force_retry_failed=True`. API ensure также
+  передает `force_retry_failed` из request contract. **Verification:**
+  `py_compile` по service/cli/api/tests; контейнерный
+  `/app/tests/test_call_processing_service.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_api.py`
+  -> `23 passed`; focused split pack -> `67 passed`. **Residual:** queue-backed
+  retry workers remain optional operational hardening; scheduled full-flow smoke
+  remains before cutover.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`
