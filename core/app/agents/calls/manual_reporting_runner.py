@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly retry calls previously marked quota_insufficient.",
     )
     parser.add_argument(
+        "--force-rebuild-analyses",
+        action="store_true",
+        help="Explicitly rebuild analyses when upstream call-processing artifacts changed after analysis.",
+    )
+    parser.add_argument(
         "--include-controlled-samples",
         action="store_true",
         help="Opt in to using analyses marked controlled_sample or verification.",
@@ -88,6 +93,7 @@ async def _run(args: argparse.Namespace) -> dict:
             min_duration_sec=args.min_duration_sec,
             max_duration_sec=args.max_duration_sec,
             force_retry_quota_blocked=args.force_retry_quota_blocked,
+            force_rebuild_analyses=args.force_rebuild_analyses,
             include_controlled_samples=args.include_controlled_samples,
             analysis_instruction_version=(
                 (args.analysis_instruction_version or "").strip() or None

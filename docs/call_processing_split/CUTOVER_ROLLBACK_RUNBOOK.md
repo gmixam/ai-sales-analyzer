@@ -206,7 +206,20 @@ When `source_artifacts_updated_after_analysis` appears:
 1. Identify affected `interaction_id` values in run errors/build summary.
 2. Confirm upstream artifact is correct and newer than analysis.
 3. Rerun analysis manually for the selected manager/day or exact interaction
-   scope.
+   scope with `--force-rebuild-analyses`, for example:
+
+   ```bash
+   docker compose exec -T api python -m app.agents.calls.manual_reporting_runner \
+     --department-id <department_uuid> \
+     --preset manager_daily \
+     --mode build_missing_and_report \
+     --date-from <YYYY-MM-DD> \
+     --date-to <YYYY-MM-DD> \
+     --manager-extension <ext> \
+     --force-rebuild-analyses \
+     --no-delivery
+   ```
+
 4. Confirm the new run supersedes the stale analysis in reporting.
 
 ## Handoff For Next Agent

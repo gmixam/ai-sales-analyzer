@@ -340,6 +340,9 @@ Changed:
   - Late ready upstream artifacts with `source_updated_at` later than reused
     EDO analysis `created_at` mark the affected call as
     `source_artifacts_updated_after_analysis` without automatic rerun.
+  - Explicit admin/manual rerun can pass `force_rebuild_analyses` (CLI:
+    `--force-rebuild-analyses`) to rebuild analyses for late upstream
+    artifacts and supersede the marker without enabling automatic reruns.
   - Legacy mode keeps the previous direct STT and runtime LLM1 path; the new
     `llm1_first_pass_artifact` keyword is not passed in legacy mode.
   - Observability now separates external upstream LLM1 reuse/missing counters
@@ -361,19 +364,26 @@ Changed:
   - Covers manager_daily async `ensure` source summary mapping and
     `rop_weekly` external mode persisted-only behavior without call-processing
     `ensure`.
+  - Covers force rebuild after late upstream artifacts: without the flag the
+    marker is emitted; with the flag a new analysis is built and the marker is
+    superseded.
 - `core/tests/test_call_processing_manual_pilot_boundary.py`
   - Covers that manual live pilot fails before any upstream provider work in
     `external_service` mode.
+- `core/tests/test_call_processing_manual_reporting_runner.py`
+  - Covers CLI acceptance of `--force-rebuild-analyses`.
 
 Verification:
 
-- `python3 -m py_compile core/app/agents/calls/reporting.py core/app/agents/calls/orchestrator.py core/tests/test_call_processing_reporting_integration.py core/tests/test_call_processing_manual_pilot_boundary.py`
+- `python3 -m py_compile core/app/agents/calls/reporting.py core/app/agents/calls/manual_reporting_runner.py core/app/agents/calls/orchestrator.py core/tests/test_call_processing_reporting_integration.py core/tests/test_call_processing_manual_pilot_boundary.py core/tests/test_call_processing_manual_reporting_runner.py`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_reporting_integration.py`
-  -> `5 passed`
+  -> `6 passed`
 - `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_manual_pilot_boundary.py`
   -> `1 passed`
-- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_manual_pilot_boundary.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
-  -> `62 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_manual_reporting_runner.py`
+  -> `1 passed`
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_contracts.py /app/tests/test_call_processing_db_contract.py /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py /app/tests/test_call_processing_cli.py /app/tests/test_call_processing_llm1_external_mode.py /app/tests/test_call_processing_client.py /app/tests/test_call_processing_reporting_integration.py /app/tests/test_call_processing_manual_pilot_boundary.py /app/tests/test_call_processing_manual_reporting_runner.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_llm2_layered_runtime.py`
+  -> `64 passed`
 - Legacy focused reporting checks for contract/quota/source-audio branches:
   `5 passed, 287 deselected`
 - `git diff --check`
@@ -392,8 +402,7 @@ Residual risk:
   production worker scheduling remain before cutover.
 - In `external_service` mode reporting still does not hide missing upstream
   source ingestion; it reports partial/no-data until upstream artifacts exist.
-- Manual rerun marker clearing and full scheduled flow checks remain for the
-  next Task 6/8 passes.
+- Full scheduled flow checks remain for the next Task 6/8 passes.
 
 ## Task 7 Runtime Split First Pass
 

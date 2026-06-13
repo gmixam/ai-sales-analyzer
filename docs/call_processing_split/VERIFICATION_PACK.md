@@ -116,10 +116,11 @@ Latest checks run during implementation:
 
 | Check | Result |
 | --- | --- |
-| `test_call_processing_reporting_integration.py` | `5 passed` |
+| `test_call_processing_reporting_integration.py` | `6 passed` |
 | `test_call_processing_manual_pilot_boundary.py` | `1 passed` |
+| `test_call_processing_manual_reporting_runner.py` | `1 passed` |
 | `test_call_processing_runtime_split.py` | `4 passed` |
-| focused call-processing/analyzer pack after provider-backed first pass | `62 passed` |
+| focused call-processing/analyzer pack after provider-backed first pass | `64 passed` |
 | focused AI routing/settings pack | `7 passed, 41 deselected` |
 | legacy prepare-artifacts focused checks | `5 passed, 240 deselected` |
 | `docker compose config` | passed |

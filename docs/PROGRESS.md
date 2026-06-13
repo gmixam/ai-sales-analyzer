@@ -162,8 +162,22 @@
   `python3 -m py_compile core/app/agents/calls/orchestrator.py
   core/tests/test_call_processing_manual_pilot_boundary.py`; контейнерный
   `/app/tests/test_call_processing_manual_pilot_boundary.py` -> `1 passed`;
-  focused split pack -> `62 passed`. **Residual:** manual rerun marker clearing
-  and scheduled full-flow smoke remain before cutover.
+  focused split pack -> `62 passed`. **Residual at the time:** manual rerun
+  marker clearing and scheduled full-flow smoke remained before cutover; manual
+  rerun marker clearing was addressed by the next 2026-06-13 pass.
+- [x] 2026-06-13 — Добавлен admin/manual rerun для late upstream artifacts.
+  **Изменение:** `ReportRunFilters` и `manual_reporting_runner` получили
+  `force_rebuild_analyses` / `--force-rebuild-analyses`. Без флага late
+  artifacts по-прежнему только помечают reused analysis как
+  `source_artifacts_updated_after_analysis` и не запускают автоматический
+  rerun; с флагом в `build_missing_and_report` анализ пересобирается через
+  ready `llm1_first_pass_v1`, а marker supersede-ится новым анализом.
+  **Verification:** `py_compile` по `reporting.py`,
+  `manual_reporting_runner.py`, `orchestrator.py` и split tests; parser test
+  для `--force-rebuild-analyses` -> `1 passed`; контейнерный
+  `/app/tests/test_call_processing_reporting_integration.py` -> `6 passed`;
+  focused split pack -> `64 passed`. **Residual:** scheduled full-flow smoke
+  remains before cutover.
 - [x] 2026-06-13 — Выполнен first pass Task 7 runtime split. **Изменение:**
   добавлен `APP_SERVICE=monolith_legacy|call_processing|analysis`,
   service-aware secret validation и split queue helpers; `APP_SERVICE=analysis`

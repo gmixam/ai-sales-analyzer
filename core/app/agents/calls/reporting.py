@@ -265,6 +265,7 @@ class ReportRunFilters:
     min_duration_sec: int | None = None
     max_duration_sec: int | None = None
     force_retry_quota_blocked: bool = False
+    force_rebuild_analyses: bool = False
     include_controlled_samples: bool = False
     analysis_instruction_version: str | None = None
 
@@ -1113,6 +1114,7 @@ class CallsManualReportingOrchestrator:
             preset=preset,
             mode=normalized_mode,
             force_retry_quota_blocked=filters.force_retry_quota_blocked,
+            force_rebuild_analyses=filters.force_rebuild_analyses,
             include_controlled_samples=filters.include_controlled_samples,
             analysis_instruction_version=filters.analysis_instruction_version,
         )
@@ -1332,6 +1334,7 @@ class CallsManualReportingOrchestrator:
             "missing_llm1_first_pass_before_analysis": 0,
             "invalid_llm1_first_pass_before_analysis": 0,
             "source_artifacts_updated_after_analysis": 0,
+            "source_artifacts_force_rebuilt_after_update": 0,
         }
 
     def _build_call_processing_scope(
@@ -1809,6 +1812,7 @@ class CallsManualReportingOrchestrator:
         preset: ReportPreset,
         mode: str,
         force_retry_quota_blocked: bool = False,
+        force_rebuild_analyses: bool = False,
         include_controlled_samples: bool = False,
         analysis_instruction_version: str | None = None,
     ) -> tuple[list[ReportArtifact], dict[str, Any], list[str]]:
@@ -1864,12 +1868,14 @@ class CallsManualReportingOrchestrator:
         missing_llm1_first_pass_before_analysis = 0
         invalid_llm1_first_pass_before_analysis = 0
         source_artifacts_updated_after_analysis = 0
+        source_artifacts_force_rebuilt_after_update = 0
         build_errors: list[str] = []
         artifacts: list[ReportArtifact] = []
         for interaction in interactions:
             analysis = analyses_by_interaction.get(interaction.id)
             original_analysis = analysis
             analysis_reuse_reason: str | None = None
+            force_rebuild_due_to_late_source = False
             if interaction.text:
                 reused_transcripts += 1
             else:
@@ -1878,14 +1884,25 @@ class CallsManualReportingOrchestrator:
                 analysis,
                 required_instruction_version=required_analysis_instruction_version,
             )
+            has_late_source_update = self._analysis_has_late_source_update(
+                analysis=analysis,
+                latest_source_update=late_source_updates_by_interaction.get(
+                    str(interaction.id)
+                ),
+            )
+            if (
+                reusable_analysis
+                and has_late_source_update
+                and force_rebuild_analyses
+                and self._allows_build_missing(preset=preset, mode=mode)
+            ):
+                force_rebuild_due_to_late_source = True
+                source_artifacts_force_rebuilt_after_update += 1
+                reusable_analysis = False
+                analysis_reuse_reason = "source_artifacts_updated_after_analysis_force_rebuild"
             if reusable_analysis:
                 reused_analyses += 1
-                if self._analysis_has_late_source_update(
-                    analysis=analysis,
-                    latest_source_update=late_source_updates_by_interaction.get(
-                        str(interaction.id)
-                    ),
-                ):
+                if has_late_source_update:
                     source_artifacts_updated_after_analysis += 1
                     analysis_reuse_reason = "source_artifacts_updated_after_analysis"
                     build_errors.append(
@@ -1894,12 +1911,16 @@ class CallsManualReportingOrchestrator:
             else:
                 missing_analyses_before_build += 1
                 if analysis is not None:
-                    analyses_rejected_for_reuse += 1
-                    if _is_instruction_version_mismatch_reason(analysis_reuse_reason):
-                        analyses_rejected_for_instruction_version += 1
-                    if not (
-                        self._allows_build_missing(preset=preset, mode=mode)
-                        and interaction.text
+                    if not force_rebuild_due_to_late_source:
+                        analyses_rejected_for_reuse += 1
+                        if _is_instruction_version_mismatch_reason(analysis_reuse_reason):
+                            analyses_rejected_for_instruction_version += 1
+                    if (
+                        not force_rebuild_due_to_late_source
+                        and not (
+                            self._allows_build_missing(preset=preset, mode=mode)
+                            and interaction.text
+                        )
                     ):
                         build_errors.append(
                             f"analysis_reuse_rejected:{interaction.id}:{analysis_reuse_reason}"
@@ -2163,6 +2184,9 @@ class CallsManualReportingOrchestrator:
                 ),
                 "source_artifacts_updated_after_analysis": (
                     source_artifacts_updated_after_analysis
+                ),
+                "source_artifacts_force_rebuilt_after_update": (
+                    source_artifacts_force_rebuilt_after_update
                 ),
             },
             build_errors,

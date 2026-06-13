@@ -269,6 +269,68 @@ def test_prepare_artifacts_marks_late_source_artifacts_without_auto_rerun() -> N
     assert build_errors == [f"source_artifacts_updated_after_analysis:{interaction.id}"]
 
 
+def test_prepare_artifacts_force_rebuild_supersedes_late_source_marker() -> None:
+    interaction = _interaction()
+    stale_analysis = _analysis()
+    stale_analysis.interaction_id = interaction.id
+    stale_analysis.created_at = datetime(2026, 6, 3, 10, 10, tzinfo=UTC)
+    rebuilt_analysis = _analysis()
+    rebuilt_analysis.interaction_id = interaction.id
+    rebuilt_analysis.created_at = datetime(2026, 6, 3, 10, 45, tzinfo=UTC)
+    late_row = SimpleNamespace(
+        interaction_id=interaction.id,
+        artifact_kind=ArtifactKind.LLM1_FIRST_PASS.value,
+        status=ArtifactStatus.READY.value,
+        is_active=True,
+        source_updated_at=datetime(2026, 6, 3, 10, 30, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 3, 10, 30, tzinfo=UTC),
+    )
+    client = _FakeCallProcessingClient(payload=_llm1_payload(), rows=[late_row])
+    orchestrator = _make_orchestrator(client)
+    captured: dict[str, object] = {}
+
+    def _analyze_call(item, **kwargs):
+        captured["interaction_id"] = item.id
+        captured["llm1_first_pass_artifact"] = kwargs.get("llm1_first_pass_artifact")
+        return rebuilt_analysis
+
+    orchestrator.analyzer = SimpleNamespace(analyze_call=_analyze_call)
+    orchestrator.call_orchestrator = SimpleNamespace(
+        persist_analysis=lambda **_kwargs: rebuilt_analysis,
+        persist_failed_analysis=lambda **kwargs: _analysis(),
+    )
+    setattr(orchestrator, "_load_latest_analyses_by_interaction", lambda **_kwargs: {interaction.id: stale_analysis})
+
+    previous = os.environ.get("CALL_PROCESSING_MODE")
+    os.environ["CALL_PROCESSING_MODE"] = "external_service"
+    try:
+        artifacts, build_summary, build_errors = asyncio.run(
+            CallsManualReportingOrchestrator._prepare_artifacts(
+                orchestrator,
+                interactions=[interaction],
+                preset=resolve_report_preset("manager_daily"),
+                mode="build_missing_and_report",
+                force_rebuild_analyses=True,
+            )
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("CALL_PROCESSING_MODE", None)
+        else:
+            os.environ["CALL_PROCESSING_MODE"] = previous
+
+    assert artifacts[0].analysis is rebuilt_analysis
+    assert artifacts[0].original_analysis is stale_analysis
+    assert artifacts[0].analysis_reuse_reason == "reusable"
+    assert captured["interaction_id"] == interaction.id
+    assert isinstance(captured["llm1_first_pass_artifact"], LLM1FirstPassPayload)
+    assert build_summary["analyses_built"] == 1
+    assert build_summary["analyses_reused"] == 0
+    assert build_summary["source_artifacts_updated_after_analysis"] == 0
+    assert build_summary["source_artifacts_force_rebuilt_after_update"] == 1
+    assert build_errors == []
+
+
 def test_manager_daily_external_service_ensure_uses_async_client_and_exposes_source_summary() -> None:
     client = _FakeEnsureClient()
     orchestrator = object.__new__(CallsManualReportingOrchestrator)
