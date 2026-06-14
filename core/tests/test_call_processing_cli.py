@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from app.agents.call_processing import EnsureResponse, ProcessingRunStatus, ProcessingScope
@@ -72,6 +72,9 @@ class _FakeCallProcessingService:
 
 
 class _FakeProcessingRunRepository:
+    rows: list[object] = []
+    updated: list[object] = []
+
     def __init__(self, _db: object) -> None:
         pass
 
@@ -100,10 +103,27 @@ class _FakeProcessingRunRepository:
             },
         )()
 
+    def list_open(self):
+        return list(self.rows)
+
+    def update_status(self, run, status, **kwargs):
+        run.status = str(status)
+        run.errors_json = kwargs.get("errors_json", run.errors_json)
+        run.finished_at = kwargs.get("finished_at", run.finished_at)
+        self.updated.append(run)
+        return run
+
+
+class _FakeDb:
+    commits = 0
+
+    def commit(self) -> None:
+        type(self).commits += 1
+
 
 @contextmanager
 def _fake_db():
-    yield object()
+    yield _FakeDb()
 
 
 def test_cli_dry_run_requires_admin_grant(capsys) -> None:
@@ -228,3 +248,93 @@ def test_cli_retry_failed_replays_run_scope_with_force(monkeypatch, capsys) -> N
     assert payload["retry_run"]["status"] == "ready"
     assert _FakeCallProcessingService.calls[0]["force_retry_failed"] is True
     assert len(_FakeCallProcessingService.calls[0]["required_artifacts"]) == 2
+
+
+def test_cli_cleanup_stale_runs_marks_only_stale_open_runs(monkeypatch, capsys) -> None:
+    now = datetime.now(UTC)
+    stale = type(
+        "Run",
+        (),
+        {
+            "id": "stale-run",
+            "status": "running",
+            "errors_json": [],
+            "finished_at": None,
+            "heartbeat_at": now - timedelta(hours=3),
+            "updated_at": now - timedelta(hours=3),
+        },
+    )()
+    fresh = type(
+        "Run",
+        (),
+        {
+            "id": "fresh-run",
+            "status": "running",
+            "errors_json": [],
+            "finished_at": None,
+            "heartbeat_at": now,
+            "updated_at": now,
+        },
+    )()
+    _FakeProcessingRunRepository.rows = [stale, fresh]
+    _FakeProcessingRunRepository.updated = []
+    _FakeDb.commits = 0
+    monkeypatch.setattr(call_processing_cli, "get_db", _fake_db)
+    monkeypatch.setattr(call_processing_cli, "ProcessingRunRepository", _FakeProcessingRunRepository)
+
+    exit_code = call_processing_cli.main(
+        [
+            "--grant",
+            _grant("admin"),
+            "cleanup-stale-runs",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stale_runs_cleaned"] == 1
+    assert payload["runs"][0]["run_id"] == "stale-run"
+    assert stale.status == "stale"
+    assert stale.finished_at is not None
+    assert stale.errors_json[0]["error_class"] == "stale_processing_run"
+    assert fresh.status == "running"
+    assert _FakeProcessingRunRepository.updated == [stale]
+    assert _FakeDb.commits == 1
+
+
+def test_cli_cleanup_stale_runs_dry_run_does_not_commit(monkeypatch, capsys) -> None:
+    now = datetime.now(UTC)
+    stale = type(
+        "Run",
+        (),
+        {
+            "id": "stale-run",
+            "status": "running",
+            "errors_json": [],
+            "finished_at": None,
+            "heartbeat_at": now - timedelta(hours=3),
+            "updated_at": now - timedelta(hours=3),
+        },
+    )()
+    _FakeProcessingRunRepository.rows = [stale]
+    _FakeProcessingRunRepository.updated = []
+    _FakeDb.commits = 0
+    monkeypatch.setattr(call_processing_cli, "get_db", _fake_db)
+    monkeypatch.setattr(call_processing_cli, "ProcessingRunRepository", _FakeProcessingRunRepository)
+
+    exit_code = call_processing_cli.main(
+        [
+            "--grant",
+            _grant("admin"),
+            "cleanup-stale-runs",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stale_runs_cleaned"] == 1
+    assert payload["runs"][0]["dry_run"] is True
+    assert stale.status == "running"
+    assert _FakeProcessingRunRepository.updated == []
+    assert _FakeDb.commits == 0

@@ -49,6 +49,7 @@ class ProcessingRunStatus(StrEnum):
 
     QUEUED = "queued"
     RUNNING = "running"
+    STALE = "stale"
     READY = "ready"
     PARTIAL = "partial"
     BLOCKED = "blocked"

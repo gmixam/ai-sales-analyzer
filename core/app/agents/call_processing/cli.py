@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +15,10 @@ from app.agents.call_processing import (
     AccessGrant,
     CallProcessingService,
     EnsureMode,
+    ProcessingRunStatus,
     ProcessingScope,
     RequiredArtifactKind,
+    is_stale_run,
 )
 from app.agents.call_processing.repositories import ProcessingRunRepository
 from app.core_shared.api.routes.call_processing import _list_artifacts
@@ -141,6 +144,69 @@ def retry_failed(args: argparse.Namespace) -> int:
     )
 
 
+def cleanup_stale_runs(args: argparse.Namespace) -> int:
+    grant = _load_grant(args.grant)
+    _require_admin(grant)
+    cleaned: list[dict[str, Any]] = []
+    inspected = 0
+    with get_db() as db:
+        repo = ProcessingRunRepository(db)
+        for run in repo.list_open():
+            inspected += 1
+            if not is_stale_run(run):
+                continue
+            previous_status = run.status
+            errors = list(run.errors_json or [])
+            errors.append(
+                {
+                    "error_class": "stale_processing_run",
+                    "error_reason": "Run had no heartbeat/progress inside the approved stale window.",
+                    "retryable": False,
+                    "previous_status": previous_status,
+                    "cleaned_by": grant.client_id,
+                }
+            )
+            if getattr(args, "dry_run", False):
+                cleaned.append(
+                    {
+                        "run_id": str(run.id),
+                        "previous_status": previous_status,
+                        "new_status": str(ProcessingRunStatus.STALE),
+                        "heartbeat_at": run.heartbeat_at,
+                        "updated_at": run.updated_at,
+                        "dry_run": True,
+                    }
+                )
+                continue
+            repo.update_status(
+                run,
+                ProcessingRunStatus.STALE,
+                errors_json=errors,
+                finished_at=run.finished_at or datetime.now(UTC),
+            )
+            cleaned.append(
+                {
+                    "run_id": str(run.id),
+                    "previous_status": previous_status,
+                    "new_status": str(ProcessingRunStatus.STALE),
+                    "heartbeat_at": run.heartbeat_at,
+                    "updated_at": run.updated_at,
+                    "dry_run": False,
+                }
+            )
+        if cleaned and not getattr(args, "dry_run", False):
+            db.commit()
+    return _print_json(
+        {
+            "status": "ok",
+            "inspected_open_runs": inspected,
+            "stale_runs_cleaned": len(cleaned),
+            "runs": cleaned,
+            "dry_run": bool(getattr(args, "dry_run", False)),
+        }
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="call-processing")
     parser.add_argument(
@@ -163,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     retry_parser = subparsers.add_parser("retry-failed")
     retry_parser.add_argument("--run-id", required=True)
+
+    cleanup_parser = subparsers.add_parser("cleanup-stale-runs")
+    cleanup_parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -180,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_artifacts(args)
         if args.command == "retry-failed":
             return retry_failed(args)
+        if args.command == "cleanup-stale-runs":
+            return cleanup_stale_runs(args)
     except (ValidationError, ValueError, PermissionError, json.JSONDecodeError) as exc:
         return _print_json({"error": str(exc)}, exit_code=1)
     return _print_json({"error": f"unknown command: {args.command}"}, exit_code=1)

@@ -124,10 +124,10 @@ reuse-записей по mismatch версии анализа; по трем о
   `UniqueViolation` до деактивации старой active записи. Исправление в
   `ArtifactRepository.write_active()` деактивирует DB-active и pending-active
   duplicate до insert.
-- Остаточная операционная аномалия: две ранние упавшие попытки ensure остались
-  в `call_core.call_processing_runs` со статусом `running`, хотя процессов уже
-  нет. Требуется отдельный cleanup stale processing runs, чтобы не путать
-  будущий мониторинг.
+- Cleanup этой аномалии закрыт 2026-06-14: добавлена admin-only команда
+  `cleanup-stale-runs`, две зависшие записи `465abcb5...` и `aa915c5e...`
+  переведены из `running` в `stale` с `errors_json.error_class=
+  stale_processing_run`. Открытых `queued/running` split runs после cleanup нет.
 
 ## Пилотный порядок
 

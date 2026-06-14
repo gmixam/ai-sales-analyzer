@@ -215,6 +215,21 @@ class ProcessingRunRepository:
         stmt = select(CallProcessingRun).where(CallProcessingRun.id == run_id)
         return self.session.scalars(stmt).first()
 
+    def list_open(self) -> list[CallProcessingRun]:
+        stmt = (
+            select(CallProcessingRun)
+            .where(
+                CallProcessingRun.status.in_(
+                    [
+                        str(ProcessingRunStatus.QUEUED),
+                        str(ProcessingRunStatus.RUNNING),
+                    ]
+                )
+            )
+            .order_by(CallProcessingRun.updated_at.asc())
+        )
+        return list(self.session.scalars(stmt).all())
+
     def status(self, run_id: uuid.UUID | str) -> ProcessingRunStatus | None:
         run = self.get(run_id)
         return ProcessingRunStatus(run.status) if run is not None else None
