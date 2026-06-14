@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
 from app.agents.call_processing import EnsureResponse, ProcessingRunStatus, ProcessingScope
@@ -78,12 +78,25 @@ class _FakeProcessingRunRepository:
     def get(self, run_id: str):
         if run_id != "run-1":
             return None
+        now = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
         return type(
             "Run",
             (),
             {
+                "id": "run-1",
+                "requested_by": "edo-analysis",
                 "scope_json": json.loads(_scope()),
+                "scope_hash": "scope-hash",
                 "required_artifacts": ["transcript", "llm1_first_pass"],
+                "mode": "dry_run",
+                "status": "ready",
+                "counts_json": {"provider_calls_made": 0},
+                "errors_json": [],
+                "started_at": now,
+                "finished_at": now,
+                "heartbeat_at": now,
+                "created_at": now,
+                "updated_at": now,
             },
         )()
 
@@ -170,6 +183,27 @@ def test_cli_retry_failed_is_admin_only(capsys) -> None:
 
     assert exit_code == 1
     assert "admin grant required" in capsys.readouterr().out
+
+
+def test_cli_run_status_prints_persisted_run(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(call_processing_cli, "get_db", _fake_db)
+    monkeypatch.setattr(call_processing_cli, "ProcessingRunRepository", _FakeProcessingRunRepository)
+
+    exit_code = call_processing_cli.main(
+        [
+            "--grant",
+            _grant("reader"),
+            "run-status",
+            "--run-id",
+            "run-1",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run_id"] == "run-1"
+    assert payload["status"] == "ready"
+    assert payload["counts"]["provider_calls_made"] == 0
 
 
 def test_cli_retry_failed_replays_run_scope_with_force(monkeypatch, capsys) -> None:

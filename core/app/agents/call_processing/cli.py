@@ -87,10 +87,10 @@ def run_status(args: argparse.Namespace) -> int:
     _require_reader(grant)
     with get_db() as db:
         run = ProcessingRunRepository(db).get(args.run_id)
-    if run is None:
-        return _print_json({"error": "run not found", "run_id": args.run_id}, exit_code=1)
-    return _print_json(
-        {
+        if run is None:
+            payload = {"error": "run not found", "run_id": args.run_id}
+            return _print_json(payload, exit_code=1)
+        payload = {
             "run_id": str(run.id),
             "requested_by": run.requested_by,
             "scope": run.scope_json or {},
@@ -106,7 +106,7 @@ def run_status(args: argparse.Namespace) -> int:
             "created_at": run.created_at,
             "updated_at": run.updated_at,
         }
-    )
+    return _print_json(payload)
 
 
 def run_artifacts(args: argparse.Namespace) -> int:

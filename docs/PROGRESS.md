@@ -4,9 +4,32 @@
 **Этап:** MVP-1 pilot operations
 **Статус фазы:** этап правок закрыт, начат пилотный операционный цикл
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-13
+**Последнее обновление:** 2026-06-14
 
 ## Что сделано
+- [x] 2026-06-14 — Выполнен controlled live rehearsal для
+  `call-processing` split перед `ensure`. **DB:** перед миграцией создан
+  backup `/tmp/asa_pre_call_processing_split_20260614.dump` в postgres
+  container; затем применена additive Alembic migration до head
+  `2f4c9d8e7a61`, созданы schemas/views `call_core`, `call_public`,
+  `analysis`, `org`. **Runtime:** подняты только named split services
+  `call_processing_api` и `call_processing_worker`; health endpoint
+  `/call-processing/health` вернул `ok`, legacy `api/worker/beat` оставлены
+  как были. **Smoke:** `dry-run` по Толегену за `2026-06-03`, extension `325`,
+  required artifacts `transcript,transcript_segments,llm1_first_pass`, без
+  provider calls и без delivery: `interactions_total=38`,
+  `artifact_requirements_total=114`, `artifacts_ready=48`,
+  `artifacts_missing=66`, `provider_calls_planned=52`,
+  `provider_calls_made=0`, status `partial`. Read-only aggregate confirmed
+  existing split artifacts: `transcript=24 ready`, `transcript_segments=24
+  ready`, `llm1_first_pass=0`; missing work is expected to include 14 STT
+  builds plus LLM1 first-pass builds. **Safety stop:** `ensure` was not run
+  because planned provider calls exceed the conservative rehearsal budget
+  `20`. **Fix:** `call-processing run-status` CLI no longer accesses ORM run
+  fields after DB session close; regression test added. **Verification:**
+  `py_compile`, `git diff --check`, container
+  `/app/tests/test_call_processing_cli.py` -> `6 passed`; `run-status` now
+  returns the persisted dry-run summary.
 - [x] 2026-06-13 — Стартован большой проект разделения `call-processing` и
   `analysis` services в отдельной ветке `feat/call-processing-analysis-split`.
   **Baseline:** task pack из ветки `docs/call-processing-split-task-pack`
