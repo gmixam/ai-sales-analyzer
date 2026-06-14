@@ -31,6 +31,10 @@ def _coerce_value(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
 
 
+def _same_identity(left: Any, right: Any) -> bool:
+    return str(left or "") == str(right or "")
+
+
 class ArtifactRepository:
     """Read and write active call-processing artifacts."""
 
@@ -93,9 +97,18 @@ class ArtifactRepository:
     ) -> CallArtifact:
         kind = str(_coerce_value(artifact_kind))
         version = artifact_version or DEFAULT_ARTIFACT_VERSIONS[kind]
-        existing = self.latest_active(interaction_id, kind, version)
+        self._deactivate_pending_active(interaction_id, kind, version)
+        no_autoflush = getattr(self.session, "no_autoflush", None)
+        if no_autoflush is not None:
+            with no_autoflush:
+                existing = self.latest_active(interaction_id, kind, version)
+        else:
+            existing = self.latest_active(interaction_id, kind, version)
         if existing is not None:
             existing.is_active = False
+            flush = getattr(self.session, "flush", None)
+            if callable(flush):
+                flush()
 
         artifact = CallArtifact(
             id=uuid.uuid4(),
@@ -119,6 +132,28 @@ class ArtifactRepository:
         )
         self.session.add(artifact)
         return artifact
+
+    def _deactivate_pending_active(
+        self,
+        interaction_id: uuid.UUID | str,
+        artifact_kind: str,
+        artifact_version: str,
+    ) -> None:
+        pending = getattr(self.session, "new", None)
+        if pending is None:
+            return
+        for artifact in list(pending):
+            if not isinstance(artifact, CallArtifact):
+                continue
+            if not bool(getattr(artifact, "is_active", False)):
+                continue
+            if not _same_identity(getattr(artifact, "interaction_id", None), interaction_id):
+                continue
+            if getattr(artifact, "artifact_kind", None) != artifact_kind:
+                continue
+            if getattr(artifact, "artifact_version", None) != artifact_version:
+                continue
+            artifact.is_active = False
 
 
 class ProcessingRunRepository:

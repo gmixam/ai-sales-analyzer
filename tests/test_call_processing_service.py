@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -38,13 +39,24 @@ class _FakeSession:
     def __init__(self, scalars_rows: list[object] | None = None) -> None:
         self.scalars_rows = scalars_rows or []
         self.added: list[object] = []
+        self.new: list[object] = []
         self.commits = 0
+        self.flushes = 0
 
     def add(self, row: object) -> None:
         self.added.append(row)
+        self.new.append(row)
 
     def commit(self) -> None:
         self.commits += 1
+
+    def flush(self) -> None:
+        self.flushes += 1
+        self.new.clear()
+
+    @property
+    def no_autoflush(self):
+        return nullcontext()
 
     def scalars(self, _stmt: object) -> _ScalarResult:
         return _ScalarResult(self.scalars_rows)
@@ -156,6 +168,34 @@ def test_artifact_repository_write_active_deactivates_previous_artifact() -> Non
     assert first.is_active is False
     assert second.is_active is True
     assert second.text_value == "second"
+    assert session.added == [first, second]
+    assert session.flushes == 1
+
+
+def test_artifact_repository_write_active_deactivates_pending_duplicate() -> None:
+    session = _FakeSession()
+    repo = ArtifactRepository(session)
+    scope = _scope()
+    interaction = _interaction(scope)
+
+    first = repo.write_active(
+        department_id=interaction.department_id,
+        interaction_id=interaction.id,
+        artifact_kind=ArtifactKind.TRANSCRIPT_SEGMENTS,
+        status=ArtifactStatus.READY,
+        payload_json={"segments": [{"text": "first"}]},
+    )
+    second = repo.write_active(
+        department_id=interaction.department_id,
+        interaction_id=interaction.id,
+        artifact_kind=ArtifactKind.TRANSCRIPT_SEGMENTS,
+        status=ArtifactStatus.READY,
+        payload_json={"segments": [{"text": "second"}]},
+    )
+
+    assert first.is_active is False
+    assert second.is_active is True
+    assert session.flushes == 0
     assert session.added == [first, second]
 
 

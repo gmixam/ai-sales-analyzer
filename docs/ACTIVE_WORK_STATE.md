@@ -1,6 +1,6 @@
 # Активное состояние работ
 
-Дата обновления: 2026-06-12
+Дата обновления: 2026-06-14
 
 Статус: `active`
 
@@ -96,6 +96,38 @@ reuse-записей по mismatch версии анализа; по трем о
   safety, normal full_report path -> `3 passed`.
 - Следующий шаг: controlled rerender Тимура за `2026-06-11` в preview/operator
   mode; business email только после review.
+
+Последний split-service test run:
+
+- 2026-06-14 выполнен полный тестовый прогон за `2026-06-12` для Алишера,
+  Тимура и Толегена через разделенный контур:
+  `call_processing_api/worker` -> `analysis_api`.
+- Важно: это не legacy monolith. `analysis_api` работал с
+  `CALL_PROCESSING_MODE=external_service`, `AI_LLM2_INPUT_PROFILE=compact`,
+  OpenAI-compatible runtime, subagent/simulation выключены, `LLM3_ENABLED=true`.
+- Upstream call-processing: найдено `73` interactions, готово `105/219`
+  artifact requirements, отсутствует `114`; provider calls в успешном ensure:
+  `101` (`36` source/recording, `32` STT, `33` LLM1). Итоговый статус:
+  `partial`, без artifact build failures.
+- Analysis/report: LLM1 external artifacts reused for analysis=`35`,
+  analyses built=`28`, failed=`7`, причина failed:
+  `llm2_admission_non_commercial_or_unusable`.
+- По scope 2026-06-12 в БД есть только Алишер (`6` звонков, `4` с STT/LLM1)
+  и Толеген (`67` звонков, `31` с STT/LLM1). По Тимуру (`extension=311`) за
+  этот день записей не найдено.
+- Telegram operator delivery: PDF Алишера доставлен как
+  `skip_accumulate/preview`, PDF Толегена доставлен как `full_report`.
+  Business email был выключен (`telegram_test_only`, `email_status=skipped`).
+- Во время первого split ensure найден и исправлен write-path дефект
+  `call_core.call_artifacts`: pending/active duplicate для
+  `(interaction_id, artifact_kind, artifact_version)` мог ловить
+  `UniqueViolation` до деактивации старой active записи. Исправление в
+  `ArtifactRepository.write_active()` деактивирует DB-active и pending-active
+  duplicate до insert.
+- Остаточная операционная аномалия: две ранние упавшие попытки ensure остались
+  в `call_core.call_processing_runs` со статусом `running`, хотя процессов уже
+  нет. Требуется отдельный cleanup stale processing runs, чтобы не путать
+  будущий мониторинг.
 
 ## Пилотный порядок
 
