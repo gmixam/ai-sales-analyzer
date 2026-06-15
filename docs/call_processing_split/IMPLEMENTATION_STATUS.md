@@ -5,6 +5,8 @@ Branch: `feat/call-processing-analysis-split`
 Source task pack: `docs/call_processing_split/IMPLEMENTATION_TASK_PACK_FOR_AGENTS.md`
 Latest acceptance audit:
 `docs/call_processing_split/RELEASE_ACCEPTANCE_AUDIT_2026-06-13.md`
+Completion roadmap:
+`docs/call_processing_split/COMPLETION_ROADMAP.md`
 
 ## Current Rule
 
@@ -27,6 +29,25 @@ explicit operator approval.
 | 7. Runtime split | `implemented_local_compose` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. Live split deployment remains release-time. |
 | 8. Test matrix and verification pack | `implemented_local` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
 | 9. Cutover, rollback, runbook | `runbook_ready_cutover_not_executed` | Added cutover/rollback runbook and next-agent handoff. Production cutover not executed. |
+
+## Completion Roadmap
+
+The implementation tasks are locally complete, but production completion is
+tracked separately in
+`docs/call_processing_split/COMPLETION_ROADMAP.md`.
+
+Current completion status:
+
+- first real provider-backed split run was executed on 2026-06-14 for report day
+  `2026-06-12`;
+- the run confirmed the route
+  `call_processing_api/worker -> analysis_api` with
+  `CALL_PROCESSING_MODE=external_service`;
+- the run was `partial`, because the selected day had no Timur calls in scope
+  and only two manager reports were produced in operator Telegram;
+- scheduled/reviewable flow, ROP weekly external-service smoke, split cost
+  normalization, production secret partitioning and production cutover remain
+  open completion stages.
 
 ## Task 0 Contract Skeleton
 

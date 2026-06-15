@@ -220,6 +220,8 @@ manager_daily PDF.
 
 - `docs/PILOT_OPERATIONS.md` - ежедневный порядок пилота.
 - `docs/PILOT_BACKLOG.md` - актуальные задачи пилота и очередность работ.
+- `docs/call_processing_split/COMPLETION_ROADMAP.md` - оставшиеся этапы до
+  полного закрытия переноса STT/call-processing в отдельный сервис.
 - `docs/MVP1_PILOT_METRICS_MEASUREMENTS.md` - KPI, GO/NO-GO и экономика.
 - `docs/RUNTIME_PROFILES.md` - режимы запуска и subagent/API границы.
 - `docs/AI_PROVIDER_ROUTING.md` - provider pools и env.

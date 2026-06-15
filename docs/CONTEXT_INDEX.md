@@ -43,6 +43,14 @@ audit-fix pass.
 
 - [docs/KIMI_K26_TRIAL_HANDOFF_2026-06-02.md](KIMI_K26_TRIAL_HANDOFF_2026-06-02.md)
 
+Если задача связана с переносом STT/транскрибации в отдельный
+`call-processing` сервис, дополнительно открыть:
+
+- [docs/call_processing_split/COMPLETION_ROADMAP.md](call_processing_split/COMPLETION_ROADMAP.md)
+- [docs/call_processing_split/IMPLEMENTATION_STATUS.md](call_processing_split/IMPLEMENTATION_STATUS.md)
+- [docs/call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md](call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md)
+- [docs/call_processing_split/VERIFICATION_PACK.md](call_processing_split/VERIFICATION_PACK.md)
+
 ## Текущие правила пилота
 
 - Compact LLM2 input является runtime default: `AI_LLM2_INPUT_PROFILE=compact`.
