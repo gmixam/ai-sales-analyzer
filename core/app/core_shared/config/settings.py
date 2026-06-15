@@ -136,6 +136,8 @@ class Settings(BaseSettings):
     alert_email_min_level: str = Field(default="warning")
     alert_email_on_start: bool = Field(default=True)
     alert_email_on_success: bool = Field(default=False)
+    manager_daily_rop_email_enabled: bool = Field(default=True)
+    manager_daily_rop_email_to: str = Field(default="edo.rop@dogovor24.kz")
 
     # Telegram
     telegram_bot_token: str = Field(default="")

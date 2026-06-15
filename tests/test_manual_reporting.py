@@ -7871,6 +7871,74 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertIn("rop_tasks_next_week", payload)
         self.assertIn(payload["week_over_week_dynamics"]["trend"], {"n/a", "up", "down", "flat"})
 
+    def test_manager_daily_rop_bundle_sends_all_delivered_manager_pdfs(self) -> None:
+        sent_messages: list[dict[str, Any]] = []
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        orchestrator.delivery = SimpleNamespace(
+            send_email_message=lambda **kwargs: sent_messages.append(kwargs)
+            or {"status": "sent", "target": kwargs["email_to"]}
+        )
+        reports = [
+            {
+                "status": "delivered",
+                "payload": {"header": {"manager_name": "Толеген"}},
+                "delivery": {"transport": {"email_delivery": {"status": "delivered"}}},
+                "_runtime_rop_bundle_attachment": {
+                    "filename": "tolegen.pdf",
+                    "content": b"pdf-1",
+                },
+            },
+            {
+                "status": "delivered",
+                "payload": {"header": {"manager_name": "Тимур"}},
+                "delivery": {"transport": {"email_delivery": {"status": "delivered"}}},
+                "_runtime_rop_bundle_attachment": {
+                    "filename": "timur.pdf",
+                    "content": b"pdf-2",
+                },
+            },
+        ]
+
+        with (
+            patch.object(settings, "manager_daily_rop_email_enabled", True),
+            patch.object(settings, "manager_daily_rop_email_to", "edo.rop@dogovor24.kz"),
+            patch.object(settings, "smtp_user", "smtp-user"),
+        ):
+            summary = CallsManualReportingOrchestrator._send_manager_daily_rop_bundle(
+                orchestrator,
+                preset=resolve_report_preset("manager_daily"),
+                period={"date_from": "2026-06-11", "date_to": "2026-06-11"},
+                delivery_options=resolve_report_delivery_options(send_email=True),
+                reports=reports,
+            )
+
+        self.assertEqual(summary["status"], "sent")
+        self.assertEqual(summary["target"], "edo.rop@dogovor24.kz")
+        self.assertEqual(summary["attachments_count"], 2)
+        self.assertEqual(len(sent_messages), 1)
+        self.assertEqual(sent_messages[0]["email_to"], "edo.rop@dogovor24.kz")
+        self.assertEqual([item["filename"] for item in sent_messages[0]["attachments"]], ["tolegen.pdf", "timur.pdf"])
+
+    def test_manager_daily_rop_bundle_skips_when_manager_business_email_disabled(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        orchestrator.delivery = SimpleNamespace(send_email_message=lambda **_kwargs: self.fail("must not send"))
+
+        with (
+            patch.object(settings, "manager_daily_rop_email_enabled", True),
+            patch.object(settings, "manager_daily_rop_email_to", "edo.rop@dogovor24.kz"),
+            patch.object(settings, "smtp_user", "smtp-user"),
+        ):
+            summary = CallsManualReportingOrchestrator._send_manager_daily_rop_bundle(
+                orchestrator,
+                preset=resolve_report_preset("manager_daily"),
+                period={"date_from": "2026-06-11", "date_to": "2026-06-11"},
+                delivery_options=resolve_report_delivery_options(send_email=False),
+                reports=[],
+            )
+
+        self.assertEqual(summary["status"], "skipped")
+        self.assertEqual(summary["reason"], "manager_business_email_disabled")
+
     def test_render_report_email_uses_short_body_and_pdf_attachment(self) -> None:
         payload = build_manager_daily_payload(
             department_id=str(uuid4()),

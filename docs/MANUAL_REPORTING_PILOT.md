@@ -458,7 +458,8 @@ Readiness проверяется последовательно:
 - resolved email recipients при этом всё равно вычисляются и показываются в preview / run result как reference;
 - если `manager_daily` report имеет `review_required` / incomplete gate, business email delivery is forced off; Telegram operator preview remains possible only when explicitly enabled;
 - Telegram test delivery отправляет именно итоговый PDF document, а не text-only dump;
-- если enabled delivery channel не удался, это возвращается как structured delivery status/reason, а не traceback.
+- если enabled delivery channel не удался, это возвращается как structured delivery status/reason, а не traceback;
+- после успешной business email отправки `manager_daily` менеджерам runtime отправляет отдельное summary-письмо РОП ЭДО на `MANAGER_DAILY_ROP_EMAIL_TO` (default `edo.rop@dogovor24.kz`) со всеми PDF-отчётами менеджеров за день во вложении; это не `rop_weekly`, не запускает новый анализ и срабатывает только при включенной manager business delivery.
 
 Источник адресатов:
 - email менеджера берётся из карточки сотрудника в Bitrix;
@@ -474,6 +475,10 @@ Readiness проверяется последовательно:
 - monitoring copy:
   - default = `sales@dogovor24.kz`
   - optional override = `departments.settings.reporting.monitoring_email`
+- daily ROP copy:
+  - default = `edo.rop@dogovor24.kz`
+  - env: `MANAGER_DAILY_ROP_EMAIL_ENABLED=true`,
+    `MANAGER_DAILY_ROP_EMAIL_TO=edo.rop@dogovor24.kz`
 
 Это пока минимальный bounded runtime rule для ручного пилота.
 Отдельный richer Bitrix org-structure resolver может быть добавлен позже без смены `report_preset` contract.

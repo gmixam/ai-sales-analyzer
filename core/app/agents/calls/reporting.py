@@ -1200,6 +1200,13 @@ class CallsManualReportingOrchestrator:
         """Build the final structured run response for success and blocked outcomes."""
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=errors or [])
         resolved_delivery_options = delivery_options or resolve_report_delivery_options(send_email=send_email)
+        rop_daily_delivery = self._send_manager_daily_rop_bundle(
+            preset=preset,
+            period=period,
+            delivery_options=resolved_delivery_options,
+            reports=reports,
+        )
+        self._strip_runtime_report_attachments(reports)
         result = {
             "status": overall_status,
             "preset": preset.code,
@@ -1216,6 +1223,7 @@ class CallsManualReportingOrchestrator:
             },
             "reports": reports,
             "errors": list(errors or []),
+            "rop_daily_delivery": rop_daily_delivery,
             "observability": self._build_run_observability(
                 preset=preset,
                 source_summary=source_summary,
@@ -1251,6 +1259,7 @@ class CallsManualReportingOrchestrator:
                 "send_business_email": resolved_delivery_options.send_business_email,
             },
         }
+        result["observability"]["summary"]["rop_daily_delivery"] = rop_daily_delivery
         terminal_alerts = self._send_run_monitor_alerts(
             preset=preset,
             period=period,
@@ -1267,6 +1276,178 @@ class CallsManualReportingOrchestrator:
             "statuses": [item["status"] for item in result["observability"]["alerts"]],
         }
         return result
+
+    def _send_manager_daily_rop_bundle(
+        self,
+        *,
+        preset: ReportPreset,
+        period: dict[str, str],
+        delivery_options: ReportDeliveryOptions,
+        reports: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Send one ROP email with all manager_daily PDFs after manager delivery."""
+        target = str(settings.manager_daily_rop_email_to or "").strip()
+        summary: dict[str, Any] = {
+            "enabled": bool(settings.manager_daily_rop_email_enabled),
+            "target": target or None,
+            "status": "skipped",
+            "reason": None,
+            "attachments_count": 0,
+            "attached_reports": [],
+        }
+        if preset.code != "manager_daily":
+            summary["reason"] = "preset_not_manager_daily"
+            return summary
+        if not settings.manager_daily_rop_email_enabled:
+            summary["reason"] = "manager_daily_rop_email_disabled"
+            return summary
+        if not delivery_options.send_business_email:
+            summary["reason"] = "manager_business_email_disabled"
+            return summary
+        if not target:
+            summary.update({"status": "blocked", "reason": "manager_daily_rop_email_to_missing"})
+            return summary
+        if not settings.has_smtp:
+            summary.update({"status": "blocked", "reason": "smtp_not_configured"})
+            return summary
+
+        attachments: list[dict[str, Any]] = []
+        attached_reports: list[dict[str, Any]] = []
+        skipped_reports: list[dict[str, Any]] = []
+        used_filenames: set[str] = set()
+        for report in reports:
+            manager_name = self._manager_name_from_report(report)
+            transport = (report.get("delivery") or {}).get("transport") or {}
+            email = transport.get("email_delivery") or {}
+            email_status = str(email.get("status") or "").strip()
+            runtime_attachment = report.get("_runtime_rop_bundle_attachment")
+            if email_status != "delivered":
+                skipped_reports.append(
+                    {
+                        "manager_name": manager_name,
+                        "status": report.get("status"),
+                        "email_status": email_status or "unknown",
+                    }
+                )
+                continue
+            if not isinstance(runtime_attachment, dict) or not runtime_attachment.get("content"):
+                skipped_reports.append(
+                    {
+                        "manager_name": manager_name,
+                        "status": report.get("status"),
+                        "email_status": email_status,
+                        "reason": "runtime_pdf_missing",
+                    }
+                )
+                continue
+            filename = self._dedupe_attachment_filename(
+                str(runtime_attachment.get("filename") or "manager_daily_report.pdf"),
+                used_filenames=used_filenames,
+            )
+            attachments.append(
+                {
+                    "filename": filename,
+                    "content": runtime_attachment["content"],
+                    "maintype": "application",
+                    "subtype": "pdf",
+                }
+            )
+            attached_reports.append(
+                {
+                    "manager_name": manager_name,
+                    "filename": filename,
+                    "email_status": email_status,
+                    "report_status": report.get("status"),
+                }
+            )
+
+        summary["attachments_count"] = len(attachments)
+        summary["attached_reports"] = attached_reports
+        if skipped_reports:
+            summary["skipped_reports"] = skipped_reports
+        if not attachments:
+            summary["reason"] = "no_delivered_manager_reports"
+            return summary
+
+        subject = f"Ежедневные отчёты менеджеров ЭДО — {_format_period_label(period)}"
+        attached_lines = [f"- {item['manager_name']}: {item['filename']}" for item in attached_reports]
+        skipped_lines = [
+            f"- {item['manager_name']}: {item.get('email_status') or item.get('reason') or 'skipped'}"
+            for item in skipped_reports
+        ]
+        text_parts = [
+            "Добрый день.",
+            "",
+            f"Во вложении ежедневные отчёты менеджеров ЭДО за {_format_period_label(period)}.",
+            "",
+            "Приложены отчёты:",
+            *attached_lines,
+        ]
+        if skipped_lines:
+            text_parts.extend(["", "Не приложены:", *skipped_lines])
+        text_parts.extend(["", "Это автоматическая копия после отправки отчётов менеджерам."])
+        try:
+            delivery = self.delivery.send_email_message(
+                email_to=target,
+                subject=subject,
+                text="\n".join(text_parts),
+                attachments=attachments,
+            )
+        except DeliveryError as exc:
+            summary.update(
+                {
+                    "status": "failed",
+                    "reason": str(exc),
+                    "subject": subject,
+                }
+            )
+            return summary
+
+        summary.update(
+            {
+                "status": delivery.get("status") or "sent",
+                "reason": None,
+                "subject": subject,
+                "delivery": delivery,
+            }
+        )
+        return summary
+
+    @staticmethod
+    def _manager_name_from_report(report: dict[str, Any]) -> str:
+        """Return manager display name from a manager_daily report payload."""
+        payload = report.get("payload") if isinstance(report, dict) else None
+        header = payload.get("header") if isinstance(payload, dict) else None
+        manager_name = str((header or {}).get("manager_name") or "").strip()
+        if manager_name:
+            return manager_name
+        group_key = str(report.get("group_key") or "").strip()
+        return group_key or "Менеджер"
+
+    @staticmethod
+    def _dedupe_attachment_filename(filename: str, *, used_filenames: set[str]) -> str:
+        """Return a unique filename for one email attachment."""
+        candidate = filename.strip() or "manager_daily_report.pdf"
+        if candidate not in used_filenames:
+            used_filenames.add(candidate)
+            return candidate
+        stem, dot, suffix = candidate.rpartition(".")
+        base = stem if dot else candidate
+        extension = f".{suffix}" if dot else ""
+        index = 2
+        while True:
+            deduped = f"{base} ({index}){extension}"
+            if deduped not in used_filenames:
+                used_filenames.add(deduped)
+                return deduped
+            index += 1
+
+    @staticmethod
+    def _strip_runtime_report_attachments(reports: list[dict[str, Any]]) -> None:
+        """Remove non-JSON runtime attachment bytes before returning run results."""
+        for report in reports:
+            if isinstance(report, dict):
+                report.pop("_runtime_rop_bundle_attachment", None)
 
     @staticmethod
     def _derive_run_overall_status(
@@ -4359,6 +4540,10 @@ class CallsManualReportingOrchestrator:
             "payload": payload,
             "preview": preview,
             "artifact": rendered.get("artifact"),
+            "_runtime_rop_bundle_attachment": {
+                "filename": rendered["artifact"]["filename"],
+                "content": rendered["pdf_bytes"],
+            },
             "delivery": self.delivery.preview_report_delivery(
                 primary_email=primary_email,
                 cc_emails=cc_emails,
