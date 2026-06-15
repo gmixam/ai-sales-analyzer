@@ -7,6 +7,19 @@
 **Последнее обновление:** 2026-06-15
 
 ## Что сделано
+- [x] 2026-06-15 — Выполнена runtime activation для
+  `SPLIT-COMPLETE-07C` без ручного billable прогона. Остановлен legacy
+  scheduler `beat`, создан один active `manager_daily` schedule для `[ЭДО]
+  Отдел Продаж` на 4 менеджеров: Алишер, Илья, Тимур, Толеген. Schedule id:
+  `97e6c120-6aa3-4664-99ae-3982054698d7`, `next_run_at=2026-06-16T03:00:00Z`
+  (`08:00 Asia/Almaty`) для report day `2026-06-15`.
+  `business_email_enabled=false`, `review_required=true`,
+  `report_period_rule=previous_day`, mode `build_missing_and_report`.
+  Запущен split `analysis_beat`; `call_processing_beat` оставлен выключенным,
+  потому что upstream provider-backed `00:00` run и budget отдельно не
+  утверждены. Первый automatic due scan обработал `0` schedules, потому что
+  `next_run_at` в будущем. Не запускались `scan-due`, approve, manual
+  pipeline, STT/LLM или email.
 - [x] 2026-06-15 — Реализован local code pass для
   `SPLIT-COMPLETE-07B`: добавлен scheduled upstream Celery task
   `call_processing.ensure_daily_upstream` для `APP_SERVICE=call_processing`.

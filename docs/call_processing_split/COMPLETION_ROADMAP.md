@@ -491,22 +491,34 @@ CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
 
 ### SPLIT-COMPLETE-07C — Runtime schedule activation for pilot
 
-Статус: `draft_tz_ready_requires_operator_approval`
+Статус: `implemented_runtime_activation_safe`
 
 ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_07C_RUNTIME_SCHEDULE_ACTIVATION_TZ.md`
 
 Что сделать:
 
-- остановить legacy `beat`;
-- создать production `manager_daily` schedule row для 4 менеджеров ЭДО;
-- запустить split `analysis_beat`;
-- запустить `call_processing_beat` только если upstream provider-backed run на
-  `00:00 Asia/Almaty` утвержден и env/budget заполнены;
-- проверить, что `business_email_enabled=false`, `review_required=true`,
+- [x] остановить legacy `beat`;
+- [x] создать production `manager_daily` schedule row для 4 менеджеров ЭДО;
+- [x] запустить split `analysis_beat`;
+- [x] не запускать `call_processing_beat`, потому что upstream provider-backed
+  run на `00:00 Asia/Almaty` еще не утвержден и env/budget не включены;
+- [x] проверить, что `business_email_enabled=false`, `review_required=true`,
   schedule scope = 4 утвержденных менеджера;
-- не запускать `scan-due`, approve, manual pipeline или STT/LLM без отдельного
+- [x] не запускать `scan-due`, approve, manual pipeline или STT/LLM без отдельного
   approval;
-- зафиксировать schedule id, `next_run_at` и состояние beat-процессов.
+- [x] зафиксировать schedule id, `next_run_at` и состояние beat-процессов.
+
+Результат 2026-06-15:
+
+- schedule id: `97e6c120-6aa3-4664-99ae-3982054698d7`;
+- `next_run_at=2026-06-16T03:00:00+00:00` (`08:00 Asia/Almaty`);
+- legacy `beat` stopped;
+- `analysis_beat` running;
+- `call_processing_beat` not running until upstream provider budget/enablement
+  is separately approved;
+- first automatic due scan processed `0` schedules because `next_run_at` is in
+  the future;
+- no manual billable pipeline/STT/LLM/email/approve was triggered.
 
 Почему добавлено:
 
@@ -517,11 +529,11 @@ CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
 
 Критерий готовности:
 
-- active schedule создан и безопасен;
-- legacy scheduler не конкурирует;
-- split scheduler state соответствует выбранному режиму;
-- менеджерам ничего не отправлено без approve;
-- следующий automatic cycle может пройти по расписанию или дает понятный
+- [x] active schedule создан и безопасен;
+- [x] legacy scheduler не конкурирует;
+- [x] split scheduler state соответствует выбранному режиму;
+- [x] менеджерам ничего не отправлено без approve;
+- [x] следующий automatic cycle может пройти по расписанию или дает понятный
   blocker/alert.
 
 ### SPLIT-COMPLETE-08 — Production cutover или rollback decision

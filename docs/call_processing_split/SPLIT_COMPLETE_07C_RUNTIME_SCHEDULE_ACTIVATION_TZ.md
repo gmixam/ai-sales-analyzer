@@ -310,22 +310,20 @@ unless operator explicitly approves the next smoke/run.
 
 ## Result Log
 
-Заполнить после выполнения:
-
 ```text
-activation_started_at:
-git_commit_before_activation:
-bitrix_sync_status:
-schedule_id:
-next_run_at:
-legacy_beat_state:
-call_processing_beat_state:
-analysis_beat_state:
-business_email_enabled:
-provider_upstream_enabled:
-provider_budget:
-smoke_status:
-blockers:
-next_step:
+activation_started_at: 2026-06-15T15:42:00Z
+git_commit_before_activation: 4aabb2f Document split runtime schedule activation
+bitrix_sync_status: ok; 4 schedule_scope_candidates; Robot Dogovor24 excluded
+schedule_id: 97e6c120-6aa3-4664-99ae-3982054698d7
+next_run_at: 2026-06-16T03:00:00+00:00 (2026-06-16 08:00 Asia/Almaty)
+legacy_beat_state: stopped/exited
+call_processing_beat_state: not running; provider-backed upstream not approved
+analysis_beat_state: running
+business_email_enabled: false
+review_required: true
+provider_upstream_enabled: false
+provider_budget: 0 / not approved for this activation step
+smoke_status: schedule activation smoke passed; first due scan processed 0 schedules because next_run_at is future
+blockers: none for scheduled reporting activation; open decision remains 00:00 call-processing upstream budget/enablement
+next_step: decide whether to enable provider-backed call_processing_beat for 2026-06-16 00:00 Asia/Almaty or let 08:00 analysis request missing artifacts via external call-processing
 ```
-
