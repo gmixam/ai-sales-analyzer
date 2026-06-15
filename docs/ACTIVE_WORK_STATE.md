@@ -142,6 +142,17 @@ reuse-записей по mismatch версии анализа; по трем о
   admin alert, но business email менеджерам по-прежнему идет только через
   отдельный delivery gate.
 
+Последняя локальная доработка split cost readiness:
+
+- `SPLIT-COMPLETE-03` внедрен локально 2026-06-15: новые split-run должны
+  возвращать единый `observability.ai_costs` (`split_ai_costs_v1`).
+- Upstream `call-processing` возвращает `EnsureResponse.costs` и сохраняет
+  summary в `CallProcessingRun.counts_json["costs"]`.
+- Downstream `analysis/reporting` объединяет upstream STT/LLM1 и downstream
+  LLM2/LLM3 в одном summary; dry-run/reuse/backfill не добавляют current-run
+  cost.
+- Полный pipeline после этой доработки еще не запускался.
+
 ## Пилотный порядок
 
 1. Перед запуском проверить профиль в `docs/RUNTIME_PROFILES.md`.

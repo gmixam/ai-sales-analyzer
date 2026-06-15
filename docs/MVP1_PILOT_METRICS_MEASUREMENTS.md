@@ -1,6 +1,6 @@
 # MVP-1 Pilot Metrics Measurements
 
-Дата актуализации: 2026-06-14
+Дата актуализации: 2026-06-15
 
 ## Назначение
 
@@ -152,8 +152,10 @@ LLM3-only. Более ранние rerender этого же отчета за 20
 - Для недельной AI-оценки еще нужен ручной аудит 25 звонков и 1 daily report.
 - Подтверждение чтения отчетов менеджерами пока не собрано у РОП.
 - Полная стоимость end-to-end по STT/LLM1/LLM2/LLM3 за 2026-06-04 восстановлена
-  по telemetry в БД и LLM3 report observability. На будущее нужно сохранять такой
-  summary автоматически в run package, чтобы не пересобирать расчет вручную.
+  по telemetry в БД и LLM3 report observability. Для новых split-run после
+  SPLIT-COMPLETE-03 источник расчета — `observability.ai_costs`: upstream
+  `call-processing` и downstream `analysis/reporting` уже объединены в одном
+  summary, если upstream вернул `EnsureResponse.costs`.
 
 ## Ежедневные операционные замеры
 
@@ -165,8 +167,8 @@ LLM3-only. Более ранние rerender этого же отчета за 20
 | 2026-06-04 | Толеген Жангазиев | LLM2 fresh + report/email, OpenAI, compact | 52 | 24 | 18 | 34.6% | 0 / 24 / 0 | 18 / 0 / 6 fail-closed | `signal_report` | Да | - | Да, email delivered | Нет данных | 1.598201 | 0.288000 / 0.071306 / 1.212110 / 0.026785 | 0.088789 | н/д | 6 звонков отклонены LLM2 admission как non-commercial/unusable | Artifact cost: STT/LLM1/LLM2/LLM3 учтены один раз; повторные rerender не суммируются |
 | 2026-06-04 | Тимур Жуматаев | LLM2 fresh + report/email, OpenAI, compact | 24 | 12 | 12 | 50.0% | 0 / 12 / 0 | 12 / 0 / 0 | `signal_report` | Да | - | Да, email delivered | Нет данных | 1.340780 | 0.522000 / 0.041552 / 0.751768 / 0.025460 | 0.111732 | н/д | Нет | Artifact cost: STT/LLM1/LLM2/LLM3 учтены один раз; повторные rerender не суммируются |
 | 2026-06-04 | Алишер Гайнидинов | LLM2 fresh + report/email, OpenAI, compact | 12 | 9 | 6 | 50.0% | 0 / 9 / 0 | 6 / 0 / 3 fail-closed | `signal_report` | Да | - | Да, email delivered | Нет данных | 0.785703 | 0.366000 / 0.035464 / 0.362137 / 0.022102 | 0.130951 | н/д | 3 звонка отклонены LLM2 admission как non-commercial/unusable | Artifact cost: STT/LLM1/LLM2/LLM3 учтены один раз; повторные rerender не суммируются |
-| 2026-06-12 | Алишер Гайнидинов | split services: call-processing STT/LLM1 + analysis LLM2/LLM3, OpenAI, compact, telegram_test_only | 6 | 4 | 3 | 75.0% | split upstream ready 4 / report reused external 4 / 0 | 3 / 0 / 1 fail-closed | `skip_accumulate` / operator preview | Да, preview PDF | delivered, id not captured | Нет, test-only | Нет данных | н/д | split cost needs normalized merged summary | н/д | н/д | 1 содержательный звонок отклонен LLM2 admission; данных мало для manager-facing full report | Split-route check: `CALL_PROCESSING_MODE=external_service`; business email disabled |
-| 2026-06-12 | Толеген Жангазиев | split services: call-processing STT/LLM1 + analysis LLM2/LLM3, OpenAI, compact, telegram_test_only; 2026-06-15 ready-only business email delivery | 67 | 31 | 25 | 80.6% | split upstream ready 31 / report reused external 31 / 0 | 25 / 0 / 6 fail-closed | `full_report` | Да | delivered, id not captured | Да, email delivered 2026-06-15 to `zh.tolegen@dogovor24.kz`, CC `sales@dogovor24.kz` | Нет данных | н/д | split cost needs normalized merged summary; ready-only delivery added LLM3 current-run cost `0.025457` USDT | н/д | н/д | 6 звонков отклонены LLM2 admission as non-commercial/unusable | Первый полноценный split-service manager-day report; business email delivered on explicit operator request |
+| 2026-06-12 | Алишер Гайнидинов | split services: call-processing STT/LLM1 + analysis LLM2/LLM3, OpenAI, compact, telegram_test_only | 6 | 4 | 3 | 75.0% | split upstream ready 4 / report reused external 4 / 0 | 3 / 0 / 1 fail-closed | `skip_accumulate` / operator preview | Да, preview PDF | delivered, id not captured | Нет, test-only | Нет данных | н/д | Для новых split-run читать из `observability.ai_costs` (`split_ai_costs_v1`) | н/д | н/д | 1 содержательный звонок отклонен LLM2 admission; данных мало для manager-facing full report | Split-route check: `CALL_PROCESSING_MODE=external_service`; business email disabled |
+| 2026-06-12 | Толеген Жангазиев | split services: call-processing STT/LLM1 + analysis LLM2/LLM3, OpenAI, compact, telegram_test_only; 2026-06-15 ready-only business email delivery | 67 | 31 | 25 | 80.6% | split upstream ready 31 / report reused external 31 / 0 | 25 / 0 / 6 fail-closed | `full_report` | Да | delivered, id not captured | Да, email delivered 2026-06-15 to `zh.tolegen@dogovor24.kz`, CC `sales@dogovor24.kz` | Нет данных | н/д | Для новых split-run читать из `observability.ai_costs` (`split_ai_costs_v1`); ready-only delivery added LLM3 current-run cost `0.025457` USDT | н/д | н/д | 6 звонков отклонены LLM2 admission as non-commercial/unusable | Первый полноценный split-service manager-day report; business email delivered on explicit operator request |
 | 2026-06-12 | Тимур Жуматаев | split services, OpenAI, compact, telegram_test_only | 0 | 0 | 0 | н/д | 0 / 0 / 0 | 0 / 0 / 0 | `no_data` | Нет | - | Нет | Нет данных | 0 | 0 / 0 / 0 / 0 | н/д | н/д | В scope дня нет записей по `extension=311` / manager_id Тимура | Проверить, были ли звонки Тимура 2026-06-12 в OnlinePBX вне выбранного отдела/extension |
 
 ## Еженедельный AI-аудит
@@ -203,8 +205,11 @@ Baseline фиксируется вручную от РОП/CRM до оценки
 ## Бюджет и экономика прогона
 
 Стоимость автоматически считается в USDT в `observability.ai_costs` после
-каждого прогона. USD-прайсы провайдеров считаются как USDT-equivalent по правилу
-`1 USD = 1 USDT`.
+каждого прогона. Для split-run это единый source of truth: при наличии
+`call_processing_costs` из upstream summary поле `observability.ai_costs`
+содержит `upstream`, `downstream`, верхние STT/LLM1/LLM2/LLM3 totals и общий
+`total_current_run_cost_usdt`. USD-прайсы провайдеров считаются как
+USDT-equivalent по правилу `1 USD = 1 USDT`.
 
 Codex по запросу пользователя должен читать run package / `observability` и
 выдавать:

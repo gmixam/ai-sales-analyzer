@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 
@@ -163,12 +164,14 @@ class CallProcessingService:
         budget = ProviderCallBudget(provider_call_budget)
         source_counts = self._discover_and_persist_source_calls(scope_model, mode_model, budget)
         interactions = self._find_interactions(scope_model)
+        cost_entries: list[dict[str, Any]] = []
         counts = await self._ensure_artifacts(
             interactions,
             required,
             mode_model,
             force_retry_failed=force_retry_failed,
             budget=budget,
+            cost_entries=cost_entries,
         )
         source_quota_blocked = int(source_counts.pop("quota_blocked", 0) or 0)
         counts["quota_blocked"] = int(counts.get("quota_blocked", 0) or 0) + source_quota_blocked
@@ -176,12 +179,13 @@ class CallProcessingService:
             source_counts.pop("provider_calls_made", 0)
         )
         counts.update(source_counts)
+        costs = self._estimate_upstream_costs(cost_entries, counts, mode_model)
         status = self._status_from_counts(counts)
 
         self.runs.update_status(
             run,
             status,
-            counts_json=counts,
+            counts_json={**counts, "costs": costs},
             finished_at=datetime.now(UTC),
         )
         self._commit_if_available()
@@ -193,6 +197,7 @@ class CallProcessingService:
             requested_by=requester,
             planned=counts,
             quota=self._quota_summary(counts, mode_model, budget),
+            costs=costs,
         )
 
     def _normalize_required_artifacts(
@@ -383,6 +388,7 @@ class CallProcessingService:
         *,
         force_retry_failed: bool = False,
         budget: ProviderCallBudget | None = None,
+        cost_entries: list[dict[str, Any]] | None = None,
     ) -> dict[str, int]:
         budget = budget or ProviderCallBudget()
         counts = {
@@ -441,6 +447,8 @@ class CallProcessingService:
                             counts["artifacts_ready"] += 1
                             counts["transcripts_built"] += 1
                             counts["provider_calls_made"] += 1
+                            if cost_entries is not None:
+                                cost_entries.append(built)
                             continue
                     counts["artifacts_missing"] += 1
                     continue
@@ -465,6 +473,8 @@ class CallProcessingService:
                             counts["artifacts_ready"] += 1
                             counts["llm1_first_pass_built"] += 1
                             counts["provider_calls_made"] += 1
+                            if cost_entries is not None:
+                                cost_entries.append(built)
                             continue
                     counts["artifacts_missing"] += 1
                     continue
@@ -493,13 +503,13 @@ class CallProcessingService:
             str(getattr(interaction, "department_id", "") or "").strip()
         )
 
-    async def _build_transcript_artifacts(self, interaction: Interaction) -> bool:
+    async def _build_transcript_artifacts(self, interaction: Interaction) -> dict[str, Any] | None:
         """Run STT for one interaction and persist transcript artifacts."""
         if not str(getattr(interaction, "raw_ref", "") or "").strip():
-            return False
+            return None
         department_id = str(getattr(interaction, "department_id", "") or "")
         if not department_id:
-            return False
+            return None
         try:
             extractor = self._build_extractor(department_id)
             result = await extractor.process(interaction)
@@ -510,7 +520,7 @@ class CallProcessingService:
                 error_class=ProcessingErrorClass.UNKNOWN_ERROR,
                 error_reason=str(exc),
             )
-            return False
+            return None
 
         now = datetime.now(UTC)
         self.artifacts.write_active(
@@ -542,15 +552,22 @@ class CallProcessingService:
                 source_updated_at=now,
                 **self._artifact_provider_fields(interaction, layer="stt"),
             )
-        return bool(str(result.full_text or "").strip())
+        if not str(result.full_text or "").strip():
+            return None
+        return self._execution_entry(
+            interaction,
+            layer="stt",
+            request_kind="speech_to_text",
+            duration_sec=result.duration_sec,
+        )
 
-    def _build_llm1_first_pass_artifact(self, interaction: Interaction) -> bool:
+    def _build_llm1_first_pass_artifact(self, interaction: Interaction) -> dict[str, Any] | None:
         """Run only LLM1 first-pass and persist its versioned artifact."""
         if not str(getattr(interaction, "text", "") or "").strip():
-            return False
+            return None
         department_id = str(getattr(interaction, "department_id", "") or "")
         if not department_id:
-            return False
+            return None
         instruction_version = "edo_sales_mvp1_call_analysis_v15_block_ready"
         try:
             analyzer = self._build_analyzer(department_id)
@@ -565,7 +582,7 @@ class CallProcessingService:
                 error_class=ProcessingErrorClass.UNKNOWN_ERROR,
                 error_reason=str(exc),
             )
-            return False
+            return None
 
         provider_fields = self._artifact_provider_fields(interaction, layer="llm1")
         payload = LLM1FirstPassPayload(
@@ -589,7 +606,11 @@ class CallProcessingService:
             source_updated_at=datetime.now(UTC),
             **provider_fields,
         )
-        return True
+        return self._execution_entry(
+            interaction,
+            layer="llm1",
+            request_kind="llm1_first_pass",
+        )
 
     def _write_failed_artifact(
         self,
@@ -616,6 +637,19 @@ class CallProcessingService:
     @staticmethod
     def _artifact_provider_fields(interaction: Interaction, *, layer: str) -> dict[str, Any]:
         """Extract provider/model metadata written by existing STT/LLM routing."""
+        layer_meta = CallProcessingService._route_metadata(interaction, layer=layer)
+        if not layer_meta:
+            return {}
+        return {
+            "provider": layer_meta.get("provider") or layer_meta.get("selected_provider"),
+            "model": layer_meta.get("model") or layer_meta.get("selected_model"),
+            "account_alias": layer_meta.get("account_alias"),
+            "api_key_env": layer_meta.get("api_key_env"),
+            "raw_response_ref": layer_meta.get("provider_request_id"),
+        }
+
+    @staticmethod
+    def _route_metadata(interaction: Interaction, *, layer: str) -> dict[str, Any]:
         metadata = getattr(interaction, "metadata_", None) or {}
         if not isinstance(metadata, dict):
             metadata = {}
@@ -623,15 +657,208 @@ class CallProcessingService:
         if not isinstance(ai_routing, dict):
             return {}
         layer_meta = ai_routing.get(layer)
-        if not isinstance(layer_meta, dict):
-            return {}
+        return dict(layer_meta) if isinstance(layer_meta, dict) else {}
+
+    def _execution_entry(
+        self,
+        interaction: Interaction,
+        *,
+        layer: str,
+        request_kind: str,
+        duration_sec: int | None = None,
+    ) -> dict[str, Any]:
+        route = self._route_metadata(interaction, layer=layer)
+        usage = route.get("usage") if isinstance(route.get("usage"), dict) else {}
+        provider = route.get("provider") or route.get("selected_provider")
+        model = route.get("model") or route.get("selected_model")
+        if duration_sec is not None:
+            usage = {**usage, "duration_sec": duration_sec}
         return {
-            "provider": layer_meta.get("provider"),
-            "model": layer_meta.get("model"),
-            "account_alias": layer_meta.get("account_alias"),
-            "api_key_env": layer_meta.get("api_key_env"),
-            "raw_response_ref": layer_meta.get("provider_request_id"),
+            "layer": layer,
+            "node": layer,
+            "request_kind": route.get("request_kind") or request_kind,
+            "subject_key": str(getattr(interaction, "id", "") or ""),
+            "provider": provider,
+            "model": model,
+            "selected_provider": provider,
+            "selected_model": model,
+            "account_alias": route.get("account_alias"),
+            "api_key_env": route.get("api_key_env"),
+            "provider_request_id": route.get("provider_request_id"),
+            "usage": usage or None,
+            "duration_sec": duration_sec or usage.get("duration_sec"),
         }
+
+    def _estimate_upstream_costs(
+        self,
+        cost_entries: list[dict[str, Any]],
+        counts: dict[str, Any],
+        mode: EnsureMode,
+    ) -> dict[str, Any]:
+        helper = self._call_processing_cost_helper()
+        if helper is not None:
+            return self._call_processing_costs_from_helper(
+                helper,
+                execution_entries=cost_entries,
+                counts=counts,
+                mode=mode,
+            )
+        return self._fallback_upstream_costs(cost_entries, counts)
+
+    @staticmethod
+    def _call_processing_cost_helper() -> Callable[..., dict[str, Any]] | None:
+        try:
+            from app.agents.calls import ai_costs
+        except Exception:
+            return None
+        helper = getattr(ai_costs, "estimate_call_processing_costs", None)
+        return helper if callable(helper) else None
+
+    @staticmethod
+    def _call_processing_costs_from_helper(
+        helper: Callable[..., dict[str, Any]],
+        *,
+        execution_entries: list[dict[str, Any]],
+        counts: dict[str, Any],
+        mode: EnsureMode,
+    ) -> dict[str, Any]:
+        signature = inspect.signature(helper)
+        parameters = signature.parameters
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        kwargs: dict[str, Any] = {"execution_entries": execution_entries}
+        if accepts_kwargs or "planned" in parameters:
+            kwargs["planned"] = counts
+        if accepts_kwargs or "counts" in parameters:
+            kwargs["counts"] = counts
+        if accepts_kwargs or "mode" in parameters:
+            kwargs["mode"] = mode.value
+        return helper(**kwargs)
+
+    @staticmethod
+    def _fallback_upstream_costs(
+        cost_entries: list[dict[str, Any]],
+        counts: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            from app.agents.calls.ai_costs import (
+                PRICING_CATALOG_VERSION,
+                PRICING_CURRENCY,
+                USD_TO_USDT_RATE,
+            )
+        except Exception:
+            PRICING_CATALOG_VERSION = "unknown"
+            PRICING_CURRENCY = "USDT"
+            USD_TO_USDT_RATE = 1.0
+
+        by_layer = [
+            CallProcessingService._fallback_cost_entry(entry)
+            for entry in cost_entries
+        ]
+        total = round(
+            sum(
+                float(entry["current_run_cost_usdt"])
+                for entry in by_layer
+                if entry.get("current_run_cost_usdt") is not None
+            ),
+            6,
+        )
+        transcribed = int(counts.get("transcripts_built") or 0)
+        return {
+            "schema_version": "split_upstream_ai_costs_v1",
+            "pricing_catalog_version": PRICING_CATALOG_VERSION,
+            "currency": PRICING_CURRENCY,
+            "usd_to_usdt_rate": USD_TO_USDT_RATE,
+            "cost_status": CallProcessingService._fallback_cost_status(by_layer),
+            "stt_cost_usdt": CallProcessingService._fallback_layer_total(by_layer, "stt"),
+            "llm1_cost_usdt": CallProcessingService._fallback_layer_total(by_layer, "llm1"),
+            "total_current_run_cost_usdt": total,
+            "reused_artifact_original_cost_usdt": None,
+            "cost_per_transcribed_call_usdt": round(total / transcribed, 6) if transcribed else None,
+            "by_layer": by_layer,
+            "by_request_kind": CallProcessingService._fallback_by_request_kind(by_layer),
+            "notes": [
+                "Reused, dry-run, and backfilled artifacts do not add current-run cost.",
+                "Call-processing cost helper is not installed yet; "
+                "upstream provider executions are reported without price calculation.",
+            ],
+        }
+
+    @staticmethod
+    def _fallback_cost_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        usage = entry.get("usage") if isinstance(entry.get("usage"), dict) else None
+        has_usage = bool(usage)
+        cost_status = "price_missing" if has_usage else "usage_missing"
+        return {
+            "layer": entry.get("layer"),
+            "node": entry.get("node") or entry.get("layer"),
+            "request_kind": entry.get("request_kind"),
+            "subject_key": entry.get("subject_key"),
+            "provider": entry.get("provider") or entry.get("selected_provider"),
+            "model": entry.get("model") or entry.get("selected_model"),
+            "used": True,
+            "used_count": 1,
+            "cost_status": cost_status,
+            "current_run_cost_usdt": None,
+            "tokens": usage if entry.get("layer") == "llm1" else None,
+            "duration_sec": entry.get("duration_sec") or (usage or {}).get("duration_sec"),
+            "billable_minutes": None,
+            "pricing": None,
+            "provider_request_id": entry.get("provider_request_id"),
+        }
+
+    @staticmethod
+    def _fallback_cost_status(entries: list[dict[str, Any]]) -> str:
+        if not entries:
+            return "no_billable_work"
+        statuses = {str(entry.get("cost_status") or "") for entry in entries}
+        if statuses <= {"available"}:
+            return "available"
+        if "available" in statuses:
+            return "partial"
+        if "usage_missing" in statuses:
+            return "usage_missing"
+        return "price_missing"
+
+    @staticmethod
+    def _fallback_layer_total(entries: list[dict[str, Any]], layer: str) -> float | None:
+        selected = [
+            entry
+            for entry in entries
+            if entry.get("layer") == layer and entry.get("current_run_cost_usdt") is not None
+        ]
+        if selected:
+            return round(
+                sum(float(entry.get("current_run_cost_usdt") or 0) for entry in selected),
+                6,
+            )
+        return None if any(entry.get("layer") == layer for entry in entries) else 0.0
+
+    @staticmethod
+    def _fallback_by_request_kind(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for entry in entries:
+            key = (
+                str(entry.get("layer") or ""),
+                str(entry.get("request_kind") or entry.get("node") or "unknown"),
+            )
+            bucket = grouped.setdefault(
+                key,
+                {
+                    "layer": key[0],
+                    "request_kind": key[1],
+                    "used_count": 0,
+                    "current_run_cost_usdt": 0.0,
+                    "cost_statuses": [],
+                },
+            )
+            bucket["used_count"] += int(entry.get("used_count") or 0)
+            status = entry.get("cost_status")
+            if status and status not in bucket["cost_statuses"]:
+                bucket["cost_statuses"].append(status)
+        return list(grouped.values())
 
     def _backfill_from_legacy(
         self,

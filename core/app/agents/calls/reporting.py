@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.agents.calls.analysis_purpose import is_controlled_analysis
-from app.agents.calls.ai_costs import estimate_run_ai_costs
+from app.agents.calls.ai_costs import estimate_run_ai_costs, merge_split_ai_costs
 from app.agents.calls.analyzer import (
     APPROVED_CHECKLIST_VERSION,
     CallsAnalyzer,
@@ -799,6 +799,13 @@ def classify_provider_error(error: BaseException | str) -> ProviderErrorInfo:
     return ProviderErrorInfo(error_class="unknown_provider_error", raw_message=raw)
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _previous_quota_blocker(interaction: Interaction) -> dict[str, Any] | None:
     """Return previous quota failure marker for an interaction, if any."""
     metadata = dict(getattr(interaction, "metadata_", None) or {})
@@ -1416,24 +1423,26 @@ class CallsManualReportingOrchestrator:
         else:
             response = client.ensure_processed_calls(scope, required_artifacts, mode=ensure_mode)
         planned = dict(response.planned or {})
+        response_costs = getattr(response, "costs", None)
         interactions_total = int(planned.get("interactions_total") or 0)
-        summary.update(
-            {
-                "call_processing_mode": CallProcessingMode.EXTERNAL_SERVICE.value,
-                "call_processing_run_id": response.run_id,
-                "call_processing_status": str(response.status),
-                "call_processing_scope_hash": response.scope_hash,
-                "call_processing_artifacts_ready": int(planned.get("artifacts_ready") or 0),
-                "call_processing_artifacts_missing": int(planned.get("artifacts_missing") or 0),
-                "call_processing_artifacts_backfilled": int(planned.get("artifacts_backfilled") or 0),
-                "call_processing_provider_calls_made": int(
-                    (response.quota or {}).get("provider_calls_made") or 0
-                ),
-                "targeted_source_records_total": interactions_total,
-                "already_persisted_source_records_total": interactions_total,
-                "missing_source_records_total": int(planned.get("artifacts_missing") or 0),
-            }
-        )
+        summary_update: dict[str, Any] = {
+            "call_processing_mode": CallProcessingMode.EXTERNAL_SERVICE.value,
+            "call_processing_run_id": response.run_id,
+            "call_processing_status": str(response.status),
+            "call_processing_scope_hash": response.scope_hash,
+            "call_processing_artifacts_ready": int(planned.get("artifacts_ready") or 0),
+            "call_processing_artifacts_missing": int(planned.get("artifacts_missing") or 0),
+            "call_processing_artifacts_backfilled": int(planned.get("artifacts_backfilled") or 0),
+            "call_processing_provider_calls_made": int(
+                (response.quota or {}).get("provider_calls_made") or 0
+            ),
+            "targeted_source_records_total": interactions_total,
+            "already_persisted_source_records_total": interactions_total,
+            "missing_source_records_total": int(planned.get("artifacts_missing") or 0),
+        }
+        if isinstance(response_costs, dict) and response_costs:
+            summary_update["call_processing_costs"] = dict(response_costs)
+        summary.update(summary_update)
         return summary
 
     def _discover_and_persist_source_calls(
@@ -2400,6 +2409,7 @@ class CallsManualReportingOrchestrator:
             reports=reports,
             delivery_options=delivery_options,
         )
+        upstream_costs = source_summary.get("call_processing_costs")
         ai_costs = estimate_run_ai_costs(
             build_summary=build_summary,
             artifacts=artifacts or [],
@@ -2408,7 +2418,29 @@ class CallsManualReportingOrchestrator:
             manager_day_budget_usdt=settings.ai_cost_manager_day_budget_usdt,
             warning_threshold_ratio=settings.ai_cost_warning_threshold_ratio,
             over_budget_threshold_ratio=settings.ai_cost_over_budget_threshold_ratio,
+            include_llm1_cost=not (isinstance(upstream_costs, dict) and upstream_costs),
         )
+        if isinstance(upstream_costs, dict) and upstream_costs:
+            ai_costs = merge_split_ai_costs(
+                upstream_costs=upstream_costs,
+                downstream_costs=ai_costs,
+                counters={
+                    "transcribed_calls": self._count_transcribed_calls_for_costs(
+                        source_summary=source_summary,
+                        build_summary=build_summary,
+                    ),
+                    "analyzed_calls": self._count_report_analyzed_calls_for_costs(
+                        reports=reports,
+                        build_summary=build_summary,
+                    ),
+                    "manager_day_reports": self._count_manager_day_reports_for_costs(
+                        reports=reports
+                    ),
+                },
+                manager_day_budget_usdt=settings.ai_cost_manager_day_budget_usdt,
+                warning_threshold_ratio=settings.ai_cost_warning_threshold_ratio,
+                over_budget_threshold_ratio=settings.ai_cost_over_budget_threshold_ratio,
+            )
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=all_errors)
         return {
             "status": overall_status,
@@ -2539,6 +2571,68 @@ class CallsManualReportingOrchestrator:
             ),
             "ai_costs": ai_costs,
         }
+
+    @staticmethod
+    def _count_transcribed_calls_for_costs(
+        *,
+        source_summary: dict[str, Any],
+        build_summary: dict[str, Any],
+    ) -> int:
+        """Return the best available split-run transcribed-call denominator."""
+        for value in (
+            source_summary.get("call_processing_transcripts_ready"),
+            build_summary.get("transcripts_built", 0) + build_summary.get("transcripts_reused", 0),
+        ):
+            parsed = _safe_int(value)
+            if parsed > 0:
+                return parsed
+        return 0
+
+    @staticmethod
+    def _count_report_analyzed_calls_for_costs(
+        *,
+        reports: list[dict[str, Any]],
+        build_summary: dict[str, Any],
+    ) -> int:
+        """Count calls that were actually ready for/generated into this report run."""
+        total = 0
+        for report in reports:
+            payload = report.get("payload") if isinstance(report, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            source_artifacts = (
+                meta.get("source_artifacts")
+                if isinstance(meta.get("source_artifacts"), dict)
+                else {}
+            )
+            count = _safe_int(source_artifacts.get("analysis_count"))
+            if count <= 0:
+                selection_model = (
+                    payload.get("selection_model")
+                    if isinstance(payload.get("selection_model"), dict)
+                    else {}
+                )
+                count = _safe_int(selection_model.get("included_in_report_total"))
+            total += max(count, 0)
+        if total > 0:
+            return total
+        return max(
+            _safe_int(build_summary.get("analyses_built"))
+            + _safe_int(build_summary.get("analyses_reused")),
+            0,
+        )
+
+    @staticmethod
+    def _count_manager_day_reports_for_costs(*, reports: list[dict[str, Any]]) -> int:
+        """Count manager-day report outputs that exist in this run."""
+        count = 0
+        for report in reports:
+            if not isinstance(report, dict):
+                continue
+            if report.get("payload") or report.get("preview") or report.get("artifact"):
+                count += 1
+        return count
 
     def _send_run_start_alerts(
         self,

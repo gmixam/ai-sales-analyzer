@@ -155,7 +155,9 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-03 — Нормализовать cost summary для split-runs
 
-Статус: `planned`
+Статус: `implemented_local`
+
+ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_03_COST_SUMMARY_TZ.md`
 
 Что сделать:
 
@@ -165,15 +167,31 @@ ALERT_EMAIL_ON_SUCCESS=false
 - в KPI фиксировать total split cost, STT, LLM1, LLM2, LLM3 и cost per analyzed
   call.
 
+Что уже сделано:
+
+- `call-processing` возвращает `EnsureResponse.costs` и сохраняет тот же
+  upstream summary в `CallProcessingRun.counts_json["costs"]`;
+- upstream cost считается только по newly built STT/LLM1 artifacts; dry-run,
+  reuse и legacy backfill не добавляют current-run cost;
+- `analysis/reporting` читает upstream summary из
+  `source_summary.call_processing_costs`, если external `EnsureResponse`
+  вернул `costs`;
+- итоговый `observability.ai_costs` в split-mode содержит `upstream`,
+  `downstream`, верхние STT/LLM1/LLM2/LLM3 totals и общий
+  `total_current_run_cost_usdt`;
+- старые/legacy ответы без upstream `costs` не падают и сохраняют прежний
+  downstream-only contract.
+
 Почему нужно:
 
 - 2026-06-12 split-run уже имел cost telemetry в разных частях контура, но в KPI
-  он помечен как `split cost needs normalized merged summary`.
+  был помечен как требующий нормализованного merged summary.
 
 Критерий готовности:
 
-- Codex по запросу может ответить, сколько стоил split-run, без ручной
-  реконструкции из нескольких JSON/log sources.
+- для новых split-run Codex/оператор читает стоимость из одного
+  `observability.ai_costs`, без ручной реконструкции из нескольких JSON/log
+  sources.
 
 ### SPLIT-COMPLETE-04 — Scheduled flow в split-контуре
 
@@ -275,7 +293,9 @@ ALERT_EMAIL_ON_SUCCESS=false
 - итоговый статус был `partial`;
 - business delivery была специально выключена;
 - scheduled/автоматический flow не проверялся;
-- cost summary для split-run еще не нормализован в единый отчет.
+- новые split-runs после `SPLIT-COMPLETE-03` должны уже возвращать merged
+  `observability.ai_costs`; сам 2026-06-12 run был выполнен до этой доработки,
+  поэтому его стоимость остается исторической/частично ручной реконструкцией.
 
 Поэтому следующий ручной full-day split-smoke нужен только на более подходящем
 дне, а отдельный пункт про scheduled flow означает проверку автоматического

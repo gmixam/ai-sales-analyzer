@@ -11,6 +11,7 @@ from app.agents.call_processing.schemas import EnsureMode, EnsureResponse, Proce
 from app.agents.calls.reporting import (
     CallsManualReportingOrchestrator,
     ReportRunFilters,
+    resolve_report_delivery_options,
     resolve_report_preset,
 )
 
@@ -108,7 +109,7 @@ class _FakeEnsureClient:
                 "mode": mode,
             }
         )
-        return EnsureResponse(
+        return SimpleNamespace(
             run_id="run-ensure",
             status=ProcessingRunStatus.READY,
             scope_hash="hash-ensure",
@@ -120,6 +121,35 @@ class _FakeEnsureClient:
                 "artifacts_backfilled": 2,
             },
             quota={"provider_calls_made": 4},
+            costs={
+                "schema_version": "split_upstream_ai_costs_v1",
+                "pricing_catalog_version": "ai_cost_pricing_usdt_2026-06-04_v1",
+                "currency": "USDT",
+                "cost_status": "available",
+                "stt_cost_usdt": 0.012,
+                "llm1_cost_usdt": 0.003,
+                "total_current_run_cost_usdt": 0.015,
+                "reused_artifact_original_cost_usdt": None,
+                "cost_per_transcribed_call_usdt": 0.005,
+                "by_layer": [
+                    {
+                        "layer": "stt",
+                        "request_kind": "speech_to_text",
+                        "used_count": 2,
+                        "cost_status": "available",
+                        "current_run_cost_usdt": 0.012,
+                    },
+                    {
+                        "layer": "llm1",
+                        "request_kind": "llm1_first_pass",
+                        "used_count": 1,
+                        "cost_status": "available",
+                        "current_run_cost_usdt": 0.003,
+                    },
+                ],
+                "by_request_kind": [],
+                "notes": [],
+            },
         )
 
 
@@ -359,7 +389,118 @@ def test_manager_daily_external_service_ensure_uses_async_client_and_exposes_sou
     assert summary["call_processing_artifacts_missing"] == 1
     assert summary["call_processing_artifacts_backfilled"] == 2
     assert summary["call_processing_provider_calls_made"] == 4
+    assert summary["call_processing_costs"]["total_current_run_cost_usdt"] == 0.015
     assert summary["targeted_source_records_total"] == 3
+
+
+def test_build_run_observability_external_service_merges_upstream_and_downstream_costs() -> None:
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+    observability = CallsManualReportingOrchestrator._build_run_observability(
+        orchestrator,
+        preset=resolve_report_preset("manager_daily"),
+        source_summary={
+            "execution_model": "source_aware_full_manual",
+            "days_scanned": 1,
+            "targeted_source_records_total": 1,
+            "call_processing_mode": "external_service",
+            "call_processing_costs": {
+                "schema_version": "split_upstream_ai_costs_v1",
+                "pricing_catalog_version": "ai_cost_pricing_usdt_2026-06-04_v1",
+                "currency": "USDT",
+                "cost_status": "available",
+                "stt_cost_usdt": 0.006,
+                "llm1_cost_usdt": 0.001,
+                "total_current_run_cost_usdt": 0.007,
+                "reused_artifact_original_cost_usdt": None,
+                "by_layer": [
+                    {
+                        "layer": "stt",
+                        "request_kind": "speech_to_text",
+                        "used_count": 1,
+                        "cost_status": "available",
+                        "current_run_cost_usdt": 0.006,
+                    },
+                    {
+                        "layer": "llm1",
+                        "request_kind": "llm1_first_pass",
+                        "used_count": 1,
+                        "cost_status": "available",
+                        "current_run_cost_usdt": 0.001,
+                    },
+                ],
+                "by_request_kind": [],
+                "notes": [],
+            },
+        },
+        period={"date_from": "2026-06-03", "date_to": "2026-06-03"},
+        source_period={"date_from": "2026-06-03", "date_to": "2026-06-03"},
+        mode="build_missing_and_report",
+        delivery_options=resolve_report_delivery_options(delivery_mode="preview_only"),
+        selected_interactions_count=1,
+        build_summary={
+            "transcripts_built": 0,
+            "transcripts_reused": 1,
+            "analyses_built": 1,
+            "analyses_reused": 0,
+            "missing_transcripts_before_build": 0,
+            "missing_analyses_before_build": 1,
+        },
+        reports=[
+            {
+                "status": "ready",
+                "errors": [],
+                "payload": {
+                    "meta": {"source_artifacts": {"interaction_count": 1, "analysis_count": 1}},
+                    "llm3_route": {
+                        "layer": "llm3",
+                        "selected_provider": "openai",
+                        "selected_model": "gpt-5.4-mini",
+                        "execution_status": "executed",
+                        "executed": True,
+                        "request_kind": "manager_daily",
+                        "usage": {"prompt_tokens": 1000, "completion_tokens": 100},
+                    },
+                },
+                "preview": {"subject": "subject"},
+            }
+        ],
+        overall_status="completed",
+        artifacts=[
+            SimpleNamespace(
+                interaction=SimpleNamespace(
+                    id="call-1",
+                    metadata_={
+                        "ai_routing": {
+                            "llm2_history": [
+                                {
+                                    "layer": "llm2",
+                                    "selected_provider": "openai",
+                                    "selected_model": "gpt-5.4-mini",
+                                    "execution_status": "executed",
+                                    "executed": True,
+                                    "request_kind": "llm2_layered_analysis",
+                                    "usage": {"prompt_tokens": 1000, "completion_tokens": 100},
+                                }
+                            ]
+                        }
+                    },
+                )
+            )
+        ],
+    )
+
+    ai_costs = observability["ai_costs"]
+    assert ai_costs["schema_version"] == "split_ai_costs_v1"
+    assert ai_costs["cost_status"] == "available"
+    assert ai_costs["upstream"]["total_current_run_cost_usdt"] == 0.007
+    assert ai_costs["downstream"]["llm3_cost_usdt"] == 0.0012
+    assert ai_costs["stt_cost_usdt"] == 0.006
+    assert ai_costs["llm1_cost_usdt"] == 0.001
+    assert ai_costs["llm2_cost_usdt"] == 0.0012
+    assert ai_costs["llm3_cost_usdt"] == 0.0012
+    assert ai_costs["total_current_run_cost_usdt"] == 0.0094
+    assert ai_costs["cost_per_analyzed_call_usdt"] == 0.0094
 
 
 def test_rop_weekly_external_service_remains_persisted_only_and_does_not_ensure() -> None:

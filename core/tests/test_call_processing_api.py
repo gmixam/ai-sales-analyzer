@@ -77,6 +77,10 @@ class _FakeCallProcessingService:
                 "artifact_requirements_total": len(required_artifacts),
             },
             quota={"provider_calls_made": 0},
+            costs={
+                "schema_version": "split_upstream_ai_costs_v1",
+                "total_current_run_cost_usdt": 0.0,
+            },
         )
 
     async def ensure_async(
@@ -158,6 +162,7 @@ def test_ensure_uses_service_and_requires_requested_by_match(monkeypatch) -> Non
     assert payload["status"] == "ready"
     assert payload["requested_by"] == "edo-analysis"
     assert payload["planned"]["artifact_requirements_total"] == 2
+    assert payload["costs"]["schema_version"] == "split_upstream_ai_costs_v1"
 
 
 def test_ensure_passes_provider_call_budget_from_grant_rate_limits(monkeypatch) -> None:

@@ -12,6 +12,7 @@ from app.agents.call_processing import (
     ArtifactStatus,
     CallProcessingService,
     EnsureMode,
+    EnsureResponse,
     ProcessingErrorClass,
     ProcessingRunStatus,
     ProcessingScope,
@@ -144,6 +145,19 @@ def test_processing_run_repository_creates_and_updates_durable_run() -> None:
     assert run.counts_json == {"artifacts_ready": 1}
 
 
+def test_ensure_response_costs_default_is_backward_compatible() -> None:
+    response = EnsureResponse(
+        run_id="run-1",
+        status=ProcessingRunStatus.READY,
+        scope_hash="scope-hash",
+        requested_by="tester",
+        planned={"provider_calls_made": 0},
+        quota={"provider_calls_made": 0},
+    )
+
+    assert response.costs == {}
+
+
 def test_artifact_repository_write_active_deactivates_previous_artifact() -> None:
     session = _FakeSession()
     repo = ArtifactRepository(session)
@@ -215,6 +229,8 @@ def test_ensure_backfills_legacy_transcript_and_segments_without_provider_calls(
     assert response.planned["artifacts_backfilled"] == 2
     assert response.planned["artifacts_ready"] == 2
     assert response.planned["provider_calls_made"] == 0
+    assert response.costs["cost_status"] == "no_billable_work"
+    assert response.costs["total_current_run_cost_usdt"] == 0.0
     assert {row.artifact_kind for row in artifacts.rows} == {"transcript", "transcript_segments"}
 
 
@@ -230,6 +246,7 @@ def test_ensure_is_idempotent_by_reusing_active_ready_artifacts() -> None:
     assert first.planned["artifacts_backfilled"] == 1
     assert second.planned["artifacts_backfilled"] == 0
     assert second.planned["artifacts_ready"] == 1
+    assert second.costs["cost_status"] == "no_billable_work"
     assert len([row for row in artifacts.rows if row.is_active]) == 1
 
 
@@ -244,6 +261,7 @@ def test_dry_run_plans_backfill_but_does_not_write_artifacts() -> None:
     assert response.status == ProcessingRunStatus.READY
     assert response.planned["artifacts_backfilled"] == 1
     assert response.quota["provider_calls_made"] == 0
+    assert response.costs["cost_status"] == "no_billable_work"
     assert artifacts.rows == []
 
 
@@ -449,6 +467,12 @@ def test_ensure_builds_transcript_and_segments_artifacts_via_stt() -> None:
     assert response.status == ProcessingRunStatus.READY
     assert response.planned["transcripts_built"] == 1
     assert response.planned["provider_calls_made"] == 1
+    assert response.costs["schema_version"] == "split_upstream_ai_costs_v1"
+    assert response.costs["cost_status"] == "price_missing"
+    assert response.costs["stt_cost_usdt"] is None
+    assert response.costs["total_current_run_cost_usdt"] == 0.0
+    assert response.costs["by_layer"][0]["layer"] == "stt"
+    assert response.costs["by_layer"][0]["duration_sec"] == 60
     active = {row.artifact_kind: row for row in artifacts.rows if row.is_active}
     assert active["transcript"].text_value == "Клиент попросил материалы."
     assert active["transcript"].provider == "assemblyai"
@@ -595,6 +619,10 @@ def test_ensure_builds_llm1_first_pass_artifact_without_llm2() -> None:
     assert response.status == ProcessingRunStatus.READY
     assert response.planned["llm1_first_pass_built"] == 1
     assert response.planned["provider_calls_made"] == 1
+    assert response.costs["schema_version"] == "split_upstream_ai_costs_v1"
+    assert response.costs["cost_status"] == "price_missing"
+    assert response.costs["llm1_cost_usdt"] is None
+    assert response.costs["by_layer"][0]["layer"] == "llm1"
     artifact = artifacts.latest_active(
         interaction.id,
         RequiredArtifactKind.LLM1_FIRST_PASS,
@@ -604,6 +632,53 @@ def test_ensure_builds_llm1_first_pass_artifact_without_llm2() -> None:
     assert artifact.provider == "openai"
     assert artifact.payload_json["schema_version"] == "llm1_first_pass_v1"
     assert artifact.payload_json["summary"]["brief"] == "Клиент попросил материалы."
+
+
+def test_ensure_uses_call_processing_cost_helper_when_available(monkeypatch) -> None:
+    from app.agents.calls import ai_costs
+
+    scope = _scope()
+    interaction = _interaction(scope)
+    interaction.raw_ref = "https://recordings.test/call.mp3"
+    artifacts = _MemoryArtifactRepository()
+    calls: list[dict[str, object]] = []
+
+    def fake_estimate_call_processing_costs(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "schema_version": "split_upstream_ai_costs_v1",
+            "pricing_catalog_version": "test",
+            "currency": "USDT",
+            "cost_status": "available",
+            "stt_cost_usdt": 0.006,
+            "llm1_cost_usdt": 0.0,
+            "total_current_run_cost_usdt": 0.006,
+            "reused_artifact_original_cost_usdt": None,
+            "cost_per_transcribed_call_usdt": 0.006,
+            "by_layer": [],
+            "by_request_kind": [],
+            "notes": [],
+        }
+
+    monkeypatch.setattr(
+        ai_costs,
+        "estimate_call_processing_costs",
+        fake_estimate_call_processing_costs,
+        raising=False,
+    )
+    session = _FakeSession([interaction])
+    service = CallProcessingService(
+        session,
+        artifacts=artifacts,
+        extractor_factory=lambda _department_id, _db: _FakeExtractor(),
+    )
+
+    response = service.ensure(scope, [RequiredArtifactKind.TRANSCRIPT])
+
+    assert response.costs["total_current_run_cost_usdt"] == 0.006
+    assert calls[0]["counts"]["transcripts_built"] == 1
+    assert calls[0]["execution_entries"][0]["layer"] == "stt"
+    assert session.added[0].counts_json["costs"] == response.costs
 
 
 def test_ensure_filters_interactions_by_scope_date() -> None:

@@ -267,6 +267,7 @@ class EnsureResponse(BaseModel):
     requested_by: str
     planned: dict[str, int] = Field(default_factory=dict)
     quota: dict[str, Any] = Field(default_factory=dict)
+    costs: dict[str, Any] = Field(default_factory=dict)
 
 
 class AccessGrant(BaseModel):

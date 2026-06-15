@@ -89,6 +89,10 @@ class _FakeService:
             requested_by=requested_by or "unknown",
             planned={"provider_calls_made": 0},
             quota={"provider_calls_made": 0},
+            costs={
+                "schema_version": "split_upstream_ai_costs_v1",
+                "total_current_run_cost_usdt": 0.0,
+            },
         )
 
     async def ensure_async(
@@ -114,6 +118,10 @@ class _FakeService:
             requested_by=requested_by or "unknown",
             planned={"provider_calls_made": 0},
             quota={"provider_calls_made": 0},
+            costs={
+                "schema_version": "split_upstream_ai_costs_v1",
+                "total_current_run_cost_usdt": 0.0,
+            },
         )
 
     def _find_interactions(self, _scope: ProcessingScope) -> list[SimpleNamespace]:
@@ -206,6 +214,7 @@ def test_ensure_processed_calls_delegates_to_service_without_provider_call() -> 
     )
 
     assert response.quota["provider_calls_made"] == 0
+    assert response.costs["schema_version"] == "split_upstream_ai_costs_v1"
     assert service.ensure_calls == [
         {
             "scope": scope,
@@ -325,6 +334,10 @@ class _FakeHttpClient:
                 "requested_by": json["requested_by"],
                 "planned": {"interactions_total": 1},
                 "quota": {"provider_calls_made": 0},
+                "costs": {
+                    "schema_version": "split_upstream_ai_costs_v1",
+                    "total_current_run_cost_usdt": 0.0,
+                },
             },
         )
 
@@ -385,6 +398,7 @@ def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
     llm1_payload = client.get_llm1_first_pass_artifact(uuid.uuid4())
 
     assert ensure_response.run_id == "run-http"
+    assert ensure_response.costs["schema_version"] == "split_upstream_ai_costs_v1"
     assert llm1_payload is not None
     assert llm1_payload.provider == "openai"
     assert _FakeHttpClient.calls[0][0] == "POST"
@@ -410,6 +424,7 @@ async def test_http_client_posts_ensure_async(monkeypatch) -> None:
     )
 
     assert ensure_response.run_id == "run-http"
+    assert ensure_response.costs["total_current_run_cost_usdt"] == 0.0
     assert len(_FakeAsyncHttpClient.calls) == 1
     assert _FakeAsyncHttpClient.calls[0][0] == "POST"
     assert _FakeAsyncHttpClient.calls[0][1] == "http://call-processing.test/call-processing/ensure"

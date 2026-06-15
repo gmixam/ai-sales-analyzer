@@ -68,6 +68,10 @@ class _FakeCallProcessingService:
             requested_by=requested_by,
             planned={"artifact_requirements_total": len(required_artifacts)},
             quota={"provider_calls_made": 0},
+            costs={
+                "schema_version": "split_upstream_ai_costs_v1",
+                "total_current_run_cost_usdt": 0.0,
+            },
         )
 
 
@@ -165,6 +169,7 @@ def test_cli_dry_run_prints_json_response(monkeypatch, capsys) -> None:
     assert payload["status"] == "ready"
     assert payload["requested_by"] == "edo-analysis"
     assert payload["planned"]["artifact_requirements_total"] == 2
+    assert payload["costs"]["schema_version"] == "split_upstream_ai_costs_v1"
     assert _FakeCallProcessingService.calls[0]["provider_call_budget"] is None
 
 
