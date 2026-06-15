@@ -10,9 +10,9 @@ CORE_ROOT = PROJECT_ROOT if (PROJECT_ROOT / "app").exists() else PROJECT_ROOT / 
 if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
 
-from app.core_shared.config.settings import Settings
-from app.core_shared.exceptions import ConfigurationError
-from app.core_shared.workers.celery_app import (
+from app.core_shared.config.settings import Settings  # noqa: E402
+from app.core_shared.exceptions import ConfigurationError  # noqa: E402
+from app.core_shared.workers.celery_app import (  # noqa: E402
     ANALYSIS_QUEUE,
     CALL_PROCESSING_QUEUE,
     DEFAULT_QUEUE,
@@ -20,6 +20,12 @@ from app.core_shared.workers.celery_app import (
     build_task_routes,
     build_worker_queues,
     scheduled_reporting_queue,
+)
+
+CALL_PROCESSING_ACCESS_GRANT_JSON = (
+    '{"client_id":"edo-analysis","client_type":"service","role":"admin",'
+    '"allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],'
+    '"read_surfaces":["processed_calls_v1"],"created_by_admin":"operator"}'
 )
 
 
@@ -37,6 +43,28 @@ def _base_settings(**overrides: object) -> Settings:
         "stt_provider": "assemblyai",
         "onlinepbx_domain": "example.onpbx.ru",
         "onlinepbx_api_key": "test-key",
+        "strict_service_secret_partitioning": False,
+        "openai_api_key_stt_main": "",
+        "openai_api_key_llm1_main": "",
+        "openai_api_key_llm2_main": "",
+        "openai_api_key_llm3_main": "",
+        "ai_stt_providers_json": "",
+        "ai_stt_fixed_account_alias": "",
+        "ai_stt_force_account_alias": "",
+        "ai_llm1_providers_json": "",
+        "ai_llm1_fixed_account_alias": "",
+        "ai_llm1_force_account_alias": "",
+        "ai_llm2_providers_json": "",
+        "ai_llm2_fixed_account_alias": "",
+        "ai_llm2_force_account_alias": "",
+        "ai_llm3_providers_json": "",
+        "ai_llm3_fixed_account_alias": "",
+        "ai_llm3_force_account_alias": "",
+        "smtp_user": "",
+        "smtp_password": "",
+        "telegram_bot_token": "",
+        "test_delivery_email_to": "",
+        "test_delivery_telegram_chat_id": "",
     }
     data.update(overrides)
     return Settings(**data)
@@ -47,11 +75,7 @@ def test_analysis_external_service_starts_without_upstream_provider_secrets() ->
         app_service="analysis",
         call_processing_mode="external_service",
         call_processing_api_base_url="http://call-processing.test",
-        call_processing_access_grant_json=(
-            '{"client_id":"edo-analysis","client_type":"service","role":"admin",'
-            '"allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],'
-            '"read_surfaces":["processed_calls_v1"],"created_by_admin":"operator"}'
-        ),
+        call_processing_access_grant_json=CALL_PROCESSING_ACCESS_GRANT_JSON,
         openai_api_key="",
         assemblyai_api_key="",
         onlinepbx_domain="",
@@ -61,6 +85,63 @@ def test_analysis_external_service_starts_without_upstream_provider_secrets() ->
     assert settings.app_service == "analysis"
     assert settings.call_processing_mode == "external_service"
     assert settings.onlinepbx_base_url == ""
+
+
+def test_analysis_service_rejects_missing_external_service_endpoint() -> None:
+    with pytest.raises(ConfigurationError, match="CALL_PROCESSING_API_BASE_URL"):
+        _base_settings(
+            app_service="analysis",
+            call_processing_mode="external_service",
+            call_processing_api_base_url="",
+            call_processing_access_grant_json=CALL_PROCESSING_ACCESS_GRANT_JSON,
+            openai_api_key="",
+            assemblyai_api_key="",
+            onlinepbx_domain="",
+            onlinepbx_api_key="",
+        )
+
+
+def test_strict_analysis_service_rejects_upstream_secrets_and_provider_config() -> None:
+    with pytest.raises(
+        ConfigurationError,
+        match="forbids upstream secrets/config.*AI_LLM1_PROVIDERS_JSON.*OPENAI_API_KEY_LLM1_MAIN",
+    ):
+        _base_settings(
+            app_service="analysis",
+            call_processing_mode="external_service",
+            call_processing_api_base_url="http://call-processing.test",
+            call_processing_access_grant_json=CALL_PROCESSING_ACCESS_GRANT_JSON,
+            strict_service_secret_partitioning=True,
+            onlinepbx_domain="",
+            onlinepbx_api_key="",
+            assemblyai_api_key="",
+            openai_api_key_llm1_main="llm1-secret",
+            ai_llm1_providers_json="""
+            [
+              {
+                "provider": "openai",
+                "account_alias": "llm1_main",
+                "model": "gpt-4o-mini",
+                "api_key_env": "OPENAI_API_KEY_LLM1_MAIN"
+              }
+            ]
+            """,
+        )
+
+
+def test_non_strict_analysis_service_warns_about_upstream_secret_leak() -> None:
+    with pytest.warns(RuntimeWarning, match="APP_SERVICE=analysis"):
+        settings = _base_settings(
+            app_service="analysis",
+            call_processing_mode="external_service",
+            call_processing_api_base_url="http://call-processing.test",
+            call_processing_access_grant_json=CALL_PROCESSING_ACCESS_GRANT_JSON,
+            onlinepbx_domain="",
+            onlinepbx_api_key="leaked-onlinepbx-key",
+            assemblyai_api_key="",
+        )
+
+    assert settings.app_service == "analysis"
 
 
 def test_call_processing_requires_source_and_stt_secrets_but_not_delivery() -> None:
@@ -84,13 +165,41 @@ def test_call_processing_requires_source_and_stt_secrets_but_not_delivery() -> N
         _base_settings(app_service="call_processing", assemblyai_api_key="")
 
 
+def test_strict_call_processing_service_rejects_downstream_provider_secrets() -> None:
+    with pytest.raises(
+        ConfigurationError,
+        match="forbids downstream provider secrets/config.*OPENAI_API_KEY_LLM2_MAIN",
+    ):
+        _base_settings(
+            app_service="call_processing",
+            strict_service_secret_partitioning=True,
+            openai_api_key_llm2_main="llm2-secret",
+        )
+
+
+def test_monolith_legacy_keeps_shared_secret_compatibility() -> None:
+    settings = _base_settings(
+        app_service="monolith_legacy",
+        strict_service_secret_partitioning=True,
+        openai_api_key_llm1_main="llm1-secret",
+        openai_api_key_llm2_main="llm2-secret",
+        openai_api_key_llm3_main="llm3-secret",
+        smtp_password="smtp-secret",
+        telegram_bot_token="telegram-secret",
+    )
+
+    assert settings.app_service == "monolith_legacy"
+    assert settings.has_smtp is False
+    assert settings.has_telegram is True
+
+
 def test_analysis_service_rejects_legacy_call_processing_mode() -> None:
     with pytest.raises(ConfigurationError, match="APP_SERVICE=analysis requires"):
         _base_settings(
             app_service="analysis",
             call_processing_mode="legacy",
             call_processing_api_base_url="http://call-processing.test",
-            call_processing_access_grant_json='{"client_id":"edo-analysis","client_type":"service","role":"admin","created_by_admin":"operator"}',
+            call_processing_access_grant_json=CALL_PROCESSING_ACCESS_GRANT_JSON,
         )
 
 

@@ -243,7 +243,7 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-05 — ROP weekly / scheduled reviewable smoke
 
-Статус: `planned`
+Статус: `deferred_by_operator`
 
 Что сделать:
 
@@ -256,9 +256,16 @@ ALERT_EMAIL_ON_SUCCESS=false
 - weekly/reporting smoke проходит или явно показывает persisted-data blocker;
 - split-boundary не нарушается.
 
+Примечание 2026-06-15:
+
+- оператор решил временно пропустить weekly ROP smoke и перейти к техническому
+  разделению секретов.
+
 ### SPLIT-COMPLETE-06 — Production secret partitioning
 
-Статус: `planned`
+Статус: `implemented_local`
+
+ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_06_SECRET_PARTITIONING_TZ.md`
 
 Что сделать:
 
@@ -267,11 +274,45 @@ ALERT_EMAIL_ON_SUCCESS=false
 - `analysis` в external mode не должен нуждаться в STT/LLM1 credentials;
 - проверить route/env plan в контейнерах.
 
+Что сделано:
+
+- добавлены tracked templates без реальных секретов:
+  `.env.split.common.example`, `.env.call-processing.example`,
+  `.env.analysis.example`;
+- реальные `.env.split.common`, `.env.call-processing`, `.env.analysis`
+  остаются под `.gitignore`;
+- split services в `docker-compose.yml` читают
+  `.env.split.common + .env.call-processing` или
+  `.env.split.common + .env.analysis`;
+- monolith/rollback services продолжают использовать `.env`;
+- runbook обновлен на split-команды с
+  `docker compose --env-file .env.split.common --profile split ...`;
+- безопасная config-проверка:
+  `docker compose --env-file .env.split.common.example --profile split config --no-env-resolution --quiet`.
+- добавлен `STRICT_SERVICE_SECRET_PARTITIONING` в settings;
+- `analysis` strict mode fail-fast ловит upstream OnlinePBX/STT/LLM1
+  secrets/config;
+- `call-processing` strict mode fail-fast ловит downstream LLM2/LLM3 provider
+  secrets/config;
+- добавлен `split_secret_partitioning_preflight.py` с JSON summary и exit codes;
+- CLI доступен в контейнерном path `report_scripts/...`.
+
 Критерий готовности:
 
 - analysis service в external mode может собрать отчет по готовым artifacts без
   STT/LLM1 secrets;
 - call-processing service отдельно имеет только нужные upstream secrets.
+
+Проверки:
+
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py /app/tests/test_service_secret_partitioning.py` -> `16 passed`;
+- `docker compose exec -T api python -m ruff check ...` -> passed;
+- `python3 -m py_compile` по changed settings/preflight/tests -> passed;
+- `docker compose config --no-env-resolution --quiet` -> passed;
+- `docker compose --env-file .env.split.common.example --profile split config --no-env-resolution --quiet` -> passed;
+- container preflight smoke for clean `analysis --strict` -> passed;
+- container preflight smoke for clean `call-processing --strict` -> passed;
+- strict `analysis` with injected `ONLINEPBX_API_KEY` -> failed as expected.
 
 ### SPLIT-COMPLETE-07 — Production cutover rehearsal
 

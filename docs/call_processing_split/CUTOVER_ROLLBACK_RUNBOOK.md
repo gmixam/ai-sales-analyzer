@@ -27,6 +27,42 @@ Not yet production-complete:
 - production secret partitioning;
 - real cutover execution.
 
+## Split Env Profiles
+
+The default monolith/rollback path still uses `.env` through `api`, `worker`,
+`beat`, and `flower`.
+
+Split services use service-specific env files:
+
+| Service | Env files |
+| --- | --- |
+| `call_processing_api` | `.env.split.common`, `.env.call-processing` |
+| `call_processing_worker` | `.env.split.common`, `.env.call-processing` |
+| `analysis_api` | `.env.split.common`, `.env.analysis` |
+| `analysis_worker` | `.env.split.common`, `.env.analysis` |
+| `analysis_beat` | `.env.split.common`, `.env.analysis` |
+
+Create the real files from the tracked templates:
+
+```bash
+cp .env.split.common.example .env.split.common
+cp .env.call-processing.example .env.call-processing
+cp .env.analysis.example .env.analysis
+```
+
+Do not copy OnlinePBX/STT/LLM1 secrets into `.env.analysis`. Do not copy
+LLM2/LLM3/business delivery secrets into `.env.call-processing`.
+
+Use `.env.split.common` as the Compose interpolation file for split commands;
+the role-specific files are loaded by each service through `env_file`:
+
+```bash
+docker compose --env-file .env.split.common --profile split ...
+```
+
+For config validation, prefer `--no-env-resolution --quiet`; plain
+`docker compose config` can render env-file values to stdout.
+
 ## Pre-cutover Checklist
 
 1. Announce a short pause window for scheduled report runs.
@@ -50,8 +86,12 @@ docker compose exec -T postgres pg_dump \
 4. Verify config without starting production split services:
 
 ```bash
-docker compose config
-docker compose --profile split config
+docker compose config --no-env-resolution --quiet
+docker compose --env-file .env.split.common --profile split \
+  config --no-env-resolution --quiet \
+  postgres redis \
+  call_processing_api call_processing_worker \
+  analysis_api analysis_worker analysis_beat
 ```
 
 5. Run verification pack:
@@ -104,7 +144,8 @@ access. The default service path should still use the call-processing API.
 4. Start call-processing service first:
 
 ```bash
-docker compose --profile split up -d call_processing_api call_processing_worker
+docker compose --env-file .env.split.common --profile split up -d \
+  call_processing_api call_processing_worker
 ```
 
 5. Run call-processing health:
@@ -139,7 +180,8 @@ docker compose exec -T call_processing_api python -m app.agents.call_processing.
 8. Start analysis service in external mode:
 
 ```bash
-docker compose --profile split up -d analysis_api analysis_worker analysis_beat
+docker compose --env-file .env.split.common --profile split up -d \
+  analysis_api analysis_worker analysis_beat
 ```
 
 9. Run manager_daily preview smoke:
@@ -180,6 +222,9 @@ docker compose stop analysis_api analysis_worker analysis_beat
 APP_SERVICE=monolith_legacy
 CALL_PROCESSING_MODE=legacy
 ```
+
+Rollback uses the monolith `.env` profile, not the split service-specific env
+files.
 
 3. Start/confirm legacy services:
 

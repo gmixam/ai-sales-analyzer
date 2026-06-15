@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import warnings
 from typing import Any
 from urllib.parse import urlparse
 
@@ -37,6 +39,7 @@ class Settings(BaseSettings):
     app_env: str = Field(default="production")
     log_level: str = Field(default="INFO")
     compose_project_name: str = Field(default="asa")
+    strict_service_secret_partitioning: bool = Field(default=False)
 
     # Database
     database_url: PostgresDsn
@@ -50,6 +53,10 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str = Field(default="")
+    openai_api_key_stt_main: str = Field(default="")
+    openai_api_key_llm1_main: str = Field(default="")
+    openai_api_key_llm2_main: str = Field(default="")
+    openai_api_key_llm3_main: str = Field(default="")
     openai_model_classify: str = Field(default="gpt-4o-mini")
     openai_model_analyze: str = Field(default="gpt-4o")
     openai_model_stt: str = Field(default="whisper-1")
@@ -276,7 +283,130 @@ class Settings(BaseSettings):
                 raise ConfigurationError(
                     "CALL_PROCESSING_ACCESS_GRANT_JSON is required for APP_SERVICE=analysis."
                 )
+            self._validate_analysis_forbidden_upstream_secrets()
+        if self.app_service == APP_SERVICE_CALL_PROCESSING:
+            self._validate_call_processing_forbidden_downstream_secrets()
         return self
+
+    def _validate_analysis_forbidden_upstream_secrets(self) -> None:
+        """Warn or fail when analysis receives call-processing-owned secrets."""
+        forbidden_secret_fields = {
+            "ONLINEPBX_API_KEY": self.onlinepbx_api_key,
+            "ASSEMBLYAI_API_KEY": self.assemblyai_api_key,
+            "OPENAI_API_KEY_STT_MAIN": self.openai_api_key_stt_main,
+            "OPENAI_API_KEY_LLM1_MAIN": self.openai_api_key_llm1_main,
+        }
+        present = self._present_env_names(forbidden_secret_fields)
+        if self._has_enabled_provider_config(self.ai_stt_providers_json):
+            present.append("AI_STT_PROVIDERS_JSON")
+        if self._has_enabled_provider_config(self.ai_llm1_providers_json):
+            present.append("AI_LLM1_PROVIDERS_JSON")
+
+        warning_only = self._present_env_names(
+            {
+                "ONLINEPBX_DOMAIN": self.onlinepbx_domain,
+                "AI_STT_FIXED_ACCOUNT_ALIAS": self.ai_stt_fixed_account_alias,
+                "AI_STT_FORCE_ACCOUNT_ALIAS": self.ai_stt_force_account_alias,
+                "AI_LLM1_FIXED_ACCOUNT_ALIAS": self.ai_llm1_fixed_account_alias,
+                "AI_LLM1_FORCE_ACCOUNT_ALIAS": self.ai_llm1_force_account_alias,
+            }
+        )
+        if present and self.strict_service_secret_partitioning:
+            names = ", ".join(sorted(present))
+            raise ConfigurationError(
+                "STRICT_SERVICE_SECRET_PARTITIONING forbids upstream secrets/config "
+                f"for APP_SERVICE=analysis: {names}."
+            )
+        self._warn_forbidden_secret_partitioning("analysis", present + warning_only)
+
+    def _validate_call_processing_forbidden_downstream_secrets(self) -> None:
+        """Warn or fail when call-processing receives analysis-owned provider secrets."""
+        present = self._present_env_names(
+            {
+                "OPENAI_API_KEY_LLM2_MAIN": self.openai_api_key_llm2_main,
+                "OPENAI_API_KEY_LLM3_MAIN": self.openai_api_key_llm3_main,
+            }
+        )
+        if self._has_enabled_provider_config(self.ai_llm2_providers_json):
+            present.append("AI_LLM2_PROVIDERS_JSON")
+        if self._has_enabled_provider_config(self.ai_llm3_providers_json):
+            present.append("AI_LLM3_PROVIDERS_JSON")
+
+        delivery_warnings = self._present_env_names(
+            {
+                "SMTP_PASSWORD": self.smtp_password,
+                "TELEGRAM_BOT_TOKEN": self.telegram_bot_token,
+                "TEST_DELIVERY_EMAIL_TO": self.test_delivery_email_to,
+                "TEST_DELIVERY_TELEGRAM_CHAT_ID": self.test_delivery_telegram_chat_id,
+            }
+        )
+        if present and self.strict_service_secret_partitioning:
+            names = ", ".join(sorted(present))
+            raise ConfigurationError(
+                "STRICT_SERVICE_SECRET_PARTITIONING forbids downstream provider "
+                f"secrets/config for APP_SERVICE=call_processing: {names}."
+            )
+        self._warn_forbidden_secret_partitioning(
+            "call_processing",
+            present + delivery_warnings,
+        )
+
+    @staticmethod
+    def _present_env_names(values_by_env_name: dict[str, Any]) -> list[str]:
+        """Return env names with non-empty configured values."""
+        return [
+            name
+            for name, value in values_by_env_name.items()
+            if str(value or "").strip()
+        ]
+
+    @staticmethod
+    def _warn_forbidden_secret_partitioning(service: str, names: list[str]) -> None:
+        """Emit a non-strict service partitioning warning."""
+        if not names:
+            return
+        warnings.warn(
+            "Service secret partitioning warning for "
+            f"APP_SERVICE={service}: unexpected env present: "
+            f"{', '.join(sorted(set(names)))}.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+    @staticmethod
+    def _has_enabled_provider_config(raw_config: str) -> bool:
+        """Return True when a provider JSON config contains enabled entries."""
+        raw = raw_config.strip()
+        if raw == "":
+            return False
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return True
+
+        if isinstance(parsed, list):
+            entries = parsed
+        elif isinstance(parsed, dict):
+            if "entries" in parsed and isinstance(parsed["entries"], list):
+                entries = parsed["entries"]
+            elif "provider" in parsed or "api_key_env" in parsed:
+                entries = [parsed]
+            else:
+                entries = []
+        else:
+            entries = []
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return True
+            enabled = entry.get("enabled", True)
+            if isinstance(enabled, str):
+                if enabled.strip().lower() in {"0", "false", "no", "off"}:
+                    continue
+            elif enabled is False:
+                continue
+            return True
+        return False
 
     @field_validator(
         "manual_pilot_extensions",

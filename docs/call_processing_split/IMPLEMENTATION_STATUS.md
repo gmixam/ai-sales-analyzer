@@ -29,6 +29,7 @@ explicit operator approval.
 | 7. Runtime split | `implemented_local_compose` | Added service identity settings, split queue helpers, and Docker profile services without changing default monolith startup. Live split deployment remains release-time. |
 | 8. Test matrix and verification pack | `implemented_local` | Added reproducible verification pack, copy-paste smoke commands, and current verification report. |
 | 9. Cutover, rollback, runbook | `runbook_ready_cutover_not_executed` | Added cutover/rollback runbook and next-agent handoff. Production cutover not executed. |
+| SPLIT-COMPLETE-06 secret partitioning | `implemented_local` | Added split env templates, split service `env_file` partitioning, settings strict boundary, and preflight CLI while preserving monolith `.env` rollback. |
 
 ## Completion Roadmap
 
@@ -513,6 +514,56 @@ Residual risk:
 - Existing unprofiled monolith services still start unless the operator targets
   split services explicitly. This preserves pilot rollback but is not yet a
   production deployment topology.
+
+## SPLIT-COMPLETE-06 Secret Partitioning Pass
+
+Changed:
+
+- Added `.env.split.common.example` for DB/Redis/shared runtime defaults and
+  Compose interpolation values.
+- Added `.env.call-processing.example` for OnlinePBX, STT, and LLM1 upstream
+  provider routing only.
+- Added `.env.analysis.example` for call-processing API access, LLM2/LLM3,
+  Bitrix/read-only reporting config, SMTP, Telegram, and alert delivery.
+- Updated `.gitignore` so real `.env.split.common`, `.env.call-processing`, and
+  `.env.analysis` remain ignored while the examples are tracked.
+- Updated `docker-compose.yml` so split services read
+  `.env.split.common + role-specific env_file`; default monolith services keep
+  `.env` for rollback/local development.
+- Removed inline analysis defaults for `CALL_PROCESSING_API_BASE_URL` and
+  `CALL_PROCESSING_ACCESS_GRANT_JSON` so `.env.analysis` owns those values.
+- Updated the cutover runbook with the split env file map and safe
+  `docker compose ... config --no-env-resolution --quiet` checks.
+- Added `STRICT_SERVICE_SECRET_PARTITIONING` to settings.
+- `APP_SERVICE=analysis` in strict mode fails when upstream OnlinePBX/STT/LLM1
+  secrets or enabled provider configs are present.
+- `APP_SERVICE=call_processing` in strict mode fails when downstream LLM2/LLM3
+  provider secrets or configs are present; delivery secrets remain
+  warning-visible because technical alerts may still be needed.
+- Added `split_secret_partitioning_preflight.py` with JSON summary and exit
+  codes. It is available in both `core/report_scripts` and runtime-mounted
+  `scripts` so `python report_scripts/split_secret_partitioning_preflight.py`
+  works inside current Compose containers.
+
+Verification:
+
+- `docker compose config --no-env-resolution --quiet` -> passed.
+- `docker compose --env-file .env.split.common.example --profile split config --no-env-resolution --quiet` -> passed.
+- `docker compose --env-file .env.split.common.example --profile split config --no-env-resolution --quiet postgres redis call_processing_api call_processing_worker analysis_api analysis_worker analysis_beat` -> passed.
+- `docker compose exec -T api python -m pytest -q /app/tests/test_call_processing_runtime_split.py /app/tests/test_service_secret_partitioning.py` -> `16 passed`.
+- `docker compose exec -T api python -m ruff check /app/app/core_shared/config/settings.py /app/tests/test_call_processing_runtime_split.py /app/tests/test_service_secret_partitioning.py /app/report_scripts/split_secret_partitioning_preflight.py` -> passed.
+- `python3 -m py_compile` for changed settings/preflight/tests -> passed.
+- Container preflight smoke for clean `analysis --strict` -> passed.
+- Container preflight smoke for clean `call-processing --strict` -> passed.
+- Strict `analysis` with injected upstream `ONLINEPBX_API_KEY` -> failed as expected.
+- `git diff --check` -> passed.
+
+Residual risk:
+
+- Real secret files were not created or validated in git, by design.
+- Current running monolith `api` container still reads common `.env` and fails
+  `analysis --strict` preflight as expected; split services must be recreated
+  with service-specific env files for production smoke.
 
 ## Task 8 Verification Pack First Pass
 

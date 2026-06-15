@@ -40,7 +40,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_api
     command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       APP_SERVICE: ${APP_SERVICE:-monolith_legacy}
       CALL_PROCESSING_MODE: ${CALL_PROCESSING_MODE:-legacy}
@@ -70,7 +71,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_worker
     command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=4 -Q calls,default,analysis,call_processing
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       APP_SERVICE: ${APP_SERVICE:-monolith_legacy}
       CALL_PROCESSING_MODE: ${CALL_PROCESSING_MODE:-legacy}
@@ -92,7 +94,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_beat
     command: celery -A app.core_shared.workers.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       APP_SERVICE: ${APP_SERVICE:-monolith_legacy}
       CALL_PROCESSING_MODE: ${CALL_PROCESSING_MODE:-legacy}
@@ -116,7 +119,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_flower
     command: celery -A app.core_shared.workers.celery_app flower --port=5555 --basic_auth=${FLOWER_USER}:${FLOWER_PASSWORD}
     env_file:
-      - .env
+      - path: .env
+        required: false
     restart: unless-stopped
     volumes:
       - ./core:/app
@@ -135,7 +139,10 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_call_processing_api
     command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - .env
+      - path: .env.split.common
+        required: false
+      - path: .env.call-processing
+        required: false
     environment:
       APP_SERVICE: call_processing
       CALL_PROCESSING_MODE: legacy
@@ -165,12 +172,13 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_analysis_api
     command: python -m uvicorn app.core_shared.api.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - .env
+      - path: .env.split.common
+        required: false
+      - path: .env.analysis
+        required: false
     environment:
       APP_SERVICE: analysis
       CALL_PROCESSING_MODE: external_service
-      CALL_PROCESSING_API_BASE_URL: ${CALL_PROCESSING_API_BASE_URL:-http://asa_call_processing_api:8000}
-      CALL_PROCESSING_ACCESS_GRANT_JSON: ${CALL_PROCESSING_ACCESS_GRANT_JSON:-{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1"],"created_by_admin":"local-compose"}}
     volumes:
       - ./core:/app
       - ./scripts:/app/report_scripts:ro
@@ -197,7 +205,10 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_call_processing_worker
     command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=2 -Q call_processing
     env_file:
-      - .env
+      - path: .env.split.common
+        required: false
+      - path: .env.call-processing
+        required: false
     environment:
       APP_SERVICE: call_processing
       CALL_PROCESSING_MODE: legacy
@@ -219,12 +230,13 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_analysis_worker
     command: celery -A app.core_shared.workers.celery_app worker --loglevel=info --concurrency=4 -Q analysis,default
     env_file:
-      - .env
+      - path: .env.split.common
+        required: false
+      - path: .env.analysis
+        required: false
     environment:
       APP_SERVICE: analysis
       CALL_PROCESSING_MODE: external_service
-      CALL_PROCESSING_API_BASE_URL: ${CALL_PROCESSING_API_BASE_URL:-http://asa_call_processing_api:8000}
-      CALL_PROCESSING_ACCESS_GRANT_JSON: ${CALL_PROCESSING_ACCESS_GRANT_JSON:-{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1"],"created_by_admin":"local-compose"}}
     volumes:
       - ./core:/app
       - ./scripts:/app/report_scripts:ro
@@ -243,12 +255,13 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}_analysis_beat
     command: celery -A app.core_shared.workers.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
     env_file:
-      - .env
+      - path: .env.split.common
+        required: false
+      - path: .env.analysis
+        required: false
     environment:
       APP_SERVICE: analysis
       CALL_PROCESSING_MODE: external_service
-      CALL_PROCESSING_API_BASE_URL: ${CALL_PROCESSING_API_BASE_URL:-http://asa_call_processing_api:8000}
-      CALL_PROCESSING_ACCESS_GRANT_JSON: ${CALL_PROCESSING_ACCESS_GRANT_JSON:-{"client_id":"edo-analysis-reporting","client_type":"service","role":"admin","allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],"read_surfaces":["processed_calls_v1","transcripts_v1","llm1_artifacts_v1"],"created_by_admin":"local-compose"}}
     volumes:
       - ./core:/app
       - ./scripts:/app/report_scripts:ro
