@@ -489,6 +489,41 @@ CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
 - первый upstream scheduled smoke проходит без business delivery и с cost/alert
   observability.
 
+### SPLIT-COMPLETE-07C — Runtime schedule activation for pilot
+
+Статус: `draft_tz_ready_requires_operator_approval`
+
+ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_07C_RUNTIME_SCHEDULE_ACTIVATION_TZ.md`
+
+Что сделать:
+
+- остановить legacy `beat`;
+- создать production `manager_daily` schedule row для 4 менеджеров ЭДО;
+- запустить split `analysis_beat`;
+- запустить `call_processing_beat` только если upstream provider-backed run на
+  `00:00 Asia/Almaty` утвержден и env/budget заполнены;
+- проверить, что `business_email_enabled=false`, `review_required=true`,
+  schedule scope = 4 утвержденных менеджера;
+- не запускать `scan-due`, approve, manual pipeline или STT/LLM без отдельного
+  approval;
+- зафиксировать schedule id, `next_run_at` и состояние beat-процессов.
+
+Почему добавлено:
+
+- `07A` подготовил безопасный CLI и schedule dry-run;
+- `07B` подготовил code/compose для ночного upstream scheduler;
+- теперь нужен отдельный runtime activation step, где изменяется состояние
+  сервисов и БД, но еще не запускается ручной billable pipeline.
+
+Критерий готовности:
+
+- active schedule создан и безопасен;
+- legacy scheduler не конкурирует;
+- split scheduler state соответствует выбранному режиму;
+- менеджерам ничего не отправлено без approve;
+- следующий automatic cycle может пройти по расписанию или дает понятный
+  blocker/alert.
+
 ### SPLIT-COMPLETE-08 — Production cutover или rollback decision
 
 Статус: `planned_requires_operator_approval`

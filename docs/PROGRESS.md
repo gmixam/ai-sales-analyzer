@@ -27,6 +27,15 @@
   (`CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=false`,
   `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=0`) до отдельного
   approval.
+- [x] 2026-06-15 — Подготовлено отдельное runtime ТЗ
+  `SPLIT-COMPLETE-07C — runtime schedule activation for pilot`:
+  `docs/call_processing_split/SPLIT_COMPLETE_07C_RUNTIME_SCHEDULE_ACTIVATION_TZ.md`.
+  ТЗ отделяет уже выполненную разработку `07A/07B` от следующего runtime шага:
+  остановить legacy `beat`, создать production `manager_daily` schedule row для
+  4 менеджеров, запустить split `analysis_beat`, а `call_processing_beat`
+  запускать только при отдельном approval на upstream provider-backed `00:00`
+  run и заполненном budget. В ТЗ явно запрещены `scan-due`, approve, manual
+  pipeline, STT/LLM и business email без отдельного подтверждения.
 - [x] 2026-06-15 — Выполнен read-only audit перед
   `SPLIT-COMPLETE-07A` schedule activation. **Runtime:** confirmed running
   legacy `api/worker/beat` and split `call_processing_api/worker`,
