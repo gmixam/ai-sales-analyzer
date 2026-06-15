@@ -344,6 +344,49 @@ ALERT_EMAIL_ON_SUCCESS=false
 - rehearsal проходит без rollback;
 - operator подтверждает readiness к production cutover.
 
+### SPLIT-COMPLETE-07A — Production schedule activation smoke
+
+Статус: `planned_not_started`
+
+Что сделать:
+
+- создать реальные активные `report_schedules` для production pilot scope;
+- явно проверить, что schedules настроены на `manager_daily`, трех пилотных
+  менеджеров, `Asia/Almaty`, нужное время запуска и split-mode;
+- поднять `analysis_beat` в split-профиле только после проверки env/preflight;
+- выполнить первый automatic due-scan smoke без ручного запуска pipeline;
+- убедиться, что batch/draft создается в split-mode, а не через legacy path;
+- проверить, что business delivery остается за review/approval gate, если
+  отдельно не утверждено автодоставлять менеджерам;
+- зафиксировать результат: schedule id, next_run_at, batch/draft id,
+  observability, alerts и статус `GO/NO-GO` для дальнейшего cutover.
+
+Что не делать на этом этапе:
+
+- не запускать ручной provider-backed full-day pipeline вместо scheduler;
+- не включать business email менеджерам без отдельного operator approval;
+- не считать сам факт реализованного scheduled-flow кода активацией расписания.
+
+Почему добавлено:
+
+- `SPLIT-COMPLETE-04` подготовил код scheduled flow, но не означает, что в БД
+  уже есть production `report_schedules`;
+- `SPLIT-COMPLETE-07` является rehearsal и прямо не включает production
+  schedule на автозапуск;
+- на 2026-06-15 фактическая проверка показала: активных строк
+  `report_schedules` нет, `analysis_beat` остановлен, поэтому автоматический
+  запуск без этого этапа не состоится.
+
+Критерий готовности:
+
+- в БД есть активные schedule rows для пилотных менеджеров;
+- `analysis_beat` запущен в split-profile и маршрутизирует scan-task в
+  `analysis` queue;
+- первый due scan создает expected reviewable batch/draft или понятный
+  no-data/blocker с admin alert;
+- observability подтверждает `CALL_PROCESSING_MODE=external_service` и
+  отсутствие local STT/LLM1 execution внутри analysis.
+
 ### SPLIT-COMPLETE-08 — Production cutover или rollback decision
 
 Статус: `planned_requires_operator_approval`
