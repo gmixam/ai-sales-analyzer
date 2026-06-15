@@ -2826,7 +2826,14 @@ class CallsManualReportingOrchestrator:
         diagnostics_context: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """Attempt a fail-safe run-start alert for automated operation."""
-        if not settings.alert_email_enabled or not settings.alert_email_on_start:
+        start_alert_enabled = (
+            settings.alert_email_enabled
+            and settings.alert_email_on_start
+        ) or (
+            settings.alert_telegram_enabled
+            and settings.alert_telegram_on_start
+        )
+        if not start_alert_enabled:
             return []
 
         attempt = send_run_alert(
@@ -2937,7 +2944,7 @@ class CallsManualReportingOrchestrator:
         if not should_alert and not settings.alert_email_on_success:
             return []
 
-        target = self._resolve_monitoring_email()
+        target = self._resolve_monitoring_target()
 
         reason_codes = self._collect_run_alert_reason_codes(
             reports=reports,
@@ -3012,8 +3019,10 @@ class CallsManualReportingOrchestrator:
             }
         ]
 
-    def _resolve_monitoring_email(self) -> str | None:
-        """Resolve production monitoring email from global alert settings."""
+    def _resolve_monitoring_target(self) -> str | None:
+        """Resolve production monitoring target from global alert settings."""
+        if settings.alert_telegram_enabled and settings.alert_telegram_chat_id.strip():
+            return settings.alert_telegram_chat_id.strip()
         email = str(settings.alert_email_to or "").strip()
         return email or None
 

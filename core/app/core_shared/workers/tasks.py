@@ -13,6 +13,7 @@ from app.agents.call_processing import (
     ProcessingScope,
     RequiredArtifactKind,
 )
+from app.agents.calls.run_alerts import send_run_alert
 from app.agents.calls.scheduled_reporting import ScheduledReviewableReportingService
 from app.core_shared.config.settings import settings
 from app.core_shared.db.session import get_db
@@ -32,9 +33,13 @@ DAILY_UPSTREAM_REQUIRED_ARTIFACTS: tuple[RequiredArtifactKind, ...] = (
 @celery_app.task(name="calls.scan_scheduled_reviewable_reporting")
 def scan_scheduled_reviewable_reporting() -> dict:
     """Scan due schedules and create reviewable report batches."""
-    with get_db() as db:
-        service = ScheduledReviewableReportingService(db=db)
-        return service.scan_due_schedules()
+    try:
+        with get_db() as db:
+            service = ScheduledReviewableReportingService(db=db)
+            return service.scan_due_schedules()
+    except Exception as exc:  # noqa: BLE001 - scheduled automation must notify and re-raise.
+        _send_scheduled_reporting_alert(exc)
+        raise
 
 
 def _parse_report_date(value: str | None, timezone_name: str) -> date:
@@ -102,10 +107,22 @@ def ensure_daily_call_processing_upstream(
             "reason": "manager_scope_not_configured",
         }
     if not dry_run and settings.call_processing_daily_upstream_provider_call_budget <= 0:
+        alert = _send_daily_upstream_alert(
+            "blocked",
+            run_id="scheduled-call-processing-upstream",
+            status="blocked",
+            title="Daily call-processing upstream blocked",
+            level="warning",
+            scope={},
+            counts={},
+            errors=["provider_call_budget_not_configured"],
+            details={"reason": "provider_call_budget_not_configured"},
+        )
         return {
             **base_payload,
             "task_status": "skipped",
             "reason": "provider_call_budget_not_configured",
+            "alerts": [alert],
         }
 
     try:
@@ -122,6 +139,17 @@ def ensure_daily_call_processing_upstream(
                 provider_call_budget=settings.call_processing_daily_upstream_provider_call_budget,
             )
     except Exception as exc:  # noqa: BLE001 - task must return operator-visible failure payload.
+        alert = _send_daily_upstream_alert(
+            "failed",
+            run_id="scheduled-call-processing-upstream",
+            status="failed",
+            title="Daily call-processing upstream failed",
+            level="error",
+            scope={},
+            counts={},
+            errors=[{"class": exc.__class__.__name__, "message": str(exc)}],
+            details={"phase": "call_processing.ensure_daily_upstream"},
+        )
         return {
             **base_payload,
             "task_status": "failed",
@@ -130,9 +158,27 @@ def ensure_daily_call_processing_upstream(
                 "class": exc.__class__.__name__,
                 "message": str(exc),
             },
+            "alerts": [alert],
         }
 
     response_payload = response.model_dump(mode="json")
+    status = str(response_payload.get("status") or "")
+    alert = None
+    if not dry_run and status not in {"ready", "completed"}:
+        alert = _send_daily_upstream_alert(
+            "blocked",
+            run_id=str(response_payload.get("run_id") or "scheduled-call-processing-upstream"),
+            status=status or "unknown",
+            title="Daily call-processing upstream needs attention",
+            level="warning",
+            scope=scope.model_dump(mode="json", exclude_none=True),
+            counts=response_payload.get("planned", {}),
+            errors=response_payload.get("errors", []),
+            details={
+                "quota": response_payload.get("quota", {}),
+                "costs": response_payload.get("costs", {}),
+            },
+        )
     return {
         **base_payload,
         "task_status": "completed",
@@ -147,7 +193,59 @@ def ensure_daily_call_processing_upstream(
         "planned": response_payload.get("planned", {}),
         "quota": response_payload.get("quota", {}),
         "costs": response_payload.get("costs", {}),
+        "alerts": [alert] if alert is not None else [],
     }
+
+
+def _send_daily_upstream_alert(
+    event: str,
+    *,
+    run_id: str,
+    status: str,
+    title: str,
+    level: str,
+    scope: dict[str, Any],
+    counts: dict[str, Any],
+    errors: list[Any],
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Send fail-safe technical alert for scheduled call-processing upstream."""
+    attempt = send_run_alert(
+        event,
+        run_id=run_id,
+        status=status,
+        title=title,
+        level=level,
+        requested_by="scheduled_call_processing_upstream",
+        scope=scope,
+        counts=counts,
+        errors=errors,
+        details=details,
+    )
+    attempt["kind"] = "scheduled_call_processing_upstream"
+    attempt["trigger"] = status
+    attempt["severity"] = level
+    return attempt
+
+
+def _send_scheduled_reporting_alert(exc: Exception) -> dict[str, Any]:
+    """Send fail-safe technical alert when scheduled reporting scan itself fails."""
+    attempt = send_run_alert(
+        "failed",
+        run_id="scheduled-reviewable-reporting-scan",
+        status="failed",
+        title="Scheduled reporting scan failed",
+        level="error",
+        requested_by="scheduled_reviewable_reporting",
+        scope={"task": SCHEDULED_REPORTING_TASK},
+        counts={},
+        errors=[{"class": exc.__class__.__name__, "message": str(exc)}],
+        details={"phase": "scan_due_schedules"},
+    )
+    attempt["kind"] = "scheduled_reviewable_reporting_scan"
+    attempt["trigger"] = "task_exception"
+    attempt["severity"] = "error"
+    return attempt
 
 
 def get_registered_tasks() -> Sequence[str]:

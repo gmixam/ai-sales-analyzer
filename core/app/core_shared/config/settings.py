@@ -21,7 +21,7 @@ APP_SERVICE_VALUES = (
     APP_SERVICE_MONOLITH_LEGACY,
 )
 CALL_PROCESSING_MODE_VALUES = ("legacy", "external_service")
-ALERT_EMAIL_LEVEL_VALUES = ("info", "warning", "error", "critical")
+ALERT_LEVEL_VALUES = ("info", "warning", "error", "critical")
 
 
 class Settings(BaseSettings):
@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     alert_email_min_level: str = Field(default="warning")
     alert_email_on_start: bool = Field(default=True)
     alert_email_on_success: bool = Field(default=False)
+    alert_telegram_enabled: bool = Field(default=False)
+    alert_telegram_chat_id: str = Field(default="")
+    alert_telegram_min_level: str = Field(default="warning")
+    alert_telegram_on_start: bool = Field(default=False)
+    alert_telegram_on_success: bool = Field(default=False)
     manager_daily_rop_email_enabled: bool = Field(default=True)
     manager_daily_rop_email_to: str = Field(default="edo.rop@dogovor24.kz")
 
@@ -196,17 +201,17 @@ class Settings(BaseSettings):
         """Normalize log level casing."""
         return value.strip().upper()
 
-    @field_validator("alert_email_min_level")
+    @field_validator("alert_email_min_level", "alert_telegram_min_level")
     @classmethod
-    def validate_alert_email_min_level(cls, value: str) -> str:
-        """Normalize and validate the minimum production alert email level."""
+    def validate_alert_min_level(cls, value: str) -> str:
+        """Normalize and validate the minimum production alert level."""
         normalized = value.strip().lower()
         aliases = {"warn": "warning", "fatal": "critical"}
         normalized = aliases.get(normalized, normalized)
-        if normalized not in ALERT_EMAIL_LEVEL_VALUES:
-            allowed_values = ", ".join(ALERT_EMAIL_LEVEL_VALUES)
+        if normalized not in ALERT_LEVEL_VALUES:
+            allowed_values = ", ".join(ALERT_LEVEL_VALUES)
             raise ConfigurationError(
-                f"Invalid ALERT_EMAIL_MIN_LEVEL value '{value}'. "
+                f"Invalid alert min level value '{value}'. "
                 f"Expected one of: {allowed_values}."
             )
         return normalized
@@ -345,11 +350,12 @@ class Settings(BaseSettings):
         delivery_warnings = self._present_env_names(
             {
                 "SMTP_PASSWORD": self.smtp_password,
-                "TELEGRAM_BOT_TOKEN": self.telegram_bot_token,
                 "TEST_DELIVERY_EMAIL_TO": self.test_delivery_email_to,
                 "TEST_DELIVERY_TELEGRAM_CHAT_ID": self.test_delivery_telegram_chat_id,
             }
         )
+        if self.telegram_bot_token.strip() and not self.alert_telegram_enabled:
+            delivery_warnings.append("TELEGRAM_BOT_TOKEN")
         if present and self.strict_service_secret_partitioning:
             names = ", ".join(sorted(present))
             raise ConfigurationError(
@@ -482,6 +488,15 @@ class Settings(BaseSettings):
             self.alert_email_enabled
             and self.alert_email_to.strip() != ""
             and self.has_smtp
+        )
+
+    @property
+    def has_alert_telegram_delivery(self) -> bool:
+        """Return True when production alert Telegram delivery is configured."""
+        return (
+            self.alert_telegram_enabled
+            and self.alert_telegram_chat_id.strip() != ""
+            and self.has_telegram
         )
 
     @property

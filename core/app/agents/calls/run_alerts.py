@@ -1,4 +1,4 @@
-"""Fail-safe production run email alerts."""
+"""Fail-safe production run alerts."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable
 
+import httpx
 import structlog
 
 from app.agents.calls.delivery import send_smtp_email_message
@@ -44,6 +45,7 @@ RUN_ALERT_EVENTS = {
 }
 
 EmailSender = Callable[..., dict[str, Any]]
+TelegramSender = Callable[[str, str], dict[str, Any]]
 
 logger = structlog.get_logger().bind(module="calls.run_alerts")
 
@@ -142,6 +144,7 @@ def send_run_alert(
     details: dict[str, Any] | None = None,
     app_settings: Any = settings,
     email_sender: EmailSender | None = None,
+    telegram_sender: TelegramSender | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Send one production run alert, returning an observability-safe attempt result."""
@@ -159,6 +162,15 @@ def send_run_alert(
         app_settings=app_settings,
         now=now,
     )
+    if bool(getattr(app_settings, "alert_telegram_enabled", False)):
+        return _send_telegram_alert(
+            email,
+            event=email.event,
+            run_id=run_id,
+            app_settings=app_settings,
+            telegram_sender=telegram_sender,
+        )
+
     attempt = _base_attempt(email)
     skip_reason = _alert_skip_reason(email=email, event=email.event, app_settings=app_settings)
     if skip_reason:
@@ -198,6 +210,81 @@ def send_run_alert(
     return attempt
 
 
+def _send_telegram_alert(
+    email: RunAlertEmail,
+    *,
+    event: str,
+    run_id: str | None,
+    app_settings: Any,
+    telegram_sender: TelegramSender | None,
+) -> dict[str, Any]:
+    chat_id = str(getattr(app_settings, "alert_telegram_chat_id", "") or "").strip()
+    attempt = {
+        "channel": "telegram",
+        "event": email.event,
+        "level": email.level,
+        "recipient": chat_id or None,
+        "subject": email.subject,
+        "status": "pending",
+    }
+    skip_reason = _alert_telegram_skip_reason(
+        email=email,
+        event=event,
+        chat_id=chat_id,
+        app_settings=app_settings,
+    )
+    if skip_reason:
+        attempt.update({"status": "skipped", "reason": skip_reason})
+        return attempt
+
+    sender = telegram_sender or _send_telegram_message
+    try:
+        delivery = sender(chat_id, _format_telegram_alert(email))
+    except Exception as exc:  # noqa: BLE001 - alerting must never break a production run
+        error = str(exc)
+        logger.warning(
+            "run_alert.telegram_failed",
+            alert_event=email.event,
+            level=email.level,
+            recipient=chat_id,
+            error=error,
+            error_class=exc.__class__.__name__,
+        )
+        attempt.update(
+            {
+                "status": "failed",
+                "error": error,
+                "error_class": exc.__class__.__name__,
+            }
+        )
+        return attempt
+
+    attempt.update({"status": "sent", "delivery": delivery})
+    logger.info(
+        "run_alert.telegram_sent",
+        alert_event=email.event,
+        level=email.level,
+        recipient=chat_id,
+        run_id=run_id,
+    )
+    return attempt
+
+
+def _send_telegram_message(chat_id: str, text: str) -> dict[str, Any]:
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
+    chunks = _chunk_text(text, max_len=3500)
+    with httpx.Client(timeout=30) as client:
+        for chunk in chunks:
+            response = client.post(url, json={"chat_id": chat_id, "text": chunk})
+            response.raise_for_status()
+    return {
+        "channel": "telegram",
+        "target": chat_id,
+        "status": "sent",
+        "messages_sent": len(chunks),
+    }
+
+
 def _base_attempt(email: RunAlertEmail) -> dict[str, Any]:
     return {
         "channel": "email",
@@ -207,6 +294,35 @@ def _base_attempt(email: RunAlertEmail) -> dict[str, Any]:
         "subject": email.subject,
         "status": "pending",
     }
+
+
+def _alert_telegram_skip_reason(
+    *,
+    email: RunAlertEmail,
+    event: str,
+    chat_id: str,
+    app_settings: Any,
+) -> str | None:
+    if not bool(getattr(app_settings, "alert_telegram_enabled", False)):
+        return "alert_telegram_disabled"
+    if event == "started" and not bool(getattr(app_settings, "alert_telegram_on_start", False)):
+        return "alert_on_start_disabled"
+    if event == "completed" and not bool(getattr(app_settings, "alert_telegram_on_success", False)):
+        return "alert_on_success_disabled"
+    if not chat_id:
+        return "telegram_chat_id_missing"
+    if not bool(getattr(app_settings, "has_telegram", False)):
+        return "telegram_not_configured"
+
+    min_level = _normalize_level(str(getattr(app_settings, "alert_telegram_min_level", "warning")))
+    explicit_event_enabled = (
+        event == "started" and bool(getattr(app_settings, "alert_telegram_on_start", False))
+    ) or (
+        event == "completed" and bool(getattr(app_settings, "alert_telegram_on_success", False))
+    )
+    if not explicit_event_enabled and ALERT_LEVELS[email.level] < ALERT_LEVELS[min_level]:
+        return "below_min_level"
+    return None
 
 
 def _alert_skip_reason(*, email: RunAlertEmail, event: str, app_settings: Any) -> str | None:
@@ -283,3 +399,32 @@ def _format_errors(errors: list[Any]) -> str:
 
 def _format_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+
+
+def _format_telegram_alert(email: RunAlertEmail) -> str:
+    return "\n".join(
+        [
+            email.subject,
+            "",
+            email.body,
+        ]
+    )
+
+
+def _chunk_text(text: str, *, max_len: int) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        if len(current) + len(line) > max_len and current:
+            chunks.append(current)
+            current = line
+        else:
+            current += line
+        while len(current) > max_len:
+            chunks.append(current[:max_len])
+            current = current[max_len:]
+    if current:
+        chunks.append(current)
+    return chunks

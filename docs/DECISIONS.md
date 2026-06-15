@@ -1053,3 +1053,25 @@
   меняет LLM/STT provider routing, смысловой анализ, renderer или email
   delivery gates.
 - **Дата:** 2026-06-15
+
+## ADR-099: Unattended pilot automation uses Telegram technical alerts
+- **Решение:** Постоянный пилотный runtime работает без Codex: split
+  `call_processing_beat` запускает previous-day upstream в `00:00
+  Asia/Almaty`, split `analysis_beat` запускает `manager_daily` reporting в
+  `08:00 Asia/Almaty`.
+- **Решение:** Telegram становится production technical alert channel для
+  unattended blockers/failures. Это отдельный канал от operator/test Telegram
+  preview и не является business delivery менеджерам.
+- **Решение:** Success-alerts выключены по умолчанию, warning/error blockers
+  отправляются через `ALERT_TELEGRAM_ENABLED=true`,
+  `ALERT_TELEGRAM_CHAT_ID`, `ALERT_TELEGRAM_MIN_LEVEL=warning`.
+- **Решение:** Ночной upstream защищен per-run guard
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300`; budget/quota/auth
+  и runtime failures должны быть operator-visible в task payload и
+  техническом Telegram alert.
+- **Причина:** Пилот должен запускаться автоматически и сообщать о тормозящих
+  процесс ошибках без ручного мониторинга Codex.
+- **Scope:** runtime automation, scheduler/beat, technical alerting и
+  observability. Business email gate остается отдельным:
+  `business_email_enabled=false`, `review_required=true` до operator review.
+- **Дата:** 2026-06-15

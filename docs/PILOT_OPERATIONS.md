@@ -1,6 +1,6 @@
 # Pilot Operations
 
-Дата обновления: 2026-06-09
+Дата обновления: 2026-06-15
 
 ## Назначение
 
@@ -8,6 +8,32 @@
 что проверять перед отправкой, какие метрики заполнять и где брать стоимость.
 
 Актуальные задачи пилотного этапа ведутся в `docs/PILOT_BACKLOG.md`.
+
+## Постоянная автоматизация пилота
+
+С 2026-06-15 базовый runtime пилота работает без Codex:
+
+- `call_processing_beat` каждый день в `00:00 Asia/Almaty` запускает
+  `call_processing.ensure_daily_upstream` за предыдущий локальный день и
+  готовит upstream artifacts: `transcript`, `transcript_segments`,
+  `llm1_first_pass`;
+- `analysis_beat` каждый день в `08:00 Asia/Almaty` сканирует активный
+  `manager_daily` schedule, добирает недостающие artifacts через external
+  call-processing при необходимости и формирует review-required batch/draft;
+- business email менеджерам остается gated: автоматический schedule создан с
+  `business_email_enabled=false`, `review_required=true`;
+- technical blockers/failures должны уходить в Telegram через
+  `ALERT_TELEGRAM_ENABLED=true`, `ALERT_TELEGRAM_CHAT_ID`.
+
+Runtime scope: `[ЭДО] Отдел Продаж`, schedule candidates: Алишер, Илья, Тимур,
+Толеген. Технический пользователь `Робот Договор24` исключается из schedule
+scope.
+
+Ночной upstream имеет per-run guard
+`CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300`. Если budget/quota,
+auth, provider или runtime failure блокирует прогон, task должен вернуть
+operator-visible payload и попытаться отправить Telegram alert. Success-alerts
+выключены, чтобы не спамить штатными ночными прогонами.
 
 ## Ежедневный порядок
 

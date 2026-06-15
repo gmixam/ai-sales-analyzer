@@ -7,6 +7,19 @@
 **Последнее обновление:** 2026-06-15
 
 ## Что сделано
+- [x] 2026-06-15 — По решению пользователя включен постоянный unattended split
+  runtime: `call_processing_beat` должен запускать
+  `call_processing.ensure_daily_upstream` каждый день в `00:00 Asia/Almaty`
+  для previous local day, а `analysis_beat` продолжает запускать
+  `manager_daily` schedule в `08:00 Asia/Almaty`. Ночной upstream включен через
+  `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true` и per-run guard
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300`. Добавлен
+  Telegram technical alert channel (`ALERT_TELEGRAM_*`) в fail-safe run alerts;
+  call-processing upstream при failure/budget/blocker возвращает
+  operator-visible `alerts` payload и пытается отправить Telegram notification.
+  Runtime smoke: оба split beat running, новых upstream/report batches после
+  activation не создано, Telegram alert smoke отправлен успешно без запуска
+  STT/LLM/report/email. Focused tests внутри контейнера: `22 passed`.
 - [x] 2026-06-15 — Выполнена runtime activation для
   `SPLIT-COMPLETE-07C` без ручного billable прогона. Остановлен legacy
   scheduler `beat`, создан один active `manager_daily` schedule для `[ЭДО]

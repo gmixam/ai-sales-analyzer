@@ -317,13 +317,43 @@ bitrix_sync_status: ok; 4 schedule_scope_candidates; Robot Dogovor24 excluded
 schedule_id: 97e6c120-6aa3-4664-99ae-3982054698d7
 next_run_at: 2026-06-16T03:00:00+00:00 (2026-06-16 08:00 Asia/Almaty)
 legacy_beat_state: stopped/exited
-call_processing_beat_state: not running; provider-backed upstream not approved
+call_processing_beat_state: running after user approval for permanent 00:00 upstream
 analysis_beat_state: running
 business_email_enabled: false
 review_required: true
-provider_upstream_enabled: false
-provider_budget: 0 / not approved for this activation step
+provider_upstream_enabled: true
+provider_budget: 300 provider calls per scheduled upstream run
 smoke_status: schedule activation smoke passed; first due scan processed 0 schedules because next_run_at is future
-blockers: none for scheduled reporting activation; open decision remains 00:00 call-processing upstream budget/enablement
-next_step: decide whether to enable provider-backed call_processing_beat for 2026-06-16 00:00 Asia/Almaty or let 08:00 analysis request missing artifacts via external call-processing
+blockers: none for scheduled reporting activation; 00:00 upstream approved and enabled
+next_step: monitor first unattended 00:00 upstream and 08:00 manager_daily batch for report day 2026-06-15
 ```
+
+## Runtime Update 2026-06-15
+
+После первичной safe activation пользователь утвердил постоянный полный процесс:
+
+- `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true`;
+- `CALL_PROCESSING_DAILY_UPSTREAM_TIMEZONE=Asia/Almaty`;
+- `CALL_PROCESSING_DAILY_UPSTREAM_HOUR=0`;
+- `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300`;
+- `call_processing_beat` должен быть запущен постоянно;
+- `analysis_beat` остается запущен постоянно;
+- technical blockers/failures отправляются в Telegram через
+  `ALERT_TELEGRAM_ENABLED=true`, `ALERT_TELEGRAM_MIN_LEVEL=warning`;
+- manager business email остается gated:
+  `business_email_enabled=false`, `review_required=true`.
+
+Smoke after update:
+
+- `call_processing_beat=running`, `analysis_beat=running`;
+- `call_processing` beat schedule:
+  `scheduled-call-processing-daily-upstream ->
+  call_processing.ensure_daily_upstream`, crontab `0 0 * * *`,
+  timezone `Asia/Almaty`, queue `call_processing`;
+- `analysis` beat schedule:
+  `scheduled-reviewable-reporting-scan ->
+  calls.scan_scheduled_reviewable_reporting`, every `60s`, queue `analysis`;
+- no new `call_core.call_processing_runs` or `scheduled_report_batches` were
+  created during activation smoke;
+- Telegram alert smoke `scheduled-runtime-telegram-smoke` sent successfully;
+  no STT/LLM/report/business email was triggered by the smoke.

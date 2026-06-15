@@ -60,6 +60,7 @@ production cutover, потому что день был неполным по м
 | Split Docker services | `done` | `call_processing_*` and `analysis_*` started |
 | Active artifact duplicate fix | `done` | commit `e81ae74` |
 | Stale processing run cleanup | `done` | commit `5eda14b`; no open `queued/running` split runs |
+| Permanent split schedule runtime | `active` | `call_processing_beat` 00:00 Almaty + `analysis_beat` 08:00 Almaty running |
 | Legacy rollback path | `available` | `CALL_PROCESSING_MODE=legacy` remains supported |
 
 ## Оставшиеся этапы до полного закрытия
@@ -94,7 +95,8 @@ ALERT_EMAIL_ON_SUCCESS=false
 Важно:
 
 - это production-механизм, который должен работать без Codex;
-- Telegram не является обязательным каналом мониторинга;
+- с 2026-06-15 unattended blockers/failures отправляются в Telegram через
+  `ALERT_TELEGRAM_*`;
 - `sales@dogovor24.kz` остается business/ROP copy для отчетов, но не является
   основным technical alert recipient.
 
@@ -346,7 +348,7 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-07A — Production schedule activation smoke
 
-Статус: `implementation_in_progress`
+Статус: `implemented_runtime_active`
 
 ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_07A_PRODUCTION_SCHEDULE_ACTIVATION_TZ.md`
 
@@ -359,15 +361,19 @@ ALERT_EMAIL_ON_SUCCESS=false
   `start_date=2026-06-16`, `start_time=08:00`, `timezone=Asia/Almaty`,
   `business_email_enabled=false`, `billable_pipeline_started=false`,
   `conflicts=[]`;
-- реальный schedule row еще не создан;
-- due-scan не запускался;
-- найден runtime blocker/risk: legacy `beat` сейчас running, поэтому перед
-  enabled schedule + split `analysis_beat` нужно остановить legacy scheduler
-  или иначе исключить двойную обработку;
-- отдельный scheduled `call-processing` entrypoint на `00:00 Asia/Almaty` еще
-  не найден и остается gap для полной автоматизации.
+- реальный production schedule row создан:
+  `97e6c120-6aa3-4664-99ae-3982054698d7`;
+- `next_run_at=2026-06-16T03:00:00+00:00`
+  (`2026-06-16 08:00 Asia/Almaty`);
+- legacy `beat` остановлен;
+- split `analysis_beat` запущен и маршрутизирует scan-task в `analysis` queue;
+- `business_email_enabled=false`, `review_required=true`;
+- первый due-scan не запускался вручную; автоматический scan до `next_run_at`
+  обработал `0` schedules;
+- отдельный scheduled `call-processing` entrypoint на `00:00 Asia/Almaty`
+  включен в рамках `SPLIT-COMPLETE-07B/07C`.
 
-Что сделать:
+Что было сделано:
 
 - перед созданием schedules выполнить Bitrix manager sync для `[ЭДО] Отдел
   Продаж` и строить scope только по актуальным `schedule_scope_candidates`:
@@ -384,12 +390,12 @@ ALERT_EMAIL_ON_SUCCESS=false
   (`656abe58-7c23-476a-a9f6-d76305cf42e0`), Толеген
   (`d42e8246-772e-4a04-bbe7-2b88f45db695`);
 - поднять `analysis_beat` в split-профиле только после проверки env/preflight;
-- выполнить первый automatic due-scan smoke без ручного запуска pipeline;
+- не выполнять ручной `scan-due` до первого автоматического окна;
 - убедиться, что batch/draft создается в split-mode, а не через legacy path;
 - проверить, что business delivery остается за review/approval gate, если
   отдельно не утверждено автодоставлять менеджерам;
-- зафиксировать результат: schedule id, next_run_at, batch/draft id,
-  observability, alerts и статус `GO/NO-GO` для дальнейшего cutover.
+- зафиксировать результат: schedule id, next_run_at, observability/alert
+  readiness и статус для дальнейшего cutover.
 
 Что не делать на этом этапе:
 
@@ -403,25 +409,25 @@ ALERT_EMAIL_ON_SUCCESS=false
   уже есть production `report_schedules`;
 - `SPLIT-COMPLETE-07` является rehearsal и прямо не включает production
   schedule на автозапуск;
-- на 2026-06-15 фактическая проверка показала: активных строк
-  `report_schedules` нет, `analysis_beat` остановлен, поэтому автоматический
-  запуск без этого этапа не состоится.
+- на 2026-06-15 фактическая проверка сначала показала отсутствие active
+  schedules и остановленный `analysis_beat`; затем activation была выполнена.
 
 Критерий готовности:
 
-- в БД есть активные schedule rows для пилотных менеджеров;
-- manager scope соответствует последнему Bitrix sync: уволенные/inactive не
+- [x] в БД есть активный schedule row для пилотных менеджеров;
+- [x] manager scope соответствует последнему Bitrix sync: уволенные/inactive не
   выбраны, `Робот Договор24` исключен;
-- `analysis_beat` запущен в split-profile и маршрутизирует scan-task в
+- [x] `analysis_beat` запущен в split-profile и маршрутизирует scan-task в
   `analysis` queue;
-- первый due scan создает expected reviewable batch/draft или понятный
-  no-data/blocker с admin alert;
-- observability подтверждает `CALL_PROCESSING_MODE=external_service` и
-  отсутствие local STT/LLM1 execution внутри analysis.
+- [ ] первый автоматический due scan создает expected reviewable batch/draft
+  или понятный no-data/blocker с Telegram alert;
+- [ ] observability первого автоматического цикла подтверждает
+  `CALL_PROCESSING_MODE=external_service` и отсутствие local STT/LLM1 execution
+  внутри analysis.
 
 ### SPLIT-COMPLETE-07B — Scheduled call-processing upstream at 00:00
 
-Статус: `implemented_local_requires_runtime_activation`
+Статус: `implemented_runtime_active`
 
 Что сделать:
 
@@ -458,18 +464,23 @@ CALL_PROCESSING_DAILY_UPSTREAM_TIMEZONE=Asia/Almaty
 CALL_PROCESSING_DAILY_UPSTREAM_HOUR=0
 CALL_PROCESSING_DAILY_UPSTREAM_MINUTE=0
 CALL_PROCESSING_DAILY_UPSTREAM_DEPARTMENT_ID=472cda28-ce71-494c-9068-25d3ffbf7399
-CALL_PROCESSING_DAILY_UPSTREAM_MANAGER_IDS=5638c619-8732-435c-9664-a7188f13effd,cfba5067-d356-4c8b-895a-0f5808647978,656abe58-7c23-476a-a9f6-d76305cf42e0,d42e8246-772e-4a04-bbe7-2b88f45db695
-CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
+CALL_PROCESSING_DAILY_UPSTREAM_MANAGER_IDS=["5638c619-8732-435c-9664-a7188f13effd","cfba5067-d356-4c8b-895a-0f5808647978","656abe58-7c23-476a-a9f6-d76305cf42e0","d42e8246-772e-4a04-bbe7-2b88f45db695"]
+CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300
+ALERT_TELEGRAM_ENABLED=true
+ALERT_TELEGRAM_MIN_LEVEL=warning
 ```
 
-Что оператору осталось сделать:
+Что выполнено в runtime:
 
-- включить env `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true` и provider budget
-  в `.env.call-processing` только после approval;
-- запустить отдельный Celery beat process `call_processing_beat` после
-  остановки/разделения legacy beat;
-- выполнить `dry_run=True` task smoke без provider calls;
-- только после этого включать provider-backed scheduled run.
+- env `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true` и provider budget `300`
+  включены в `.env.call-processing` после approval;
+- отдельный Celery beat process `call_processing_beat` запущен;
+- beat schedule подтвержден:
+  `scheduled-call-processing-daily-upstream ->
+  call_processing.ensure_daily_upstream`, crontab `0 0 * * *`, timezone
+  `Asia/Almaty`, queue `call_processing`;
+- technical Telegram alert smoke отправлен успешно;
+- ручной STT/LLM/report/business email во время activation не запускались.
 
 Почему добавлено:
 
@@ -481,17 +492,20 @@ CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
 
 Критерий готовности:
 
-- local tests подтверждают, что task scheduled/routed в `call_processing` queue;
-- runtime smoke подтверждает, что `call-processing` сам создает previous-day
-  artifacts по расписанию;
-- `analysis` в `08:00` переиспользует готовые external artifacts;
-- split boundary соблюден: STT/LLM1 не выполняются внутри `analysis`;
-- первый upstream scheduled smoke проходит без business delivery и с cost/alert
-  observability.
+- [x] local tests подтверждают, что task scheduled/routed в `call_processing`
+  queue;
+- [x] runtime smoke подтверждает, что `call_processing_beat` запланировал
+  previous-day upstream на `00:00 Asia/Almaty`;
+- [ ] первый автоматический upstream cycle создает previous-day artifacts по
+  расписанию;
+- [ ] `analysis` в `08:00` переиспользует готовые external artifacts;
+- [ ] split boundary соблюден: STT/LLM1 не выполняются внутри `analysis`;
+- [ ] первый upstream scheduled cycle проходит без business delivery и с
+  cost/alert observability.
 
 ### SPLIT-COMPLETE-07C — Runtime schedule activation for pilot
 
-Статус: `implemented_runtime_activation_safe`
+Статус: `implemented_permanent_split_schedule`
 
 ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_07C_RUNTIME_SCHEDULE_ACTIVATION_TZ.md`
 
@@ -500,8 +514,11 @@ CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
 - [x] остановить legacy `beat`;
 - [x] создать production `manager_daily` schedule row для 4 менеджеров ЭДО;
 - [x] запустить split `analysis_beat`;
-- [x] не запускать `call_processing_beat`, потому что upstream provider-backed
-  run на `00:00 Asia/Almaty` еще не утвержден и env/budget не включены;
+- [x] после отдельного approval включить `call_processing_beat` для постоянного
+  upstream run на `00:00 Asia/Almaty`;
+- [x] включить `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true` и per-run guard
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300`;
+- [x] включить Telegram technical alerts для unattended blockers/failures;
 - [x] проверить, что `business_email_enabled=false`, `review_required=true`,
   schedule scope = 4 утвержденных менеджера;
 - [x] не запускать `scan-due`, approve, manual pipeline или STT/LLM без отдельного
@@ -514,8 +531,9 @@ CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
 - `next_run_at=2026-06-16T03:00:00+00:00` (`08:00 Asia/Almaty`);
 - legacy `beat` stopped;
 - `analysis_beat` running;
-- `call_processing_beat` not running until upstream provider budget/enablement
-  is separately approved;
+- `call_processing_beat` running after upstream provider budget/enablement was
+  approved;
+- Telegram technical alerts enabled for warning/error blockers;
 - first automatic due scan processed `0` schedules because `next_run_at` is in
   the future;
 - no manual billable pipeline/STT/LLM/email/approve was triggered.

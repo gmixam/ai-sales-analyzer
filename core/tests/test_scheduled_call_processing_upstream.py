@@ -50,6 +50,41 @@ def test_scheduled_upstream_requires_provider_budget_for_ensure(monkeypatch) -> 
     assert result["billable_pipeline_started"] is False
 
 
+def test_scheduled_reporting_scan_failure_sends_alert(monkeypatch) -> None:
+    sent: list[dict[str, object]] = []
+
+    class FailingScheduledReportingService:
+        def __init__(self, db: object) -> None:
+            self.db = db
+
+        def scan_due_schedules(self):
+            raise RuntimeError("db unavailable")
+
+    @contextmanager
+    def fake_get_db():
+        yield object()
+
+    def fake_send_run_alert(*args, **kwargs):
+        sent.append({"args": args, "kwargs": kwargs})
+        return {"channel": "telegram", "status": "sent"}
+
+    monkeypatch.setattr(tasks, "get_db", fake_get_db)
+    monkeypatch.setattr(tasks, "ScheduledReviewableReportingService", FailingScheduledReportingService)
+    monkeypatch.setattr(tasks, "send_run_alert", fake_send_run_alert)
+
+    try:
+        tasks.scan_scheduled_reviewable_reporting()
+    except RuntimeError as exc:
+        assert str(exc) == "db unavailable"
+    else:  # pragma: no cover - explicit guard for readability
+        raise AssertionError("scan_scheduled_reviewable_reporting should re-raise failures")
+
+    assert len(sent) == 1
+    assert sent[0]["args"] == ("failed",)
+    assert sent[0]["kwargs"]["run_id"] == "scheduled-reviewable-reporting-scan"
+    assert sent[0]["kwargs"]["level"] == "error"
+
+
 def test_scheduled_upstream_dry_run_uses_call_processing_ensure_contract(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

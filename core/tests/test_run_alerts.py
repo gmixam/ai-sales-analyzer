@@ -44,6 +44,9 @@ def _settings(**overrides: object) -> Settings:
         "smtp_user": "no-reply@example.test",
         "smtp_password": "smtp-pass",
         "smtp_from": "no-reply@example.test",
+        "alert_telegram_enabled": False,
+        "alert_telegram_chat_id": "",
+        "telegram_bot_token": "",
     }
     data.update(overrides)
     return Settings(**data)
@@ -173,3 +176,49 @@ def test_email_failure_is_stored_in_alert_result() -> None:
     assert result["status"] == "failed"
     assert result["error"] == "smtp unavailable"
     assert result["error_class"] == "RuntimeError"
+
+
+def test_blocked_run_sends_telegram_alert_when_enabled() -> None:
+    sent: list[dict[str, str]] = []
+
+    def fake_sender(chat_id: str, text: str) -> dict[str, Any]:
+        sent.append({"chat_id": chat_id, "text": text})
+        return {"channel": "telegram", "target": chat_id, "status": "sent"}
+
+    result = send_run_alert(
+        "blocked",
+        run_id="run-blocked",
+        counts={"quota_blocked": 1},
+        app_settings=_settings(
+            alert_telegram_enabled=True,
+            alert_telegram_chat_id="74665909",
+            telegram_bot_token="telegram-token",
+        ),
+        telegram_sender=fake_sender,
+    )
+
+    assert result["channel"] == "telegram"
+    assert result["status"] == "sent"
+    assert result["recipient"] == "74665909"
+    assert sent[0]["chat_id"] == "74665909"
+    assert "Production run blocked" in sent[0]["text"]
+    assert "quota_blocked" in sent[0]["text"]
+
+
+def test_telegram_alert_respects_min_level() -> None:
+    result = send_run_alert(
+        "completed",
+        run_id="run-success",
+        app_settings=_settings(
+            alert_telegram_enabled=True,
+            alert_telegram_chat_id="74665909",
+            telegram_bot_token="telegram-token",
+            alert_telegram_min_level="warning",
+            alert_telegram_on_success=False,
+        ),
+        telegram_sender=lambda _chat_id, _text: {"status": "sent"},
+    )
+
+    assert result["channel"] == "telegram"
+    assert result["status"] == "skipped"
+    assert result["reason"] == "alert_on_success_disabled"

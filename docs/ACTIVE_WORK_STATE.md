@@ -30,9 +30,11 @@ docs/DECISIONS.md
 
 Тема: MVP-1 pilot operations.
 
-Этап правок механизма закрыт. Начинается пилотирование: ежедневные прогоны,
-замеры KPI, контроль стоимости и доставка отчетов после operator review.
-Актуальный рабочий backlog пилота: `docs/PILOT_BACKLOG.md`.
+Этап правок механизма закрыт. Пилот переведен в постоянную автоматизацию:
+ночной upstream call-processing в `00:00 Asia/Almaty`, дневной
+analysis/reporting в `08:00 Asia/Almaty`, technical blockers/failures в
+Telegram. Замеры KPI, контроль стоимости и business delivery остаются под
+operator review. Актуальный рабочий backlog пилота: `docs/PILOT_BACKLOG.md`.
 
 Актуальный runtime default:
 
@@ -131,16 +133,36 @@ reuse-записей по mismatch версии анализа; по трем о
 
 Последняя локальная доработка split automation readiness:
 
-- `SPLIT-COMPLETE-00` внедрен локально 2026-06-15: добавлен fail-safe
-  production email alert layer без участия Codex.
-- Технические уведомления отправляются через SMTP на `ALERT_EMAIL_TO`, целевой
-  адрес для пилота: `admin@dogovor24.kz`.
-- Включение через env: `ALERT_EMAIL_ENABLED=true`,
-  `ALERT_EMAIL_MIN_LEVEL=warning`, `ALERT_EMAIL_ON_SUCCESS=false`.
+- `SPLIT-COMPLETE-00` расширен 2026-06-15: fail-safe production alert layer
+  поддерживает Telegram как technical alert channel без участия Codex.
+- Технические уведомления по unattended runtime отправляются в Telegram через
+  `ALERT_TELEGRAM_ENABLED=true`, `ALERT_TELEGRAM_CHAT_ID`.
+- Success-alerts выключены (`ALERT_TELEGRAM_ON_SUCCESS=false`), чтобы не
+  спамить штатными прогонами; warning/error blockers должны уходить в Telegram.
 - `manager_daily` terminal result пишет `observability.alerts`; `skip_accumulate`,
   `partial`, `blocked`, `no_data` и readiness/blocker состояния могут отправить
-  admin alert, но business email менеджерам по-прежнему идет только через
+  technical alert, но business email менеджерам по-прежнему идет только через
   отдельный delivery gate.
+
+Последняя runtime activation:
+
+- 2026-06-15 принято решение включить полный постоянный процесс без Codex.
+- `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true`,
+  `CALL_PROCESSING_DAILY_UPSTREAM_TIMEZONE=Asia/Almaty`,
+  `CALL_PROCESSING_DAILY_UPSTREAM_HOUR=0`,
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=300`.
+- `call_processing_beat` должен быть running; он планирует только
+  `call_processing.ensure_daily_upstream` в `call_processing` queue.
+- `analysis_beat` должен быть running; активный `manager_daily` schedule:
+  `97e6c120-6aa3-4664-99ae-3982054698d7`, `start_time=08:00`,
+  `timezone=Asia/Almaty`, `report_period_rule=previous_day`,
+  `business_email_enabled=false`, `review_required=true`.
+- Runtime smoke после включения:
+  `call_processing_beat=running`, `analysis_beat=running`, новых
+  `call_processing_runs` и `scheduled_report_batches` после activation не
+  создано; технический Telegram alert smoke
+  `scheduled-runtime-telegram-smoke` отправлен успешно (`status=sent`), без
+  STT/LLM/report/business email.
 
 Последняя локальная доработка split cost readiness:
 
