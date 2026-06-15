@@ -1,6 +1,6 @@
 # Активное состояние работ
 
-Дата обновления: 2026-06-14
+Дата обновления: 2026-06-15
 
 Статус: `active`
 
@@ -128,6 +128,19 @@ reuse-записей по mismatch версии анализа; по трем о
   `cleanup-stale-runs`, две зависшие записи `465abcb5...` и `aa915c5e...`
   переведены из `running` в `stale` с `errors_json.error_class=
   stale_processing_run`. Открытых `queued/running` split runs после cleanup нет.
+
+Последняя локальная доработка split automation readiness:
+
+- `SPLIT-COMPLETE-00` внедрен локально 2026-06-15: добавлен fail-safe
+  production email alert layer без участия Codex.
+- Технические уведомления отправляются через SMTP на `ALERT_EMAIL_TO`, целевой
+  адрес для пилота: `admin@dogovor24.kz`.
+- Включение через env: `ALERT_EMAIL_ENABLED=true`,
+  `ALERT_EMAIL_MIN_LEVEL=warning`, `ALERT_EMAIL_ON_SUCCESS=false`.
+- `manager_daily` terminal result пишет `observability.alerts`; `skip_accumulate`,
+  `partial`, `blocked`, `no_data` и readiness/blocker состояния могут отправить
+  admin alert, но business email менеджерам по-прежнему идет только через
+  отдельный delivery gate.
 
 ## Пилотный порядок
 

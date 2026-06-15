@@ -64,6 +64,48 @@ production cutover, потому что день был неполным по м
 
 ## Оставшиеся этапы до полного закрытия
 
+### SPLIT-COMPLETE-00 — Production run alerts без Codex
+
+Статус: `implemented_local`
+
+Что сделано:
+
+- добавлен fail-safe email alert layer для автоматических прогонов;
+- технический канал уведомлений отделен от business delivery менеджерам;
+- alert recipient задается через `ALERT_EMAIL_TO`, текущий целевой адрес:
+  `admin@dogovor24.kz`;
+- алерт сохраняется в `observability.alerts` и не ломает сам прогон, даже если
+  SMTP недоступен;
+- `skip_accumulate`, `partial`, `blocked`, `no_data`, missing/review statuses и
+  quota/error blockers становятся operator/admin-visible;
+- manager business email gate не ослаблен: preview/skip states менеджерам не
+  отправляются автоматически.
+
+Runtime config:
+
+```text
+ALERT_EMAIL_ENABLED=true
+ALERT_EMAIL_TO=admin@dogovor24.kz
+ALERT_EMAIL_MIN_LEVEL=warning
+ALERT_EMAIL_ON_START=true
+ALERT_EMAIL_ON_SUCCESS=false
+```
+
+Важно:
+
+- это production-механизм, который должен работать без Codex;
+- Telegram не является обязательным каналом мониторинга;
+- `sales@dogovor24.kz` остается business/ROP copy для отчетов, но не является
+  основным technical alert recipient.
+
+Проверки:
+
+- `python3 -m py_compile` по измененным Python-файлам;
+- `git diff --check`;
+- focused pytest:
+  `/app/tests/test_run_alerts.py /app/tests/test_manual_reporting.py -k "run_alert or admin_alert"`
+  plus manual reporting runner checks -> `12 passed`.
+
 ### SPLIT-COMPLETE-01 — Выбрать валидный контрольный день
 
 Статус: `next`

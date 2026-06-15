@@ -19,6 +19,7 @@ APP_SERVICE_VALUES = (
     APP_SERVICE_MONOLITH_LEGACY,
 )
 CALL_PROCESSING_MODE_VALUES = ("legacy", "external_service")
+ALERT_EMAIL_LEVEL_VALUES = ("info", "warning", "error", "critical")
 
 
 class Settings(BaseSettings):
@@ -123,6 +124,11 @@ class Settings(BaseSettings):
     smtp_user: str = Field(default="")
     smtp_password: str = Field(default="")
     smtp_from: str = Field(default="")
+    alert_email_enabled: bool = Field(default=False)
+    alert_email_to: str = Field(default="admin@dogovor24.kz")
+    alert_email_min_level: str = Field(default="warning")
+    alert_email_on_start: bool = Field(default=True)
+    alert_email_on_success: bool = Field(default=False)
 
     # Telegram
     telegram_bot_token: str = Field(default="")
@@ -172,6 +178,21 @@ class Settings(BaseSettings):
     def normalize_log_level(cls, value: str) -> str:
         """Normalize log level casing."""
         return value.strip().upper()
+
+    @field_validator("alert_email_min_level")
+    @classmethod
+    def validate_alert_email_min_level(cls, value: str) -> str:
+        """Normalize and validate the minimum production alert email level."""
+        normalized = value.strip().lower()
+        aliases = {"warn": "warning", "fatal": "critical"}
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in ALERT_EMAIL_LEVEL_VALUES:
+            allowed_values = ", ".join(ALERT_EMAIL_LEVEL_VALUES)
+            raise ConfigurationError(
+                f"Invalid ALERT_EMAIL_MIN_LEVEL value '{value}'. "
+                f"Expected one of: {allowed_values}."
+            )
+        return normalized
 
     @field_validator("stt_provider", "manual_live_stt_provider")
     @classmethod
@@ -312,6 +333,15 @@ class Settings(BaseSettings):
     def has_smtp(self) -> bool:
         """Return True when SMTP delivery is configured."""
         return self.smtp_user != ""
+
+    @property
+    def has_alert_email_delivery(self) -> bool:
+        """Return True when production alert email delivery is configured."""
+        return (
+            self.alert_email_enabled
+            and self.alert_email_to.strip() != ""
+            and self.has_smtp
+        )
 
     @property
     def has_test_email_delivery(self) -> bool:

@@ -19,6 +19,55 @@ from app.core_shared.db.models import Interaction
 from app.core_shared.exceptions import DeliveryError
 
 
+def send_smtp_email_message(
+    *,
+    email_to: str,
+    subject: str,
+    text: str,
+    html: str | None = None,
+    cc_emails: list[str] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Send one SMTP email using the shared application mail configuration."""
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings.smtp_from or settings.smtp_user
+    message["To"] = email_to
+    message.set_content(text)
+    if cc_emails:
+        message["Cc"] = ", ".join(cc_emails)
+    if html:
+        message.add_alternative(html, subtype="html")
+    for attachment in attachments or []:
+        message.add_attachment(
+            attachment["content"],
+            maintype=attachment.get("maintype", "application"),
+            subtype=attachment.get("subtype", "octet-stream"),
+            filename=attachment["filename"],
+        )
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+            smtp.starttls()
+            if settings.smtp_user:
+                smtp.login(settings.smtp_user, settings.smtp_password)
+            smtp.send_message(message)
+        return {
+            "channel": "email",
+            "target": email_to,
+            "cc": cc_emails or [],
+            "status": "sent",
+        }
+    except smtplib.SMTPAuthenticationError as exc:
+        raise DeliveryError(
+            f"Email delivery failed: SMTP auth error {exc.smtp_code}"
+        ) from exc
+    except smtplib.SMTPException as exc:
+        raise DeliveryError(f"Email delivery failed: {exc}") from exc
+    except OSError as exc:
+        raise DeliveryError(f"Email delivery failed: {exc}") from exc
+
+
 @dataclass(slots=True)
 class DeliveryTarget:
     """Resolved test delivery destination."""
@@ -554,43 +603,14 @@ class CallsDelivery:
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Send one email with optional HTML and CC recipients."""
-        message = EmailMessage()
-        message["Subject"] = subject
-        message["From"] = settings.smtp_from or settings.smtp_user
-        message["To"] = email_to
-        message.set_content(text)
-        if cc_emails:
-            message["Cc"] = ", ".join(cc_emails)
-        if html:
-            message.add_alternative(html, subtype="html")
-        for attachment in attachments or []:
-            message.add_attachment(
-                attachment["content"],
-                maintype=attachment.get("maintype", "application"),
-                subtype=attachment.get("subtype", "octet-stream"),
-                filename=attachment["filename"],
-            )
-
-        try:
-            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
-                smtp.starttls()
-                if settings.smtp_user:
-                    smtp.login(settings.smtp_user, settings.smtp_password)
-                smtp.send_message(message)
-            return {
-                "channel": "email",
-                "target": email_to,
-                "cc": cc_emails or [],
-                "status": "sent",
-            }
-        except smtplib.SMTPAuthenticationError as exc:
-            raise DeliveryError(
-                f"Email delivery failed: SMTP auth error {exc.smtp_code}"
-            ) from exc
-        except smtplib.SMTPException as exc:
-            raise DeliveryError(f"Email delivery failed: {exc}") from exc
-        except OSError as exc:
-            raise DeliveryError(f"Email delivery failed: {exc}") from exc
+        return send_smtp_email_message(
+            email_to=email_to,
+            subject=subject,
+            text=text,
+            html=html,
+            cc_emails=cc_emails,
+            attachments=attachments,
+        )
 
     def send_email(self, email_to: str, subject: str, text: str) -> dict[str, Any]:
         """Send a test notification to Email."""

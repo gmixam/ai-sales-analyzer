@@ -93,6 +93,7 @@ from app.agents.calls.scheduled_reporting import (  # noqa: E402
     extract_editable_blocks,
 )
 from app.core_shared.api.main import app  # noqa: E402
+from app.core_shared.config.settings import settings  # noqa: E402
 from app.core_shared.exceptions import ASAError, DeliveryError, LLMResponseError  # noqa: E402
 
 try:
@@ -9325,6 +9326,208 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(observability["summary"]["execution_model"], "persisted_only")
         self.assertEqual(observability["stages"][0]["status"], "skipped")
         self.assertEqual(observability["stages"][5]["status"], "skipped")
+
+    def test_terminal_run_skip_accumulate_blocks_manager_email_and_sends_admin_alert(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        orchestrator.department_id = uuid4()
+        orchestrator.db = None
+        sent_alerts = []
+
+        class FakeDelivery:
+            def send_email_message(self, **kwargs):
+                sent_alerts.append(kwargs)
+                return {
+                    "channel": "email",
+                    "target": kwargs["email_to"],
+                    "status": "sent",
+                }
+
+        orchestrator.delivery = FakeDelivery()
+        reports = [
+            {
+                "status": "skip_accumulate",
+                "group_key": "manager_daily_preview:elmira:2026-03-25",
+                "errors": ["analysis_missing:test"],
+                "readiness_reason_codes": ["skip_accumulate_readiness_not_met"],
+                "delivery": {
+                    "transport": {
+                        "mode": "split_operator_delivery",
+                        "telegram_test_delivery": {"enabled": False, "status": "skipped"},
+                        "email_delivery": {
+                            "enabled": False,
+                            "status": "skipped",
+                            "primary_email": None,
+                            "cc_emails": [],
+                        },
+                        "resolved_email": {"primary_email": None, "cc_emails": []},
+                    }
+                },
+            }
+        ]
+
+        original_alert_settings = {
+            "alert_email_enabled": settings.alert_email_enabled,
+            "alert_email_to": settings.alert_email_to,
+            "alert_email_min_level": settings.alert_email_min_level,
+            "smtp_user": settings.smtp_user,
+        }
+        self.addCleanup(
+            lambda: [
+                setattr(settings, key, value)
+                for key, value in original_alert_settings.items()
+            ]
+        )
+        settings.alert_email_enabled = True
+        settings.alert_email_to = "admin@dogovor24.kz"
+        settings.alert_email_min_level = "warning"
+        settings.smtp_user = "no-reply@example.test"
+
+        result = CallsManualReportingOrchestrator._build_terminal_run_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            mode="report_from_ready_data_only",
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            diagnostics_context={
+                "department_id": str(orchestrator.department_id),
+                "department_name": "Отдел продаж",
+                "preset": "manager_daily",
+                "execution_model": "source_aware_full_manual",
+                "mode": "report_from_ready_data_only",
+                "period": {"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                "selected_manager_ids": [],
+                "selected_manager_extensions": [],
+                "manager_filter_logic": "department_scope",
+                "missing_local_manager_ids": [],
+            },
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            source_summary={
+                "execution_model": "source_aware_full_manual",
+                "days_scanned": 1,
+                "source_records_total": 2,
+                "eligible_source_records_total": 2,
+                "targeted_source_records_total": 2,
+                "already_persisted_source_records_total": 2,
+                "missing_source_records_total": 0,
+                "ingest_created_total": 0,
+                "ingest_skipped_total": 2,
+            },
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 1,
+                "analyses_built": 0,
+                "analyses_reused": 0,
+                "missing_transcripts_before_build": 0,
+                "missing_analyses_before_build": 1,
+            },
+            reports=reports,
+            selected_interactions_count=2,
+            final_selected_interactions_count=0,
+            overall_status="completed",
+            errors=[],
+            delivery_options=resolve_report_delivery_options(delivery_mode="preview_only"),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["reports"][0]["delivery"]["transport"]["email_delivery"]["status"], "skipped")
+        self.assertEqual(sent_alerts[0]["email_to"], "admin@dogovor24.kz")
+        self.assertIn("skip_accumulate", sent_alerts[0]["text"])
+        self.assertEqual(result["observability"]["alerts"][0]["status"], "sent")
+        self.assertEqual(result["observability"]["alerts"][0]["trigger"], "skip_accumulate")
+
+    def test_terminal_run_partial_records_failed_admin_alert_without_changing_status(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        orchestrator.department_id = uuid4()
+        orchestrator.db = None
+
+        class FailingDelivery:
+            def send_email_message(self, **_kwargs):
+                raise DeliveryError("smtp unavailable")
+
+        orchestrator.delivery = FailingDelivery()
+
+        original_alert_settings = {
+            "alert_email_enabled": settings.alert_email_enabled,
+            "alert_email_to": settings.alert_email_to,
+            "alert_email_min_level": settings.alert_email_min_level,
+            "smtp_user": settings.smtp_user,
+        }
+        self.addCleanup(
+            lambda: [
+                setattr(settings, key, value)
+                for key, value in original_alert_settings.items()
+            ]
+        )
+        settings.alert_email_enabled = True
+        settings.alert_email_to = "admin@dogovor24.kz"
+        settings.alert_email_min_level = "warning"
+        settings.smtp_user = "no-reply@example.test"
+
+        result = CallsManualReportingOrchestrator._build_terminal_run_result(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            mode="build_missing_and_report",
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            source_period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            diagnostics_context={
+                "department_id": str(orchestrator.department_id),
+                "department_name": "Отдел продаж",
+                "preset": "manager_daily",
+                "execution_model": "source_aware_full_manual",
+                "mode": "build_missing_and_report",
+                "period": {"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                "selected_manager_ids": [],
+                "selected_manager_extensions": [],
+                "manager_filter_logic": "department_scope",
+                "missing_local_manager_ids": [],
+            },
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            source_summary={
+                "execution_model": "source_aware_full_manual",
+                "days_scanned": 1,
+                "source_records_total": 3,
+                "eligible_source_records_total": 3,
+                "targeted_source_records_total": 3,
+                "already_persisted_source_records_total": 3,
+                "missing_source_records_total": 0,
+                "ingest_created_total": 0,
+                "ingest_skipped_total": 3,
+            },
+            build_summary={
+                "transcripts_built": 0,
+                "transcripts_reused": 3,
+                "analyses_built": 0,
+                "analyses_reused": 2,
+                "missing_transcripts_before_build": 0,
+                "missing_analyses_before_build": 1,
+            },
+            reports=[
+                {
+                    "status": "partial",
+                    "group_key": "manager_daily:elmira:2026-03-25",
+                    "errors": ["Email delivery failed: timeout"],
+                    "delivery": {
+                        "transport": {
+                            "mode": "split_operator_delivery",
+                            "telegram_test_delivery": {"enabled": True, "status": "delivered", "target": "74665909"},
+                            "email_delivery": {"enabled": True, "status": "failed", "primary_email": "elmira@example.com"},
+                            "resolved_email": {"primary_email": "elmira@example.com", "cc_emails": ["sales@dogovor24.kz"]},
+                        }
+                    },
+                }
+            ],
+            selected_interactions_count=3,
+            final_selected_interactions_count=2,
+            overall_status="partial",
+            errors=[],
+            delivery_options=resolve_report_delivery_options(delivery_mode="telegram_and_email"),
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["observability"]["status"], "partial")
+        self.assertEqual(result["observability"]["summary"]["alerts"]["attempted"], 1)
+        self.assertEqual(result["observability"]["alerts"][0]["status"], "failed")
+        self.assertIn("smtp unavailable", result["observability"]["alerts"][0]["error"])
 
     def test_build_run_diagnostics_reports_empty_intersection_and_local_directory_issue(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)

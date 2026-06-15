@@ -44,6 +44,7 @@ from app.agents.calls.report_time import (
     report_human_datetime_ru,
     report_time_label,
 )
+from app.agents.calls.run_alerts import send_run_alert
 from app.agents.calls.situation_day_composer import (
     SITUATION_DAY_COMPOSER_VERSION,
     compose_situation_day,
@@ -985,6 +986,14 @@ class CallsManualReportingOrchestrator:
             filters=filters,
             period=source_period,
         )
+        start_alerts = self._send_run_start_alerts(
+            preset=preset,
+            period=period,
+            source_period=source_period,
+            mode=normalized_mode,
+            delivery_options=delivery_options,
+            diagnostics_context=diagnostics_context,
+        )
         execution_model = self._resolve_execution_model(preset=preset)
         source_summary = self._empty_source_summary(period=source_period, execution_model=execution_model)
         source_discovery_errors: list[str] = []
@@ -1021,6 +1030,7 @@ class CallsManualReportingOrchestrator:
                             errors=[error_token],
                             artifacts=[],
                             delivery_options=delivery_options,
+                            pre_run_alerts=start_alerts,
                         )
             else:
                 try:
@@ -1055,6 +1065,7 @@ class CallsManualReportingOrchestrator:
                             errors=[error_token],
                             artifacts=[],
                             delivery_options=delivery_options,
+                            pre_run_alerts=start_alerts,
                         )
         interactions = self._select_interactions(filters=filters, period=source_period)
         if not interactions:
@@ -1090,6 +1101,7 @@ class CallsManualReportingOrchestrator:
                     errors=["no_interactions_for_selected_filters"],
                     artifacts=[],
                     delivery_options=delivery_options,
+                    pre_run_alerts=start_alerts,
                 )
             return self._build_terminal_run_result(
                 preset=preset,
@@ -1107,6 +1119,7 @@ class CallsManualReportingOrchestrator:
                 errors=["no_interactions_for_selected_filters"],
                 artifacts=[],
                 delivery_options=delivery_options,
+                pre_run_alerts=start_alerts,
             )
 
         artifacts, build_summary, build_errors = await self._prepare_artifacts(
@@ -1153,6 +1166,7 @@ class CallsManualReportingOrchestrator:
             send_email=delivery_options.send_business_email,
             artifacts=artifacts,
             delivery_options=delivery_options,
+            pre_run_alerts=start_alerts,
         )
 
     def _build_terminal_run_result(
@@ -1174,11 +1188,12 @@ class CallsManualReportingOrchestrator:
         send_email: bool = False,
         artifacts: list[ReportArtifact] | None = None,
         delivery_options: ReportDeliveryOptions | None = None,
+        pre_run_alerts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Build the final structured run response for success and blocked outcomes."""
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=errors or [])
         resolved_delivery_options = delivery_options or resolve_report_delivery_options(send_email=send_email)
-        return {
+        result = {
             "status": overall_status,
             "preset": preset.code,
             "mode": mode,
@@ -1229,6 +1244,22 @@ class CallsManualReportingOrchestrator:
                 "send_business_email": resolved_delivery_options.send_business_email,
             },
         }
+        terminal_alerts = self._send_run_monitor_alerts(
+            preset=preset,
+            period=period,
+            mode=mode,
+            delivery_options=resolved_delivery_options,
+            reports=reports,
+            overall_status=overall_status,
+            errors=errors or [],
+            observability=result["observability"],
+        )
+        result["observability"]["alerts"] = [*(pre_run_alerts or []), *terminal_alerts]
+        result["observability"]["summary"]["alerts"] = {
+            "attempted": len(result["observability"]["alerts"]),
+            "statuses": [item["status"] for item in result["observability"]["alerts"]],
+        }
+        return result
 
     @staticmethod
     def _derive_run_overall_status(
@@ -2380,7 +2411,13 @@ class CallsManualReportingOrchestrator:
         )
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=all_errors)
         return {
+            "status": overall_status,
             "run_state": self._map_run_state(overall_status),
+            "blockers": self._build_run_blockers(
+                quota_blocker=quota_blocker,
+                errors=all_errors,
+                reports=reports,
+            ),
             "stages": [
                 self._build_source_discovery_stage(
                     preset=preset,
@@ -2502,6 +2539,265 @@ class CallsManualReportingOrchestrator:
             ),
             "ai_costs": ai_costs,
         }
+
+    def _send_run_start_alerts(
+        self,
+        *,
+        preset: ReportPreset,
+        period: dict[str, str],
+        source_period: dict[str, str],
+        mode: str,
+        delivery_options: ReportDeliveryOptions,
+        diagnostics_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Attempt a fail-safe run-start alert for automated operation."""
+        if not settings.alert_email_enabled or not settings.alert_email_on_start:
+            return []
+
+        attempt = send_run_alert(
+            "started",
+            run_id=f"manual-report:{preset.code}:{period.get('date_from')}:{period.get('date_to')}",
+            status="running",
+            title="Manager reporting run started",
+            level="info",
+            requested_by="manual_reporting_runner",
+            scope={
+                "preset": preset.code,
+                "period": period,
+                "source_period": source_period,
+                "mode": mode,
+                "delivery_mode": delivery_options.mode,
+                "business_email_enabled": delivery_options.send_business_email,
+                "department_id": diagnostics_context.get("department_id"),
+                "selected_manager_ids": diagnostics_context.get("selected_manager_ids"),
+                "selected_manager_extensions": diagnostics_context.get("selected_manager_extensions"),
+            },
+            counts={},
+            details={"phase": "run_start"},
+            email_sender=self.delivery.send_email_message,
+        )
+        attempt["kind"] = "reporting_run_start"
+        attempt["trigger"] = "run_start"
+        attempt["severity"] = "info"
+        return [attempt]
+
+    def _send_run_monitor_alerts(
+        self,
+        *,
+        preset: ReportPreset,
+        period: dict[str, str],
+        mode: str,
+        delivery_options: ReportDeliveryOptions,
+        reports: list[dict[str, Any]],
+        overall_status: str,
+        errors: list[str],
+        observability: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Attempt admin run-monitor alerts and return fail-safe observability records."""
+        specs = self._build_run_monitor_alert_specs(
+            preset=preset,
+            period=period,
+            mode=mode,
+            delivery_options=delivery_options,
+            reports=reports,
+            overall_status=overall_status,
+            errors=errors,
+            observability=observability,
+        )
+        if not specs:
+            return []
+
+        alerts: list[dict[str, Any]] = []
+        for spec in specs:
+            attempt = send_run_alert(
+                spec["event"],
+                run_id=spec["run_id"],
+                status=spec["run_status"],
+                title=spec["title"],
+                level=spec["severity"],
+                requested_by="manual_reporting_runner",
+                scope=spec["scope"],
+                counts=spec["counts"],
+                errors=spec["reason_codes"],
+                details=spec["details"],
+                email_sender=self.delivery.send_email_message,
+            )
+            alert = {
+                "kind": spec["kind"],
+                "channel": attempt.get("channel", "email"),
+                "target": attempt.get("recipient") or spec["target"],
+                "severity": spec["severity"],
+                "trigger": spec["trigger"],
+                "status": attempt.get("status", "unknown"),
+                "subject": attempt.get("subject"),
+                "reason_codes": list(spec["reason_codes"]),
+            }
+            for key in ("delivery", "reason", "error", "error_class"):
+                if attempt.get(key) is not None:
+                    alert[key] = attempt[key]
+            alerts.append(alert)
+        return alerts
+
+    def _build_run_monitor_alert_specs(
+        self,
+        *,
+        preset: ReportPreset,
+        period: dict[str, str],
+        mode: str,
+        delivery_options: ReportDeliveryOptions,
+        reports: list[dict[str, Any]],
+        overall_status: str,
+        errors: list[str],
+        observability: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Return bounded admin alert specs for report-run states that need operator attention."""
+        if preset.code != "manager_daily":
+            return []
+
+        report_statuses = [str(report.get("status") or "unknown") for report in reports]
+        alert_statuses = {"skip_accumulate", "missing_artifacts", "blocked", "partial", "review_required"}
+        should_alert = overall_status in {"blocked", "failed", "partial", "no_data"} or any(
+            status in alert_statuses for status in report_statuses
+        )
+        if not should_alert and not settings.alert_email_on_success:
+            return []
+
+        target = self._resolve_monitoring_email()
+
+        reason_codes = self._collect_run_alert_reason_codes(
+            reports=reports,
+            errors=errors,
+        )
+        status_counts = {
+            status: report_statuses.count(status)
+            for status in sorted(set(report_statuses))
+        }
+        severity = (
+            "error"
+            if overall_status in {"blocked", "failed", "no_data"}
+            else "warning"
+            if should_alert
+            else "info"
+        )
+        trigger = (
+            "skip_accumulate"
+            if "skip_accumulate" in report_statuses
+            else "blocked_or_partial_run"
+            if overall_status in {"blocked", "failed", "partial", "no_data"}
+            else "manager_daily_review_required"
+            if should_alert
+            else "manager_daily_completed"
+        )
+        event = "failed" if overall_status == "failed" else "blocked" if should_alert else "completed"
+        text = "\n".join(
+            [
+                "manager_daily run monitor alert",
+                f"Status: {overall_status}",
+                f"Period: {period.get('date_from')}..{period.get('date_to')}",
+                f"Mode: {mode}",
+                f"Delivery mode: {delivery_options.mode}",
+                f"Business email enabled: {delivery_options.send_business_email}",
+                f"Report statuses: {json.dumps(status_counts, ensure_ascii=False, sort_keys=True)}",
+                f"Reason codes: {', '.join(reason_codes) if reason_codes else 'none'}",
+                f"Blockers: {json.dumps(observability.get('blockers') or [], ensure_ascii=False)}",
+                (
+                    "Manager delivery note: skip_accumulate/preview and blocked states are "
+                    "operator/admin observable; ordinary manager business email remains gated separately."
+                ),
+            ]
+        )
+        return [
+            {
+                "kind": "manager_daily_run_monitor",
+                "target": target,
+                "severity": severity,
+                "event": event,
+                "trigger": trigger,
+                "run_id": f"manual-report:{preset.code}:{period.get('date_from')}:{period.get('date_to')}",
+                "run_status": overall_status,
+                "title": "Manager daily run needs attention",
+                "scope": {
+                    "preset": preset.code,
+                    "period": period,
+                    "mode": mode,
+                    "delivery_mode": delivery_options.mode,
+                    "business_email_enabled": delivery_options.send_business_email,
+                },
+                "counts": {
+                    "reports": len(reports),
+                    **{f"report_status_{key}": value for key, value in status_counts.items()},
+                },
+                "details": {
+                    "trigger": trigger,
+                    "target": target,
+                    "blockers": observability.get("blockers") or [],
+                    "message": text,
+                },
+                "reason_codes": reason_codes,
+            }
+        ]
+
+    def _resolve_monitoring_email(self) -> str | None:
+        """Resolve production monitoring email from global alert settings."""
+        email = str(settings.alert_email_to or "").strip()
+        return email or None
+
+    @staticmethod
+    def _collect_run_alert_reason_codes(
+        *,
+        reports: list[dict[str, Any]],
+        errors: list[str],
+    ) -> list[str]:
+        """Collect concise alert reasons from run/report diagnostics."""
+        reason_codes: list[str] = []
+        for item in errors:
+            if item and item not in reason_codes:
+                reason_codes.append(str(item))
+        for report in reports:
+            for item in report.get("readiness_reason_codes") or []:
+                if item and item not in reason_codes:
+                    reason_codes.append(str(item))
+            readiness = report.get("readiness") or {}
+            for item in readiness.get("readiness_reason_codes") or []:
+                if item and item not in reason_codes:
+                    reason_codes.append(str(item))
+            for item in report.get("errors") or []:
+                if item and item not in reason_codes:
+                    reason_codes.append(str(item))
+        return reason_codes[:12]
+
+    @staticmethod
+    def _build_run_blockers(
+        *,
+        quota_blocker: dict[str, Any] | None,
+        errors: list[str],
+        reports: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return compact run blockers for observability consumers."""
+        blockers: list[dict[str, Any]] = []
+        if quota_blocker:
+            blockers.append({"type": "quota", **quota_blocker})
+        for error in errors:
+            if error:
+                blockers.append({"type": "error", "message": error})
+        for report in reports:
+            status = str(report.get("status") or "")
+            if status not in {"missing_artifacts", "blocked", "partial", "review_required", "skip_accumulate"}:
+                continue
+            blockers.append(
+                {
+                    "type": "report",
+                    "status": status,
+                    "group_key": report.get("group_key"),
+                    "reason_codes": list(
+                        report.get("readiness_reason_codes")
+                        or (report.get("readiness") or {}).get("readiness_reason_codes")
+                        or report.get("errors")
+                        or []
+                    )[:8],
+                }
+            )
+        return blockers[:20]
 
     def _collect_run_diagnostics_context(
         self,
