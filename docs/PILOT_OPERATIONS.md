@@ -106,6 +106,10 @@ P1-задач из `docs/PILOT_BACKLOG.md` ежедневный preflight дол
 
 - актуальность Bitrix manager sync: активные менеджеры, email, extension,
   Bitrix ID, новые/деактивированные сотрудники;
+- отчетный scope после Bitrix sync строится только из `active=true`,
+  `email` заполнен, `extension` заполнен; inactive/уволенные сотрудники не
+  считаются, технический пользователь `Робот Договор24` исключается из
+  расписаний и дневных прогонов;
 - route-plan для `stt`, `llm1`, `llm2`, `llm3`;
 - есть ли due schedules, open batches или review drafts;
 - delivery mode: test/preview или business delivery после review;
@@ -133,7 +137,39 @@ docker compose exec -T api python /app/report_scripts/bitrix_manager_sync_prefli
 недоступен в `/app/report_scripts`; тогда нужно пересоздать `api/worker/beat`
 или запускать временную копию только для проверки.
 
+Для расписания использовать не весь список `active_managers`, а
+`schedule_scope_candidates`: это active-менеджеры отдела с email и внутренним
+номером, без технических пользователей. На последней live-сверке 2026-06-15
+Bitrix вернул `5` active-пользователей отдела, из них `4` кандидата в
+расписание: Алишер, Илья, Тимур, Толеген. `Робот Договор24` остается active в
+Bitrix, но исключается из schedule scope.
+
+Утвержденный production pilot scope с 2026-06-15:
+
+| Менеджер | `manager_id` | Extension | Email |
+| --- | --- | --- | --- |
+| Алишер Гайнидинов | `5638c619-8732-435c-9664-a7188f13effd` | `317` | `g.alisher@dogovor24.kz` |
+| Илья Тарасов | `cfba5067-d356-4c8b-895a-0f5808647978` | `350` | `t.ilya@dogovor24.kz` |
+| Тимур Жуматаев | `656abe58-7c23-476a-a9f6-d76305cf42e0` | `311` | `zh.timur@dogovor24.kz` |
+| Толеген Жангазиев | `d42e8246-772e-4a04-bbe7-2b88f45db695` | `325` | `zh.tolegen@dogovor24.kz` |
+
+Schedule `manager_ids`:
+
+```json
+[
+  "5638c619-8732-435c-9664-a7188f13effd",
+  "cfba5067-d356-4c8b-895a-0f5808647978",
+  "656abe58-7c23-476a-a9f6-d76305cf42e0",
+  "d42e8246-772e-4a04-bbe7-2b88f45db695"
+]
+```
+
 ### Scheduled reporting без UI
+
+Важно: перед activation smoke не должны одновременно работать legacy `beat` и
+split `analysis_beat`. Пока active schedules нет, это не приводит к запуску
+отчетов, но после создания schedule одновременная работа двух beat-процессов
+может создать дубли или отправить task не в тот runtime path.
 
 Проверить schedules и recent review batches:
 
@@ -150,16 +186,20 @@ docker compose exec -T api python /app/report_scripts/scheduled_reporting_prefli
 Создать controlled schedule для пилотного отдела:
 
 ```bash
-docker compose exec -T api python /app/report_scripts/scheduled_reporting_preflight.py create \
+docker compose exec -T api python /app/report_scripts/scheduled_reporting_preflight.py \
+  create-production-manager-daily \
   --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 \
-  --preset manager_daily \
-  --mode report_from_ready_data_only \
-  --start-date YYYY-MM-DD \
-  --start-time HH:MM \
-  --timezone Asia/Almaty \
-  --period-rule previous_day \
-  --no-business-email-enabled
+  --first-report-date 2026-06-15 \
+  --manager-id 5638c619-8732-435c-9664-a7188f13effd \
+  --manager-id cfba5067-d356-4c8b-895a-0f5808647978 \
+  --manager-id 656abe58-7c23-476a-a9f6-d76305cf42e0 \
+  --manager-id d42e8246-772e-4a04-bbe7-2b88f45db695 \
+  --dry-run
 ```
+
+После dry-run и проверки conflicts убрать `--dry-run` для реального создания
+schedule. По умолчанию `business_email_enabled=false`, а значит создание
+schedule не отправляет письма менеджерам.
 
 Approve запускать только после review и явного решения на доставку:
 

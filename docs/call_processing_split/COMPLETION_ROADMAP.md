@@ -346,13 +346,43 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-07A — Production schedule activation smoke
 
-Статус: `planned_not_started`
+Статус: `implementation_in_progress`
+
+ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_07A_PRODUCTION_SCHEDULE_ACTIVATION_TZ.md`
+
+Текущее состояние 2026-06-15:
+
+- CLI activation guard внедрен:
+  `scheduled_reporting_preflight.py create-production-manager-daily`;
+- runtime-mounted copies доступны в `/app/report_scripts`;
+- dry-run по 4 менеджерам за `2026-06-15` прошел без записи в БД:
+  `start_date=2026-06-16`, `start_time=08:00`, `timezone=Asia/Almaty`,
+  `business_email_enabled=false`, `billable_pipeline_started=false`,
+  `conflicts=[]`;
+- реальный schedule row еще не создан;
+- due-scan не запускался;
+- найден runtime blocker/risk: legacy `beat` сейчас running, поэтому перед
+  enabled schedule + split `analysis_beat` нужно остановить legacy scheduler
+  или иначе исключить двойную обработку;
+- отдельный scheduled `call-processing` entrypoint на `00:00 Asia/Almaty` еще
+  не найден и остается gap для полной автоматизации.
 
 Что сделать:
 
+- перед созданием schedules выполнить Bitrix manager sync для `[ЭДО] Отдел
+  Продаж` и строить scope только по актуальным `schedule_scope_candidates`:
+  `active=true`, есть `email`, есть `extension`, без технических пользователей
+  вроде `Робот Договор24`; inactive/уволенные сотрудники не должны попадать в
+  расписание;
 - создать реальные активные `report_schedules` для production pilot scope;
-- явно проверить, что schedules настроены на `manager_daily`, трех пилотных
-  менеджеров, `Asia/Almaty`, нужное время запуска и split-mode;
+- явно проверить, что schedules настроены на `manager_daily`, актуальных
+  менеджеров production pilot scope, `Asia/Almaty`, нужное время запуска и
+  split-mode;
+- актуальный утвержденный production pilot scope с 2026-06-15: Алишер
+  (`5638c619-8732-435c-9664-a7188f13effd`), Илья
+  (`cfba5067-d356-4c8b-895a-0f5808647978`), Тимур
+  (`656abe58-7c23-476a-a9f6-d76305cf42e0`), Толеген
+  (`d42e8246-772e-4a04-bbe7-2b88f45db695`);
 - поднять `analysis_beat` в split-профиле только после проверки env/preflight;
 - выполнить первый automatic due-scan smoke без ручного запуска pipeline;
 - убедиться, что batch/draft создается в split-mode, а не через legacy path;
@@ -380,12 +410,48 @@ ALERT_EMAIL_ON_SUCCESS=false
 Критерий готовности:
 
 - в БД есть активные schedule rows для пилотных менеджеров;
+- manager scope соответствует последнему Bitrix sync: уволенные/inactive не
+  выбраны, `Робот Договор24` исключен;
 - `analysis_beat` запущен в split-profile и маршрутизирует scan-task в
   `analysis` queue;
 - первый due scan создает expected reviewable batch/draft или понятный
   no-data/blocker с admin alert;
 - observability подтверждает `CALL_PROCESSING_MODE=external_service` и
   отсутствие local STT/LLM1 execution внутри analysis.
+
+### SPLIT-COMPLETE-07B — Scheduled call-processing upstream at 00:00
+
+Статус: `planned_not_started`
+
+Что сделать:
+
+- реализовать или явно подключить отдельный scheduled entrypoint для
+  `call-processing`, который каждый день в `00:00 Asia/Almaty` готовит
+  previous-day upstream artifacts: OnlinePBX source discovery, audio/STT,
+  transcript segments и LLM1;
+- entrypoint должен работать в `call_processing` service/queue, не в
+  `analysis`;
+- запуск должен быть idempotent: reuse не добавляет новый расход, готовые
+  artifacts не пересоздаются;
+- quota/budget/provider blockers должны фиксироваться в observability и
+  отправлять technical alert на `admin@dogovor24.kz`;
+- output должен быть читаемым для последующего `08:00 analysis` schedule.
+
+Почему добавлено:
+
+- аудит `SPLIT-COMPLETE-07A` подтвердил, что scheduled analysis scan существует,
+  но отдельного production-ready ночного upstream scheduler на `00:00
+  Asia/Almaty` пока не найдено;
+- без этого полный автоматический контур либо зависит от добора missing
+  artifacts в `08:00 analysis`, либо требует ручного запуска call-processing.
+
+Критерий готовности:
+
+- `call-processing` сам создает previous-day artifacts по расписанию;
+- `analysis` в `08:00` переиспользует готовые external artifacts;
+- split boundary соблюден: STT/LLM1 не выполняются внутри `analysis`;
+- первый upstream scheduled smoke проходит без business delivery и с cost/alert
+  observability.
 
 ### SPLIT-COMPLETE-08 — Production cutover или rollback decision
 
