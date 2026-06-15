@@ -421,21 +421,55 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-07B — Scheduled call-processing upstream at 00:00
 
-Статус: `planned_not_started`
+Статус: `implemented_local_requires_runtime_activation`
 
 Что сделать:
 
-- реализовать или явно подключить отдельный scheduled entrypoint для
-  `call-processing`, который каждый день в `00:00 Asia/Almaty` готовит
-  previous-day upstream artifacts: OnlinePBX source discovery, audio/STT,
-  transcript segments и LLM1;
-- entrypoint должен работать в `call_processing` service/queue, не в
-  `analysis`;
-- запуск должен быть idempotent: reuse не добавляет новый расход, готовые
-  artifacts не пересоздаются;
-- quota/budget/provider blockers должны фиксироваться в observability и
-  отправлять technical alert на `admin@dogovor24.kz`;
-- output должен быть читаемым для последующего `08:00 analysis` schedule.
+Что сделано:
+
+- добавлен Celery task
+  `call_processing.ensure_daily_upstream`, который строит scope за previous-day
+  в timezone `Asia/Almaty` и вызывает `CallProcessingService.ensure(...)`;
+- task требует только upstream artifacts:
+  `transcript`, `transcript_segments`, `llm1_first_pass`;
+- task routed только в `call_processing` queue;
+- beat schedule для этого task создается только при
+  `APP_SERVICE=call_processing` и
+  `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true`;
+- добавлен split-service `call_processing_beat` в `docker-compose.yml`, чтобы
+  upstream scheduler можно было запускать отдельно от `analysis_beat`;
+- `call_processing` beat больше не планирует scheduled reporting scan, поэтому
+  reporting остается в `analysis` / legacy runtime;
+- безопасный `dry_run=True` поддержан для технической репетиции без provider
+  calls даже если enabled-флаг выключен;
+- real ensure дополнительно требует production scope и
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET > 0`, чтобы случайный
+  env toggle не начал платный прогон;
+- returned payload содержит `task_status`, `report_date`, `scope`,
+  `required_artifacts`, `planned`, `quota`, `costs`, `status` и structured
+  `error` при failure.
+
+Runtime env для включения:
+
+```text
+APP_SERVICE=call_processing
+CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true
+CALL_PROCESSING_DAILY_UPSTREAM_TIMEZONE=Asia/Almaty
+CALL_PROCESSING_DAILY_UPSTREAM_HOUR=0
+CALL_PROCESSING_DAILY_UPSTREAM_MINUTE=0
+CALL_PROCESSING_DAILY_UPSTREAM_DEPARTMENT_ID=472cda28-ce71-494c-9068-25d3ffbf7399
+CALL_PROCESSING_DAILY_UPSTREAM_MANAGER_IDS=5638c619-8732-435c-9664-a7188f13effd,cfba5067-d356-4c8b-895a-0f5808647978,656abe58-7c23-476a-a9f6-d76305cf42e0,d42e8246-772e-4a04-bbe7-2b88f45db695
+CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=200
+```
+
+Что оператору осталось сделать:
+
+- включить env `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true` и provider budget
+  в `.env.call-processing` только после approval;
+- запустить отдельный Celery beat process `call_processing_beat` после
+  остановки/разделения legacy beat;
+- выполнить `dry_run=True` task smoke без provider calls;
+- только после этого включать provider-backed scheduled run.
 
 Почему добавлено:
 
@@ -447,7 +481,9 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 Критерий готовности:
 
-- `call-processing` сам создает previous-day artifacts по расписанию;
+- local tests подтверждают, что task scheduled/routed в `call_processing` queue;
+- runtime smoke подтверждает, что `call-processing` сам создает previous-day
+  artifacts по расписанию;
 - `analysis` в `08:00` переиспользует готовые external artifacts;
 - split boundary соблюден: STT/LLM1 не выполняются внутри `analysis`;
 - первый upstream scheduled smoke проходит без business delivery и с cost/alert

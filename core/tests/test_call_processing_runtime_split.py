@@ -16,7 +16,9 @@ from app.core_shared.workers.celery_app import (  # noqa: E402
     ANALYSIS_QUEUE,
     CALL_PROCESSING_QUEUE,
     DEFAULT_QUEUE,
+    SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
     SCHEDULED_REPORTING_TASK,
+    build_beat_schedule,
     build_task_routes,
     build_worker_queues,
     scheduled_reporting_queue,
@@ -212,3 +214,33 @@ def test_celery_queue_routing_is_split_by_service_identity() -> None:
     assert scheduled_reporting_queue("call_processing") == DEFAULT_QUEUE
     assert build_task_routes("analysis")[SCHEDULED_REPORTING_TASK]["queue"] == ANALYSIS_QUEUE
     assert build_task_routes("monolith_legacy")[SCHEDULED_REPORTING_TASK]["queue"] == DEFAULT_QUEUE
+    assert build_task_routes("analysis")[SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK]["queue"] == CALL_PROCESSING_QUEUE
+
+
+def test_celery_beat_schedule_is_split_by_service_identity() -> None:
+    analysis_schedule = build_beat_schedule("analysis")
+    assert "scheduled-reviewable-reporting-scan" in analysis_schedule
+    assert "scheduled-call-processing-daily-upstream" not in analysis_schedule
+
+    disabled_call_processing_schedule = build_beat_schedule(
+        "call_processing",
+        call_processing_daily_upstream_enabled=False,
+    )
+    assert disabled_call_processing_schedule == {}
+
+    call_processing_schedule = build_beat_schedule(
+        "call_processing",
+        call_processing_daily_upstream_enabled=True,
+        call_processing_daily_upstream_hour=0,
+        call_processing_daily_upstream_minute=0,
+    )
+    assert "scheduled-call-processing-daily-upstream" in call_processing_schedule
+    assert "scheduled-reviewable-reporting-scan" not in call_processing_schedule
+    assert (
+        call_processing_schedule["scheduled-call-processing-daily-upstream"]["task"]
+        == SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK
+    )
+    assert (
+        call_processing_schedule["scheduled-call-processing-daily-upstream"]["options"]["queue"]
+        == CALL_PROCESSING_QUEUE
+    )

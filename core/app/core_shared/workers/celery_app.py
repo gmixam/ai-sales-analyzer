@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core_shared.config.settings import settings
 
@@ -11,6 +12,7 @@ ANALYSIS_QUEUE = "analysis"
 LEGACY_CALLS_QUEUE = "calls"
 DEFAULT_QUEUE = "default"
 SCHEDULED_REPORTING_TASK = "calls.scan_scheduled_reviewable_reporting"
+SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK = "call_processing.ensure_daily_upstream"
 APP_SERVICE_CALL_PROCESSING = "call_processing"
 APP_SERVICE_ANALYSIS = "analysis"
 APP_SERVICE_MONOLITH_LEGACY = "monolith_legacy"
@@ -38,12 +40,48 @@ def build_task_routes(app_service: str) -> dict[str, dict[str, str]]:
     """Build explicit task routes for service-split queue isolation."""
     return {
         SCHEDULED_REPORTING_TASK: {"queue": scheduled_reporting_queue(app_service)},
+        SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK: {"queue": CALL_PROCESSING_QUEUE},
     }
+
+
+def build_beat_schedule(
+    app_service: str,
+    *,
+    call_processing_daily_upstream_enabled: bool = False,
+    call_processing_daily_upstream_hour: int = 0,
+    call_processing_daily_upstream_minute: int = 0,
+) -> dict[str, dict[str, object]]:
+    """Build service-specific beat entries without crossing split boundaries."""
+    normalized = str(app_service or APP_SERVICE_MONOLITH_LEGACY).strip().lower()
+    schedule: dict[str, dict[str, object]] = {}
+
+    if normalized in {APP_SERVICE_ANALYSIS, APP_SERVICE_MONOLITH_LEGACY}:
+        schedule["scheduled-reviewable-reporting-scan"] = {
+            "task": SCHEDULED_REPORTING_TASK,
+            "schedule": 60.0,
+            "options": {"queue": scheduled_reporting_queue(normalized)},
+        }
+
+    if normalized == APP_SERVICE_CALL_PROCESSING and call_processing_daily_upstream_enabled:
+        schedule["scheduled-call-processing-daily-upstream"] = {
+            "task": SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
+            "schedule": crontab(
+                minute=call_processing_daily_upstream_minute,
+                hour=call_processing_daily_upstream_hour,
+            ),
+            "options": {"queue": CALL_PROCESSING_QUEUE},
+        }
+
+    return schedule
 
 
 def create_celery_app() -> Celery:
     """Create the shared Celery application."""
-    scheduled_queue = scheduled_reporting_queue(settings.app_service)
+    timezone = (
+        settings.call_processing_daily_upstream_timezone
+        if settings.app_service == APP_SERVICE_CALL_PROCESSING
+        else "UTC"
+    )
     app = Celery(
         "ai_sales_analyzer",
         broker=str(settings.redis_url),
@@ -55,14 +93,13 @@ def create_celery_app() -> Celery:
         task_default_exchange="default",
         task_default_routing_key="default",
         task_routes=build_task_routes(settings.app_service),
-        beat_schedule={
-            "scheduled-reviewable-reporting-scan": {
-                "task": SCHEDULED_REPORTING_TASK,
-                "schedule": 60.0,
-                "options": {"queue": scheduled_queue},
-            }
-        },
-        timezone="UTC",
+        beat_schedule=build_beat_schedule(
+            settings.app_service,
+            call_processing_daily_upstream_enabled=settings.call_processing_daily_upstream_enabled,
+            call_processing_daily_upstream_hour=settings.call_processing_daily_upstream_hour,
+            call_processing_daily_upstream_minute=settings.call_processing_daily_upstream_minute,
+        ),
+        timezone=timezone,
         enable_utc=True,
     )
     return app

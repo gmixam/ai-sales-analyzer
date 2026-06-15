@@ -224,6 +224,34 @@ services:
     networks:
       - asa_network
 
+  call_processing_beat:
+    profiles: ["split"]
+    build: ./core
+    container_name: ${COMPOSE_PROJECT_NAME}_call_processing_beat
+    command: celery -A app.core_shared.workers.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
+    env_file:
+      - path: .env.split.common
+        required: false
+      - path: .env.call-processing
+        required: false
+    environment:
+      APP_SERVICE: call_processing
+      CALL_PROCESSING_MODE: legacy
+    volumes:
+      - ./core:/app
+      - ./scripts:/app/report_scripts:ro
+      - asa_call_processing_beat_data:/var/run/celery
+      - asa_audio_tmp:/tmp/audio
+    depends_on:
+      call_processing_worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - asa_network
+
   analysis_worker:
     profiles: ["split"]
     build: ./core
@@ -306,3 +334,6 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME}_audio_tmp
   asa_beat_data:
     name: ${COMPOSE_PROJECT_NAME}_beat_data
+
+  asa_call_processing_beat_data:
+    name: ${COMPOSE_PROJECT_NAME}_call_processing_beat_data

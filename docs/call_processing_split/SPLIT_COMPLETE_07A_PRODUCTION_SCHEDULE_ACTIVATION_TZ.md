@@ -55,6 +55,137 @@
 - отдельный scheduled call-processing entrypoint на `00:00 Asia/Almaty` еще не
   найден/не реализован; это gap для полной автоматизации upstream STT/LLM1.
 
+## Read-only audit перед runtime activation, 2026-06-15
+
+Проверка выполнена без изменения runtime state:
+
+- не создавались реальные `report_schedules`;
+- не останавливались и не запускались сервисы;
+- не запускались `scan-due`, pipeline, approve или email delivery;
+- не запускались STT/LLM.
+
+Текущее состояние сервисов по `docker compose ps`:
+
+- running legacy services: `api`, `worker`, `beat`;
+- running split services: `call_processing_api`, `call_processing_worker`,
+  `analysis_api`, `analysis_worker`;
+- split `analysis_beat` сейчас не running;
+- `postgres`, `redis`, `nginx`, `flower` running.
+
+Текущее состояние расписаний:
+
+```text
+active report_schedules where deleted_at is null: 0
+```
+
+CLI в контейнере доступен:
+
+```bash
+docker compose exec -T analysis_api python /app/report_scripts/bitrix_manager_sync_preflight.py --help
+docker compose exec -T analysis_api python /app/report_scripts/scheduled_reporting_preflight.py --help
+```
+
+Повторный dry-run создания production schedule прошел успешно:
+
+```bash
+docker compose exec -T analysis_api python /app/report_scripts/scheduled_reporting_preflight.py \
+  --json \
+  create-production-manager-daily \
+  --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 \
+  --first-report-date 2026-06-15 \
+  --manager-id 5638c619-8732-435c-9664-a7188f13effd \
+  --manager-id cfba5067-d356-4c8b-895a-0f5808647978 \
+  --manager-id 656abe58-7c23-476a-a9f6-d76305cf42e0 \
+  --manager-id d42e8246-772e-4a04-bbe7-2b88f45db695 \
+  --dry-run
+```
+
+Результат dry-run:
+
+```text
+status=ok
+action=dry_run_create_schedule
+preset=manager_daily
+enabled=true
+start_date=2026-06-16
+start_time=08:00
+timezone=Asia/Almaty
+recurrence_type=daily
+report_period_rule=previous_day
+mode=build_missing_and_report
+business_email_enabled=false
+review_required=true
+manager_count=4
+conflicts=[]
+billable_pipeline_started=false
+```
+
+После dry-run active schedules остались равны `0`.
+
+Локальный manager directory по отделу `[ЭДО] Отдел Продаж`:
+
+- в production scope входят 4 active менеджера с email и extension: Алишер,
+  Илья, Тимур, Толеген;
+- `Робот Договор24` остается `active=true` в локальной базе и Bitrix, но у него
+  пустой `extension`; он должен исключаться из schedule scope фильтром;
+- inactive/уволенные менеджеры лежат в базе как `active=false` и не входят в
+  schedule scope.
+
+Опасные действия без отдельного разрешения:
+
+- запускать `scan-due`, если появятся due schedules;
+- держать одновременно legacy `beat` и split `analysis_beat` при active
+  schedules;
+- включать `business_email_enabled=true`;
+- запускать approve/delivery;
+- запускать full pipeline/STT/LLM вместо schedule activation smoke.
+
+Точная операторская последовательность следующего шага:
+
+```bash
+# 1. Commit восстановимой точки перед runtime activation.
+git status --short --branch
+git add <утвержденный scope файлов>
+git commit -m "Prepare production schedule activation smoke"
+
+# 2. Остановить legacy scheduler, чтобы он не конкурировал со split scheduler.
+docker compose stop beat
+
+# 3. Создать production schedule row без --dry-run.
+docker compose exec -T analysis_api python /app/report_scripts/scheduled_reporting_preflight.py \
+  --json \
+  create-production-manager-daily \
+  --department-id 472cda28-ce71-494c-9068-25d3ffbf7399 \
+  --first-report-date 2026-06-15 \
+  --manager-id 5638c619-8732-435c-9664-a7188f13effd \
+  --manager-id cfba5067-d356-4c8b-895a-0f5808647978 \
+  --manager-id 656abe58-7c23-476a-a9f6-d76305cf42e0 \
+  --manager-id d42e8246-772e-4a04-bbe7-2b88f45db695
+
+# 4. Запустить split scheduler.
+docker compose --env-file .env.split.common --profile split up -d analysis_beat
+
+# 5. Проверить статус расписаний и очереди review.
+docker compose exec -T analysis_api python /app/report_scripts/scheduled_reporting_preflight.py --json status
+docker compose exec -T postgres psql -U asa_app -d ai_sales_analyzer -P pager=off -c \
+  "select id, preset, enabled, start_date, start_time, timezone, report_period_rule, mode, business_email_enabled, review_required, next_run_at from report_schedules where deleted_at is null order by created_at desc;"
+
+# 6. Проверить, что legacy beat stopped, split analysis_beat running.
+docker compose ps
+```
+
+Acceptance после выполнения операторской последовательности:
+
+- есть commit hash перед runtime activation;
+- `beat` stopped;
+- `analysis_beat` running;
+- active schedule ровно один для `manager_daily` ЭДО Продажи;
+- `manager_ids` ровно 4 утвержденных менеджера;
+- `business_email_enabled=false`;
+- `review_required=true`;
+- `next_run_at` соответствует `2026-06-16 08:00 Asia/Almaty`;
+- нет запуска STT/LLM/pipeline/email в момент создания schedule.
+
 ## Оставшиеся решения
 
 ### 1. Commit перед изменением runtime state

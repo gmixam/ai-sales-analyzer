@@ -4,9 +4,43 @@
 **Этап:** MVP-1 pilot operations
 **Статус фазы:** этап правок закрыт, начат пилотный операционный цикл
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-14
+**Последнее обновление:** 2026-06-15
 
 ## Что сделано
+- [x] 2026-06-15 — Реализован local code pass для
+  `SPLIT-COMPLETE-07B`: добавлен scheduled upstream Celery task
+  `call_processing.ensure_daily_upstream` для `APP_SERVICE=call_processing`.
+  Task routed в `call_processing` queue, работает только с
+  `CallProcessingService.ensure(...)` и required artifacts
+  `transcript/transcript_segments/llm1_first_pass`, не вызывает LLM2/LLM3/report
+  layer и не отправляет business email. Beat entry создается только при
+  `CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=true`, scope задается через
+  `CALL_PROCESSING_DAILY_UPSTREAM_DEPARTMENT_ID` и
+  `CALL_PROCESSING_DAILY_UPSTREAM_MANAGER_IDS`, timezone default
+  `Asia/Almaty`, запуск default `00:00`, target day = previous local day.
+  Для безопасного real ensure дополнительно нужен
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET > 0`; ручной
+  `dry_run=True` остается доступен без provider calls. Проверки: focused unit
+  tests planned, provider-backed ensure не запускался. Дополнительно добавлен
+  split-service `call_processing_beat` в `docker-compose.yml` и безопасные
+  env-шаблоны в `.env.call-processing.example`; schedule disabled by default
+  (`CALL_PROCESSING_DAILY_UPSTREAM_ENABLED=false`,
+  `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET=0`) до отдельного
+  approval.
+- [x] 2026-06-15 — Выполнен read-only audit перед
+  `SPLIT-COMPLETE-07A` schedule activation. **Runtime:** confirmed running
+  legacy `api/worker/beat` and split `call_processing_api/worker`,
+  `analysis_api/worker`; split `analysis_beat` is not running. **DB:** active
+  `report_schedules` = `0`, dry-run create-production-manager-daily left DB
+  unchanged. **CLI:** Bitrix manager sync preflight and scheduled reporting
+  preflight are available inside `/app/report_scripts`. **Dry-run:** production
+  `manager_daily` schedule for 4 EDO Sales managers would create
+  `start_date=2026-06-16`, `start_time=08:00`, `timezone=Asia/Almaty`,
+  `business_email_enabled=false`, `review_required=true`, `conflicts=[]`,
+  `billable_pipeline_started=false`. **Safety:** no services stopped/started,
+  no real schedule row, no `scan-due`, no STT/LLM/pipeline/email. Exact
+  operator sequence and risks were added to
+  `docs/call_processing_split/SPLIT_COMPLETE_07A_PRODUCTION_SCHEDULE_ACTIVATION_TZ.md`.
 - [x] 2026-06-14 — Выполнен controlled live rehearsal для
   `call-processing` split перед `ensure`. **DB:** перед миграцией создан
   backup `/tmp/asa_pre_call_processing_split_20260614.dump` в postgres
