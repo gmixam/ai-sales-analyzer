@@ -316,7 +316,9 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-07 — Production cutover rehearsal
 
-Статус: `planned_requires_operator_approval`
+Статус: `draft_tz_ready_requires_operator_approval`
+
+ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_07_CUTOVER_REHEARSAL_TZ.md`
 
 Что сделать:
 
@@ -326,6 +328,16 @@ ALERT_EMAIL_ON_SUCCESS=false
 - поднять split services;
 - выполнить dry-run -> ensure -> manager_daily preview;
 - не включать business delivery до approval.
+
+Что уточнено в ТЗ:
+
+- rehearsal не является production cutover;
+- перед стартом нужны реальные `.env.split.common`, `.env.call-processing`,
+  `.env.analysis`;
+- обязательны strict preflight для обоих сервисов;
+- есть stop conditions перед каждым billable/следующим шагом;
+- результатом должен быть отдельный rehearsal result/audit с `GO/NO-GO`
+  recommendation для SPLIT-COMPLETE-08.
 
 Критерий готовности:
 
