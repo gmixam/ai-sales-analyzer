@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -15,11 +16,13 @@ from app.agents.calls.reporting import (
     CallsManualReportingOrchestrator,
     REPORTING_ALLOWED_MODES,
     ReportRunFilters,
+    parse_call_started_at,
     render_report_email,
     resolve_report_preset,
 )
 from app.core_shared.db.models import (
     Department,
+    Interaction,
     Manager,
     ReportingSchedule,
     ScheduledReportBatch,
@@ -55,6 +58,18 @@ SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "paused": ("queued", "failed"),
 }
 SCHEDULED_REVIEWABLE_DEFAULT_EDITOR = "operator_ui"
+SCHEDULED_ANALYSIS_LOOKBACK_DAYS_ENV = "SCHEDULED_ANALYSIS_LOOKBACK_DAYS"
+SCHEDULED_ANALYSIS_DEFAULT_LOOKBACK_DAYS = 7
+SCHEDULED_MANAGER_DAILY_DUPLICATE_BATCH_STATUSES = (
+    "planned",
+    "queued",
+    "running",
+    "review_required",
+    "approved_for_delivery",
+    "delivered",
+    "failed",
+    "paused",
+)
 MANAGER_DAILY_EDITABLE_BLOCKS = (
     "top_summary",
     "focus_wording",
@@ -76,6 +91,38 @@ class SchedulePeriod:
 
     date_from: str
     date_to: str
+
+
+@dataclass(slots=True)
+class ScheduledManagerDaySelection:
+    """Candidate-selection diagnostics for one scheduled manager-day scan."""
+
+    manager_id: str
+    candidate_dates: list[str]
+    selected_report_date: str | None
+    skipped_empty_dates: list[str]
+    skipped_already_reported_dates: list[str]
+    skipped_not_ready_dates: list[str]
+    selection_reason: str
+    scheduled_timezone: str
+    scan_started_at: str
+    lookback_days: int
+
+    def to_observability(self) -> dict[str, Any]:
+        """Return the stable JSON shape expected by operators/tests."""
+        return {
+            "timezone": self.scheduled_timezone,
+            "scheduled_timezone": self.scheduled_timezone,
+            "scan_started_at": self.scan_started_at,
+            "lookback_days": self.lookback_days,
+            "manager_id": self.manager_id,
+            "candidate_dates": list(self.candidate_dates),
+            "selected_report_date": self.selected_report_date,
+            "skipped_empty_dates": list(self.skipped_empty_dates),
+            "skipped_already_reported_dates": list(self.skipped_already_reported_dates),
+            "skipped_not_ready_dates": list(self.skipped_not_ready_dates),
+            "selection_reason": self.selection_reason,
+        }
 
 
 def _coerce_uuid_list(values: list[str]) -> list[str]:
@@ -112,6 +159,28 @@ def _validate_timezone(value: str) -> str:
     except Exception as exc:  # pragma: no cover - stdlib zoneinfo edge
         raise ASAError(f"Unsupported timezone '{candidate}'.") from exc
     return candidate
+
+
+def _scheduled_analysis_lookback_days() -> int:
+    """Return the configured analysis lookback with a production-safe default."""
+    raw = str(os.environ.get(SCHEDULED_ANALYSIS_LOOKBACK_DAYS_ENV) or "").strip()
+    if not raw:
+        return SCHEDULED_ANALYSIS_DEFAULT_LOOKBACK_DAYS
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ASAError(f"{SCHEDULED_ANALYSIS_LOOKBACK_DAYS_ENV} must be a positive integer.") from exc
+    if parsed < 1:
+        raise ASAError(f"{SCHEDULED_ANALYSIS_LOOKBACK_DAYS_ENV} must be a positive integer.")
+    return parsed
+
+
+def _candidate_dates_for_lookback(*, local_planned: datetime, rule: str, lookback_days: int) -> list[str]:
+    """Return oldest-to-newest candidate dates ending at the scheduled target day."""
+    scheduled_period = _compute_report_period(rule=rule, local_run_at=local_planned)
+    end = date.fromisoformat(scheduled_period.date_to)
+    start = end - timedelta(days=lookback_days - 1)
+    return [(start + timedelta(days=offset)).isoformat() for offset in range(lookback_days)]
 
 
 def _combine_local_datetime(*, start_date: date, start_time: str, timezone_name: str) -> datetime:
@@ -568,6 +637,9 @@ class ScheduledReviewableReportingService:
             return
 
         planned_for = schedule.next_run_at or now_utc
+        if self._uses_manager_daily_candidate_selection(schedule=schedule):
+            self._run_due_manager_daily_schedule(schedule=schedule, now_utc=now_utc)
+            return
         existing = self._get_batch_for_occurrence(schedule_id=schedule.id, planned_for=planned_for)
         if existing is not None:
             schedule.last_planned_at = planned_for
@@ -668,6 +740,413 @@ class ScheduledReviewableReportingService:
         schedule.last_planned_at = planned_for
         schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
         self.db.flush()
+
+    def _uses_manager_daily_candidate_selection(self, *, schedule: ReportingSchedule) -> bool:
+        """Return True for split scheduled manager-day scans with explicit managers."""
+        return (
+            str(getattr(schedule, "preset", "") or "").strip() == "manager_daily"
+            and str(getattr(schedule, "recurrence_type", "") or "").strip().lower() == "daily"
+            and bool(list(getattr(schedule, "manager_ids", None) or []))
+        )
+
+    def _run_due_manager_daily_schedule(self, *, schedule: ReportingSchedule, now_utc: datetime) -> None:
+        """Execute one due manager_daily schedule through data-driven candidate selection."""
+        planned_for = schedule.next_run_at or now_utc
+        local_planned = planned_for.astimezone(ZoneInfo(schedule.timezone))
+        lookback_days = _scheduled_analysis_lookback_days()
+        candidate_dates = _candidate_dates_for_lookback(
+            local_planned=local_planned,
+            rule=schedule.report_period_rule,
+            lookback_days=lookback_days,
+        )
+        scan_started_at = datetime.now(UTC).isoformat()
+        for manager_id in list(schedule.manager_ids or []):
+            selection = self._select_manager_day_candidate(
+                schedule=schedule,
+                manager_id=str(manager_id),
+                candidate_dates=candidate_dates,
+                lookback_days=lookback_days,
+                scan_started_at=scan_started_at,
+            )
+            if selection.selected_report_date:
+                self._run_due_manager_day_selection(
+                    schedule=schedule,
+                    planned_for=planned_for,
+                    selection=selection,
+                )
+            else:
+                self._record_skipped_manager_day_selection(
+                    schedule=schedule,
+                    planned_for=planned_for,
+                    selection=selection,
+                )
+
+        schedule.last_planned_at = planned_for
+        schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+        self.db.flush()
+
+    def _select_manager_day_candidate(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        manager_id: str,
+        candidate_dates: list[str],
+        lookback_days: int,
+        scan_started_at: str,
+    ) -> ScheduledManagerDaySelection:
+        """Pick the oldest not-yet-reported manager day with actual calls."""
+        interactions_by_day = self._load_manager_interactions_by_day(
+            department_id=schedule.department_id,
+            manager_id=manager_id,
+            candidate_dates=candidate_dates,
+        )
+        skipped_empty_dates: list[str] = []
+        skipped_already_reported_dates: list[str] = []
+        skipped_not_ready_dates: list[str] = []
+        selected_report_date: str | None = None
+        selection_reason = "no_candidate_empty_window"
+        for candidate_date in candidate_dates:
+            if not interactions_by_day.get(candidate_date):
+                skipped_empty_dates.append(candidate_date)
+                continue
+            if self._has_manager_day_duplicate(
+                department_id=schedule.department_id,
+                preset=schedule.preset,
+                manager_id=manager_id,
+                report_date=candidate_date,
+            ):
+                skipped_already_reported_dates.append(candidate_date)
+                continue
+            if selected_report_date is None:
+                selected_report_date = candidate_date
+                selection_reason = "selected_oldest_unreported_date_with_calls"
+        if selected_report_date is None:
+            if skipped_already_reported_dates and not skipped_empty_dates and not skipped_not_ready_dates:
+                selection_reason = "no_candidate_all_reported"
+            elif skipped_already_reported_dates or skipped_not_ready_dates:
+                selection_reason = "no_candidate_after_skips"
+        return ScheduledManagerDaySelection(
+            manager_id=manager_id,
+            candidate_dates=list(candidate_dates),
+            selected_report_date=selected_report_date,
+            skipped_empty_dates=skipped_empty_dates,
+            skipped_already_reported_dates=skipped_already_reported_dates,
+            skipped_not_ready_dates=skipped_not_ready_dates,
+            selection_reason=selection_reason,
+            scheduled_timezone=str(schedule.timezone),
+            scan_started_at=scan_started_at,
+            lookback_days=lookback_days,
+        )
+
+    def _load_manager_interactions_by_day(
+        self,
+        *,
+        department_id: UUID,
+        manager_id: str,
+        candidate_dates: list[str],
+    ) -> dict[str, list[Interaction]]:
+        """Return persisted call interactions grouped by report-day string."""
+        candidate_set = set(candidate_dates)
+        try:
+            manager_uuid = UUID(manager_id)
+        except ValueError as exc:
+            raise ASAError("manager_ids must contain valid UUID values.") from exc
+        rows = (
+            self.db.query(Interaction)
+            .filter(
+                Interaction.department_id == department_id,
+                Interaction.manager_id == manager_uuid,
+            )
+            .all()
+        )
+        grouped: dict[str, list[Interaction]] = {item: [] for item in candidate_dates}
+        for interaction in rows:
+            call_started_at = parse_call_started_at(dict(interaction.metadata_ or {}))
+            if call_started_at is None:
+                continue
+            call_day = call_started_at.date().isoformat()
+            if call_day in candidate_set:
+                grouped.setdefault(call_day, []).append(interaction)
+        return grouped
+
+    def _has_manager_day_duplicate(
+        self,
+        *,
+        department_id: UUID,
+        preset: str,
+        manager_id: str,
+        report_date: str,
+    ) -> bool:
+        """Return True when a manager-day scheduled record already protects this key."""
+        batches = (
+            self.db.query(ScheduledReportBatch)
+            .filter(
+                ScheduledReportBatch.department_id == department_id,
+                ScheduledReportBatch.preset == preset,
+                ScheduledReportBatch.status.in_(list(SCHEDULED_MANAGER_DAILY_DUPLICATE_BATCH_STATUSES)),
+            )
+            .all()
+        )
+        for batch in batches:
+            if self._batch_matches_manager_day_key(
+                batch=batch,
+                manager_id=manager_id,
+                report_date=report_date,
+            ):
+                return True
+            for draft in self._load_batch_drafts(batch.id):
+                if self._draft_matches_manager_day_key(
+                    draft=draft,
+                    preset=preset,
+                    manager_id=manager_id,
+                    report_date=report_date,
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _batch_matches_manager_day_key(
+        *,
+        batch: ScheduledReportBatch,
+        manager_id: str,
+        report_date: str,
+    ) -> bool:
+        """Match duplicate key fields available on the scheduled batch JSON columns."""
+        observability = dict(batch.observability or {})
+        selection = dict(observability.get("scheduled_candidate_selection") or {})
+        if selection and selection.get("selected_report_date") != report_date:
+            return False
+        period = dict(batch.period or {})
+        if str(period.get("date_from") or "") != report_date:
+            return False
+        if str(period.get("date_to") or report_date) != report_date:
+            return False
+        filters = dict(batch.filters or {})
+        manager_ids = {str(item) for item in list(filters.get("manager_ids") or [])}
+        return manager_id in manager_ids
+
+    @staticmethod
+    def _draft_matches_manager_day_key(
+        *,
+        draft: ScheduledReportDraft,
+        preset: str,
+        manager_id: str,
+        report_date: str,
+    ) -> bool:
+        """Match duplicate key fields embedded in draft group/payload metadata."""
+        group_key = str(draft.group_key or "")
+        if group_key == f"{preset}:{manager_id}:{report_date}":
+            return True
+        payload = dict(draft.generated_payload or {})
+        meta = dict(payload.get("meta") or {})
+        period = dict(meta.get("period") or {})
+        header = dict(payload.get("header") or {})
+        payload_report_date = (
+            str(header.get("report_date") or "").strip()
+            or str(period.get("date_from") or "").strip()
+        )
+        if payload_report_date != report_date:
+            return False
+        payload_manager_id = (
+            str(meta.get("manager_id") or "").strip()
+            or str(header.get("manager_id") or "").strip()
+        )
+        return payload_manager_id == manager_id
+
+    def _run_due_manager_day_selection(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        selection: ScheduledManagerDaySelection,
+    ) -> None:
+        """Run the orchestrator for one selected manager/report-date pair."""
+        report_date = str(selection.selected_report_date or "")
+        if not report_date:
+            return
+        period = SchedulePeriod(date_from=report_date, date_to=report_date)
+        filters = ReportRunFilters(
+            manager_ids={selection.manager_id},
+            date_from=period.date_from,
+            date_to=period.date_to,
+        )
+        batch = self._create_scheduled_batch(
+            schedule=schedule,
+            planned_for=planned_for,
+            period=period,
+            manager_ids=[selection.manager_id],
+            selection=selection,
+        )
+        self._transition_batch_status(batch, "queued")
+        batch.queued_at = datetime.now(UTC)
+        self.db.flush()
+
+        self._transition_batch_status(batch, "running")
+        batch.started_at = datetime.now(UTC)
+        self.db.flush()
+
+        orchestrator = CallsManualReportingOrchestrator(
+            department_id=str(schedule.department_id),
+            db=self.db,
+        )
+        try:
+            result = asyncio.run(
+                orchestrator.run_report(
+                    preset_code=schedule.preset,
+                    mode=schedule.mode,
+                    filters=filters,
+                    model_override=None,
+                    send_email=False,
+                )
+            )
+        except Exception as exc:
+            self._transition_batch_status(batch, "failed")
+            batch.failed_at = datetime.now(UTC)
+            batch.errors = [f"{exc.__class__.__name__}: {exc}"]
+            batch.observability = self._with_candidate_selection_observability(
+                observability=dict(batch.observability or {}),
+                selection=selection,
+            )
+            self.db.flush()
+            return
+
+        batch.observability = self._with_candidate_selection_observability(
+            observability=dict(result.get("observability") or {}),
+            selection=selection,
+        )
+        batch.diagnostics = {
+            **dict(result.get("diagnostics") or {}),
+            "scheduled_candidate_selection": selection.to_observability(),
+        }
+        batch.errors = list(result.get("errors") or [])
+
+        drafts_created = 0
+        for report in result.get("reports") or []:
+            payload = dict(report.get("payload") or {})
+            if not payload:
+                continue
+            draft = ScheduledReportDraft(
+                batch_id=batch.id,
+                department_id=schedule.department_id,
+                preset=schedule.preset,
+                group_key=str(report.get("group_key") or f"{schedule.preset}:{selection.manager_id}:{report_date}"),
+                status="review_required",
+                generated_payload=payload,
+                generated_blocks=extract_editable_blocks(preset=schedule.preset, payload=payload),
+                edited_blocks={},
+                edit_audit=[],
+                preview=dict(report.get("preview") or {}) or None,
+                artifact=dict(report.get("artifact") or {}) or None,
+                delivery=dict(report.get("delivery") or {}) or None,
+                errors=list(report.get("errors") or []),
+            )
+            self.db.add(draft)
+            drafts_created += 1
+
+        next_batch_status = "review_required" if drafts_created > 0 else "failed"
+        self._transition_batch_status(batch, next_batch_status)
+        if batch.status == "review_required":
+            batch.review_required_at = datetime.now(UTC)
+        else:
+            batch.failed_at = datetime.now(UTC)
+        self.db.flush()
+
+    def _record_skipped_manager_day_selection(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        selection: ScheduledManagerDaySelection,
+    ) -> None:
+        """Persist an operator-visible no-draft record for empty/already-reported windows."""
+        fallback_period = _compute_report_period(
+            rule=schedule.report_period_rule,
+            local_run_at=planned_for.astimezone(ZoneInfo(schedule.timezone)),
+        )
+        batch = self._create_scheduled_batch(
+            schedule=schedule,
+            planned_for=planned_for,
+            period=fallback_period,
+            manager_ids=[selection.manager_id],
+            selection=selection,
+        )
+        self._transition_batch_status(batch, "queued")
+        batch.queued_at = datetime.now(UTC)
+        self._transition_batch_status(batch, "running")
+        batch.started_at = datetime.now(UTC)
+        batch.observability = self._with_candidate_selection_observability(
+            observability={
+                "status": "skipped",
+                "run_state": "skipped_without_manager_report",
+                "blockers": [],
+                "alerts": [],
+                "summary": {"alerts": {"attempted": 0, "statuses": []}},
+            },
+            selection=selection,
+        )
+        batch.diagnostics = {"scheduled_candidate_selection": selection.to_observability()}
+        batch.errors = [selection.selection_reason]
+        self._transition_batch_status(batch, "failed")
+        batch.failed_at = datetime.now(UTC)
+        self.db.flush()
+
+    def _create_scheduled_batch(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        period: SchedulePeriod,
+        manager_ids: list[str],
+        selection: ScheduledManagerDaySelection | None = None,
+    ) -> ScheduledReportBatch:
+        """Create the common scheduled batch row without running delivery."""
+        observability = (
+            self._with_candidate_selection_observability(observability={}, selection=selection)
+            if selection is not None
+            else None
+        )
+        batch = ScheduledReportBatch(
+            schedule_id=schedule.id,
+            department_id=schedule.department_id,
+            preset=schedule.preset,
+            mode=schedule.mode,
+            report_period_rule=schedule.report_period_rule,
+            status="planned",
+            planned_for=planned_for,
+            period={"date_from": period.date_from, "date_to": period.date_to},
+            filters={
+                "manager_ids": list(manager_ids),
+                "manager_extensions": [],
+            },
+            business_email_enabled=bool(schedule.business_email_enabled),
+            review_required=True,
+            observability=observability,
+            diagnostics=(
+                {"scheduled_candidate_selection": selection.to_observability()}
+                if selection is not None
+                else None
+            ),
+            errors=[],
+        )
+        self.db.add(batch)
+        self.db.flush()
+        return batch
+
+    @staticmethod
+    def _with_candidate_selection_observability(
+        *,
+        observability: dict[str, Any],
+        selection: ScheduledManagerDaySelection | None,
+    ) -> dict[str, Any]:
+        """Attach candidate diagnostics both top-level and under a named block."""
+        if selection is None:
+            return observability
+        merged = dict(observability)
+        selection_payload = selection.to_observability()
+        merged["scheduled_candidate_selection"] = selection_payload
+        for key, value in selection_payload.items():
+            merged[key] = value
+        return merged
 
     def _advance_schedule(self, *, schedule: ReportingSchedule, after_utc: datetime) -> datetime:
         """Advance next_run_at after one execution."""

@@ -10306,6 +10306,58 @@ class ScheduledReviewableReportingServiceTests(unittest.TestCase):
         service.db = SimpleNamespace(add=lambda *_args, **_kwargs: None, flush=lambda: None)
         return service
 
+    def _due_manager_daily_schedule(self, **overrides) -> SimpleNamespace:
+        values = {
+            "id": uuid4(),
+            "department_id": uuid4(),
+            "preset": "manager_daily",
+            "mode": "build_missing_and_report",
+            "report_period_rule": "previous_day",
+            "enabled": True,
+            "business_email_enabled": True,
+            "manager_ids": [],
+            "timezone": "Etc/UTC",
+            "start_date": date(2026, 4, 15),
+            "start_time": "09:00",
+            "recurrence_type": "daily",
+            "next_run_at": datetime(2026, 4, 15, 9, 0, tzinfo=UTC),
+            "last_planned_at": None,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def _run_due_schedule_with_fake_result(self, result: dict[str, Any]) -> tuple[list[Any], list[dict[str, Any]]]:
+        service = self._make_service()
+        added: list[Any] = []
+        run_calls: list[dict[str, Any]] = []
+        schedule = self._due_manager_daily_schedule()
+        service.db = SimpleNamespace(add=lambda item: added.append(item), flush=lambda: None)
+        service._has_open_batch = lambda **_kwargs: False
+        service._get_batch_for_occurrence = lambda **_kwargs: None
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 4, 16, 9, 0, tzinfo=UTC)
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                self.extractor = SimpleNamespace(
+                    process=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        AssertionError("scheduled external_service analysis must not run local STT")
+                    )
+                )
+                self.analyzer = SimpleNamespace(
+                    _request_llm1_first_pass=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        AssertionError("scheduled external_service analysis must not run local LLM1")
+                    )
+                )
+
+            async def run_report(self, **kwargs):
+                run_calls.append(kwargs)
+                return result
+
+        with patch.dict(os.environ, {"CALL_PROCESSING_MODE": "external_service"}, clear=False):
+            with patch("app.agents.calls.scheduled_reporting.CallsManualReportingOrchestrator", FakeOrchestrator):
+                service._run_due_schedule(schedule=schedule, now_utc=datetime(2026, 4, 15, 9, 30, tzinfo=UTC))
+        return added, run_calls
+
     def test_batch_transition_map_is_explicit(self) -> None:
         self.assertEqual(SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS["planned"], ("queued", "failed", "paused"))
         self.assertEqual(SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS["review_required"], ("approved_for_delivery", "failed", "paused"))
@@ -10489,22 +10541,7 @@ class ScheduledReviewableReportingServiceTests(unittest.TestCase):
     def test_scheduled_run_stops_at_review_required_and_disables_business_email_in_run_call(self) -> None:
         service = self._make_service()
         added = []
-        schedule = SimpleNamespace(
-            id=uuid4(),
-            department_id=uuid4(),
-            preset="manager_daily",
-            mode="build_missing_and_report",
-            report_period_rule="previous_day",
-            enabled=True,
-            business_email_enabled=True,
-            manager_ids=[],
-            timezone="Etc/UTC",
-            start_date=date(2026, 4, 15),
-            start_time="09:00",
-            recurrence_type="daily",
-            next_run_at=datetime(2026, 4, 15, 9, 0, tzinfo=UTC),
-            last_planned_at=None,
-        )
+        schedule = self._due_manager_daily_schedule()
         service.db = SimpleNamespace(
             add=lambda item: added.append(item),
             flush=lambda: None,
@@ -10551,6 +10588,157 @@ class ScheduledReviewableReportingServiceTests(unittest.TestCase):
         draft = added[1]
         self.assertEqual(batch.status, "review_required")
         self.assertEqual(draft.status, "review_required")
+
+    def test_scheduled_external_service_run_delegates_without_local_stt_or_llm1(self) -> None:
+        added, run_calls = self._run_due_schedule_with_fake_result(
+            {
+                "reports": [
+                    {
+                        "group_key": "manager_daily:test",
+                        "payload": {
+                            "narrative_day_conclusion": {"text": "Summary"},
+                            "main_focus_for_tomorrow": {"text": "Focus"},
+                            "key_problem_of_day": {"description": "Problem"},
+                            "editorial_recommendations": {"text": "Recommendations"},
+                            "focus_of_week": {"text": "Note"},
+                        },
+                        "preview": {"subject": "subject"},
+                        "artifact": {"filename": "report.pdf"},
+                        "delivery": {
+                            "transport": {
+                                "telegram_test_delivery": {"status": "skipped"},
+                                "email_delivery": {"status": "skipped"},
+                            }
+                        },
+                        "errors": [],
+                    }
+                ],
+                "observability": {
+                    "summary": {
+                        "source": {
+                            "call_processing_mode": "external_service",
+                            "call_processing_run_id": "cp-run-1",
+                        }
+                    }
+                },
+                "diagnostics": {},
+                "errors": [],
+            }
+        )
+
+        self.assertEqual(run_calls[0]["preset_code"], "manager_daily")
+        self.assertEqual(run_calls[0]["mode"], "build_missing_and_report")
+        self.assertEqual(run_calls[0]["send_email"], False)
+        self.assertEqual(added[0].status, "review_required")
+        self.assertEqual(
+            added[0].observability["summary"]["source"]["call_processing_mode"],
+            "external_service",
+        )
+
+    def test_scheduled_batch_observability_keeps_merged_upstream_costs(self) -> None:
+        upstream_costs = {
+            "schema_version": "split_upstream_ai_costs_v1",
+            "currency": "USDT",
+            "cost_status": "available",
+            "stt_cost_usdt": 0.006,
+            "llm1_cost_usdt": 0.001,
+            "total_current_run_cost_usdt": 0.007,
+            "by_layer": [],
+            "notes": [],
+        }
+        added, _run_calls = self._run_due_schedule_with_fake_result(
+            {
+                "reports": [
+                    {
+                        "group_key": "manager_daily:test",
+                        "payload": {
+                            "narrative_day_conclusion": {"text": "Summary"},
+                            "main_focus_for_tomorrow": {"text": "Focus"},
+                            "key_problem_of_day": {"description": "Problem"},
+                            "editorial_recommendations": {"text": "Recommendations"},
+                            "focus_of_week": {"text": "Note"},
+                        },
+                        "preview": {"subject": "subject"},
+                        "artifact": {"filename": "report.pdf"},
+                        "delivery": {"transport": {"email_delivery": {"status": "skipped"}}},
+                        "errors": [],
+                    }
+                ],
+                "observability": {
+                    "ai_costs": {
+                        "schema_version": "split_ai_costs_v1",
+                        "currency": "USDT",
+                        "cost_status": "available",
+                        "upstream": upstream_costs,
+                        "downstream": {
+                            "schema_version": "ai_costs_v1",
+                            "llm2_cost_usdt": 0.0012,
+                            "llm3_cost_usdt": 0.0012,
+                            "total_current_run_cost_usdt": 0.0024,
+                        },
+                        "stt_cost_usdt": 0.006,
+                        "llm1_cost_usdt": 0.001,
+                        "llm2_cost_usdt": 0.0012,
+                        "llm3_cost_usdt": 0.0012,
+                        "total_current_run_cost_usdt": 0.0094,
+                    }
+                },
+                "diagnostics": {},
+                "errors": [],
+            }
+        )
+
+        ai_costs = added[0].observability["ai_costs"]
+        self.assertEqual(ai_costs["schema_version"], "split_ai_costs_v1")
+        self.assertEqual(ai_costs["upstream"]["schema_version"], "split_upstream_ai_costs_v1")
+        self.assertEqual(ai_costs["upstream"]["total_current_run_cost_usdt"], 0.007)
+        self.assertEqual(ai_costs["total_current_run_cost_usdt"], 0.0094)
+
+    def test_scheduled_batch_observability_keeps_admin_alert_attempts_for_non_ready_states(self) -> None:
+        for state in ("no_data", "not_ready", "partial", "blocker"):
+            with self.subTest(state=state):
+                added, _run_calls = self._run_due_schedule_with_fake_result(
+                    {
+                        "reports": [
+                            {
+                                "group_key": f"manager_daily:{state}",
+                                "payload": {
+                                    "narrative_day_conclusion": {"text": "Summary"},
+                                    "main_focus_for_tomorrow": {"text": "Focus"},
+                                    "key_problem_of_day": {"description": "Problem"},
+                                    "editorial_recommendations": {"text": "Recommendations"},
+                                    "focus_of_week": {"text": "Note"},
+                                },
+                                "preview": {"subject": "subject"},
+                                "artifact": {"filename": "report.pdf"},
+                                "delivery": {"transport": {"email_delivery": {"status": "skipped"}}},
+                                "errors": [f"{state}:needs_operator_attention"],
+                            }
+                        ],
+                        "observability": {
+                            "status": state,
+                            "alerts": [
+                                {
+                                    "kind": "manager_daily_run_monitor",
+                                    "channel": "email",
+                                    "target": "admin@dogovor24.kz",
+                                    "severity": "warning",
+                                    "trigger": state,
+                                    "status": "sent",
+                                    "reason_codes": [f"{state}:needs_operator_attention"],
+                                }
+                            ],
+                            "summary": {"alerts": {"attempted": 1, "statuses": ["sent"]}},
+                        },
+                        "diagnostics": {},
+                        "errors": [f"{state}:needs_operator_attention"],
+                    }
+                )
+
+                batch_alerts = added[0].observability["alerts"]
+                self.assertEqual(batch_alerts[0]["target"], "admin@dogovor24.kz")
+                self.assertEqual(batch_alerts[0]["trigger"], state)
+                self.assertEqual(added[0].observability["summary"]["alerts"]["attempted"], 1)
 
     def test_approve_uses_draft_path_and_returns_structured_failed_state(self) -> None:
         service = self._make_service()

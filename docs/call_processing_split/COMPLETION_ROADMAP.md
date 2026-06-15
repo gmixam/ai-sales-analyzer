@@ -195,27 +195,51 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-04 — Scheduled flow в split-контуре
 
-Статус: `planned`
+Статус: `implemented_local`
+
+ТЗ: `docs/call_processing_split/SPLIT_COMPLETE_04_SCHEDULED_FLOW_TZ.md`
 
 Что это значит:
 
 - это не ручной полный дневной прогон;
-- это проверка, что автоматический scheduled/reviewable flow умеет в split-mode
-  создать batch/draft, дождаться/использовать call-processing artifacts, собрать
-  report preview, пройти review/delivery gate и не вызвать legacy STT/LLM1.
+- это техническая подготовка автоматизации: `call-processing` каждый день в
+  `00:00 Asia/Almaty` готовит STT/LLM1 за предыдущий день, а
+  `analysis/reporting` каждый день в `08:00 Asia/Almaty` ищет неотчитанные дни
+  с фактическими звонками и создает reviewable batch/draft;
+- отдельный календарь выходных/праздников не ведем: пустые дни без звонков
+  пропускаются без manager-facing отчета, а ближайший неотчитанный рабочий день
+  выбирается по данным в lookback-window;
+- это проверка, что automatic scheduled/reviewable flow умеет в split-mode
+  создать batch/draft, использовать call-processing artifacts, собрать report
+  preview, пройти review/delivery gate и не вызвать legacy STT/LLM1.
 
 Что сделать:
 
-- controlled schedule create/draft smoke без бизнес-доставки;
-- проверить `scheduled_report_batches` / `scheduled_report_drafts`;
-- проверить, что report observability содержит external-service source summary;
-- затем отдельно проверить approve/delivery только после operator approval.
+Что сделано:
+
+- добавлен split-aware scheduled branch для `manager_daily` schedules с явными
+  `manager_ids`;
+- data-driven candidate selection выбирает самый старый неотчитанный день со
+  звонками внутри lookback-window;
+- пустые выходные/праздничные дни без звонков фиксируются как skip/no-draft и
+  не создают manager-facing отчет;
+- batch observability сохраняет `scheduled_candidate_selection`;
+- duplicate protection усилен по manager-day ключу;
+- scan/draft вызывает `run_report(..., send_email=False)`;
+- external-service scheduled path покрыт тестами на split-boundary, costs и
+  alerts.
 
 Критерий готовности:
 
 - один controlled scheduled manager_daily draft создан в split-mode без UI и без
   business delivery;
 - delivery gate не отправляет менеджерам без explicit approval.
+
+Проверки:
+
+- `docker compose exec -T api python -m pytest -q /app/tests/test_scheduled_reporting.py /app/tests/test_manual_reporting.py /app/tests/test_call_processing_reporting_integration.py -k "scheduled or schedule or reviewable or external_service"` -> `38 passed`;
+- `python3 -m py_compile` по scheduled/reporting/alert/test files -> passed;
+- `git diff --check` -> passed.
 
 ### SPLIT-COMPLETE-05 — ROP weekly / scheduled reviewable smoke
 

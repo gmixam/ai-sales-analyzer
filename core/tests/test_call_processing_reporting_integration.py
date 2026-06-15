@@ -153,6 +153,33 @@ class _FakeEnsureClient:
         )
 
 
+class _LegacyEnsureClientWithoutCosts:
+    def __init__(self) -> None:
+        self.ensure_calls: list[dict[str, object]] = []
+
+    async def ensure_processed_calls_async(self, scope, required_artifacts, mode=EnsureMode.ENSURE):
+        self.ensure_calls.append(
+            {
+                "scope": scope,
+                "required_artifacts": list(required_artifacts),
+                "mode": mode,
+            }
+        )
+        return SimpleNamespace(
+            run_id="legacy-run-without-costs",
+            status=ProcessingRunStatus.READY,
+            scope_hash="legacy-hash",
+            requested_by="edo-analysis-reporting",
+            planned={
+                "interactions_total": 2,
+                "artifacts_ready": 4,
+                "artifacts_missing": 0,
+                "artifacts_backfilled": 0,
+            },
+            quota={"provider_calls_made": 0},
+        )
+
+
 class _NoEnsureClient:
     def ensure_processed_calls(self, *_args, **_kwargs):
         raise AssertionError("rop_weekly must not call call-processing ensure")
@@ -391,6 +418,33 @@ def test_manager_daily_external_service_ensure_uses_async_client_and_exposes_sou
     assert summary["call_processing_provider_calls_made"] == 4
     assert summary["call_processing_costs"]["total_current_run_cost_usdt"] == 0.015
     assert summary["targeted_source_records_total"] == 3
+
+
+def test_manager_daily_external_service_ensure_accepts_legacy_response_without_costs() -> None:
+    client = _LegacyEnsureClientWithoutCosts()
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    orchestrator.call_processing_client = client
+
+    summary = asyncio.run(
+        CallsManualReportingOrchestrator._ensure_call_processing_source_artifacts(
+            orchestrator,
+            filters=ReportRunFilters(
+                manager_extensions={"322"},
+                date_from="2026-06-03",
+                date_to="2026-06-03",
+                min_duration_sec=30,
+            ),
+            period={"date_from": "2026-06-03", "date_to": "2026-06-03"},
+            mode="build_missing_and_report",
+        )
+    )
+
+    assert len(client.ensure_calls) == 1
+    assert summary["call_processing_mode"] == "external_service"
+    assert summary["call_processing_run_id"] == "legacy-run-without-costs"
+    assert summary["call_processing_artifacts_ready"] == 4
+    assert "call_processing_costs" not in summary
 
 
 def test_build_run_observability_external_service_merges_upstream_and_downstream_costs() -> None:
