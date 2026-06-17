@@ -13,6 +13,9 @@ LEGACY_CALLS_QUEUE = "calls"
 DEFAULT_QUEUE = "default"
 SCHEDULED_REPORTING_TASK = "calls.scan_scheduled_reviewable_reporting"
 SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK = "call_processing.ensure_daily_upstream"
+MANAGER_DAILY_SLA_PRECHECK_TASK = "calls.manager_daily_sla_precheck"
+MANAGER_DAILY_SLA_HARDCHECK_TASK = "calls.manager_daily_sla_hardcheck"
+MANAGER_DAILY_SLA_TIMEZONE = "Asia/Almaty"
 APP_SERVICE_CALL_PROCESSING = "call_processing"
 APP_SERVICE_ANALYSIS = "analysis"
 APP_SERVICE_MONOLITH_LEGACY = "monolith_legacy"
@@ -41,6 +44,8 @@ def build_task_routes(app_service: str) -> dict[str, dict[str, str]]:
     return {
         SCHEDULED_REPORTING_TASK: {"queue": scheduled_reporting_queue(app_service)},
         SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK: {"queue": CALL_PROCESSING_QUEUE},
+        MANAGER_DAILY_SLA_PRECHECK_TASK: {"queue": scheduled_reporting_queue(app_service)},
+        MANAGER_DAILY_SLA_HARDCHECK_TASK: {"queue": scheduled_reporting_queue(app_service)},
     }
 
 
@@ -61,6 +66,18 @@ def build_beat_schedule(
             "schedule": 60.0,
             "options": {"queue": scheduled_reporting_queue(normalized)},
         }
+        schedule["manager_daily_sla_precheck"] = {
+            "task": MANAGER_DAILY_SLA_PRECHECK_TASK,
+            "schedule": crontab(minute=30, hour=9, day_of_week="1-5"),
+            "kwargs": {"report_date": "auto"},
+            "options": {"queue": scheduled_reporting_queue(normalized)},
+        }
+        schedule["manager_daily_sla_hardcheck"] = {
+            "task": MANAGER_DAILY_SLA_HARDCHECK_TASK,
+            "schedule": crontab(minute=0, hour=10, day_of_week="1-5"),
+            "kwargs": {"report_date": "auto"},
+            "options": {"queue": scheduled_reporting_queue(normalized)},
+        }
 
     if normalized == APP_SERVICE_CALL_PROCESSING and call_processing_daily_upstream_enabled:
         schedule["scheduled-call-processing-daily-upstream"] = {
@@ -77,11 +94,10 @@ def build_beat_schedule(
 
 def create_celery_app() -> Celery:
     """Create the shared Celery application."""
-    timezone = (
-        settings.call_processing_daily_upstream_timezone
-        if settings.app_service == APP_SERVICE_CALL_PROCESSING
-        else "UTC"
-    )
+    normalized_service = str(settings.app_service or APP_SERVICE_MONOLITH_LEGACY).strip().lower()
+    timezone = settings.call_processing_daily_upstream_timezone
+    if normalized_service != APP_SERVICE_CALL_PROCESSING:
+        timezone = MANAGER_DAILY_SLA_TIMEZONE
     app = Celery(
         "ai_sales_analyzer",
         broker=str(settings.redis_url),

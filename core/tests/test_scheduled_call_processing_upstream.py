@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -83,6 +84,72 @@ def test_scheduled_reporting_scan_failure_sends_alert(monkeypatch) -> None:
     assert sent[0]["args"] == ("failed",)
     assert sent[0]["kwargs"]["run_id"] == "scheduled-reviewable-reporting-scan"
     assert sent[0]["kwargs"]["level"] == "error"
+
+
+def test_manager_daily_sla_precheck_delegates_to_sla_check_auto_date(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_sla_check(args):
+        calls.append({"date": args.date, "phase": args.phase})
+        return {
+            "status": "ok",
+            "action": "sla_check",
+            "report_date": "2026-06-16",
+            "phase": args.phase,
+        }
+
+    fake_preflight = SimpleNamespace(sla_check=fake_sla_check)
+    import report_scripts
+
+    monkeypatch.setattr(report_scripts, "scheduled_reporting_preflight", fake_preflight, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "report_scripts.scheduled_reporting_preflight",
+        fake_preflight,
+    )
+
+    result = tasks.manager_daily_sla_precheck()
+
+    assert calls == [{"date": "auto", "phase": "precheck"}]
+    assert result["task"] == "calls.manager_daily_sla_precheck"
+    assert result["task_status"] == "completed"
+    assert result["billable_pipeline_started"] is False
+    assert result["sla_check"]["action"] == "sla_check"
+
+
+def test_manager_daily_sla_hardcheck_delegates_to_sla_check_not_scan_due(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FailingScheduledReportingService:
+        def __init__(self, db: object) -> None:
+            raise AssertionError("SLA task must not call scan_due_schedules")
+
+    def fake_sla_check(args):
+        calls.append({"date": args.date, "phase": args.phase})
+        return {
+            "status": "ok",
+            "action": "sla_check",
+            "report_date": "2026-06-16",
+            "phase": args.phase,
+        }
+
+    fake_preflight = SimpleNamespace(sla_check=fake_sla_check)
+    import report_scripts
+
+    monkeypatch.setattr(tasks, "ScheduledReviewableReportingService", FailingScheduledReportingService)
+    monkeypatch.setattr(report_scripts, "scheduled_reporting_preflight", fake_preflight, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "report_scripts.scheduled_reporting_preflight",
+        fake_preflight,
+    )
+
+    result = tasks.manager_daily_sla_hardcheck()
+
+    assert calls == [{"date": "auto", "phase": "hard"}]
+    assert result["task"] == "calls.manager_daily_sla_hardcheck"
+    assert result["task_status"] == "completed"
+    assert result["billable_pipeline_started"] is False
 
 
 def test_scheduled_upstream_dry_run_uses_call_processing_ensure_contract(monkeypatch) -> None:

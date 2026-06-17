@@ -22,6 +22,7 @@ from app.agents.call_processing import (
     should_retry_error,
 )
 from app.agents.call_processing.repositories import ArtifactRepository, ProcessingRunRepository
+from app.agents.calls.intake import OnlinePBXIntake
 from app.agents.calls.schemas import CDRRecord, SpeakerSegment, TranscriptResult
 from app.core_shared.db.models import Interaction
 
@@ -278,6 +279,36 @@ def test_missing_llm1_is_planned_without_provider_call() -> None:
     assert response.planned["provider_calls_made"] == 0
 
 
+def test_no_audio_interactions_do_not_create_artifact_requirements() -> None:
+    scope = _scope()
+    interaction = _interaction(
+        scope,
+        text="legacy text should not be backfilled",
+        segments=[{"speaker": "manager", "text": "legacy"}],
+    )
+    interaction.status = "NO_AUDIO"
+    interaction.raw_ref = "https://recordings.test/should-not-run.mp3"
+    artifacts = _MemoryArtifactRepository()
+    service = CallProcessingService(_FakeSession([interaction]), artifacts=artifacts)
+
+    counts = service._plan_and_backfill(
+        [interaction],
+        [
+            RequiredArtifactKind.TRANSCRIPT,
+            RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
+            RequiredArtifactKind.LLM1_FIRST_PASS,
+        ],
+        EnsureMode.ENSURE,
+    )
+
+    assert counts["interactions_total"] == 0
+    assert counts["interactions_skipped_no_audio"] == 1
+    assert counts["artifact_requirements_total"] == 0
+    assert counts["artifacts_missing"] == 0
+    assert counts["provider_calls_planned"] == 0
+    assert artifacts.rows == []
+
+
 class _DiscoverySession(_FakeSession):
     def query(self, *_args: object):
         return self
@@ -287,6 +318,28 @@ class _DiscoverySession(_FakeSession):
 
     def first(self):
         return None
+
+
+class _NoopLogger:
+    def info(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+
+def _build_test_intake(session: _FakeSession, scope: ProcessingScope) -> OnlinePBXIntake:
+    intake = OnlinePBXIntake.__new__(OnlinePBXIntake)
+    intake.db = session
+    intake.department_id = uuid.UUID(scope.department_id or str(uuid.uuid4()))
+    intake.config = SimpleNamespace(
+        allowed_statuses={"answered"},
+        allowed_directions={"out"},
+    )
+    intake.logger = _NoopLogger()
+    intake.resolve_manager_mapping = lambda _record: (
+        None,
+        intake.department_id,
+        {"mapping_source": "test"},
+    )
+    return intake
 
 
 class _FakeIntake:
@@ -373,6 +426,114 @@ def test_ensure_discovers_and_persists_source_calls_in_ensure_mode() -> None:
     assert len(session.scalars_rows) == 1
 
 
+def test_split_discovery_persists_missed_zero_talk_duration_as_no_audio() -> None:
+    scope = ProcessingScope(
+        department_id=str(uuid.uuid4()),
+        extensions=["322"],
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake = _build_test_intake(session, scope)
+    recording_requests: list[str] = []
+
+    def get_cdr_list(day: str) -> list[CDRRecord]:
+        return [
+            CDRRecord(
+                call_id="missed-1",
+                call_date=f"{day}T10:00:00+00:00",
+                duration=0,
+                talk_duration=0,
+                direction="out",
+                status="missed",
+                extension="322",
+                phone="+77070000000",
+                record_url=None,
+            )
+        ]
+
+    def get_recording_url(call_id: str) -> str:
+        recording_requests.append(call_id)
+        return f"https://recordings.test/{call_id}.mp3"
+
+    intake.get_cdr_list = get_cdr_list
+    intake.get_recording_url = get_recording_url
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=lambda _department_id, _db: intake,
+    )
+
+    response = service.ensure(scope, [], mode=EnsureMode.ENSURE)
+
+    assert response.planned["source_targeted_total"] == 1
+    assert response.planned["source_ingest_created"] == 1
+    assert response.planned["source_provider_calls_made"] == 1
+    assert recording_requests == []
+    assert len(session.added) == 2
+    interaction = session.added[1]
+    assert interaction.external_id == "missed-1"
+    assert interaction.status == "NO_AUDIO"
+    assert interaction.duration_sec == 0
+    assert interaction.raw_ref is None
+    assert interaction.metadata_["source_status"] == "missed"
+
+
+def test_split_discovery_persists_answered_with_audio_as_eligible() -> None:
+    scope = ProcessingScope(
+        department_id=str(uuid.uuid4()),
+        extensions=["322"],
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake = _build_test_intake(session, scope)
+    recording_requests: list[str] = []
+
+    def get_cdr_list(day: str) -> list[CDRRecord]:
+        return [
+            CDRRecord(
+                call_id="answered-1",
+                call_date=f"{day}T10:00:00+00:00",
+                duration=180,
+                talk_duration=150,
+                direction="out",
+                status="answered",
+                extension="322",
+                phone="+77070000000",
+                record_url=None,
+            )
+        ]
+
+    def get_recording_url(call_id: str) -> str:
+        recording_requests.append(call_id)
+        return f"https://recordings.test/{call_id}.mp3"
+
+    intake.get_cdr_list = get_cdr_list
+    intake.get_recording_url = get_recording_url
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=lambda _department_id, _db: intake,
+    )
+
+    response = service.ensure(scope, [], mode=EnsureMode.ENSURE)
+
+    assert response.planned["source_targeted_total"] == 1
+    assert response.planned["source_ingest_created"] == 1
+    assert response.planned["source_provider_calls_made"] == 2
+    assert recording_requests == ["answered-1"]
+    assert len(session.added) == 2
+    interaction = session.added[1]
+    assert interaction.external_id == "answered-1"
+    assert interaction.status == "ELIGIBLE"
+    assert interaction.duration_sec == 150
+    assert interaction.raw_ref == "https://recordings.test/answered-1.mp3"
+    assert interaction.metadata_["source_status"] == "answered"
+
+
 def test_ensure_blocks_source_discovery_when_provider_budget_is_exhausted() -> None:
     scope = ProcessingScope(
         department_id=str(uuid.uuid4()),
@@ -415,10 +576,10 @@ class _FakeExtractor:
             "segments": [{"speaker": "A", "text": "Клиент попросил материалы.", "start_ms": 0, "end_ms": 1000}],
             "ai_routing": {
                 "stt": {
-                    "provider": "assemblyai",
-                    "model": "best",
+                    "provider": "openai",
+                    "model": "whisper-1",
                     "account_alias": "stt_main",
-                    "api_key_env": "ASSEMBLYAI_API_KEY",
+                    "api_key_env": "OPENAI_API_KEY_STT_MAIN",
                     "provider_request_id": "stt-request-1",
                 }
             },
@@ -434,6 +595,15 @@ class _FakeExtractor:
                     end_ms=1000,
                 )
             ],
+            speaker_a_is_manager=False,
+            diarization_metadata={
+                "source": "openai_whisper_time_segments",
+                "stt_provider": "openai",
+                "stt_model": "whisper-1",
+                "diarization_source": "whisper_time_segments_without_speaker_labels",
+                "diarization_quality": "low",
+                "warnings": ["technical_speaker_labels_unavailable"],
+            },
             confidence=0.91,
             duration_sec=60,
         )
@@ -475,8 +645,14 @@ def test_ensure_builds_transcript_and_segments_artifacts_via_stt() -> None:
     assert response.costs["by_layer"][0]["duration_sec"] == 60
     active = {row.artifact_kind: row for row in artifacts.rows if row.is_active}
     assert active["transcript"].text_value == "Клиент попросил материалы."
-    assert active["transcript"].provider == "assemblyai"
+    assert active["transcript"].provider == "openai"
+    assert active["transcript"].payload_json["speaker_a_is_manager"] is False
+    assert (
+        active["transcript"].payload_json["diarization"]["diarization_source"]
+        == "whisper_time_segments_without_speaker_labels"
+    )
     assert active["transcript_segments"].payload_json["segments"][0]["text"] == "Клиент попросил материалы."
+    assert active["transcript_segments"].payload_json["speaker_a_is_manager"] is False
 
 
 def test_ensure_blocks_billable_provider_work_when_quota_exhausted() -> None:
@@ -598,6 +774,23 @@ class _FakeAnalyzer:
             "follow_up": {"next_step": "Отправить материалы."},
             "data_quality": {"transcript_quality": "sufficient"},
             "analysis_focus": ["Проверить договоренность."],
+            "speaker_role_mapping": {
+                "source": "llm1_role_attribution",
+                "diarization_source": "whisper_time_segments_without_speaker_labels",
+                "roles": [
+                    {
+                        "raw_speaker": "A",
+                        "role": "unknown",
+                        "confidence": "low",
+                        "evidence": [],
+                    }
+                ],
+                "quality": {
+                    "diarization_quality": "low",
+                    "role_attribution_quality": "low",
+                    "warnings": ["technical_speaker_labels_unavailable"],
+                },
+            },
         }
 
     def analyze_call(self, *_args, **_kwargs):
@@ -632,6 +825,11 @@ def test_ensure_builds_llm1_first_pass_artifact_without_llm2() -> None:
     assert artifact.provider == "openai"
     assert artifact.payload_json["schema_version"] == "llm1_first_pass_v1"
     assert artifact.payload_json["summary"]["brief"] == "Клиент попросил материалы."
+    assert artifact.payload_json["speaker_role_mapping"]["roles"][0]["role"] == "unknown"
+    assert (
+        "technical_speaker_labels_unavailable"
+        in artifact.payload_json["speaker_role_mapping"]["quality"]["warnings"]
+    )
 
 
 def test_ensure_uses_call_processing_cost_helper_when_available(monkeypatch) -> None:

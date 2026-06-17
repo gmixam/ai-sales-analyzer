@@ -1,6 +1,6 @@
 # Pilot Backlog
 
-Дата актуализации: 2026-06-12
+Дата актуализации: 2026-06-17
 
 ## Назначение
 
@@ -28,6 +28,26 @@ delivery.
   подмешивания прошлых дней в менеджерский daily-отчет.
 - `docs/PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md` - draft мини-ТЗ по
   сокращению служебного текста в верхнем блоке и `БАЛЛЫ ПО ЭТАПАМ`.
+- `docs/PILOT24_SCHEDULED_AUTOMATION_FIRST_RUN_FIX_TZ.md` - ТЗ по стабилизации
+  первого unattended daily schedule: strict previous-day, duplicate guard,
+  timeout analysis -> call-processing.
+- `docs/PILOT25_NO_AUDIO_CDR_STATUS_TZ.md` - ТЗ по техническому статусу
+  no-audio/missed CDR в split upstream.
+- `docs/PILOT26_MANAGER_DAILY_AUTO_DELIVERY_SLA_TZ.md` - ТЗ по production
+  auto-delivery manager_daily до `10:00 Asia/Almaty` с late delivery.
+- `docs/PILOT27_AUTOMATIC_SLA_CHECK_TZ.md` - ТЗ по автоматическому запуску
+  SLA-check в `09:30/10:00 Asia/Almaty` без Codex.
+- `docs/PILOT28_OPERATOR_ALERT_SUMMARY_TZ.md` - ТЗ по коротким операторским
+  уведомлениям без сырого JSON.
+- `docs/PILOT29_WHISPER_SPEAKER_ROLE_ATTRIBUTION_TZ.md` - ТЗ по усилению
+  определения ролей speaker на текущем Whisper STT без смены модели.
+- `docs/PILOT30_OPENAI_DIARIZE_MODEL_EVALUATION_TZ.md` - optional/deferred ТЗ
+  по будущей оценке OpenAI diarization STT model.
+- `docs/PILOT31_WEIGHTED_FOCUS_STAGE_TZ.md` - ТЗ по weighted focus stage для
+  блока `БАЛЛЫ ПО ЭТАПАМ`.
+- `docs/PILOT33_MANAGER_DAILY_OPEN_BATCH_GUARD_TZ.md` - ТЗ по исправлению
+  scheduled guard, из-за которого старые `review_required` batches блокируют
+  новый `manager_daily` auto-run.
 
 ## Правило работы
 
@@ -64,6 +84,17 @@ delivery.
 | PILOT-21 | `КОНТАКТЫ В РАБОТУ` в `signal_report` | `new` | Во время PILOT-20 sweep найден соседний дефект: `test_signal_report_model_uses_manager_facing_polish_rules` падает, потому что `call_tomorrow.rows` пустой в `signal_report`, хотя тест ожидает 1 hot contact. Нужно разобрать, это устаревший тест после LLM-only/status gates или реальный regression в сборке `call_tomorrow` для сигнального отчета | Сначала провести bounded audit без правок: воспроизвести fixture, проверить `payload.call_tomorrow.contacts`, `selection_diagnostics`, `call_tomorrow_quality`, source final status/evidence. Затем либо обновить устаревшее ожидание теста, либо исправить `_build_call_tomorrow` / render path так, чтобы только доказанные контакты попадали в блок |
 | PILOT-22 | Строгий отчетный день в `manager_daily` | `implemented_first_pass` | ТЗ: [`docs/PILOT22_MANAGER_DAILY_STRICT_REPORT_DAY_TZ.md`](PILOT22_MANAGER_DAILY_STRICT_REPORT_DAY_TZ.md). Внедрено: `manager_daily` строит только окно report day (`window_days_used=1`), `skip_accumulate` не получает прошлые artifacts, business email блокируется `strict_report_day_gate`, если period/window расширился или `included_in_report_total > meaningful_calls_total` | Проверено focused pytest: strict-day group result, expanded-window email safety, normal full_report path -> `3 passed`. Следующий шаг: controlled rerender Тимура за `2026-06-11`: отчет и письмо должны быть строго за `2026-06-11`, без `10-11 июня`; при `1` содержательном и `0` готовых разборах текст не должен показывать `в разбор вошло — 18` |
 | PILOT-23 | Компактный верхний блок и краткие пояснения | `implemented_first_pass` | ТЗ: [`docs/PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md`](PILOT23_MANAGER_DAILY_COMPACT_SUMMARY_TZ.md). First pass внедрен: сокращены selection/header note, email summary, строка `Статусы без разбора` и scope note в `БАЛЛЫ ПО ЭТАПАМ`; расчеты readiness/selection/scoring не менялись | Focused pytest `7 passed`, `py_compile`, `node --check scripts/generate_docx_report.js`, `git diff --check` OK. Следующий шаг: controlled rerender Толегена за `2026-06-11` и визуальная проверка верхнего блока/`БАЛЛЫ ПО ЭТАПАМ`; после подтверждения перевести в `done` |
+| PILOT-24 | Стабилизация unattended daily schedule после первого автозапуска | `implemented_first_pass` | ТЗ: [`docs/PILOT24_SCHEDULED_AUTOMATION_FIRST_RUN_FIX_TZ.md`](PILOT24_SCHEDULED_AUTOMATION_FIRST_RUN_FIX_TZ.md). First pass внедрен: production `manager_daily` с `previous_day` выбирает только вчерашний день, open/report-ready batch guard защищает от дублей при минутном scan, technical failed batch без draft не блокирует retry, analysis -> call-processing timeout увеличен до `180` секунд и `ReadTimeout` получает явный reason | Focused tests: scheduled reporting / call-processing client / split runtime / scheduled upstream `34 passed, 1 skipped`; runtime settings: `call_processing_mode=external_service`, `call_processing_client_timeout_sec=180`, alert Telegram enabled. Следующий шаг: дождаться следующего auto-window или выполнить approved controlled verification без business email |
+| PILOT-25 | No-audio CDR не должен быть `ELIGIBLE` | `implemented_first_pass` | ТЗ: [`docs/PILOT25_NO_AUDIO_CDR_STATUS_TZ.md`](PILOT25_NO_AUDIO_CDR_STATUS_TZ.md). First pass внедрен: split upstream сохраняет missed/duration=0/no-recording CDR как технический статус `NO_AUDIO`, answered с аудио остается `ELIGIBLE`, `NO_AUDIO` не создает STT/segments/LLM1 requirements и не должен делать upstream `partial` только из-за missed CDR. External source summary сохраняет полный `source_targeted_total`, даже если artifact-eligible interactions меньше | Tests: call-processing service/scheduled upstream `26 passed`; focused no-audio/selection/reporting integration `13 passed` + external summary `2 passed`; `py_compile` и `git diff --check` OK. Cleanup за `2026-06-15` выполнен: `41` pilot-scope missed/no-audio rows переведены из `ELIGIBLE` в `NO_AUDIO`; контрольный report rerun подтвердил, что `NO_AUDIO` не требует STT/LLM1 |
+| PILOT-26 | Auto-delivery и SLA до 10:00 для `manager_daily` | `production_active_first_pass` | ТЗ: [`docs/PILOT26_MANAGER_DAILY_AUTO_DELIVERY_SLA_TZ.md`](PILOT26_MANAGER_DAILY_AUTO_DELIVERY_SLA_TZ.md). First pass внедрен: `manager_daily` различает review (`review_required=true`) и production (`review_required=false`) режимы; production schedule вызывает business email delivery и ROP bundle через существующий `run_report`; batch/draft получают SLA/delivery observability; CLI получил `sla-status` и `sla-check`; production-create default теперь `04:00`, `business_email_enabled=true`, `review_required=false`. Runtime activation выполнен 2026-06-16: active schedule `97e6c120-6aa3-4664-99ae-3982054698d7` переведен на `04:00 Asia/Almaty`, `review_required=false`, `business_email_enabled=true`, `next_run_at=2026-06-17 04:00 Asia/Almaty` | Проверено: focused tests `19 passed`; split/upstream regressions `26 passed`, runtime/client `20 passed, 1 skipped`, reporting/no-audio/selection `16 passed`; `sla-status --date 2026-06-16` видит production schedule. Следующий шаг - наблюдать первый auto-delivery день и отдельно привязать `sla-check precheck/hard` к расписанию, если нужен автоматический SLA alert без Codex |
+| PILOT-27 | Автоматический SLA-check в 09:30/10:00 | `implemented_first_pass` | ТЗ: [`docs/PILOT27_AUTOMATIC_SLA_CHECK_TZ.md`](PILOT27_AUTOMATIC_SLA_CHECK_TZ.md). Roadmap: `SPLIT-COMPLETE-07E`. First pass внедрен: добавлены Celery tasks `calls.manager_daily_sla_precheck` / `calls.manager_daily_sla_hardcheck`, beat entries `09:30` и `10:00` по `Asia/Almaty` для analysis runtime, routing в `analysis` queue, task wrappers вызывают существующий `scheduled_reporting_preflight.sla_check`, а `sla-status/sla-check` получили default `--date auto` = previous report day по Алматы. SLA-check не запускает STT/LLM/report pipeline и молчит при отсутствии affected managers | Проверено: runtime split/scheduled upstream SLA tests `6 passed`; preflight SLA tests `10 passed`; `py_compile` OK. До `done`: дождаться первого реального scheduled run `09:30/10:00`, подтвердить no-noise при норме и короткий alert + hard SLA observability при проблеме |
+| PILOT-28 | Короткие операторские уведомления без JSON | `implemented_first_pass` | ТЗ: [`docs/PILOT28_OPERATOR_ALERT_SUMMARY_TZ.md`](PILOT28_OPERATOR_ALERT_SUMMARY_TZ.md). First pass внедрен: `run_alerts.py` поддерживает `operator_summary` и fallback summary без raw JSON; SLA `precheck/hard` и `manager_daily` run monitor передают короткий human summary; полный JSON/details остается в observability/logs | Проверено: `test_run_alerts.py` + `test_scheduled_reporting_preflight.py` -> `20 passed`; focused `test_manual_reporting.py -k manager_daily_run_monitor...` -> `4 passed`; общий alert/admin focused sweep -> `14 passed, 261 deselected, 4 subtests passed`; `py_compile` и `git diff --check` OK |
+| PILOT-29 | Усиление speaker role attribution на текущем Whisper STT | `implemented_first_pass` | ТЗ: [`docs/PILOT29_WHISPER_SPEAKER_ROLE_ATTRIBUTION_TZ.md`](PILOT29_WHISPER_SPEAKER_ROLE_ATTRIBUTION_TZ.md). First pass внедрен: `whisper-1` остается активным STT; для Whisper убрана презумпция `speaker A = manager`; STT artifacts сохраняют diarization warning; LLM1 artifact содержит `speaker_role_mapping`; LLM2 compact/full input получает mapping; старые artifacts без mapping не падают | Tests: role/STT/LLM1 focused `9 passed`; compact LLM2 payload `1 passed`; `py_compile` и `git diff --check` OK. До `done`: controlled sample review 5-10 реальных звонков и ручная проверка, что очевидные manager/client роли не перепутаны |
+| PILOT-30 | Optional evaluation `gpt-4o-transcribe-diarize` | `optional_deferred` | ТЗ: [`docs/PILOT30_OPENAI_DIARIZE_MODEL_EVALUATION_TZ.md`](PILOT30_OPENAI_DIARIZE_MODEL_EVALUATION_TZ.md). Отдельная будущая задача: controlled comparison текущего `whisper-1` + LLM1 role attribution против OpenAI diarization STT model. В рамках PILOT-29 не выполняется | Не включено в production; решение о переходе возможно только после отдельного experiment, оценки качества/стоимости/fallback и обновления runtime profiles/cost catalog |
+| PILOT-31 | Weighted focus stage в `БАЛЛЫ ПО ЭТАПАМ` | `implemented_second_pass` | ТЗ: [`docs/PILOT31_WEIGHTED_FOCUS_STAGE_TZ.md`](PILOT31_WEIGHTED_FOCUS_STAGE_TZ.md). Внедрено: сами stage scores не меняются, изменен только выбор фокусного этапа; учитываются просадка, экспертный вес этапа и coverage по звонкам. После ручной проверки Толегена за `2026-06-15` снят `critical low-score override`: `score < 3.0` теперь отдельный `Критический сигнал`, но не перехватывает фокус | Focused tests: `/app/tests/test_manual_reporting.py -k "weighted_focus or critical_low_score or stage_scores"` -> `6 passed`; `py_compile`, `node --check scripts/generate_docx_report.js`, `git diff --check` OK. Следующий шаг: rerender Толегена за `2026-06-15`: ожидаемый фокус — `Выявление детальных потребностей`, а `Продажа: финал` — отдельный критический сигнал |
+| PILOT-32 | Лучший учебный кейс для `СИТУАЦИЯ ДНЯ` / `РАЗБОР ЗВОНКА` | `implemented_first_pass_llm_ownership` | ТЗ: [`docs/PILOT32_FOCUS_CASE_SELECTION_TZ.md`](PILOT32_FOCUS_CASE_SELECTION_TZ.md). Внедрен second pass под архитектурное правило: смысловой выбор кейса и содержательные тексты `СИТУАЦИИ ДНЯ` / `РАЗБОР ЗВОНКА` формирует LLM3 на базе LLM2 evidence; Report Layer только проверяет контракт/stage/call id и блокирует нарушенный render; legacy/report-evidence/transcript/gaps fallback больше не строит смысловой breakdown | Проверено: Report Layer focused `20 passed, 1 skipped`; LLM3 composer `13 passed`; `py_compile`, `node --check`, `git diff --check` OK. До `done`: rerender Толегена за `2026-06-15` и визуально проверить, что `sale_final` не подменяет `needs_discovery`, а LLM3-owned case отображается корректно или дается neutral empty-state |
+| PILOT-33 | `manager_daily` open-batch guard блокирует новый день | `implemented_first_pass` | ТЗ: [`docs/PILOT33_MANAGER_DAILY_OPEN_BATCH_GUARD_TZ.md`](PILOT33_MANAGER_DAILY_OPEN_BATCH_GUARD_TZ.md). First pass внедрен: `manager_daily` больше не применяет общий `_has_open_batch(schedule_id)` до выбора manager-day; duplicate protection уточнена на `schedule_id + manager_id + report_date`; non-manager_daily guard сохранен; добавлены `open-batches` diagnostics и dry-run-first `recover-open-batches`. Recovery/catch-up 2026-06-17 выполнен: `3` старых batch за `2026-06-15` переведены `review_required -> paused`; за `2026-06-16` без повторного STT/LLM1 достроены LLM2/Report Layer; Алишер и Толеген получили email, РОП получил копии, SLA=`late`; Тимур no-audio остался `review_required/missing_recipient`, Илья no-calls `not_applicable`; schedule сохранен на следующий auto-run `2026-06-17T23:00:00+00:00`. Visibility fix: `paused` исключен из default open-batch diagnostics, explicit recovery `--status paused` сохранен | Проверено: scheduler guard tests `8 passed`; preflight/recovery/SLA tests `12 passed`; full focused scheduled/preflight `28 passed`; live post-check подтверждает delivered batches Алишера/Толегена, а `open-batches` больше не шумит старыми paused recovery batches. Следующий шаг: наблюдать следующий auto-run; оставшийся хвост — duplicate diagnostics желательно дополнить concrete blocker id/alert |
+| PILOT-34 | Concrete diagnostics для duplicate/open-batch | `implemented_first_pass` | ТЗ: [`docs/PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md`](PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md). Внедрено: duplicate guard получил `_manager_day_duplicate_diagnostics(...)` с concrete `blocked_by_batch_id` / `blocked_by_draft_id`, `_has_manager_day_duplicate(...) -> bool` остался совместимым wrapper, `scheduled_candidate_selection` сохраняет `skipped_already_reported_details`, а `open-batches` JSON/human output показывает blocker ids, draft ids/statuses и recovery hint | Проверено: focused duplicate/open-batch/recovery/blocker suite `14 passed, 24 deselected, 2 subtests passed`; весь `test_scheduled_reporting.py` `19 passed, 2 subtests passed`; preflight focused `6 passed, 13 deselected`; `py_compile` и `git diff --check` OK |
 
 ### P2 - Ежедневный отчет для РОП
 
@@ -82,6 +113,7 @@ delivery.
 | ID | Задача | Статус | Что сделать | Проверка результата |
 | --- | --- | --- | --- | --- |
 | PILOT-06 | Scheduled daily operating flow | `planned` | Перевести проверенный scheduled flow в понятный Codex/CLI порядок: что запланировано, что готово к review, что approve, что delivered/failed | Codex по запросу может показать состояние расписания и выполнить approve/delivery без UI |
+| PILOT-26 | Production auto-delivery SLA | `production_active_first_pass` | First pass реализован по `docs/PILOT26_MANAGER_DAILY_AUTO_DELIVERY_SLA_TZ.md`: `04:00` production-create default, production auto-delivery branch, manager email, ROP package, SLA status/check CLI. Active schedule уже переведен в production mode | Требуется наблюдение первого рабочего auto-delivery дня; automatic beat для `sla-check` 09:30/10:00 пока не привязан |
 
 ### P4 - Отчеты РОП weekly/monthly
 
@@ -144,27 +176,51 @@ delivery.
 | 2026-06-12-coverage-11jun-01 | PILOT-20 / PILOT-22 | `observed` | Полный прогон Алишера, Тимура и Толегена за `2026-06-11` завершился доставкой email всем 3 менеджерам, но runner status=`partial`, все отчеты `signal_report`: Алишер `3/7` meaningful-ready (`42.9%`), Тимур `0/1` (`0.0%`), Толеген `9/15` (`60.0%`). Все 11 failed-анализов за целевой день имеют `llm2_admission_non_commercial_or_unusable`; provider/quota ошибок нет. Дополнительная аномалия: отчет Тимура ушел с расширенным окном `2026-06-10 - 2026-06-11` и некорректной строкой письма `Из 1 содержательных ... в коучинговый разбор вошло — 18`. Решение пользователя: manager-facing daily не должен подмешивать прошлые дни; фиксируется как `PILOT-22`. |
 | 2026-06-14-split-12jun-01 | PILOT-20 / split runtime | `observed` | Тестовый split-service прогон за `2026-06-12` запускался через `call_processing_api/worker` и `analysis_api` (`CALL_PROCESSING_MODE=external_service`, `AI_LLM2_INPUT_PROFILE=compact`, OpenAI-compatible, subagent/simulation off). Upstream нашел `73` interactions, подготовил `105/219` artifact requirements; `114` requirements остались missing, successful ensure сделал `101` provider calls (`36` source/recording, `32` STT, `33` LLM1). Analysis reused `35` external LLM1 artifacts, built `28` analyses, failed `7` as `llm2_admission_non_commercial_or_unusable`. В scope дня фактически есть Алишер `6` звонков и Толеген `67`; по Тимуру `extension=311` записей за день нет. В operator Telegram ушли PDF Алишера (`skip_accumulate/preview`) и Толегена (`full_report`); business email был выключен. |
 | 2026-06-14-split-12jun-02 | call-processing split cleanup | `done` | При первом split ensure найден write-path дефект active artifacts: pending/active duplicate для `(interaction_id, artifact_kind, artifact_version)` мог падать на `uq_call_artifacts_active_kind_version`. Код исправлен в `ArtifactRepository.write_active()` и покрыт focused тестом. Дополнительно добавлена admin-only CLI-команда `cleanup-stale-runs`; две ранние упавшие попытки ensure `465abcb5...` и `aa915c5e...` переведены из `running` в `stale`, открытых `queued/running` split runs после cleanup нет. |
+| 2026-06-16-auto-schedule-01 | PILOT-24 | `implemented_first_pass` | Первый unattended split-runtime сработал частично: `00:00` upstream за `2026-06-15` построил `50` STT и `50` LLM1, cost около `1.127513 USDT`, status=`partial`, Telegram alert sent. `08:00` reporting schedule сработал и сдвинул `next_run_at` на следующий день, но создал `8` failed batches и `0` drafts/PDF. Причины: manager_daily scheduled branch догонял старые даты (`2026-06-09`, `2026-06-10`) вместо strict previous day, analysis -> call-processing ловил `ReadTimeout`, минутный beat создал повторные попытки пока первый scan выполнялся около `95s`. First pass исправления внедрен: strict previous-day, duplicate/open-batch guard, retry после failed без draft, timeout `180`. |
+| 2026-06-16-no-audio-cdr-01 | PILOT-25 | `implemented_first_pass` | Аудит STT за `2026-06-15`: в scope `91` interaction, `50` answered получили STT/LLM1, `41` missed (`duration_sec=0`, empty `raw_ref`) остались без STT. Failed STT artifacts нет. Причина: split upstream сохранял targeted CDR напрямую через `save_interactions(targeted)`, а `save_interactions()` всем новым rows ставил `status='ELIGIBLE'`; старый `filter_eligible()` в этом path не применялся. First pass исправляет новые записи и artifact planning; bounded cleanup старых `41` строк выполнен, контрольный report rerun собрал PDF по Алишеру/Тимуру/Толегену. |
+| 2026-06-16-auto-delivery-sla-01 | PILOT-26 | `production_active_first_pass` | Агенты реализовали first pass production auto-delivery/SLA: core scheduled branch использует `review_required=false` как production режим, CLI добавил `sla-status/sla-check`, runtime-mounted `scripts/scheduled_reporting_preflight.py` синхронизирован с `core/report_scripts`. Dry-run production-create подтверждает целевой payload `04:00 Asia/Almaty`, `business_email_enabled=true`, `review_required=false`. Runtime activation выполнен: active schedule `97e6c120-6aa3-4664-99ae-3982054698d7` теперь `04:00`, `review_required=false`, `business_email_enabled=true`, `next_run_at=2026-06-17T04:00:00+05:00`. |
 
 ## Следующий рекомендуемый шаг
 
 Начать с P1:
 
-1. PILOT-20 - controlled rerender/ready-only проверка на реальных отчетах после
+1. PILOT-24 - провести controlled verification или дождаться следующего
+   auto-window: подтвердить, что schedule строит только previous day, не плодит
+   дубли, создает review draft/PDF и не включает business email.
+2. PILOT-26 - наблюдать первый auto-delivery день до `10:00`; если нужен SLA
+   alert без участия Codex, привязать `sla-check --phase precheck/hard` к
+   отдельному расписанию/beat.
+3. PILOT-27 - реализовать automatic SLA-check schedule (`09:30/10:00`), чтобы
+   контроль доставки работал без ручного запуска Codex.
+4. PILOT-28 - на следующем реальном warning/error alert проверить, что
+   Telegram/почта дают короткое резюме проблемы, влияния и следующего действия
+   без raw JSON.
+5. PILOT-29 - утвердить и реализовать усиление speaker role attribution на
+   текущем Whisper STT без смены модели.
+6. PILOT-31 - проверить на контрольном manager_daily отчете, что weighted focus
+   stage в `БАЛЛЫ ПО ЭТАПАМ` выбирает управленчески логичный этап, не меняя
+   сами баллы.
+7. PILOT-32 - проверить first pass под LLM ownership на rerender Толегена за
+   `2026-06-15`: LLM3 выбирает и пишет учебный кейс дня, Report Layer только
+   проверяет контракт и stage/call gates.
+8. PILOT-25 - подтвердить на следующем upstream cycle, что новые missed CDR
+   сразу сохраняются как `NO_AUDIO` и не создают missing STT requirements.
+9. PILOT-20 - controlled rerender/ready-only проверка на реальных отчетах после
    denominator fix: убедиться, что отчеты с высоким coverage содержательных
    звонков больше не остаются `signal_report` только из-за normal exclusions.
-2. PILOT-22 - controlled rerender после first pass: проверить Тимура за
+10. PILOT-22 - controlled rerender после first pass: проверить Тимура за
    `2026-06-11`, что отчет и письмо отражают только выбранный день, даже если
    данных мало.
-3. PILOT-23 - controlled rerender после first pass: проверить Толегена за
+11. PILOT-23 - controlled rerender после first pass: проверить Толегена за
    `2026-06-11`, что верхний блок и `БАЛЛЫ ПО ЭТАПАМ` стали компактными без
    изменения цифр.
-4. PILOT-21 - bounded audit `call_tomorrow` в `signal_report`: понять, это
+12. PILOT-21 - bounded audit `call_tomorrow` в `signal_report`: понять, это
    устаревший тест или реальный дефект блока `КОНТАКТЫ В РАБОТУ`.
-5. PILOT-17 - контрольный rerender/прогон после first pass, потому что false
+13. PILOT-17 - контрольный rerender/прогон после first pass, потому что false
    `Договорённость` напрямую бьет по доверию к отчету.
-6. PILOT-19 - прозрачность scoring, потому что менеджеры должны понимать,
+14. PILOT-19 - прозрачность scoring, потому что менеджеры должны понимать,
    какие звонки и критерии реально вошли в баллы.
-7. PILOT-13 - ФИО контакта, чтобы Report Layer не пытался достраивать имя.
-8. PILOT-02 / PILOT-06 - controlled schedule flow без UI.
+14. PILOT-13 - ФИО контакта, чтобы Report Layer не пытался достраивать имя.
+15. PILOT-02 / PILOT-06 - controlled schedule flow без UI.
 
 После закрытия P1 переходить к `rop_daily_digest`.

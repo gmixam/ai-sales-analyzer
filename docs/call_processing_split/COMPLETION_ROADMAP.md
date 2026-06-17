@@ -62,6 +62,7 @@ production cutover, потому что день был неполным по м
 | Stale processing run cleanup | `done` | commit `5eda14b`; no open `queued/running` split runs |
 | Permanent split schedule runtime | `active` | `call_processing_beat` 00:00 Almaty + `analysis_beat` 08:00 Almaty running |
 | Legacy rollback path | `available` | `CALL_PROCESSING_MODE=legacy` remains supported |
+| No-audio CDR status | `implemented_first_pass` | `docs/PILOT25_NO_AUDIO_CDR_STATUS_TZ.md`; new split upstream rows classify missed/duration=0/no-recording CDR as `NO_AUDIO`, exclude them from STT/LLM1 requirements, and keep them visible in source/report funnel. Existing 2026-06-15 pilot cleanup completed for 41 rows; next upstream cycle should confirm new rows are classified correctly on ingest |
 
 ## Оставшиеся этапы до полного закрытия
 
@@ -130,7 +131,9 @@ ALERT_EMAIL_ON_SUCCESS=false
 
 ### SPLIT-COMPLETE-02 — Повторить provider-backed full-day split smoke
 
-Статус: `planned`
+Статус: `implemented_first_pass`
+
+ТЗ: `docs/PILOT27_AUTOMATIC_SLA_CHECK_TZ.md`
 
 Что сделать:
 
@@ -567,7 +570,146 @@ ALERT_TELEGRAM_MIN_LEVEL=warning
 Критерий готовности:
 
 - принято явное решение `GO` или `NO-GO`;
+
+### SPLIT-COMPLETE-07D — Manager daily auto-delivery SLA
+
+Статус: `production_active_first_pass`
+
+ТЗ: `docs/PILOT26_MANAGER_DAILY_AUTO_DELIVERY_SLA_TZ.md`
+
+Зачем добавлено:
+
+- После первого реального дня split-runtime отчеты за `2026-06-15` были
+  проверены оператором и вручную отправлены Тимуру, Толегену и РОП.
+- Пользователь подтвердил целевой режим: менеджеры и РОП должны получать письма
+  до `10:00 Asia/Almaty` каждого рабочего утра.
+- Текущий scheduled manager_daily умеет готовить review drafts, но не является
+  полноценным unattended business delivery flow.
+
+Что сделано:
+
+- [x] добавить production branch `review_required=false` для `manager_daily`;
+- [x] production-create default = `04:00 Asia/Almaty`,
+  `business_email_enabled=true`, `review_required=false`;
+- [x] автоматически отправлять готовые manager reports при
+  `business_email_enabled=true`;
+- [x] отправлять РОП daily package после manager delivery через существующий
+  `run_report` / ROP bundle path;
+- [x] добавить SLA-monitor/checker CLI `sla-status` и `sla-check`;
+- [x] при задержке не отправлять сырой отчет, а фиксировать SLA status/reason;
+- [x] покрыть review/production/SLA paths focused тестами.
+- [x] runtime activation: active schedule `97e6c120-6aa3-4664-99ae-3982054698d7`
+  переведен на `04:00 Asia/Almaty`, `review_required=false`,
+  `business_email_enabled=true`;
+- [ ] наблюдать первый auto-delivery день и подтвердить manager/ROP emails до
+  `10:00`;
+- [ ] при необходимости расширить ROP partial/late update wording после первого
+  реального дня.
+
+Критерий готовности:
+
+- review режим не меняется и не отправляет manager email без approve;
+- production режим доставляет manager/ROP emails автоматически;
+- pending до `09:30` дает warning alert;
+- pending до `10:00` фиксирует SLA miss и critical alert;
+- late completion досылается без дублей;
+- active schedule переведен на `04:00 Asia/Almaty`; первый production cycle еще
+  нужно подтвердить по факту.
+
+### SPLIT-COMPLETE-07E — Automatic SLA-check schedule
+
+Статус: `implemented_first_pass`
+
+Контекст:
+
+- `SPLIT-COMPLETE-07D` включил production auto-delivery: manager_daily schedule
+  запускается в `04:00 Asia/Almaty`, отправляет менеджерам и РОП при готовности.
+- CLI-контроль уже готов: `scheduled_reporting_preflight.py sla-status` и
+  `scheduled_reporting_preflight.py sla-check --phase precheck|hard`.
+- First pass 2026-06-17 привязал проверки SLA в `09:30` и `10:00` к
+  Celery beat для analysis runtime.
+
+Что сделать:
+
+- [x] добавить автоматический запуск `sla-check --phase precheck` каждый рабочий
+  день в `09:30 Asia/Almaty`;
+- [x] добавить автоматический запуск `sla-check --phase hard` каждый рабочий день
+  в `10:00 Asia/Almaty`;
+- [x] добавить auto-date режим: утром checker сам выбирает previous report day
+  по `Asia/Almaty`, без ручной передачи даты;
+- [x] precheck должен слать warning alert, если manager/ROP delivery еще не
+  завершена;
+- [x] hard-check должен фиксировать `sla_missed=true`, `sla_status` и reason для
+  pending/blocked manager-day;
+- [x] no-calls/no-audio дни не должны создавать шумный alert, если manager-day
+  объективно не требует отчета;
+- [ ] если отчет позже дошел, late delivery остается разрешенной и не должна
+  дублировать уже доставленные письма;
+- [x] добавить focused tests для scheduled SLA task/beat integration;
+- [x] задокументировать команды ручной проверки для Codex/operator fallback.
+
+Критерий готовности:
+
+- в `09:30` без участия Codex появляется warning alert по всем неготовым отчетам;
+- в `10:00` без участия Codex фиксируется hard SLA miss и critical alert;
+- если все отчеты доставлены до `09:30/10:00`, SLA-check завершаетcя без шума;
+- CLI `sla-status` показывает те же статусы, что зафиксировал автоматический
+  checker.
 - состояние runtime и rollback path задокументированы.
+
+Проверено в first pass:
+
+- `test_call_processing_runtime_split.py` +
+  `test_scheduled_call_processing_upstream.py`
+  `-k "sla or celery_queue_routing or celery_beat_schedule"` -> `6 passed`;
+- `test_scheduled_reporting_preflight.py -k "sla"` -> `10 passed`;
+- `py_compile` для worker/preflight/test файлов -> OK.
+
+До `done`: подтвердить первый реальный scheduled run `09:30/10:00` без Codex.
+
+### SPLIT-COMPLETE-07F — Duplicate/open-batch diagnostics
+
+Статус: `draft_ready`
+
+ТЗ: [`docs/PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md`](../PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md)
+
+Контекст:
+
+- `PILOT-33` снял функциональную блокировку нового `manager_daily` дня старым
+  open batch.
+- Но расследование duplicate/open-batch случаев пока требует ручного поиска:
+  diagnostics не всегда показывает concrete `blocked_by_batch_id` /
+  `blocked_by_draft_id`.
+
+Что сделать:
+
+- [x] добавить диагностический результат для duplicate manager-day guard без
+  изменения текущего поведения;
+- [x] сохранить `blocked_by_batch_id`, `blocked_by_draft_id`,
+  `blocked_by_reason`, `manager_id`, `report_date` в
+  `scheduled_candidate_selection`;
+- [x] расширить `open-batches` JSON/human output concrete blocker ids и
+  recovery hint;
+- [x] сохранить no-noise policy: `paused` batches не являются default blockers;
+- [x] добавить focused tests на duplicate/open-batch diagnostics.
+
+Критерий готовности:
+
+- оператор по одному `open-batches` или `scheduled_candidate_selection` видит,
+  какой batch/draft стал причиной skip/blocker;
+- создание новых `manager_daily` batch не становится строже;
+- focused tests и `py_compile` проходят.
+
+Проверено в first pass:
+
+- `test_scheduled_reporting.py` +
+  `test_scheduled_reporting_preflight.py`
+  `-k "duplicate or open_batch or recovery or blocker"` ->
+  `14 passed, 24 deselected, 2 subtests passed`;
+- весь `test_scheduled_reporting.py` -> `19 passed, 2 subtests passed`;
+- preflight focused `open_batch/recovery/blocker` ->
+  `6 passed, 13 deselected`;
+- `py_compile` и `git diff --check` -> OK.
 
 ## Ответ на вопрос про “вчерашний полный день”
 

@@ -31,6 +31,7 @@ from app.core_shared.db.models import Interaction
 
 STALE_RUN_AFTER = timedelta(minutes=30)
 MAX_PROVIDER_ATTEMPTS = 3
+NO_AUDIO_INTERACTION_STATUS = "NO_AUDIO"
 
 
 class ProviderCallBudget:
@@ -230,8 +231,14 @@ class CallProcessingService:
         return [
             interaction
             for interaction in interactions
-            if self._interaction_matches_scope(interaction, scope)
+            if self._interaction_requires_artifacts(interaction)
+            and self._interaction_matches_scope(interaction, scope)
         ]
+
+    @staticmethod
+    def _interaction_requires_artifacts(interaction: Interaction) -> bool:
+        status = str(getattr(interaction, "status", "") or "").strip().upper()
+        return status != NO_AUDIO_INTERACTION_STATUS
 
     def _interaction_matches_scope(self, interaction: Interaction, scope: ProcessingScope) -> bool:
         metadata = getattr(interaction, "metadata_", None) or {}
@@ -348,6 +355,9 @@ class CallProcessingService:
 
     @staticmethod
     def _record_is_build_eligible(intake: Any, record: Any) -> bool:
+        talk_duration = int(getattr(record, "talk_duration", 0) or 0)
+        if talk_duration <= 0:
+            return False
         config = getattr(intake, "config", None)
         allowed_statuses = set(getattr(config, "allowed_statuses", []) or [])
         allowed_directions = set(getattr(config, "allowed_directions", []) or [])
@@ -391,9 +401,15 @@ class CallProcessingService:
         cost_entries: list[dict[str, Any]] | None = None,
     ) -> dict[str, int]:
         budget = budget or ProviderCallBudget()
+        artifact_interactions = [
+            interaction
+            for interaction in interactions
+            if self._interaction_requires_artifacts(interaction)
+        ]
         counts = {
-            "interactions_total": len(interactions),
-            "artifact_requirements_total": len(interactions) * len(required),
+            "interactions_total": len(artifact_interactions),
+            "interactions_skipped_no_audio": len(interactions) - len(artifact_interactions),
+            "artifact_requirements_total": len(artifact_interactions) * len(required),
             "artifacts_ready": 0,
             "artifacts_missing": 0,
             "artifacts_backfilled": 0,
@@ -405,7 +421,7 @@ class CallProcessingService:
             "artifact_retry_blocked": 0,
             "quota_blocked": 0,
         }
-        for interaction in interactions:
+        for interaction in artifact_interactions:
             for kind in required:
                 artifact = self.artifacts.latest_active(
                     interaction.id,
@@ -533,6 +549,8 @@ class CallProcessingService:
                 "created_by": "call_processing_service",
                 "duration_sec": result.duration_sec,
                 "confidence": result.confidence,
+                "speaker_a_is_manager": result.speaker_a_is_manager,
+                "diarization": dict(result.diarization_metadata or {}),
             },
             text_value=result.full_text,
             source_updated_at=now,
@@ -548,6 +566,8 @@ class CallProcessingService:
                 payload_json={
                     "created_by": "call_processing_service",
                     "segments": [segment.model_dump() for segment in result.segments],
+                    "speaker_a_is_manager": result.speaker_a_is_manager,
+                    "diarization": dict(result.diarization_metadata or {}),
                 },
                 source_updated_at=now,
                 **self._artifact_provider_fields(interaction, layer="stt"),
@@ -595,6 +615,7 @@ class CallProcessingService:
             follow_up=dict(normalized.get("follow_up") or {}),
             data_quality=dict(normalized.get("data_quality") or {}),
             analysis_focus=normalized.get("analysis_focus") or {},
+            speaker_role_mapping=dict(normalized.get("speaker_role_mapping") or {}),
         )
         self.artifacts.write_active(
             department_id=interaction.department_id,

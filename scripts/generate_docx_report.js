@@ -485,6 +485,24 @@ function buildSupportingQuoteParagraph(text, opts = {}) {
 }
 
 function buildSituationReviewRows(s) {
+  const sectionRows = (s.review_rows || [])
+    .map((row) => {
+      if (Array.isArray(row)) return [cleanText(row[0]), cleanText(row[1])];
+      return [cleanText(row.label || row.field || row[0]), cleanText(row.value || row.content || row[1])];
+    })
+    .filter(([label, value]) => label && value);
+  if (sectionRows.length > 0) {
+    return sectionRows.map(([label, value]) => {
+      const lines = String(value).split("\n").map((line) => cleanText(line)).filter(Boolean);
+      const contentCell = lines.length > 1
+        ? cellMultiPara(lines.map((line) => new Paragraph({
+            children: [new TextRun({ text: line, size: SZ.cell, font: "Arial", color: COLORS.black })],
+            spacing: { before: 0, after: 40 },
+          })))
+        : cell(value, { size: SZ.cell, width: { size: 70, type: WidthType.PERCENTAGE } });
+      return new TableRow({ children: [labelCell(label), contentCell] });
+    });
+  }
   const dive = s.focus_stage_deep_dive || {};
   const view = s.coaching_view || {};
   const scripts = (view.scripts || [])
@@ -709,6 +727,7 @@ function normalizeBreakdownRow(row, index, context = {}) {
 
 function stageStatus(stage) {
   if (stage.priority) return "Фокус на завтра";
+  if (stage.critical_low_score_signal) return "Критический сигнал";
   if (stage.score5 !== null && stage.score5 >= 4.0) return "Норма";
   return "Зона внимания";
 }
@@ -1069,6 +1088,7 @@ function dataFromBundle(bundle) {
       score5: stage.score === null || stage.score === undefined ? null : safeNumber((safeNumber(stage.score) / 2).toFixed(1), null),
       calls_count: safeNumber(stage.calls_count, 0),
       priority: Boolean(stage.is_priority),
+      critical_low_score_signal: Boolean(stage.critical_low_score_signal),
       problem_summary: stage.problem_summary || "",
       problem_source: stage.problem_source || "",
       subs: (stage.criteria_detail || []).filter(Boolean).map((criterion) => ({
@@ -1098,6 +1118,7 @@ function dataFromBundle(bundle) {
       focus_stage_deep_dive: payload.focus_stage_deep_dive || null,
       focus_stage_recommendation: payload.focus_stage_recommendation || null,
       coaching_view: payload.situation_day_coaching_view || null,
+      review_rows: situation.review_rows || [],
       scripts: situation.scripts || [],
       why_it_works: situation.why_it_works || "",
     },
@@ -1723,7 +1744,9 @@ function buildBally() {
     const status = stageStatus(st);
     const nameColor = st.priority ? COLORS.red : COLORS.black;
     const scoreColor = st.priority ? COLORS.red : COLORS.black;
-    const statusColor = st.priority ? COLORS.red : (status === "Норма" ? COLORS.green : COLORS.orange);
+    const statusColor = st.priority || st.critical_low_score_signal
+      ? COLORS.red
+      : (status === "Норма" ? COLORS.green : COLORS.orange);
 
     const rowShading = st.priority
       ? { fill: COLORS.priorityBg, type: ShadingType.CLEAR }
@@ -1772,70 +1795,6 @@ function buildBally() {
 
 function buildSituatsiya() {
   const s = DATA.situation;
-  if (s.coaching_view?.situation_day_evidence_status === "insufficient") {
-    const dive = s.focus_stage_deep_dive || {};
-    const recommendation = s.focus_stage_recommendation || {};
-    const result = [
-      blockHeading("🎯", s.block_label || "СИТУАЦИЯ ДНЯ"),
-    ];
-    if (s.scope_note) {
-      result.push(bodyPara(s.scope_note, { color: COLORS.gray, size: SZ.meta }));
-    }
-    const stageMeta = buildSituationStageMeta(s);
-    if (stageMeta) {
-      result.push(subHeading("Фокусный этап"));
-      result.push(bodyPara(stageMeta.replace(/^Фокусный этап:\s*/i, ""), { size: SZ.cell }));
-    }
-    const fallbackText = firstNonEmpty(
-      DATA.key_problem?.title,
-      DATA.key_problem?.description,
-      s.body,
-      s.title,
-      dive.what_went_wrong,
-      recommendation.problem,
-    );
-    if (fallbackText || dive.what_went_wrong) {
-      result.push(subHeading("Что произошло"));
-      const lines = [
-        fallbackText,
-        dive.what_went_wrong && !sameMeaningText(dive.what_went_wrong, fallbackText)
-          ? dive.what_went_wrong
-          : "",
-      ].filter((item) => cleanText(item));
-      result.push(...buildSituationNarrativeParagraphs(lines.join(" ")));
-    }
-    const rawWhy = firstNonEmpty(dive.why_it_matters, s.coaching_view?.meaning);
-    const whyLooksLikeAction = /^(подтвердить|уточнить|отправить|зафиксировать|согласовать|проверить)(?:\s|$)/i.test(rawWhy);
-    const why = whyLooksLikeAction
-      ? "Без понятной потребности или причины сомнения менеджеру сложнее связать следующий шаг с реальной задачей клиента."
-      : rawWhy;
-    if (why && !/сомнительный вывод/i.test(why)) {
-      result.push(subHeading("Почему это важно"));
-      result.push(...buildSituationNarrativeParagraphs(why));
-    }
-    const action = firstNonEmpty(dive.what_to_fix, recommendation.recommendation, s.manager_task);
-    const minimum = cleanText(dive.minimum_for_tomorrow);
-    if (action || minimum) {
-      result.push(subHeading("Что сделать"));
-      result.push(...buildSituationNarrativeParagraphs([action, minimum].filter(Boolean).join(" ")));
-    }
-    const scripts = [
-      ...(s.coaching_view?.scripts || []),
-      ...(s.scripts || []),
-      ...(recommendation.checklist || []),
-    ].map((item) => cleanText(item)).filter(Boolean).slice(0, 3);
-    if (scripts.length > 0) {
-      result.push(subHeading("Как сказать"));
-      scripts.forEach((item) => result.push(bodyPara(item, { size: SZ.cell })));
-    }
-    if (result.length > 1) {
-      return result;
-    }
-    return [
-      blockHeading("🎯", "СИТУАЦИЯ ДНЯ"),
-      bodyPara("Нет надежно подтвержденной ситуации дня.", { color: COLORS.gray }),
-    ];
-  }
   const callRef = buildCallReference(s.dialogue_excerpt || s.supporting_quote || s.evidence_quote);
   const whatHappenedText = buildWhatHappenedText(s);
   const momentSummary = situationMomentSummary(s);

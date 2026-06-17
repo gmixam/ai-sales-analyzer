@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -18,6 +19,8 @@ from app.agents.calls.scheduled_reporting import ScheduledReviewableReportingSer
 from app.core_shared.config.settings import settings
 from app.core_shared.db.session import get_db
 from app.core_shared.workers.celery_app import (
+    MANAGER_DAILY_SLA_HARDCHECK_TASK,
+    MANAGER_DAILY_SLA_PRECHECK_TASK,
     SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
     SCHEDULED_REPORTING_TASK,
     celery_app,
@@ -40,6 +43,48 @@ def scan_scheduled_reviewable_reporting() -> dict:
     except Exception as exc:  # noqa: BLE001 - scheduled automation must notify and re-raise.
         _send_scheduled_reporting_alert(exc)
         raise
+
+
+@celery_app.task(name=MANAGER_DAILY_SLA_PRECHECK_TASK)
+def manager_daily_sla_precheck(*, report_date: str = "auto") -> dict[str, Any]:
+    """Run the safe manager_daily SLA precheck without starting report generation."""
+    return _run_manager_daily_sla_check(phase="precheck", report_date=report_date)
+
+
+@celery_app.task(name=MANAGER_DAILY_SLA_HARDCHECK_TASK)
+def manager_daily_sla_hardcheck(*, report_date: str = "auto") -> dict[str, Any]:
+    """Run the safe manager_daily hard SLA check without starting report generation."""
+    return _run_manager_daily_sla_check(phase="hard", report_date=report_date)
+
+
+def _run_manager_daily_sla_check(*, phase: str, report_date: str) -> dict[str, Any]:
+    """Delegate to the existing scheduled_reporting_preflight sla-check command logic."""
+    task_name = (
+        MANAGER_DAILY_SLA_HARDCHECK_TASK
+        if phase == "hard"
+        else MANAGER_DAILY_SLA_PRECHECK_TASK
+    )
+    started_at = datetime.now(UTC)
+    try:
+        from report_scripts import scheduled_reporting_preflight
+
+        result = scheduled_reporting_preflight.sla_check(
+            Namespace(date=report_date, phase=phase)
+        )
+    except Exception as exc:  # noqa: BLE001 - scheduled SLA checks must notify and fail visibly.
+        _send_manager_daily_sla_task_alert(exc, phase=phase, report_date=report_date)
+        raise
+
+    return {
+        "task": task_name,
+        "task_status": "completed",
+        "started_at": started_at.isoformat(),
+        "finished_at": datetime.now(UTC).isoformat(),
+        "phase": phase,
+        "report_date": report_date,
+        "billable_pipeline_started": False,
+        "sla_check": result,
+    }
 
 
 def _parse_report_date(value: str | None, timezone_name: str) -> date:
@@ -248,6 +293,49 @@ def _send_scheduled_reporting_alert(exc: Exception) -> dict[str, Any]:
     return attempt
 
 
+def _send_manager_daily_sla_task_alert(
+    exc: Exception,
+    *,
+    phase: str,
+    report_date: str,
+) -> dict[str, Any]:
+    """Send a short human-readable alert when the scheduled SLA task itself fails."""
+    level = "critical" if phase == "hard" else "warning"
+    event = "failed" if phase == "hard" else "blocked"
+    run_id = f"manager_daily_sla:{report_date}:{phase}"
+    attempt = send_run_alert(
+        event,
+        run_id=run_id,
+        status="failed",
+        title=f"manager_daily SLA {phase} task failed",
+        level=level,
+        requested_by="scheduled_manager_daily_sla",
+        scope={"preset": "manager_daily", "phase": phase, "report_date": report_date},
+        counts={},
+        errors=[f"{exc.__class__.__name__}: {exc}"],
+        details={"phase": "scheduled_reporting_preflight.sla-check"},
+        operator_summary="\n".join(
+            [
+                f"manager_daily SLA {phase} не завершился.",
+                "",
+                "Что проверить:",
+                "scheduled_reporting_preflight.sla-check, DB access, delivery config.",
+                "",
+                f"Run: {run_id}",
+            ]
+        ),
+    )
+    attempt["kind"] = "manager_daily_sla_check"
+    attempt["trigger"] = "task_exception"
+    attempt["severity"] = level
+    return attempt
+
+
 def get_registered_tasks() -> Sequence[str]:
     """Return registered bounded worker tasks."""
-    return (SCHEDULED_REPORTING_TASK, SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK)
+    return (
+        SCHEDULED_REPORTING_TASK,
+        SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
+        MANAGER_DAILY_SLA_PRECHECK_TASK,
+        MANAGER_DAILY_SLA_HARDCHECK_TASK,
+    )

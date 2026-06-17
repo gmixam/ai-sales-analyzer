@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,10 +13,14 @@ if str(CORE_ROOT) not in sys.path:
 
 from app.core_shared.config.settings import Settings  # noqa: E402
 from app.core_shared.exceptions import ConfigurationError  # noqa: E402
+from app.core_shared.workers import celery_app as celery_app_module  # noqa: E402
 from app.core_shared.workers.celery_app import (  # noqa: E402
     ANALYSIS_QUEUE,
     CALL_PROCESSING_QUEUE,
     DEFAULT_QUEUE,
+    MANAGER_DAILY_SLA_HARDCHECK_TASK,
+    MANAGER_DAILY_SLA_PRECHECK_TASK,
+    MANAGER_DAILY_SLA_TIMEZONE,
     SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
     SCHEDULED_REPORTING_TASK,
     build_beat_schedule,
@@ -67,6 +72,7 @@ def _base_settings(**overrides: object) -> Settings:
         "telegram_bot_token": "",
         "test_delivery_email_to": "",
         "test_delivery_telegram_chat_id": "",
+        "call_processing_client_timeout_sec": 180,
     }
     data.update(overrides)
     return Settings(**data)
@@ -86,7 +92,21 @@ def test_analysis_external_service_starts_without_upstream_provider_secrets() ->
 
     assert settings.app_service == "analysis"
     assert settings.call_processing_mode == "external_service"
+    assert settings.call_processing_client_timeout_sec == 180
     assert settings.onlinepbx_base_url == ""
+
+
+def test_call_processing_timeout_examples_recommend_analysis_runtime_value() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    if not (project_root / ".env.analysis.example").exists():
+        pytest.skip("repo-root env templates are not mounted in this container")
+    for relative_path in (
+        ".env.analysis.example",
+        ".env.example",
+        ".env.split.common.example",
+    ):
+        content = (project_root / relative_path).read_text(encoding="utf-8")
+        assert "CALL_PROCESSING_CLIENT_TIMEOUT_SEC=180" in content
 
 
 def test_analysis_service_rejects_missing_external_service_endpoint() -> None:
@@ -215,11 +235,15 @@ def test_celery_queue_routing_is_split_by_service_identity() -> None:
     assert build_task_routes("analysis")[SCHEDULED_REPORTING_TASK]["queue"] == ANALYSIS_QUEUE
     assert build_task_routes("monolith_legacy")[SCHEDULED_REPORTING_TASK]["queue"] == DEFAULT_QUEUE
     assert build_task_routes("analysis")[SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK]["queue"] == CALL_PROCESSING_QUEUE
+    assert build_task_routes("analysis")[MANAGER_DAILY_SLA_PRECHECK_TASK]["queue"] == ANALYSIS_QUEUE
+    assert build_task_routes("analysis")[MANAGER_DAILY_SLA_HARDCHECK_TASK]["queue"] == ANALYSIS_QUEUE
 
 
 def test_celery_beat_schedule_is_split_by_service_identity() -> None:
     analysis_schedule = build_beat_schedule("analysis")
     assert "scheduled-reviewable-reporting-scan" in analysis_schedule
+    assert "manager_daily_sla_precheck" in analysis_schedule
+    assert "manager_daily_sla_hardcheck" in analysis_schedule
     assert "scheduled-call-processing-daily-upstream" not in analysis_schedule
 
     disabled_call_processing_schedule = build_beat_schedule(
@@ -244,3 +268,45 @@ def test_celery_beat_schedule_is_split_by_service_identity() -> None:
         call_processing_schedule["scheduled-call-processing-daily-upstream"]["options"]["queue"]
         == CALL_PROCESSING_QUEUE
     )
+    assert "manager_daily_sla_precheck" not in call_processing_schedule
+    assert "manager_daily_sla_hardcheck" not in call_processing_schedule
+
+
+def test_manager_daily_sla_beat_registration_uses_almaty_business_hours() -> None:
+    analysis_schedule = build_beat_schedule("analysis")
+    precheck = analysis_schedule["manager_daily_sla_precheck"]
+    hardcheck = analysis_schedule["manager_daily_sla_hardcheck"]
+
+    assert MANAGER_DAILY_SLA_TIMEZONE == "Asia/Almaty"
+    assert precheck["task"] == MANAGER_DAILY_SLA_PRECHECK_TASK
+    assert precheck["kwargs"] == {"report_date": "auto"}
+    assert precheck["options"]["queue"] == ANALYSIS_QUEUE
+    assert str(getattr(precheck["schedule"], "_orig_minute")) == "30"
+    assert str(getattr(precheck["schedule"], "_orig_hour")) == "9"
+    assert str(getattr(precheck["schedule"], "_orig_day_of_week")) == "1-5"
+
+    assert hardcheck["task"] == MANAGER_DAILY_SLA_HARDCHECK_TASK
+    assert hardcheck["kwargs"] == {"report_date": "auto"}
+    assert hardcheck["options"]["queue"] == ANALYSIS_QUEUE
+    assert str(getattr(hardcheck["schedule"], "_orig_minute")) == "0"
+    assert str(getattr(hardcheck["schedule"], "_orig_hour")) == "10"
+    assert str(getattr(hardcheck["schedule"], "_orig_day_of_week")) == "1-5"
+
+
+def test_analysis_celery_app_uses_almaty_timezone_for_manager_daily_sla(monkeypatch) -> None:
+    monkeypatch.setattr(
+        celery_app_module,
+        "settings",
+        SimpleNamespace(
+            app_service="analysis",
+            redis_url="redis://:pass@localhost:6379/0",
+            call_processing_daily_upstream_enabled=False,
+            call_processing_daily_upstream_hour=0,
+            call_processing_daily_upstream_minute=0,
+            call_processing_daily_upstream_timezone="UTC",
+        ),
+    )
+
+    app = celery_app_module.create_celery_app()
+
+    assert app.conf.timezone == MANAGER_DAILY_SLA_TIMEZONE

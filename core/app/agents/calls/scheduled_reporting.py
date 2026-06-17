@@ -28,7 +28,7 @@ from app.core_shared.db.models import (
     ScheduledReportBatch,
     ScheduledReportDraft,
 )
-from app.core_shared.exceptions import ASAError, DeliveryError
+from app.core_shared.exceptions import ASAError
 
 SCHEDULED_REVIEWABLE_OPERATING_MODE = "scheduled_reviewable_reporting"
 SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE = ("daily", "weekly")
@@ -50,7 +50,7 @@ SCHEDULED_REVIEWABLE_BATCH_STATUSES = (
 SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "planned": ("queued", "failed", "paused"),
     "queued": ("running", "failed", "paused"),
-    "running": ("review_required", "failed", "paused"),
+    "running": ("review_required", "delivered", "failed", "paused"),
     "review_required": ("approved_for_delivery", "failed", "paused"),
     "approved_for_delivery": ("delivered", "failed"),
     "delivered": (),
@@ -60,16 +60,23 @@ SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
 SCHEDULED_REVIEWABLE_DEFAULT_EDITOR = "operator_ui"
 SCHEDULED_ANALYSIS_LOOKBACK_DAYS_ENV = "SCHEDULED_ANALYSIS_LOOKBACK_DAYS"
 SCHEDULED_ANALYSIS_DEFAULT_LOOKBACK_DAYS = 7
-SCHEDULED_MANAGER_DAILY_DUPLICATE_BATCH_STATUSES = (
+SCHEDULED_MANAGER_DAILY_OPEN_BATCH_STATUSES = (
     "planned",
     "queued",
     "running",
     "review_required",
-    "approved_for_delivery",
-    "delivered",
-    "failed",
     "paused",
 )
+SCHEDULED_MANAGER_DAILY_REPORTED_BATCH_STATUSES = (
+    "review_required",
+    "approved_for_delivery",
+    "delivered",
+)
+SCHEDULED_MANAGER_DAILY_REPORTED_DRAFT_STATUSES = (
+    "review_required",
+    "delivered",
+)
+MANAGER_DAILY_SLA_DEADLINE_TIME = time(10, 0)
 MANAGER_DAILY_EDITABLE_BLOCKS = (
     "top_summary",
     "focus_wording",
@@ -102,13 +109,14 @@ class ScheduledManagerDaySelection:
     selected_report_date: str | None
     skipped_empty_dates: list[str]
     skipped_already_reported_dates: list[str]
+    skipped_already_reported_details: list[dict[str, Any]]
     skipped_not_ready_dates: list[str]
     selection_reason: str
     scheduled_timezone: str
     scan_started_at: str
     lookback_days: int
 
-    def to_observability(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON shape expected by operators/tests."""
         return {
             "timezone": self.scheduled_timezone,
@@ -120,9 +128,16 @@ class ScheduledManagerDaySelection:
             "selected_report_date": self.selected_report_date,
             "skipped_empty_dates": list(self.skipped_empty_dates),
             "skipped_already_reported_dates": list(self.skipped_already_reported_dates),
+            "skipped_already_reported_details": [
+                dict(item) for item in self.skipped_already_reported_details
+            ],
             "skipped_not_ready_dates": list(self.skipped_not_ready_dates),
             "selection_reason": self.selection_reason,
         }
+
+    def to_observability(self) -> dict[str, Any]:
+        """Return the stable JSON shape expected by operators/tests."""
+        return self.to_dict()
 
 
 def _coerce_uuid_list(values: list[str]) -> list[str]:
@@ -173,6 +188,36 @@ def _scheduled_analysis_lookback_days() -> int:
     if parsed < 1:
         raise ASAError(f"{SCHEDULED_ANALYSIS_LOOKBACK_DAYS_ENV} must be a positive integer.")
     return parsed
+
+
+def _schedule_requires_review(schedule: ReportingSchedule) -> bool:
+    """Return whether the schedule should stop at operator review."""
+    return bool(getattr(schedule, "review_required", True))
+
+
+def _manager_daily_auto_delivery_enabled(schedule: ReportingSchedule) -> bool:
+    """Return True for production manager_daily delivery schedules."""
+    return (
+        str(getattr(schedule, "preset", "") or "").strip() == "manager_daily"
+        and not _schedule_requires_review(schedule)
+        and bool(getattr(schedule, "business_email_enabled", False))
+    )
+
+
+def _manager_daily_sla_deadline(*, planned_for: datetime, timezone_name: str) -> datetime:
+    """Return the manager_daily hard SLA deadline in UTC."""
+    local_planned = planned_for.astimezone(ZoneInfo(timezone_name))
+    local_deadline = datetime.combine(
+        local_planned.date(),
+        MANAGER_DAILY_SLA_DEADLINE_TIME,
+        tzinfo=ZoneInfo(timezone_name),
+    )
+    return local_deadline.astimezone(UTC)
+
+
+def _isoformat_utc(value: datetime | None) -> str | None:
+    """Serialize datetimes for JSON observability."""
+    return value.astimezone(UTC).isoformat() if value is not None else None
 
 
 def _candidate_dates_for_lookback(*, local_planned: datetime, rule: str, lookback_days: int) -> list[str]:
@@ -351,6 +396,7 @@ class ScheduledReviewableReportingService:
         report_period_rule: str,
         mode: str,
         business_email_enabled: bool,
+        review_required: bool = True,
     ) -> dict[str, Any]:
         """Create one bounded schedule."""
         resolve_report_preset(preset)
@@ -418,7 +464,7 @@ class ScheduledReviewableReportingService:
             report_period_rule=normalized_period_rule,
             mode=normalized_mode,
             business_email_enabled=bool(business_email_enabled),
-            review_required=True,
+            review_required=bool(review_required),
             next_run_at=next_local.astimezone(UTC) if enabled else None,
         )
         self.db.add(schedule)
@@ -631,15 +677,16 @@ class ScheduledReviewableReportingService:
             return
         if schedule.next_run_at > now_utc:
             return
+
+        if self._uses_manager_daily_candidate_selection(schedule=schedule):
+            self._run_due_manager_daily_schedule(schedule=schedule, now_utc=now_utc)
+            return
         if self._has_open_batch(schedule_id=schedule.id):
             schedule.last_planned_at = schedule.next_run_at
             schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
             return
 
         planned_for = schedule.next_run_at or now_utc
-        if self._uses_manager_daily_candidate_selection(schedule=schedule):
-            self._run_due_manager_daily_schedule(schedule=schedule, now_utc=now_utc)
-            return
         existing = self._get_batch_for_occurrence(schedule_id=schedule.id, planned_for=planned_for)
         if existing is not None:
             schedule.last_planned_at = planned_for
@@ -667,7 +714,7 @@ class ScheduledReviewableReportingService:
                 "manager_extensions": [],
             },
             business_email_enabled=bool(schedule.business_email_enabled),
-            review_required=True,
+            review_required=_schedule_requires_review(schedule),
             errors=[],
         )
         self.db.add(batch)
@@ -753,12 +800,17 @@ class ScheduledReviewableReportingService:
         """Execute one due manager_daily schedule through data-driven candidate selection."""
         planned_for = schedule.next_run_at or now_utc
         local_planned = planned_for.astimezone(ZoneInfo(schedule.timezone))
-        lookback_days = _scheduled_analysis_lookback_days()
-        candidate_dates = _candidate_dates_for_lookback(
-            local_planned=local_planned,
-            rule=schedule.report_period_rule,
-            lookback_days=lookback_days,
-        )
+        if schedule.report_period_rule == "previous_day":
+            lookback_days = 1
+            period = _compute_report_period(rule=schedule.report_period_rule, local_run_at=local_planned)
+            candidate_dates = [period.date_to]
+        else:
+            lookback_days = _scheduled_analysis_lookback_days()
+            candidate_dates = _candidate_dates_for_lookback(
+                local_planned=local_planned,
+                rule=schedule.report_period_rule,
+                lookback_days=lookback_days,
+            )
         scan_started_at = datetime.now(UTC).isoformat()
         for manager_id in list(schedule.manager_ids or []):
             selection = self._select_manager_day_candidate(
@@ -802,6 +854,7 @@ class ScheduledReviewableReportingService:
         )
         skipped_empty_dates: list[str] = []
         skipped_already_reported_dates: list[str] = []
+        skipped_already_reported_details: list[dict[str, Any]] = []
         skipped_not_ready_dates: list[str] = []
         selected_report_date: str | None = None
         selection_reason = "no_candidate_empty_window"
@@ -809,19 +862,32 @@ class ScheduledReviewableReportingService:
             if not interactions_by_day.get(candidate_date):
                 skipped_empty_dates.append(candidate_date)
                 continue
-            if self._has_manager_day_duplicate(
+            duplicate_diagnostics = self._manager_day_duplicate_diagnostics(
+                schedule_id=schedule.id,
                 department_id=schedule.department_id,
                 preset=schedule.preset,
                 manager_id=manager_id,
                 report_date=candidate_date,
-            ):
+            )
+            if duplicate_diagnostics["has_duplicate"]:
                 skipped_already_reported_dates.append(candidate_date)
+                skipped_already_reported_details.append(dict(duplicate_diagnostics))
                 continue
             if selected_report_date is None:
                 selected_report_date = candidate_date
-                selection_reason = "selected_oldest_unreported_date_with_calls"
+                selection_reason = (
+                    "selected_previous_day_with_calls"
+                    if schedule.report_period_rule == "previous_day"
+                    else "selected_oldest_unreported_date_with_calls"
+                )
         if selected_report_date is None:
-            if skipped_already_reported_dates and not skipped_empty_dates and not skipped_not_ready_dates:
+            if (
+                schedule.report_period_rule == "previous_day"
+                and skipped_empty_dates
+                and not skipped_already_reported_dates
+            ):
+                selection_reason = "no_candidate_empty_previous_day"
+            elif skipped_already_reported_dates and not skipped_empty_dates and not skipped_not_ready_dates:
                 selection_reason = "no_candidate_all_reported"
             elif skipped_already_reported_dates or skipped_not_ready_dates:
                 selection_reason = "no_candidate_after_skips"
@@ -831,6 +897,7 @@ class ScheduledReviewableReportingService:
             selected_report_date=selected_report_date,
             skipped_empty_dates=skipped_empty_dates,
             skipped_already_reported_dates=skipped_already_reported_dates,
+            skipped_already_reported_details=skipped_already_reported_details,
             skipped_not_ready_dates=skipped_not_ready_dates,
             selection_reason=selection_reason,
             scheduled_timezone=str(schedule.timezone),
@@ -872,37 +939,148 @@ class ScheduledReviewableReportingService:
     def _has_manager_day_duplicate(
         self,
         *,
+        schedule_id: UUID,
         department_id: UUID,
         preset: str,
         manager_id: str,
         report_date: str,
     ) -> bool:
         """Return True when a manager-day scheduled record already protects this key."""
+        return bool(
+            self._manager_day_duplicate_diagnostics(
+                schedule_id=schedule_id,
+                department_id=department_id,
+                preset=preset,
+                manager_id=manager_id,
+                report_date=report_date,
+            )["has_duplicate"]
+        )
+
+    def _manager_day_duplicate_diagnostics(
+        self,
+        *,
+        schedule_id: UUID,
+        department_id: UUID,
+        preset: str,
+        manager_id: str,
+        report_date: str,
+    ) -> dict[str, Any]:
+        """Return concrete duplicate blocker diagnostics for one manager-day key."""
+        diagnostics = self._empty_manager_day_duplicate_diagnostics(
+            schedule_id=schedule_id,
+            manager_id=manager_id,
+            report_date=report_date,
+        )
+        legacy_checker = self.__dict__.get("_has_manager_day_duplicate")
+        if legacy_checker is not None:
+            diagnostics["has_duplicate"] = bool(
+                legacy_checker(
+                    schedule_id=schedule_id,
+                    department_id=department_id,
+                    preset=preset,
+                    manager_id=manager_id,
+                    report_date=report_date,
+                )
+            )
+            if diagnostics["has_duplicate"]:
+                diagnostics["blocked_by_reason"] = "matching_legacy_duplicate_guard"
+            return diagnostics
+
+        duplicate_statuses = tuple(
+            dict.fromkeys(
+                [
+                    *SCHEDULED_MANAGER_DAILY_OPEN_BATCH_STATUSES,
+                    *SCHEDULED_MANAGER_DAILY_REPORTED_BATCH_STATUSES,
+                    "failed",
+                ]
+            )
+        )
         batches = (
             self.db.query(ScheduledReportBatch)
             .filter(
+                ScheduledReportBatch.schedule_id == schedule_id,
                 ScheduledReportBatch.department_id == department_id,
                 ScheduledReportBatch.preset == preset,
-                ScheduledReportBatch.status.in_(list(SCHEDULED_MANAGER_DAILY_DUPLICATE_BATCH_STATUSES)),
+                ScheduledReportBatch.status.in_(list(duplicate_statuses)),
             )
             .all()
         )
         for batch in batches:
-            if self._batch_matches_manager_day_key(
+            batch_status = str(batch.status or "")
+            batch_id = str(getattr(batch, "id", "") or "").strip() or None
+            batch_matches = self._batch_matches_manager_day_key(
                 batch=batch,
                 manager_id=manager_id,
                 report_date=report_date,
-            ):
-                return True
+            )
+            if batch_matches and batch_status in SCHEDULED_MANAGER_DAILY_OPEN_BATCH_STATUSES:
+                diagnostics.update(
+                    {
+                        "has_duplicate": True,
+                        "blocked_by_batch_id": batch_id,
+                        "blocked_by_batch_status": batch_status,
+                        "blocked_by_reason": "matching_open_batch",
+                        "match_source": "batch_key",
+                    }
+                )
+                return diagnostics
+            if batch_matches and batch_status in SCHEDULED_MANAGER_DAILY_REPORTED_BATCH_STATUSES:
+                diagnostics.update(
+                    {
+                        "has_duplicate": True,
+                        "blocked_by_batch_id": batch_id,
+                        "blocked_by_batch_status": batch_status,
+                        "blocked_by_reason": "matching_reported_batch",
+                        "match_source": "batch_key",
+                    }
+                )
+                return diagnostics
             for draft in self._load_batch_drafts(batch.id):
-                if self._draft_matches_manager_day_key(
+                if str(draft.status or "") not in SCHEDULED_MANAGER_DAILY_REPORTED_DRAFT_STATUSES:
+                    continue
+                draft_match_source = self._draft_manager_day_match_source(
                     draft=draft,
                     preset=preset,
                     manager_id=manager_id,
                     report_date=report_date,
-                ):
-                    return True
-        return False
+                )
+                if draft_match_source is not None:
+                    diagnostics.update(
+                        {
+                            "has_duplicate": True,
+                            "blocked_by_batch_id": batch_id,
+                            "blocked_by_batch_status": batch_status,
+                            "blocked_by_draft_id": (
+                                str(getattr(draft, "id", "") or "").strip() or None
+                            ),
+                            "blocked_by_draft_status": str(draft.status or ""),
+                            "blocked_by_reason": "matching_reported_draft",
+                            "match_source": draft_match_source,
+                        }
+                    )
+                    return diagnostics
+        return diagnostics
+
+    @staticmethod
+    def _empty_manager_day_duplicate_diagnostics(
+        *,
+        schedule_id: UUID,
+        manager_id: str,
+        report_date: str,
+    ) -> dict[str, Any]:
+        """Return the stable diagnostic shape for duplicate guard results."""
+        return {
+            "has_duplicate": False,
+            "blocked_by_batch_id": None,
+            "blocked_by_batch_status": None,
+            "blocked_by_draft_id": None,
+            "blocked_by_draft_status": None,
+            "blocked_by_reason": None,
+            "manager_id": manager_id,
+            "report_date": report_date,
+            "schedule_id": str(schedule_id),
+            "match_source": None,
+        }
 
     @staticmethod
     def _batch_matches_manager_day_key(
@@ -934,9 +1112,28 @@ class ScheduledReviewableReportingService:
         report_date: str,
     ) -> bool:
         """Match duplicate key fields embedded in draft group/payload metadata."""
+        return (
+            ScheduledReviewableReportingService._draft_manager_day_match_source(
+                draft=draft,
+                preset=preset,
+                manager_id=manager_id,
+                report_date=report_date,
+            )
+            is not None
+        )
+
+    @staticmethod
+    def _draft_manager_day_match_source(
+        *,
+        draft: ScheduledReportDraft,
+        preset: str,
+        manager_id: str,
+        report_date: str,
+    ) -> str | None:
+        """Return which draft metadata source matched the manager-day key."""
         group_key = str(draft.group_key or "")
         if group_key == f"{preset}:{manager_id}:{report_date}":
-            return True
+            return "draft_group_key"
         payload = dict(draft.generated_payload or {})
         meta = dict(payload.get("meta") or {})
         period = dict(meta.get("period") or {})
@@ -946,12 +1143,14 @@ class ScheduledReviewableReportingService:
             or str(period.get("date_from") or "").strip()
         )
         if payload_report_date != report_date:
-            return False
+            return None
         payload_manager_id = (
             str(meta.get("manager_id") or "").strip()
             or str(header.get("manager_id") or "").strip()
         )
-        return payload_manager_id == manager_id
+        if payload_manager_id == manager_id:
+            return "draft_payload_meta"
+        return None
 
     def _run_due_manager_day_selection(
         self,
@@ -965,6 +1164,11 @@ class ScheduledReviewableReportingService:
         if not report_date:
             return
         period = SchedulePeriod(date_from=report_date, date_to=report_date)
+        production_auto_delivery = _manager_daily_auto_delivery_enabled(schedule)
+        sla_deadline = _manager_daily_sla_deadline(
+            planned_for=planned_for,
+            timezone_name=str(schedule.timezone),
+        )
         filters = ReportRunFilters(
             manager_ids={selection.manager_id},
             date_from=period.date_from,
@@ -996,21 +1200,27 @@ class ScheduledReviewableReportingService:
                     mode=schedule.mode,
                     filters=filters,
                     model_override=None,
-                    send_email=False,
+                    send_email=production_auto_delivery,
                 )
             )
         except Exception as exc:
             self._transition_batch_status(batch, "failed")
             batch.failed_at = datetime.now(UTC)
             batch.errors = [f"{exc.__class__.__name__}: {exc}"]
-            batch.observability = self._with_candidate_selection_observability(
-                observability=dict(batch.observability or {}),
-                selection=selection,
+            batch.observability = self._with_manager_daily_sla_observability(
+                observability=self._with_candidate_selection_observability(
+                    observability=dict(batch.observability or {}),
+                    selection=selection,
+                ),
+                sla_deadline=sla_deadline,
+                review_required=_schedule_requires_review(schedule),
+                status="not_applicable" if _schedule_requires_review(schedule) else "blocked",
+                missed_reason="report_run_failed",
             )
             self.db.flush()
             return
 
-        batch.observability = self._with_candidate_selection_observability(
+        base_observability = self._with_candidate_selection_observability(
             observability=dict(result.get("observability") or {}),
             selection=selection,
         )
@@ -1021,35 +1231,365 @@ class ScheduledReviewableReportingService:
         batch.errors = list(result.get("errors") or [])
 
         drafts_created = 0
+        draft_assessments: list[dict[str, Any]] = []
+        rop_daily_delivery = dict(result.get("rop_daily_delivery") or {})
+        completed_at = datetime.now(UTC)
         for report in result.get("reports") or []:
             payload = dict(report.get("payload") or {})
             if not payload:
                 continue
+            assessment = self._assess_manager_daily_scheduled_delivery(
+                report=report,
+                production_auto_delivery=production_auto_delivery,
+                completed_at=completed_at,
+                sla_deadline=sla_deadline,
+            )
+            draft_delivery = self._with_manager_daily_draft_delivery_observability(
+                delivery=dict(report.get("delivery") or {}),
+                assessment=assessment,
+                rop_daily_delivery=rop_daily_delivery,
+            )
+            draft_errors = self._unique_errors(
+                [
+                    *list(report.get("errors") or []),
+                    *list(assessment.get("errors") or []),
+                ]
+            )
             draft = ScheduledReportDraft(
                 batch_id=batch.id,
                 department_id=schedule.department_id,
                 preset=schedule.preset,
-                group_key=str(report.get("group_key") or f"{schedule.preset}:{selection.manager_id}:{report_date}"),
-                status="review_required",
+                group_key=str(
+                    report.get("group_key")
+                    or f"{schedule.preset}:{selection.manager_id}:{report_date}"
+                ),
+                status=str(assessment["draft_status"]),
                 generated_payload=payload,
                 generated_blocks=extract_editable_blocks(preset=schedule.preset, payload=payload),
                 edited_blocks={},
                 edit_audit=[],
                 preview=dict(report.get("preview") or {}) or None,
                 artifact=dict(report.get("artifact") or {}) or None,
-                delivery=dict(report.get("delivery") or {}) or None,
-                errors=list(report.get("errors") or []),
+                delivery=draft_delivery,
+                errors=draft_errors,
             )
             self.db.add(draft)
             drafts_created += 1
+            draft_assessments.append(assessment)
 
-        next_batch_status = "review_required" if drafts_created > 0 else "failed"
+        if production_auto_delivery:
+            next_batch_status = self._manager_daily_production_batch_status(
+                drafts_created=drafts_created,
+                assessments=draft_assessments,
+            )
+        else:
+            next_batch_status = "review_required" if drafts_created > 0 else "failed"
+        batch.observability = self._with_manager_daily_batch_delivery_observability(
+            observability=base_observability,
+            assessments=draft_assessments,
+            drafts_created=drafts_created,
+            production_auto_delivery=production_auto_delivery,
+            sla_deadline=sla_deadline,
+            rop_daily_delivery=rop_daily_delivery,
+        )
+        batch.errors = self._unique_errors(
+            [
+                *list(batch.errors or []),
+                *[
+                    error
+                    for assessment in draft_assessments
+                    for error in list(assessment.get("errors") or [])
+                ],
+            ]
+        )
         self._transition_batch_status(batch, next_batch_status)
         if batch.status == "review_required":
             batch.review_required_at = datetime.now(UTC)
+        elif batch.status == "delivered":
+            batch.delivered_at = completed_at
         else:
             batch.failed_at = datetime.now(UTC)
         self.db.flush()
+
+    @staticmethod
+    def _unique_errors(values: list[Any]) -> list[str]:
+        """Return non-empty error strings without duplicates, preserving order."""
+        errors: list[str] = []
+        for value in values:
+            error = str(value or "").strip()
+            if error and error not in errors:
+                errors.append(error)
+        return errors
+
+    @staticmethod
+    def _manager_daily_report_gate_block_reason(report: dict[str, Any]) -> str | None:
+        """Return a stable blocker when manager-facing gates reject business delivery."""
+        gate = dict(report.get("manager_facing_completeness") or {})
+        strict_gate = dict(report.get("strict_report_day_gate") or {})
+        payload = dict(report.get("payload") or {})
+        meta = dict(payload.get("meta") or {})
+        if not gate:
+            gate = dict(meta.get("manager_facing_completeness") or {})
+        if not strict_gate:
+            strict_gate = dict(meta.get("strict_report_day_gate") or {})
+
+        if gate and not bool(gate.get("manager_report_allowed")):
+            return "manager_facing_gate_failed"
+        if strict_gate and not bool(strict_gate.get("manager_report_allowed")):
+            reason_codes = list(strict_gate.get("reason_codes") or [])
+            if reason_codes:
+                return "strict_report_day_gate_failed:" + ",".join(
+                    str(item) for item in reason_codes
+                )
+            return "strict_report_day_gate_failed"
+        if str(report.get("status") or "").strip() == "review_required":
+            errors = [str(item) for item in list(report.get("errors") or [])]
+            if any(item.startswith("manager_facing_gate_failed") for item in errors):
+                return "manager_facing_gate_failed"
+            if any(item.startswith("manager_daily_strict_report_day_failed") for item in errors):
+                return "strict_report_day_gate_failed"
+        return None
+
+    def _assess_manager_daily_scheduled_delivery(
+        self,
+        *,
+        report: dict[str, Any],
+        production_auto_delivery: bool,
+        completed_at: datetime,
+        sla_deadline: datetime,
+    ) -> dict[str, Any]:
+        """Classify one manager_daily report for scheduled batch/draft status."""
+        transport = dict((report.get("delivery") or {}).get("transport") or {})
+        email = dict(transport.get("email_delivery") or {})
+        resolved_email = dict(transport.get("resolved_email") or {})
+        primary_email = str(
+            resolved_email.get("primary_email") or email.get("primary_email") or ""
+        ).strip()
+        email_status = str(email.get("status") or "").strip()
+        email_error = str(email.get("error") or "").strip()
+        artifact = dict(report.get("artifact") or {})
+        pdf_filename = str(artifact.get("filename") or "").strip()
+        gate_block_reason = self._manager_daily_report_gate_block_reason(report)
+
+        if not production_auto_delivery:
+            return {
+                "sla_deadline_at": _isoformat_utc(sla_deadline),
+                "draft_status": "review_required",
+                "sla_status": "not_applicable",
+                "sla_missed": False,
+                "sla_missed_reason": None,
+                "manager_email_status": email_status or "skipped",
+                "delivered_at": None,
+                "late_delivery_at": None,
+                "errors": [],
+            }
+
+        blocker: str | None = None
+        if not pdf_filename:
+            blocker = "missing_pdf"
+        elif not primary_email:
+            blocker = "missing_recipient"
+        elif gate_block_reason:
+            blocker = gate_block_reason
+
+        if blocker:
+            missed = completed_at > sla_deadline
+            return {
+                "sla_deadline_at": _isoformat_utc(sla_deadline),
+                "draft_status": "review_required",
+                "sla_status": "blocked",
+                "sla_missed": missed,
+                "sla_missed_reason": blocker,
+                "manager_email_status": email_status or "blocked",
+                "delivered_at": None,
+                "late_delivery_at": None,
+                "errors": [blocker],
+            }
+
+        if email_status == "delivered":
+            late = completed_at > sla_deadline
+            return {
+                "sla_deadline_at": _isoformat_utc(sla_deadline),
+                "draft_status": "delivered",
+                "sla_status": "late" if late else "on_time",
+                "sla_missed": late,
+                "sla_missed_reason": "delivered_after_sla_deadline" if late else None,
+                "manager_email_status": "delivered",
+                "delivered_at": completed_at,
+                "late_delivery_at": completed_at if late else None,
+                "errors": [],
+            }
+
+        delivery_failed = email_status in {"failed", "blocked"} or bool(email_error)
+        reason = (
+            "manager_email_delivery_failed"
+            if delivery_failed
+            else "manager_email_not_delivered"
+        )
+        if email_error:
+            reason = f"{reason}:{email_error}"
+        missed = completed_at > sla_deadline
+        return {
+            "sla_deadline_at": _isoformat_utc(sla_deadline),
+            "draft_status": "failed" if delivery_failed else "review_required",
+            "sla_status": "blocked" if delivery_failed else "missed_pending",
+            "sla_missed": missed,
+            "sla_missed_reason": reason,
+            "manager_email_status": email_status or "not_started",
+            "delivered_at": None,
+            "late_delivery_at": None,
+            "errors": [reason],
+        }
+
+    @staticmethod
+    def _with_manager_daily_draft_delivery_observability(
+        *,
+        delivery: dict[str, Any],
+        assessment: dict[str, Any],
+        rop_daily_delivery: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach manager_daily SLA/delivery fields to draft.delivery JSON."""
+        merged = dict(delivery or {})
+        delivered_at = assessment.get("delivered_at")
+        late_delivery_at = assessment.get("late_delivery_at")
+        merged.update(
+            {
+                "sla_deadline_at": assessment.get("sla_deadline_at"),
+                "delivered_at": (
+                    _isoformat_utc(delivered_at)
+                    if isinstance(delivered_at, datetime)
+                    else None
+                ),
+                "sla_status": assessment.get("sla_status"),
+                "sla_missed": bool(assessment.get("sla_missed")),
+                "sla_missed_reason": assessment.get("sla_missed_reason"),
+                "late_delivery_at": (
+                    _isoformat_utc(late_delivery_at)
+                    if isinstance(late_delivery_at, datetime)
+                    else None
+                ),
+                "manager_email_status": assessment.get("manager_email_status"),
+                "rop_email_status": str(rop_daily_delivery.get("status") or "skipped"),
+                "rop_daily_delivery": rop_daily_delivery,
+            }
+        )
+        return merged
+
+    @staticmethod
+    def _manager_daily_production_batch_status(
+        *,
+        drafts_created: int,
+        assessments: list[dict[str, Any]],
+    ) -> str:
+        """Derive the scheduled batch status from production delivery outcomes."""
+        if drafts_created <= 0 or not assessments:
+            return "failed"
+        statuses = {str(item.get("draft_status") or "") for item in assessments}
+        if statuses == {"delivered"}:
+            return "delivered"
+        if statuses and statuses.issubset({"failed"}):
+            return "failed"
+        return "review_required"
+
+    def _with_manager_daily_batch_delivery_observability(
+        self,
+        *,
+        observability: dict[str, Any],
+        assessments: list[dict[str, Any]],
+        drafts_created: int,
+        production_auto_delivery: bool,
+        sla_deadline: datetime,
+        rop_daily_delivery: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach aggregate manager_daily SLA/delivery fields to batch observability."""
+        merged = dict(observability or {})
+        if not production_auto_delivery:
+            return self._with_manager_daily_sla_observability(
+                observability=merged,
+                sla_deadline=sla_deadline,
+                review_required=True,
+                status="not_applicable",
+                missed_reason=None,
+            )
+        if not assessments:
+            now_utc = datetime.now(UTC)
+            return self._with_manager_daily_sla_observability(
+                observability=merged,
+                sla_deadline=sla_deadline,
+                review_required=False,
+                status="missed_pending" if now_utc > sla_deadline else "blocked",
+                missed_reason="no_deliverable_report",
+                manager_email_status="not_started",
+                rop_email_status=str(rop_daily_delivery.get("status") or "skipped"),
+                sla_missed=now_utc > sla_deadline,
+            )
+
+        delivered_assessments = [
+            item for item in assessments if str(item.get("draft_status") or "") == "delivered"
+        ]
+        first = assessments[0]
+        delivered_at = first.get("delivered_at")
+        late_delivery_at = first.get("late_delivery_at")
+        if len(delivered_assessments) == len(assessments):
+            status = (
+                "late"
+                if any(bool(item.get("sla_missed")) for item in assessments)
+                else "on_time"
+            )
+            missed = status == "late"
+            reason = "delivered_after_sla_deadline" if missed else None
+        else:
+            status = (
+                "blocked"
+                if any(str(item.get("sla_status") or "") == "blocked" for item in assessments)
+                else "missed_pending"
+            )
+            missed = any(bool(item.get("sla_missed")) for item in assessments)
+            reason = str(first.get("sla_missed_reason") or "manager_daily_delivery_blocked")
+        return self._with_manager_daily_sla_observability(
+            observability=merged,
+            sla_deadline=sla_deadline,
+            review_required=False,
+            status=status,
+            missed_reason=reason,
+            manager_email_status=str(first.get("manager_email_status") or "unknown"),
+            rop_email_status=str(rop_daily_delivery.get("status") or "skipped"),
+            sla_missed=missed,
+            delivered_at=delivered_at if isinstance(delivered_at, datetime) else None,
+            late_delivery_at=late_delivery_at if isinstance(late_delivery_at, datetime) else None,
+        )
+
+    @staticmethod
+    def _with_manager_daily_sla_observability(
+        *,
+        observability: dict[str, Any],
+        sla_deadline: datetime,
+        review_required: bool,
+        status: str,
+        missed_reason: str | None,
+        manager_email_status: str | None = None,
+        rop_email_status: str | None = None,
+        sla_missed: bool | None = None,
+        delivered_at: datetime | None = None,
+        late_delivery_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Return observability with stable SLA/delivery keys."""
+        merged = dict(observability or {})
+        missed = bool(sla_missed) if sla_missed is not None else False
+        merged.update(
+            {
+                "sla_deadline_at": _isoformat_utc(sla_deadline),
+                "delivered_at": _isoformat_utc(delivered_at),
+                "sla_status": status,
+                "sla_missed": missed,
+                "sla_missed_reason": missed_reason,
+                "late_delivery_at": _isoformat_utc(late_delivery_at),
+                "manager_email_status": manager_email_status,
+                "rop_email_status": rop_email_status,
+                "review_required": bool(review_required),
+            }
+        )
+        return merged
 
     def _record_skipped_manager_day_selection(
         self,
@@ -1074,15 +1614,29 @@ class ScheduledReviewableReportingService:
         batch.queued_at = datetime.now(UTC)
         self._transition_batch_status(batch, "running")
         batch.started_at = datetime.now(UTC)
-        batch.observability = self._with_candidate_selection_observability(
-            observability={
-                "status": "skipped",
-                "run_state": "skipped_without_manager_report",
-                "blockers": [],
-                "alerts": [],
-                "summary": {"alerts": {"attempted": 0, "statuses": []}},
-            },
-            selection=selection,
+        skip_reason = (
+            "no_calls_for_report_day"
+            if selection.selection_reason == "no_candidate_empty_previous_day"
+            else selection.selection_reason
+        )
+        batch.observability = self._with_manager_daily_sla_observability(
+            observability=self._with_candidate_selection_observability(
+                observability={
+                    "status": "skipped",
+                    "run_state": "skipped_without_manager_report",
+                    "blockers": [],
+                    "alerts": [],
+                    "summary": {"alerts": {"attempted": 0, "statuses": []}},
+                },
+                selection=selection,
+            ),
+            sla_deadline=_manager_daily_sla_deadline(
+                planned_for=planned_for,
+                timezone_name=str(schedule.timezone),
+            ),
+            review_required=_schedule_requires_review(schedule),
+            status="not_applicable",
+            missed_reason=skip_reason,
         )
         batch.diagnostics = {"scheduled_candidate_selection": selection.to_observability()}
         batch.errors = [selection.selection_reason]
@@ -1119,7 +1673,7 @@ class ScheduledReviewableReportingService:
                 "manager_extensions": [],
             },
             business_email_enabled=bool(schedule.business_email_enabled),
-            review_required=True,
+            review_required=_schedule_requires_review(schedule),
             observability=observability,
             diagnostics=(
                 {"scheduled_candidate_selection": selection.to_observability()}
@@ -1166,7 +1720,14 @@ class ScheduledReviewableReportingService:
             .filter(
                 ScheduledReportBatch.schedule_id == schedule_id,
                 ScheduledReportBatch.status.in_(
-                    ["planned", "queued", "running", "review_required", "approved_for_delivery"]
+                    [
+                        "planned",
+                        "queued",
+                        "running",
+                        "review_required",
+                        "approved_for_delivery",
+                        "paused",
+                    ]
                 ),
             )
             .first()
@@ -1196,7 +1757,14 @@ class ScheduledReviewableReportingService:
             .filter(
                 ScheduledReportBatch.schedule_id == schedule_id,
                 ScheduledReportBatch.status.in_(
-                    ["planned", "queued", "running", "review_required", "approved_for_delivery"]
+                    [
+                        "planned",
+                        "queued",
+                        "running",
+                        "review_required",
+                        "approved_for_delivery",
+                        "paused",
+                    ]
                 ),
             )
             .order_by(ScheduledReportBatch.created_at.desc())
@@ -1316,7 +1884,7 @@ class ScheduledReviewableReportingService:
             "report_period_rule": schedule.report_period_rule,
             "mode": schedule.mode,
             "business_email_enabled": bool(schedule.business_email_enabled),
-            "review_required": True,
+            "review_required": _schedule_requires_review(schedule),
             "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
             "last_planned_at": schedule.last_planned_at.isoformat() if schedule.last_planned_at else None,
             "deleted": schedule.deleted_at is not None,

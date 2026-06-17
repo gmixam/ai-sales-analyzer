@@ -1,16 +1,17 @@
 # CallBreakdownComposer v2 Prompt Contract
 
-Purpose: compose one manager-facing "Разбор звонка" block from one already
-selected verified call. This is an LLM3 report-composition contract, not a
-primary call-analysis contract.
+Purpose: compose one manager-facing "Разбор звонка" block from the same case
+selected by LLM3 daily `focus_case_selection`. This is an LLM3
+report-composition contract, not a primary call-analysis contract.
 
 The v2 goal is to preserve meaning. Do not force the call into a mechanical
 report table first. Build a coherent narrative explanation of the call, then
 derive compatibility rows from the same turning points.
 
-LLM3 is a bounded narrative composer. The selected call, Situation Day evidence,
-proof cards, proof status/strength, stage, quotes, facts, dates/deadlines, and
-claim are already chosen upstream. Do not replace, strengthen, broaden, or
+LLM3 is a bounded narrative composer for the already selected daily case. The
+selected call, `focus_case_selection`, Situation Day evidence, proof cards,
+proof status/strength, stage, quotes, facts, dates/deadlines, and claim are
+already chosen by the daily LLM3 flow. Do not replace, strengthen, broaden, or
 reinterpret them; only organize the provided proof-backed material into a clear
 manager-facing walkthrough.
 
@@ -32,8 +33,12 @@ English, but write `call_story`, `what_manager_missed`, `better_path`,
 The model receives a bounded JSON payload with:
 
 - `selected_call`: call identity and call reference.
+- `focus_case_selection`: the daily decision object with
+  `case_status=strong|workable|weak_blocked|blocked_mismatch`,
+  `focus_stage_code`, `selected_call_id`, and `selected_case_stage_code`.
 - `situation_evidence_packet`: verified Situation Day evidence for the same
   call.
+- Optional `call_breakdown_seed` from `SituationDayDailyComposer v2`.
 - `transcript_scenes`: bounded grounded scenes and turns.
 - `llm2_facts`: persisted call facts and report evidence.
 - `llm2_facts.proof_cards`: bounded proof cards only; do not infer from absent
@@ -44,6 +49,16 @@ The model receives a bounded JSON payload with:
 
 Treat `transcript_scenes` as the main evidence source. Use only facts present
 in the input.
+
+For a visible breakdown, `focus_case_selection.case_status` must be `strong` or
+`workable`, `selected_call.call_id` must equal
+`focus_case_selection.selected_call_id`, and output `stage_code` must equal
+`focus_case_selection.selected_case_stage_code` and
+`focus_case_selection.focus_stage_code`.
+
+If `case_status` is `weak_blocked` or `blocked_mismatch`, return
+`status="insufficient"` or `no_data` with blocked diagnostics. Do not choose a
+different call or another stage to keep the block visible.
 
 ## Output
 
@@ -60,6 +75,8 @@ Return exactly one JSON object compatible with the Report Layer:
   "client_call_reference": "string or null",
   "stage_code": "string or null",
   "stage_name": "string or null",
+  "case_status": "strong | workable | weak_blocked | blocked_mismatch | null",
+  "focus_case_selection": {},
   "summary_line": "short call reference and why this call is being broken down",
   "source_note": "report_evidence.call_breakdown_composer.v2",
   "call_breakdown_source": "report_evidence.call_breakdown_composer.v2",
@@ -106,6 +123,10 @@ Return exactly one JSON object compatible with the Report Layer:
 
 - Explain the call in a way a manager can understand without remembering it.
 - Write the explanation in Russian, in a manager-facing coaching tone.
+- Keep the breakdown tied to the same daily focus stage and selected call from
+  `focus_case_selection`.
+- For `case_status=workable`, use cautious wording: `в доступной сцене не
+  видно...`, `судя по фрагменту...`, `этот рабочий пример показывает...`.
 - Use paragraphs and turning points, not a checklist tone.
 - Do not duplicate Situation Day as the whole block. Situation Day names the
   daily issue; Call Breakdown should show how the issue unfolded in this call.
@@ -127,6 +148,10 @@ Return exactly one JSON object compatible with the Report Layer:
 - A verified row, moment, or narrative claim must have either a grounded proof
   fragment copied from the input or a `proof_id` copied from a provided proof
   card. If you cannot attach one of those, return `status="insufficient"`.
+- `absence_in_context` is allowed only when the input contains a grounded scene
+  where the missing action would have appeared. The claim must be worded as an
+  observation about the available scene, not as an absolute fact about the whole
+  call.
 - If speaker attribution is weak, use `unknown`, `side_1`, or `side_2`.
 - A quote may support context without directly proving a manager gap. If the
   proof is sequence/absence, explain that in `proof_explanation`.
@@ -154,14 +179,18 @@ fields are the preferred rendering surface.
 For `status="verified"`:
 
 1. `call_id` matches `selected_call.call_id`.
-2. `call_story`, `what_manager_missed`, and `better_path` are non-empty.
-3. There are 1 to 4 `key_turning_points`; complex B2B calls require at least
+2. `call_id` matches `focus_case_selection.selected_call_id`.
+3. `stage_code` matches `focus_case_selection.selected_case_stage_code` and
+   `focus_case_selection.focus_stage_code`.
+4. `focus_case_selection.case_status` is `strong` or `workable`.
+5. `call_story`, `what_manager_missed`, and `better_path` are non-empty.
+6. There are 1 to 4 `key_turning_points`; complex B2B calls require at least
    `composition_rules.verified_min_moments` when enough scenes exist.
-4. Every turning point has grounded dialogue or evidence refs.
-5. `moments` and `rows` are present and align with the turning points.
-6. Every row/moment/narrative claim carries a grounded proof fragment or copied
+7. Every turning point has grounded dialogue or evidence refs.
+8. `moments` and `rows` are present and align with the turning points.
+9. Every row/moment/narrative claim carries a grounded proof fragment or copied
    `proof_id`; otherwise the output is not verified.
-7. The block explains manager behavior, customer context, and next better path.
+10. The block explains manager behavior, customer context, and next better path.
 
 If the evidence cannot support the narrative, return `status="insufficient"`
 and explain the failed checks in `selection_diagnostics.quality_gate`.

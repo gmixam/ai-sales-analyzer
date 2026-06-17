@@ -16,6 +16,9 @@ wired into runtime by itself. The current production prompt remains
 - Direct quotes must be exact transcript substrings.
 - Use `unknown` when speaker attribution is not reliable.
 - No report block selection in any pass.
+- No day-level educational case selection in any pass. LLM-2 may prepare
+  per-call evidence/candidates for `situation_day` and `call_breakdown`, but
+  only LLM-3 chooses the day's case from the score-derived focus.
 - `semantic_case`, `block_candidates`, `report_block_fit`, and legacy report
   arrays are compatibility views, not source of truth.
 - Source of truth order is:
@@ -40,6 +43,7 @@ Common enums:
   "claim_type": ["manager_gap", "customer_signal", "follow_up", "business_outcome", "strong_practice"],
   "proof_type": ["direct_quote", "sequence_inference", "absence_based"],
   "proof_status": ["proven", "softened", "rejected", "insufficient"],
+  "case_status_candidate": ["strong", "workable", "weak_blocked"],
   "coaching_decision": ["improve", "maintain", "no_comment"],
   "sales_scoring_scope": ["full", "partial", "none", "unclear"],
   "scope_reason": [
@@ -395,6 +399,11 @@ Fail-closed behavior:
 - If counter-evidence weakens the claim, use `softened` or `rejected`.
 - If absence is not visible from the available dialogue sequence, use
   `proof_status=insufficient` and `reject_reason=unsupported_absence`.
+- `absence_based` / compatibility `absence_in_context` is allowed only when the
+  proof card points to a bounded grounded scene where the missing action would
+  have appeared, and no stronger counter-evidence shows the manager did it.
+  Use cautious language: `в доступной сцене не видно...`, not an absolute claim
+  about the whole call.
 
 ## LLM-2D: Recommendations / Universal Evidence Pack
 
@@ -450,7 +459,24 @@ Required output:
     "scenes": [],
     "evidence_ledger": [],
     "business_outcome_signal": {},
-    "quote_bank": []
+    "quote_bank": [],
+    "report_case_candidates": [
+      {
+        "candidate_id": "case_001",
+        "call_id": "string",
+        "stage_code": "string",
+        "block_targets": ["situation_day", "call_breakdown"],
+        "claim_type": "manager_gap|strong_practice",
+        "case_status_candidate": "strong|workable|weak_blocked",
+        "evidence_level": "strong|workable|weak",
+        "wording_mode": "confident|cautious|blocked",
+        "proof_ids": ["proof_001"],
+        "scene_ids": ["scene_001"],
+        "evidence_ids": ["ev_001"],
+        "selection_notes_for_llm3": "string",
+        "rejection_reasons": []
+      }
+    ]
   },
   "final_normalized_analysis": {
     "classification": {},
@@ -592,12 +618,23 @@ Downstream boundary:
 
 - Report Layer must display only the prepared `coaching_decision`; it must not
   build a fallback recommendation from scores, gaps, statuses, or templates.
+- LLM-2D may expose `report_case_candidates` and compatibility
+  `semantic_case`/`block_candidates`/`report_block_fit` evidence for downstream
+  report composition. These are per-call candidates, not final daily blocks.
 - LLM-3 may group, shorten, deduplicate, or select existing LLM-2D
-  `improve`/`maintain` decisions for day-level reporting.
+  `improve`/`maintain` decisions and report-case candidates for day-level
+  reporting.
+- LLM-3 owns the semantic choice of the educational case of the day:
+  it receives the score-derived `daily_focus.stage_code`, tries a `strong`
+  same-stage case first, may choose a `workable` same-stage case with cautious
+  wording, and returns `weak_blocked` when no readable same-stage case exists.
 - LLM-3 must not invent `Улучшить` when LLM-2D returned `maintain` or
   `no_comment`, upgrade `maintain` into a criticism, create a recommendation
   when LLM-2D gave none, or add sales-push advice for service/out-of-scope
   scenarios.
+- LLM-3 must not use a candidate from another stage as the ordinary
+  `СИТУАЦИЯ ДНЯ` / `РАЗБОР ЗВОНКА`. A stage mismatch becomes
+  `blocked_mismatch`, not a visible fallback.
 
 ## Prompt Split
 
@@ -660,6 +697,11 @@ Mapping:
   `coaching_decision.decision=improve`.
 - `LLM-2D.universal_evidence_pack.proof_cards` -> future normalized proof
   pool for validators, registry, router, and report layer.
+- `LLM-2D.universal_evidence_pack.report_case_candidates` plus compatibility
+  `report_evidence.semantic_case`, `report_block_fit`, `block_candidates`, and
+  `manager_coaching_moments` -> LLM-3 input for `focus_case_selection`.
+  Candidate-level `case_status_candidate` may guide LLM-3, but LLM-3 returns
+  the final `case_status`.
 
 Compatibility views may be generated from proof cards, but they must never be
 treated as stronger than their source proof.

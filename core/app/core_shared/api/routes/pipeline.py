@@ -146,6 +146,7 @@ class CreateReportScheduleRequest(BaseModel):
     report_period_rule: str
     mode: str
     business_email_enabled: bool = False
+    review_required: bool = True
 
 
 class ToggleReportScheduleRequest(BaseModel):
@@ -568,6 +569,7 @@ async def create_calls_report_schedule(request: CreateReportScheduleRequest) -> 
                 report_period_rule=request.report_period_rule,
                 mode=request.mode,
                 business_email_enabled=request.business_email_enabled,
+                review_required=request.review_required,
             )
             return {"status": "created", "schedule": schedule}
     except ASAError as exc:

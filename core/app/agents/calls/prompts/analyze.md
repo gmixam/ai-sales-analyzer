@@ -66,6 +66,22 @@ In addition to all existing required MVP-1 fields, return these top-level fields
 
 This package is additive. It must not change checklist scoring, stage applicability, required MVP-1 fields, or the existing `follow_up` contract.
 
+LLM2 responsibility boundary:
+- Prepare per-call report evidence only. Do not choose the day's educational
+  case, final `СИТУАЦИЯ ДНЯ`, or final `РАЗБОР ЗВОНКА` across calls.
+- `semantic_case`, `report_block_fit`, `block_candidates`,
+  `situation_candidates`, and `manager_coaching_moments` are candidate/evidence
+  packages for LLM3 and validators.
+- For usable `situation_day` and `call_breakdown` candidates, include the
+  dominant `stage_code`, proof/counter-evidence, and optional additive
+  `case_status_candidate`: `strong | workable | weak_blocked`.
+- `case_status_candidate=strong` means this call has same-stage, grounded,
+  high-value teaching material. `workable` means the scene is readable and
+  useful but needs cautious wording. `weak_blocked` means the call should not be
+  used as a visible teaching case without more evidence.
+- Never promote a candidate only because a stage score is low. Candidate status
+  must come from transcript-grounded evidence and counter-evidence review.
+
 ### Grounding rules
 - Use only the transcript and provided segments/metadata.
 - Contact/client name is stricter than other facts: fill `call.contact_name` and `report_evidence.call_report_summary.client_display_name` only when the client's name, FIO, or safe name fragment is explicitly spoken in the STT transcript or STT segments. Never use Bitrix/CRM/telephony metadata name fields such as `metadata.contact_name`, `contact_label`, `customer_name`, `client_name`, `client_display_name`, or similar fields as the source for a client name. If the transcript/segments do not clearly prove the name, use `null`. Phone/date/time may still come from metadata.
@@ -83,6 +99,17 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - For `business_outcome.evidence_quote`, copy an exact transcript substring or set it to `null`.
 - Never paraphrase `business_outcome.evidence_quote`; put interpretation only in `reason`.
 - If a useful candidate depends on an absence, use `coaching_moment.evidence_type=absence_in_context` and phrase it cautiously: `в доступной записи/фрагменте не зафиксировано...`.
+- `absence_in_context` is an LLM evidence pattern, not a deterministic fallback.
+  Use it only when a grounded scene shows the relevant dialogue window and the
+  missing manager action is visible from that window. Acceptable basis:
+  a bounded scene before the manager moved to presentation, next step, or close;
+  no question about the specific need/process/timing/DM criteria in that scene;
+  no stronger counter-evidence elsewhere in the provided transcript. Word it as
+  `в доступной сцене не видно...` or `в доступном фрагменте не зафиксировано...`,
+  never as an absolute claim about the whole call.
+- If an absence claim is not grounded in a readable scene, set the candidate to
+  `usable_in_report=false` or `case_status_candidate=weak_blocked`; do not turn
+  a low score into an absence proof.
 - If a useful candidate exists but there is no transcript-grounded quote/fragment and no careful absence/inferred coaching moment, set `evidence_quality` to `insufficient` and `usable_in_report=false`.
 - Do not invent quotes, client phrases, manager phrases, timestamps, names, or facts.
 - Do not paraphrase as a quote. Put interpretation in `meaning`, `what_happened`, `what_it_means`, `what_was_missing`, `what_better`, or similar explanatory fields.
@@ -119,6 +146,8 @@ This package is additive. It must not change checklist scoring, stage applicabil
 - `semantic_case.report_block_fit.*.coaching_moment.proof_type`: `direct_gap | absence_in_context | sequence_inference | context_support`
 - `semantic_case.report_block_fit.*.coaching_moment.quote_role`: `proves_gap | supports_context | counter_evidence | not_applicable`
 - `semantic_case.report_block_fit.*.coaching_moment.confidence`: `high | medium | low`
+- `semantic_case.report_block_fit.*.case_status_candidate`: `strong | workable | weak_blocked`
+- `block_candidates.*.case_status_candidate`: `strong | workable | weak_blocked`
 - `block_candidates` keys: `situation_day | call_breakdown | voice_of_customer | money_on_table | tomorrow_follow_up | tomorrow_challenge | call_list_context`
 - `block_candidates.*.role`: `coaching_problem | customer_signal | follow_up_action | neutral_summary | strong_practice | commercial_opportunity | skill_challenge | call_list_context`
 - `block_candidates.*.title_mode`: `problem | neutral | positive`
@@ -429,6 +458,10 @@ Semantic-case rules:
 - Keep `recommended_next_action` concrete and operational: what to do next or what to coach, not a vague principle.
 - For every usable `semantic_case`, return `report_block_fit` with all five block keys: `situation_day`, `call_breakdown`, `voice_of_customer`, `additional_situations`, `call_tomorrow`.
 - `report_block_fit` is a machine-readable suitability signal for one call, not a final report decision. The reporting layer will compare all calls and select the best ones.
+- LLM3, not LLM2 and not the Report Layer, chooses the final educational case
+  of the day from these per-call candidates using the score-derived daily focus.
+  LLM2 must not label any call as "the situation of the day"; it may only say
+  whether this call is a strong/workable/blocked candidate for a specific stage.
 - Each `report_block_fit.*.score` is an integer from 0 to 100. Use 80-100 for strong fit, 50-79 for usable but secondary fit, 1-49 for weak fit, and 0 for not fit.
 - For each relevant `fit=true` block item, fill `block_role`, `title_mode`, `evidence_target`, `gap_proven`, and `coaching_moment`. Use `problem_fit` for problem-oriented blocks and `null` for neutral customer/follow-up blocks.
 - For `fit=false`, irrelevant, or `reason_code=not_relevant_for_block` block items, set `score=0` and prefer `coaching_moment:null`. Only fill `coaching_moment` on a `fit=false` item when there is still a real, grounded caution the reporting layer may inspect.
@@ -438,6 +471,10 @@ Semantic-case rules:
 - `coaching_moment.supporting_quote` is optional only for `absence_in_context` and `inferred_from_dialogue`. Use it only for a short exact transcript substring. Set it to `null` for absence or inferred cases.
 - `coaching_moment.evidence_type=direct_quote` means `supporting_quote` is required, non-empty, and copied verbatim from the transcript. If the quote is approximate, paraphrased, translated, reconstructed, or copied from prompt examples, use `supporting_quote:null` with `inferred_from_dialogue` / `absence_in_context`, or set `coaching_moment:null` for a not-fit block.
 - `coaching_moment.evidence_type=absence_in_context` means the issue is something not seen in the available record. Use careful wording such as `в доступной записи не зафиксировано...`; do not claim the manager never did it outside the available audio/text.
+- For `absence_in_context`, the `proof_explanation` must name the bounded scene
+  and the transition that makes the absence meaningful. If the transcript later
+  contains the missing action, list that phrase in `counter_evidence` and do not
+  mark the manager-gap block as fit.
 - `coaching_moment.evidence_type=inferred_from_dialogue` means the conclusion follows from the dialogue pattern, but is not a direct quote. Keep `confidence=medium` or `low` unless the transcript is very clear.
 - `block_role` explains the role of the block, not the call outcome:
   - `coaching_problem`: show what went wrong or what was missed.
@@ -619,7 +656,15 @@ Block-candidate rules:
   one of the canonical checklist stage codes. Do not make the Reporting layer
   infer the stage from text. For `fit=false`, `stage_code` may be `null`.
 - `situation_day`: use `fit=true` only for a strong teachable case. Usually this is `role=coaching_problem` and `title_mode=problem`; a strong-practice case is allowed only when the block can render it explicitly as positive. Provide a specific thesis, what happened, why it matters, what was missing or what worked well, and better next action. Do not make `what_was_missing` and `better_next_action` identical.
+- `situation_day.case_status_candidate`: use `strong` when direct proof or a
+  very clear scene supports the teaching point; `workable` when the scene is
+  coherent but the claim relies on `absence_in_context` or sequence/context and
+  needs cautious wording; `weak_blocked` when the candidate should not be
+  selected for visible daily coaching.
 - `call_breakdown`: provide one to three `moments`; each moment needs `situation`, `essence`, `proof`, and `better_action`. If the same call is also useful for `situation_day`, go deeper and do not repeat the same wording.
+- `call_breakdown.case_status_candidate` follows the same
+  `strong|workable|weak_blocked` meaning. A `workable` breakdown is allowed only
+  when the scene is readable and the wording stays cautious.
 - `voice_of_customer`: show a real customer signal. Do not force a manager mistake. Prefer a client quote; if no direct quote exists, use `proof_type=context_support` or an indirect explanation and say why.
 - `money_on_table`: use `fit=true` only for a real commercial bridge to revenue, payment, invoice, upsell, cross-sell, or next commercial step. Do not invent money potential from generic interest or service-only calls.
 - `tomorrow_follow_up`: provide a client-specific next action, reason to follow up, manager opening phrase, and risk if no follow-up happens. Do not create follow-up for refusal/not suitable unless there is explicit allowed continuation.

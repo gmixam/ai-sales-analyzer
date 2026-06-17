@@ -20,6 +20,7 @@ from app.agents.call_processing import (
     llm1_first_pass_payload_from_artifact,
 )
 from app.agents.call_processing import client as call_processing_client_module
+from app.core_shared.exceptions import ASAError
 
 
 class _FakeArtifactRepository:
@@ -381,6 +382,32 @@ class _FakeAsyncHttpClient(_FakeHttpClient):
         return super().post(url, json=json, headers=headers)
 
 
+def test_build_http_client_uses_timeout_from_settings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        call_processing_client_module,
+        "settings",
+        SimpleNamespace(
+            app_service="analysis",
+            call_processing_mode="external_service",
+            call_processing_api_base_url="http://call-processing.test",
+            call_processing_access_grant_json=(
+                '{"client_id":"edo-analysis","client_type":"service","role":"admin",'
+                '"allowed_artifact_kinds":["transcript","transcript_segments","llm1_first_pass"],'
+                '"read_surfaces":["processed_calls_v1"],"created_by_admin":"operator"}'
+            ),
+            call_processing_client_timeout_sec=180,
+        ),
+    )
+
+    client = call_processing_client_module.build_call_processing_client(
+        object(),
+        requested_by="edo-analysis",
+    )
+
+    assert isinstance(client, HttpCallProcessingClient)
+    assert client.timeout_sec == 180
+
+
 def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
     _FakeHttpClient.calls = []
     monkeypatch.setattr(call_processing_client_module.httpx, "Client", _FakeHttpClient)
@@ -405,6 +432,42 @@ def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
     assert _FakeHttpClient.calls[0][1] == "http://call-processing.test/call-processing/ensure"
     assert _FakeHttpClient.calls[1][0] == "GET"
     assert _FakeHttpClient.calls[1][1].endswith("/llm1_first_pass")
+
+
+def test_http_client_read_timeout_uses_diagnostic_reason(monkeypatch) -> None:
+    class _ReadTimeoutHttpClient:
+        def __init__(self, *, timeout: int) -> None:
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, _url: str, *, json: dict, headers: dict):
+            raise call_processing_client_module.httpx.ReadTimeout("")
+
+    monkeypatch.setattr(call_processing_client_module.httpx, "Client", _ReadTimeoutHttpClient)
+    client = HttpCallProcessingClient(
+        base_url="http://call-processing.test",
+        access_grant=_grant(),
+        timeout_sec=180,
+        requested_by="edo-analysis",
+    )
+
+    with pytest.raises(ASAError) as exc_info:
+        client.ensure_processed_calls(
+            _scope(),
+            [RequiredArtifactKind.TRANSCRIPT],
+            mode=EnsureMode.DRY_RUN,
+        )
+
+    message = str(exc_info.value)
+    assert "call_processing_client_read_timeout" in message
+    assert "operation=ensure_processed_calls" in message
+    assert "timeout_sec=180" in message
+    assert "ReadTimeout: " not in message
 
 
 @pytest.mark.asyncio

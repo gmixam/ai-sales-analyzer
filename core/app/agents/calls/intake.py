@@ -17,6 +17,9 @@ from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Interaction, Manager
 from app.core_shared.exceptions import DatabaseError, IntakeError
 
+ELIGIBLE_INTERACTION_STATUS = "ELIGIBLE"
+NO_AUDIO_INTERACTION_STATUS = "NO_AUDIO"
+
 
 class OnlinePBXIntake:
     """Fetch call records from OnlinePBX and store eligible interactions."""
@@ -311,12 +314,20 @@ class OnlinePBXIntake:
                     "contact_phone": record.phone,
                 }
                 metadata.update(mapping_metadata)
+                interaction_status = self._interaction_status_for_record(record)
                 if existing is not None:
                     existing.raw_ref = record.record_url or existing.raw_ref
-                    existing.duration_sec = record.talk_duration or existing.duration_sec
+                    existing.duration_sec = record.talk_duration
                     existing.manager_id = existing.manager_id or (manager.id if manager is not None else None)
                     existing.department_id = manager.department_id if manager is not None else existing.department_id
                     existing.metadata_ = {**dict(existing.metadata_ or {}), **metadata}
+                    mutable_statuses = {
+                        "NEW",
+                        ELIGIBLE_INTERACTION_STATUS,
+                        NO_AUDIO_INTERACTION_STATUS,
+                    }
+                    if existing.status in mutable_statuses:
+                        existing.status = interaction_status
                     skipped += 1
                     continue
 
@@ -327,7 +338,7 @@ class OnlinePBXIntake:
                     raw_ref=record.record_url,
                     duration_sec=record.talk_duration,
                     metadata=metadata,
-                    status="ELIGIBLE",
+                    status=interaction_status,
                 )
                 interaction = Interaction(
                     department_id=payload.department_id,
@@ -350,6 +361,21 @@ class OnlinePBXIntake:
 
         self.logger.info("intake.saved", created=created, skipped=skipped)
         return created, skipped
+
+    def _interaction_status_for_record(self, record: CDRRecord) -> str:
+        """Classify source CDR by technical audio availability for downstream."""
+        if self._record_has_downstream_audio(record):
+            return ELIGIBLE_INTERACTION_STATUS
+        return NO_AUDIO_INTERACTION_STATUS
+
+    def _record_has_downstream_audio(self, record: CDRRecord) -> bool:
+        talk_duration = int(record.talk_duration or 0)
+        if talk_duration <= 0:
+            return False
+        allowed_statuses = set(getattr(self.config, "allowed_statuses", []) or [])
+        if allowed_statuses and record.status not in allowed_statuses:
+            return False
+        return bool(str(record.record_url or "").strip())
 
     async def run(self, date: str | None = None) -> dict:
         """Run intake for a specific date or for yesterday by default."""

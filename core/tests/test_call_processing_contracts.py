@@ -50,11 +50,28 @@ def test_llm1_first_pass_contract_validates_version_and_metadata() -> None:
         model="gpt-test",
         classification={"kind": "commercial"},
         summary={"short": "client asked about EDO"},
+        speaker_role_mapping={
+            "source": "llm1_role_attribution",
+            "roles": [
+                {
+                    "raw_speaker": "A",
+                    "role": "unknown",
+                    "confidence": "low",
+                    "evidence": [],
+                }
+            ],
+            "quality": {
+                "diarization_quality": "low",
+                "role_attribution_quality": "low",
+                "warnings": ["technical_speaker_labels_unavailable"],
+            },
+        },
     )
 
     assert payload.schema_version == LLM1_FIRST_PASS_SCHEMA_VERSION
     assert payload.status == ArtifactStatus.READY
     assert payload.provider == "openai"
+    assert payload.speaker_role_mapping["roles"][0]["role"] == "unknown"
 
     with pytest.raises(ValidationError):
         LLM1FirstPassPayload(

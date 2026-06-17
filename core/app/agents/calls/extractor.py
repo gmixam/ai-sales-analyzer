@@ -304,6 +304,14 @@ class CallsExtractor:
                 full_text=transcript.text or "",
                 segments=segments,
                 speaker_a_is_manager=True,
+                diarization_metadata={
+                    "source": "assemblyai_speaker_labels",
+                    "stt_provider": candidate.provider,
+                    "stt_model": candidate.model,
+                    "diarization_source": "provider_speaker_labels",
+                    "diarization_quality": "medium" if segments else "low",
+                    "warnings": [],
+                },
                 confidence=avg_confidence,
                 duration_sec=getattr(transcript, "audio_duration", None),
             ),
@@ -357,7 +365,18 @@ class CallsExtractor:
                 interaction_id=interaction_id,
                 full_text=transcript_text,
                 segments=segments,
-                speaker_a_is_manager=True,
+                speaker_a_is_manager=False,
+                diarization_metadata={
+                    "source": "openai_whisper_time_segments",
+                    "stt_provider": candidate.provider,
+                    "stt_model": candidate.model,
+                    "diarization_source": "whisper_time_segments_without_speaker_labels",
+                    "diarization_quality": "low",
+                    "warnings": [
+                        "technical_speaker_labels_unavailable",
+                        "speaker_A_is_not_manager_without_llm1_evidence",
+                    ],
+                },
                 confidence=None,
                 duration_sec=int(duration_sec) if duration_sec is not None else None,
             ),
@@ -396,6 +415,9 @@ class CallsExtractor:
 
             metadata = dict(interaction.metadata_ or {})
             metadata["segments"] = [segment.model_dump() for segment in result.segments]
+            metadata["speaker_a_is_manager"] = result.speaker_a_is_manager
+            if result.diarization_metadata:
+                metadata["diarization"] = dict(result.diarization_metadata)
             metadata["confidence"] = result.confidence
             metadata["ai_routing"] = self._merge_ai_routing_metadata(
                 metadata.get("ai_routing"),

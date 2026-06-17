@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
@@ -252,6 +252,24 @@ MANAGER_FACING_COMPLETENESS_REQUIRED_ACTIONS = {
     "Без анализа": "Достроить анализ перед отправкой менеджеру.",
     "Ошибка анализа": "Проверить техническую ошибку анализа и перезапустить точечно.",
     "Ошибка провайдера": "Проверить provider/quota и перезапустить точечно после устранения.",
+}
+RUN_ALERT_REASON_LABELS = {
+    "sla_missed": "отчет не доставлен до SLA",
+    "missing_artifacts": "не хватило готовых данных для отчета",
+    "email_failed": "ошибка отправки email",
+    "manager_email_failed": "письмо менеджеру не отправлено",
+    "no_calls": "за день нет звонков в scope",
+    "no_audio": "звонки есть, но аудио недоступно",
+    "stt_error": "ошибка транскрибации",
+    "llm_error": "ошибка анализа",
+    "llm2_admission_non_commercial_or_unusable": "звонок не принят в коммерческий разбор",
+    "quota": "ограничение бюджета или лимита",
+    "budget": "ограничение бюджета или лимита",
+    "read_timeout": "таймаут при ожидании сервиса",
+    "readtimeout": "таймаут при ожидании сервиса",
+    "skip_accumulate_readiness_not_met": "отчет требует review или накопления данных",
+    "analysis_missing": "нет готового анализа",
+    "transcript_missing": "нет готового транскрипта",
 }
 
 
@@ -804,6 +822,59 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _bounded_lines(lines: list[str], *, max_items: int, omitted_label: str) -> list[str]:
+    compact_lines = [line for line in lines if line]
+    visible = compact_lines[:max_items]
+    omitted = max(len(compact_lines) - len(visible), 0)
+    if omitted:
+        visible.append(f"Еще {omitted} {omitted_label} см. в observability/logs.")
+    return visible
+
+
+def _safe_operator_text(value: Any, *, max_len: int = 96) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    if text[:1] in {"{", "["}:
+        return "technical_detail"
+    if len(text) > max_len:
+        return f"{text[: max_len - 3].rstrip()}..."
+    return text
+
+
+def _operator_reason_label(reason_code: str) -> str:
+    code = _safe_operator_text(reason_code, max_len=80)
+    if not code:
+        return ""
+    normalized = code.strip().lower()
+    if normalized in RUN_ALERT_REASON_LABELS:
+        return f"{code}: {RUN_ALERT_REASON_LABELS[normalized]}"
+    prefix = normalized.split(":", 1)[0]
+    if prefix in RUN_ALERT_REASON_LABELS:
+        return f"{code}: {RUN_ALERT_REASON_LABELS[prefix]}"
+    if "email" in normalized and ("failed" in normalized or "timeout" in normalized):
+        return f"{code}: ошибка отправки email"
+    if "timeout" in normalized or "readtimeout" in normalized:
+        return f"{code}: таймаут при ожидании сервиса"
+    if "quota" in normalized or "budget" in normalized:
+        return f"{code}: ограничение бюджета или лимита"
+    if "analysis" in normalized and ("missing" in normalized or "failed" in normalized):
+        return f"{code}: нет готового анализа или анализ завершился ошибкой"
+    return code
+
+
+def _run_alert_impact_text(*, overall_status: str, report_statuses: list[str]) -> str:
+    statuses = set(report_statuses)
+    if overall_status in {"blocked", "failed", "no_data"} or statuses & {"blocked", "missing_artifacts"}:
+        return "Часть менеджеров может не получить ежедневный отчет."
+    if overall_status == "partial" or statuses & {"partial", "skip_accumulate"}:
+        return "Часть менеджеров может не получить отчет; часть отчетов требует review."
+    if "review_required" in statuses:
+        return "Отчет требует review перед обычной отправкой менеджеру."
+    return "Прогон завершен, оператору стоит проверить итоговую доставку."
 
 
 def _previous_quota_blocker(interaction: Interaction) -> dict[str, Any] | None:
@@ -1606,6 +1677,12 @@ class CallsManualReportingOrchestrator:
         planned = dict(response.planned or {})
         response_costs = getattr(response, "costs", None)
         interactions_total = int(planned.get("interactions_total") or 0)
+        source_targeted_total = int(planned.get("source_targeted_total") or interactions_total)
+        source_persisted_total = int(
+            planned.get("source_ingest_created") or 0
+        ) + int(planned.get("source_ingest_skipped") or 0)
+        if source_persisted_total <= 0:
+            source_persisted_total = source_targeted_total
         summary_update: dict[str, Any] = {
             "call_processing_mode": CallProcessingMode.EXTERNAL_SERVICE.value,
             "call_processing_run_id": response.run_id,
@@ -1617,8 +1694,8 @@ class CallsManualReportingOrchestrator:
             "call_processing_provider_calls_made": int(
                 (response.quota or {}).get("provider_calls_made") or 0
             ),
-            "targeted_source_records_total": interactions_total,
-            "already_persisted_source_records_total": interactions_total,
+            "targeted_source_records_total": source_targeted_total,
+            "already_persisted_source_records_total": source_persisted_total,
             "missing_source_records_total": int(planned.get("artifacts_missing") or 0),
         }
         if isinstance(response_costs, dict) and response_costs:
@@ -2891,19 +2968,20 @@ class CallsManualReportingOrchestrator:
 
         alerts: list[dict[str, Any]] = []
         for spec in specs:
-            attempt = send_run_alert(
-                spec["event"],
-                run_id=spec["run_id"],
-                status=spec["run_status"],
-                title=spec["title"],
-                level=spec["severity"],
-                requested_by="manual_reporting_runner",
-                scope=spec["scope"],
-                counts=spec["counts"],
-                errors=spec["reason_codes"],
-                details=spec["details"],
-                email_sender=self.delivery.send_email_message,
-            )
+            alert_kwargs = {
+                "run_id": spec["run_id"],
+                "status": spec["run_status"],
+                "title": spec["title"],
+                "level": spec["severity"],
+                "requested_by": "manual_reporting_runner",
+                "scope": spec["scope"],
+                "counts": spec["counts"],
+                "errors": spec["reason_codes"],
+                "details": spec["details"],
+                "operator_summary": spec["operator_summary"],
+                "email_sender": self.delivery.send_email_message,
+            }
+            attempt = send_run_alert(spec["event"], **alert_kwargs)
             alert = {
                 "kind": spec["kind"],
                 "channel": attempt.get("channel", "email"),
@@ -2950,6 +3028,10 @@ class CallsManualReportingOrchestrator:
             reports=reports,
             errors=errors,
         )
+        reason_counter = self._collect_run_alert_reason_counter(
+            reports=reports,
+            errors=errors,
+        )
         status_counts = {
             status: report_statuses.count(status)
             for status in sorted(set(report_statuses))
@@ -2971,22 +3053,14 @@ class CallsManualReportingOrchestrator:
             else "manager_daily_completed"
         )
         event = "failed" if overall_status == "failed" else "blocked" if should_alert else "completed"
-        text = "\n".join(
-            [
-                "manager_daily run monitor alert",
-                f"Status: {overall_status}",
-                f"Period: {period.get('date_from')}..{period.get('date_to')}",
-                f"Mode: {mode}",
-                f"Delivery mode: {delivery_options.mode}",
-                f"Business email enabled: {delivery_options.send_business_email}",
-                f"Report statuses: {json.dumps(status_counts, ensure_ascii=False, sort_keys=True)}",
-                f"Reason codes: {', '.join(reason_codes) if reason_codes else 'none'}",
-                f"Blockers: {json.dumps(observability.get('blockers') or [], ensure_ascii=False)}",
-                (
-                    "Manager delivery note: skip_accumulate/preview and blocked states are "
-                    "operator/admin observable; ordinary manager business email remains gated separately."
-                ),
-            ]
+        run_id = f"manual-report:{preset.code}:{period.get('date_from')}:{period.get('date_to')}"
+        operator_summary = self._build_run_monitor_operator_summary(
+            period=period,
+            overall_status=overall_status,
+            status_counts=status_counts,
+            reason_counter=reason_counter,
+            report_statuses=report_statuses,
+            run_id=run_id,
         )
         return [
             {
@@ -2995,9 +3069,10 @@ class CallsManualReportingOrchestrator:
                 "severity": severity,
                 "event": event,
                 "trigger": trigger,
-                "run_id": f"manual-report:{preset.code}:{period.get('date_from')}:{period.get('date_to')}",
+                "run_id": run_id,
                 "run_status": overall_status,
                 "title": "Manager daily run needs attention",
+                "operator_summary": operator_summary,
                 "scope": {
                     "preset": preset.code,
                     "period": period,
@@ -3013,11 +3088,75 @@ class CallsManualReportingOrchestrator:
                     "trigger": trigger,
                     "target": target,
                     "blockers": observability.get("blockers") or [],
-                    "message": text,
+                    "operator_summary": operator_summary,
                 },
                 "reason_codes": reason_codes,
             }
         ]
+
+    @staticmethod
+    def _build_run_monitor_operator_summary(
+        *,
+        period: dict[str, str],
+        overall_status: str,
+        status_counts: dict[str, int],
+        reason_counter: Counter[str],
+        report_statuses: list[str],
+        run_id: str,
+    ) -> str:
+        """Build a short human-facing manager_daily run monitor summary."""
+        date_from = _safe_operator_text(period.get("date_from"), max_len=24) or "unknown"
+        date_to = _safe_operator_text(period.get("date_to"), max_len=24) or "unknown"
+        period_label = date_from if date_from == date_to else f"{date_from}..{date_to}"
+        status_label = _safe_operator_text(overall_status, max_len=40) or "unknown"
+        total_reports = sum(max(value, 0) for value in status_counts.values())
+        count_lines = [
+            f"- reports: {total_reports}",
+            *[
+                f"- {status}: {count}"
+                for status, count in sorted(status_counts.items())
+            ],
+        ]
+        top_reason_lines = []
+        for reason, count in reason_counter.most_common(5):
+            label = _operator_reason_label(reason)
+            if not label:
+                continue
+            suffix = f" ({count})" if count > 1 else ""
+            top_reason_lines.append(f"- {label}{suffix}")
+        top_reason_lines = _bounded_lines(
+            top_reason_lines or ["- none"],
+            max_items=5,
+            omitted_label="причин",
+        )
+        impact = _run_alert_impact_text(
+            overall_status=overall_status,
+            report_statuses=report_statuses,
+        )
+        lines = [
+            f"Ежедневные отчеты менеджеров за {period_label}: {status_label}",
+            "",
+            "Что случилось:",
+            f"Период: {period_label}. Общий статус: {status_label}.",
+            "",
+            "Показатели:",
+            *_bounded_lines(count_lines, max_items=6, omitted_label="статусов"),
+            "",
+            "Основные причины:",
+            *top_reason_lines,
+            "",
+            "Что затронуто:",
+            f"- manager_daily reports: {total_reports}",
+            "",
+            "На что влияет:",
+            impact,
+            "",
+            "Что проверить:",
+            "scheduled_report_batches / drafts / observability; delivery result.",
+            "",
+            f"Run: {run_id}",
+        ]
+        return "\n".join(lines)
 
     def _resolve_monitoring_target(self) -> str | None:
         """Resolve production monitoring target from global alert settings."""
@@ -3049,6 +3188,34 @@ class CallsManualReportingOrchestrator:
                 if item and item not in reason_codes:
                     reason_codes.append(str(item))
         return reason_codes[:12]
+
+    @staticmethod
+    def _collect_run_alert_reason_counter(
+        *,
+        reports: list[dict[str, Any]],
+        errors: list[str],
+    ) -> Counter[str]:
+        """Count alert reasons for operator-facing top reason summaries."""
+        counter: Counter[str] = Counter()
+        for item in errors:
+            code = _safe_operator_text(item)
+            if code:
+                counter[code] += 1
+        for report in reports:
+            for item in report.get("readiness_reason_codes") or []:
+                code = _safe_operator_text(item)
+                if code:
+                    counter[code] += 1
+            readiness = report.get("readiness") or {}
+            for item in readiness.get("readiness_reason_codes") or []:
+                code = _safe_operator_text(item)
+                if code:
+                    counter[code] += 1
+            for item in report.get("errors") or []:
+                code = _safe_operator_text(item)
+                if code:
+                    counter[code] += 1
+        return counter
 
     @staticmethod
     def _build_run_blockers(
@@ -5764,6 +5931,267 @@ def _block_stage_code(block: dict[str, Any] | None) -> str:
     return str((block or {}).get("stage_code") or "").strip()
 
 
+def _focus_case_decision(
+    *,
+    daily_focus: dict[str, Any] | None,
+    case_status: str,
+    selected_call_id: str | None,
+    selected_case_stage_code: str | None,
+    selection_reason: str,
+    evidence_level: str,
+    wording_mode: str,
+    rejection_reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    focus_stage = _daily_focus_stage_code(daily_focus)
+    return {
+        "focus_stage_code": focus_stage or None,
+        "focus_stage_source": str((daily_focus or {}).get("challenge_metric_source") or "").strip()
+        or "score_by_stage.priority",
+        "case_status": case_status,
+        "selected_call_id": selected_call_id or None,
+        "selected_case_stage_code": selected_case_stage_code or None,
+        "selection_reason": selection_reason,
+        "evidence_level": evidence_level,
+        "wording_mode": wording_mode,
+        "rejection_reasons": list(rejection_reasons or []),
+    }
+
+
+def _attach_focus_case_diagnostics(
+    *,
+    block: dict[str, Any] | None,
+    decision: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not block or not decision:
+        return block
+    updated = dict(block)
+    for key in (
+        "case_status",
+        "evidence_level",
+        "wording_mode",
+        "selection_reason",
+        "rejection_reasons",
+        "focus_stage_code",
+        "selected_case_stage_code",
+    ):
+        updated[key] = decision.get(key)
+    diagnostics = dict(updated.get("selection_diagnostics") or {})
+    diagnostics.update(
+        {
+            "case_status": decision.get("case_status"),
+            "evidence_level": decision.get("evidence_level"),
+            "wording_mode": decision.get("wording_mode"),
+            "selection_reason": decision.get("selection_reason"),
+            "rejection_reasons": decision.get("rejection_reasons") or [],
+            "focus_stage_code": decision.get("focus_stage_code"),
+            "selected_case_stage_code": decision.get("selected_case_stage_code"),
+            "focus_case_selection": decision,
+        }
+    )
+    updated["selection_diagnostics"] = diagnostics
+    return updated
+
+
+def _focus_case_selection_from_view(
+    situation_day_coaching_view: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    diagnostics = (
+        dict((situation_day_coaching_view or {}).get("selection_diagnostics") or {})
+        if isinstance((situation_day_coaching_view or {}).get("selection_diagnostics"), dict)
+        else {}
+    )
+    decision = diagnostics.get("focus_case_selection")
+    return dict(decision) if isinstance(decision, dict) else None
+
+
+def _focus_case_is_visible(decision: dict[str, Any] | None) -> bool:
+    return str((decision or {}).get("case_status") or "").strip() in {"strong", "workable"}
+
+
+def _call_breakdown_is_llm3_owned(call_breakdown: dict[str, Any] | None) -> bool:
+    if not call_breakdown:
+        return False
+    source = str((call_breakdown or {}).get("call_breakdown_source") or "").strip()
+    diagnostics = dict((call_breakdown or {}).get("selection_diagnostics") or {})
+    quality = dict((call_breakdown or {}).get("call_breakdown_quality") or {})
+    if diagnostics.get("deterministic_fallback_used") is True:
+        return False
+    if diagnostics.get("llm3_daily_call_breakdown") is True:
+        return True
+    if diagnostics.get("llm3_used") is True:
+        return True
+    if quality.get("selection_basis") == "verified_situation_day_llm3":
+        return True
+    return source in {"llm3_daily_situation.call_breakdown"}
+
+
+def _call_breakdown_matches_focus_case(
+    *,
+    call_breakdown: dict[str, Any] | None,
+    decision: dict[str, Any] | None,
+    daily_focus: dict[str, Any] | None,
+) -> bool:
+    if not call_breakdown or not _focus_case_is_visible(decision):
+        return False
+    selected_call_id = str((decision or {}).get("selected_call_id") or "").strip()
+    block_call_id = str((call_breakdown or {}).get("call_id") or "").strip()
+    if not selected_call_id or block_call_id != selected_call_id:
+        return False
+    focus_stage = _daily_focus_stage_code(daily_focus)
+    selected_stage = str((decision or {}).get("selected_case_stage_code") or "").strip()
+    block_stage = str((call_breakdown or {}).get("stage_code") or "").strip()
+    expected_stage = focus_stage or selected_stage
+    if expected_stage and block_stage and block_stage != expected_stage:
+        return False
+    return True
+
+
+def _situation_case_status_from_packet(
+    *,
+    packet: dict[str, Any] | None,
+    view: dict[str, Any] | None,
+) -> tuple[str, str, str]:
+    proof_type = str((packet or {}).get("proof_type") or (view or {}).get("proof_type") or "").strip()
+    proof_strength = str((packet or {}).get("proof_strength") or (view or {}).get("proof_strength") or "").strip()
+    if proof_type == "direct_gap" and proof_strength == "strong":
+        return "strong", "strong", "confident"
+    return "workable", "workable", "cautious"
+
+
+def _normalize_focus_case_decision_from_llm3(
+    *,
+    daily_focus: dict[str, Any] | None,
+    result: dict[str, Any],
+    fallback_selected_call_id: str | None = None,
+    fallback_stage_code: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the LLM3-owned focus-case decision if the contract is present."""
+    raw_decision = result.get("focus_case_selection")
+    decision_source = dict(raw_decision) if isinstance(raw_decision, dict) else {}
+    case_status = str(
+        decision_source.get("case_status")
+        or result.get("case_status")
+        or ""
+    ).strip()
+    if not case_status:
+        return None
+
+    focus_stage = (
+        str(decision_source.get("focus_stage_code") or "").strip()
+        or _daily_focus_stage_code(daily_focus)
+        or None
+    )
+    selected_call_id = (
+        str(
+            decision_source.get("selected_call_id")
+            or result.get("selected_call_id")
+            or fallback_selected_call_id
+            or ""
+        ).strip()
+        or None
+    )
+    selected_case_stage_code = (
+        str(
+            decision_source.get("selected_case_stage_code")
+            or result.get("selected_case_stage_code")
+            or result.get("stage_code")
+            or fallback_stage_code
+            or ""
+        ).strip()
+        or None
+    )
+    evidence_level = str(
+        decision_source.get("evidence_level")
+        or result.get("evidence_level")
+        or ("weak" if case_status in {"weak_blocked", "blocked_mismatch"} else case_status)
+    ).strip()
+    wording_mode = str(
+        decision_source.get("wording_mode")
+        or result.get("wording_mode")
+        or ("blocked" if case_status in {"weak_blocked", "blocked_mismatch"} else "cautious")
+    ).strip()
+    rejection_reasons_raw = (
+        decision_source.get("rejection_reasons")
+        if isinstance(decision_source.get("rejection_reasons"), list)
+        else result.get("rejection_reasons")
+    )
+    rejection_reasons = [
+        str(item).strip()
+        for item in (rejection_reasons_raw or [])
+        if str(item or "").strip()
+    ]
+    return {
+        "focus_stage_code": focus_stage,
+        "focus_stage_source": str(
+            decision_source.get("focus_stage_source")
+            or (daily_focus or {}).get("challenge_metric_source")
+            or "score_by_stage.priority"
+        ).strip(),
+        "case_status": case_status,
+        "selected_call_id": selected_call_id,
+        "selected_case_stage_code": selected_case_stage_code,
+        "selection_reason": str(
+            decision_source.get("selection_reason")
+            or result.get("selection_reason")
+            or ""
+        ).strip()
+        or None,
+        "evidence_level": evidence_level or None,
+        "wording_mode": wording_mode or None,
+        "rejection_reasons": rejection_reasons,
+    }
+
+
+def _focus_case_contract_rejection_reason(
+    *,
+    decision: dict[str, Any] | None,
+    daily_focus: dict[str, Any] | None,
+    known_call_ids: set[str],
+) -> str | None:
+    """Validate the LLM3 case-decision contract without choosing semantics."""
+    if not isinstance(decision, dict):
+        return "focus_case_selection_missing"
+    case_status = str(decision.get("case_status") or "").strip()
+    if case_status not in {"strong", "workable", "weak_blocked", "blocked_mismatch"}:
+        return "focus_case_selection_case_status_invalid"
+    if case_status in {"weak_blocked", "blocked_mismatch"}:
+        return case_status
+
+    focus_stage = _daily_focus_stage_code(daily_focus)
+    selected_stage = str(decision.get("selected_case_stage_code") or "").strip()
+    if not selected_stage:
+        return "selected_case_stage_code_missing"
+    if focus_stage and selected_stage != focus_stage:
+        return f"situation_stage_mismatch:{selected_stage}"
+
+    selected_call_id = str(decision.get("selected_call_id") or "").strip()
+    if not selected_call_id:
+        return "selected_call_id_missing"
+    if selected_call_id not in known_call_ids:
+        return "selected_call_id_not_in_report_artifacts"
+    return None
+
+
+def _situation_selected_call_id(
+    *,
+    situation_evidence_quote: dict[str, Any] | None,
+    situation_day_evidence_packet: dict[str, Any] | None,
+    situation_day_coaching_view: dict[str, Any] | None,
+) -> str | None:
+    for value in (
+        ((situation_day_evidence_packet or {}).get("dialogue_excerpt") or {}).get("call_id")
+        if isinstance((situation_day_evidence_packet or {}).get("dialogue_excerpt"), dict)
+        else None,
+        (situation_evidence_quote or {}).get("call_id"),
+        (situation_day_coaching_view or {}).get("call_id"),
+        dict((situation_day_coaching_view or {}).get("selection_diagnostics") or {}).get("selected_call_id"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
 def _finalize_daily_coaching_focus(
     *,
     daily_focus: dict[str, Any],
@@ -5779,52 +6207,6 @@ def _finalize_daily_coaching_focus(
     situation_stage = _block_stage_code(situation_day_coaching_view) or str(
         (situation_evidence_quote or {}).get("stage_code") or ""
     ).strip()
-    situation_selection_mode = str(
-        dict((situation_day_coaching_view or {}).get("selection_diagnostics") or {}).get(
-            "selection_mode"
-        )
-        or ""
-    ).strip()
-    if (
-        focus_stage
-        and situation_stage
-        and situation_stage != focus_stage
-        and situation_selection_mode in SITUATION_FOCUS_OVERRIDE_SELECTION_MODES
-    ):
-        original_focus = {
-            "stage_code": result.get("stage_code"),
-            "stage_name": result.get("stage_name"),
-            "stage_id": result.get("stage_id"),
-            "problem_signal": result.get("problem_signal"),
-            "problem_statement": result.get("problem_statement"),
-            "challenge_metric_source": result.get("challenge_metric_source"),
-        }
-        result["original_score_focus"] = original_focus
-        result["stage_code"] = situation_stage
-        result["stage_id"] = _stage_funnel_label_for_code(situation_stage)
-        result["stage_name"] = (
-            str((situation_day_coaching_view or {}).get("stage_label") or "").strip()
-            or situation_stage
-        )
-        problem_statement = _first_sentence(
-            str(
-                (situation_day_coaching_view or {}).get("pattern_title")
-                or (situation_day_coaching_view or {}).get("what_was_missing")
-                or (situation_day_coaching_view or {}).get("what_happened")
-                or original_focus.get("problem_statement")
-                or ""
-            ),
-            limit=220,
-        )
-        result["problem_signal"] = _focus_problem_signal(
-            problem_statement,
-            fallback=f"{situation_selection_mode}_selected",
-        )
-        result["problem_statement"] = problem_statement
-        result["challenge_metric_source"] = situation_selection_mode
-        result["focus_override_reason"] = situation_selection_mode
-        focus_stage = situation_stage
-
     if focus_stage and situation_stage and situation_stage != focus_stage:
         issues.append(f"situation_stage_mismatch:{situation_stage}")
 
@@ -5838,9 +6220,60 @@ def _finalize_daily_coaching_focus(
     result["breakdown_call_id"] = breakdown_call_id
     result["situation_stage_code"] = situation_stage or None
     result["breakdown_stage_code"] = breakdown_stage or None
+    focus_case_selection = (
+        dict((situation_day_coaching_view or {}).get("selection_diagnostics") or {}).get(
+            "focus_case_selection"
+        )
+        if isinstance((situation_day_coaching_view or {}).get("selection_diagnostics"), dict)
+        else None
+    )
+    if not isinstance(focus_case_selection, dict):
+        case_status = "blocked_mismatch" if (
+            focus_stage and situation_stage and situation_stage != focus_stage
+        ) else "weak_blocked"
+        evidence_level = "weak"
+        wording_mode = "blocked"
+        selected_call_id = None
+        selected_case_stage = situation_stage or None
+        selection_reason = (
+            f"situation_stage_mismatch:{situation_stage}"
+            if case_status == "blocked_mismatch"
+            else "focus_case_selection_missing"
+        )
+        rejection_reasons = [selection_reason, *list(issues)]
+        focus_case_selection = _focus_case_decision(
+            daily_focus=result,
+            case_status=case_status,
+            selected_call_id=selected_call_id,
+            selected_case_stage_code=selected_case_stage,
+            selection_reason=selection_reason,
+            evidence_level=evidence_level,
+            wording_mode=wording_mode,
+            rejection_reasons=rejection_reasons,
+        )
+    elif not focus_case_selection.get("focus_stage_code"):
+        focus_case_selection = {
+            **focus_case_selection,
+            "focus_stage_code": focus_stage or None,
+            "focus_stage_source": str(result.get("challenge_metric_source") or "").strip()
+            or "score_by_stage.priority",
+        }
+    result["focus_case_selection"] = focus_case_selection
+    blockers = [
+        issue
+        for issue in issues
+        if issue.startswith("call_breakdown_stage_mismatch:")
+        or issue.startswith("situation_stage_mismatch:")
+    ]
+    case_status = str((focus_case_selection or {}).get("case_status") or "").strip()
+    if case_status in {"weak_blocked", "blocked_mismatch"}:
+        reason = str((focus_case_selection or {}).get("selection_reason") or case_status).strip()
+        if reason and reason not in blockers:
+            blockers.append(reason)
     result["validation"] = {
-        "status": "warning" if issues else "passed",
+        "status": "blocked" if blockers else "warning" if issues else "passed",
         "issues": issues,
+        "render_blockers": blockers,
     }
     return result
 
@@ -5862,105 +6295,13 @@ def _maybe_override_daily_focus_from_situation(
     situation_evidence_quote: dict[str, Any] | None,
     situation_day_coaching_view: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Align dependent report blocks to the coherent Situation Day case early.
+    """Keep the aggregate daily focus stable for PILOT-32 routing.
 
-    When there is no same-stage candidate, the report layer may deliberately pick
-    the strongest proven Situation Day case from another stage. In that mode the
-    selected case becomes the coaching focus for downstream blocks too.
+    Older pilot behavior allowed a selected Situation Day case to replace the
+    score-derived daily focus. PILOT-32 forbids that substitution: downstream
+    blocks must align to daily_focus.stage_code or become diagnostics/blockers.
     """
-    focus_stage = _daily_focus_stage_code(daily_focus)
-    situation_stage = _block_stage_code(situation_day_coaching_view) or str(
-        (situation_evidence_quote or {}).get("stage_code") or ""
-    ).strip()
-    selection_diagnostics = dict((situation_day_coaching_view or {}).get("selection_diagnostics") or {})
-    selection_mode = str(selection_diagnostics.get("selection_mode") or "").strip()
-    candidate_source = str(selection_diagnostics.get("candidate_source") or "").strip()
-    situation_source = str((situation_day_coaching_view or {}).get("source") or "").strip()
-    selected_problem_statement = _first_sentence(
-        str(
-            (situation_day_coaching_view or {}).get("what_was_missing")
-            or (situation_day_coaching_view or {}).get("pattern_title")
-            or (situation_day_coaching_view or {}).get("what_happened")
-            or ""
-        ),
-        limit=220,
-    )
-    trusted_situation_case = (
-        candidate_source == "report_evidence.block_candidates"
-        or situation_source.startswith("report_evidence.block_candidates")
-        or situation_source == "report_evidence.semantic_case"
-        or situation_source.startswith("report_evidence.evidence_registry")
-        or situation_source.startswith(SITUATION_DAY_DAILY_SOURCE)
-    )
-    if not focus_stage or not situation_stage:
-        return daily_focus
-
-    if situation_stage == focus_stage:
-        if not trusted_situation_case or not selected_problem_statement:
-            return daily_focus
-        current_problem = str(daily_focus.get("problem_statement") or "").strip()
-        if _summary_norm(current_problem) == _summary_norm(selected_problem_statement):
-            return daily_focus
-        result = dict(daily_focus)
-        result.setdefault(
-            "original_score_focus",
-            {
-                "stage_code": result.get("stage_code"),
-                "stage_name": result.get("stage_name"),
-                "stage_id": result.get("stage_id"),
-                "problem_signal": result.get("problem_signal"),
-                "problem_statement": result.get("problem_statement"),
-                "challenge_metric_source": result.get("challenge_metric_source"),
-            },
-        )
-        result["problem_signal"] = _focus_problem_signal(
-            selected_problem_statement,
-            fallback="situation_day_selected_case",
-        )
-        result["problem_statement"] = selected_problem_statement
-        result["problem_statement_source"] = "situation_day_selected_case"
-        result["challenge_metric_source"] = "situation_day_selected_case"
-        return result
-
-    if selection_mode not in SITUATION_FOCUS_OVERRIDE_SELECTION_MODES:
-        return daily_focus
-
-    result = dict(daily_focus)
-    original_focus = {
-        "stage_code": result.get("stage_code"),
-        "stage_name": result.get("stage_name"),
-        "stage_id": result.get("stage_id"),
-        "problem_signal": result.get("problem_signal"),
-        "problem_statement": result.get("problem_statement"),
-        "challenge_metric_source": result.get("challenge_metric_source"),
-    }
-    problem_statement = _first_sentence(
-        str(
-            (situation_day_coaching_view or {}).get("pattern_title")
-            or (situation_day_coaching_view or {}).get("what_was_missing")
-            or (situation_day_coaching_view or {}).get("what_happened")
-            or original_focus.get("problem_statement")
-            or ""
-        ),
-        limit=220,
-    )
-    result.update(
-        {
-            "original_score_focus": original_focus,
-            "stage_id": _stage_funnel_label_for_code(situation_stage),
-            "stage_code": situation_stage,
-            "stage_name": str((situation_day_coaching_view or {}).get("stage_label") or "").strip()
-            or situation_stage,
-            "problem_signal": _focus_problem_signal(
-                problem_statement,
-                fallback=f"{selection_mode}_selected",
-            ),
-            "problem_statement": problem_statement,
-            "challenge_metric_source": selection_mode,
-            "focus_override_reason": selection_mode,
-        }
-    )
-    return result
+    return daily_focus
 
 
 def _build_problem_wording_diagnostics(
@@ -6779,23 +7120,43 @@ def build_manager_daily_payload(
             focus_stage_deep_dive=focus_stage_deep_dive,
             focus_stage_recommendation=focus_stage_recommendation,
         )
-    situation_day_evidence_packet = _build_situation_day_evidence_packet(
-        artifacts=coaching_content_artifacts,
-        situation_evidence_quote=situation_evidence_quote,
-        situation_day_coaching_view=situation_day_coaching_view,
+    prebuilt_situation_day_packet = (
+        dict((report_evidence_situation or {}).get("evidence_packet") or {})
+        if isinstance((report_evidence_situation or {}).get("evidence_packet"), dict)
+        else {}
     )
+    if (
+        prebuilt_situation_day_packet.get("status") == "verified"
+        and prebuilt_situation_day_packet.get("case_status") in {"strong", "workable"}
+    ):
+        situation_day_evidence_packet = prebuilt_situation_day_packet
+    else:
+        situation_day_evidence_packet = _build_situation_day_evidence_packet(
+            artifacts=coaching_content_artifacts,
+            situation_evidence_quote=situation_evidence_quote,
+            situation_day_coaching_view=situation_day_coaching_view,
+        )
     if situation_day_evidence_packet is not None and situation_day_evidence_packet.get("status") == "verified":
         situation_dialogue_excerpt = dict(situation_day_evidence_packet.get("dialogue_excerpt") or {})
         if situation_day_coaching_view is not None:
+            case_status = str(situation_day_evidence_packet.get("case_status") or "").strip()
             situation_day_coaching_view = {
                 **situation_day_coaching_view,
                 "evidence_packet": situation_day_evidence_packet,
                 "proof_strength": situation_day_evidence_packet.get("proof_strength"),
-                "situation_day_evidence_status": "verified",
+                "situation_day_evidence_status": "workable" if case_status == "workable" else "verified",
                 "customer_context": situation_day_evidence_packet.get("customer_context"),
                 "customer_reaction": situation_day_evidence_packet.get("customer_reaction"),
                 "causal_link": situation_day_evidence_packet.get("causal_link"),
             }
+            if case_status:
+                situation_day_coaching_view["case_status"] = case_status
+                situation_day_coaching_view["evidence_level"] = situation_day_evidence_packet.get(
+                    "evidence_level"
+                ) or ("workable" if case_status == "workable" else "strong")
+                situation_day_coaching_view["wording_mode"] = situation_day_evidence_packet.get(
+                    "wording_mode"
+                ) or ("cautious" if case_status == "workable" else "confident")
     elif situation_day_coaching_view is not None and (
         str(situation_day_coaching_view.get("source") or "").startswith("report_evidence")
         or str((situation_evidence_quote or {}).get("source") or "").startswith("report_evidence")
@@ -6858,10 +7219,29 @@ def build_manager_daily_payload(
         or (situation_evidence_quote or {}).get("call_id")
         or ""
     ).strip()
+    focus_case_selection_for_breakdown = _focus_case_selection_from_view(situation_day_coaching_view)
+    prebuilt_llm3_call_breakdown = (
+        dict((report_evidence_situation or {}).get("call_breakdown") or {})
+        if isinstance((report_evidence_situation or {}).get("call_breakdown"), dict)
+        else None
+    )
     if (
+        prebuilt_llm3_call_breakdown is not None
+        and _call_breakdown_is_llm3_owned(prebuilt_llm3_call_breakdown)
+        and _call_breakdown_matches_focus_case(
+            call_breakdown=prebuilt_llm3_call_breakdown,
+            decision=focus_case_selection_for_breakdown,
+            daily_focus=daily_coaching_focus,
+        )
+    ):
+        call_breakdown = prebuilt_llm3_call_breakdown
+    if (
+        call_breakdown is None
+        and
         situation_day_evidence_packet is not None
         and situation_day_evidence_packet.get("status") == "verified"
         and situation_call_id_for_breakdown
+        and _focus_case_is_visible(focus_case_selection_for_breakdown)
     ):
         composer_breakdown = compose_call_breakdown_from_situation(
             artifacts=coaching_content_artifacts,
@@ -6872,17 +7252,43 @@ def build_manager_daily_payload(
         if (
             composer_breakdown is not None
             and str(composer_breakdown.get("call_id") or "").strip() == situation_call_id_for_breakdown
+            and _call_breakdown_is_llm3_owned(composer_breakdown)
             and composer_breakdown.get("rows")
+            and _call_breakdown_matches_focus_case(
+                call_breakdown=composer_breakdown,
+                decision=focus_case_selection_for_breakdown,
+                daily_focus=daily_coaching_focus,
+            )
         ):
             call_breakdown = composer_breakdown
         elif situation_call_id_for_breakdown not in situation_rejected_call_ids:
             call_breakdown = None
-    if call_breakdown is None:
+    if call_breakdown is None and situation_call_id_for_breakdown:
+        focus_stage_for_breakdown = _daily_focus_stage_code(daily_coaching_focus)
+        routed_call_breakdown_items = [
+            item
+            for item in report_block_routes.get("call_breakdown") or []
+            if str((item or {}).get("call_id") or "").strip() == situation_call_id_for_breakdown
+            and (
+                not focus_stage_for_breakdown
+                or not str((item or {}).get("stage_code") or "").strip()
+                or str((item or {}).get("stage_code") or "").strip() == focus_stage_for_breakdown
+            )
+        ]
         call_breakdown = _build_call_breakdown_from_evidence_registry_route(
             artifacts=coaching_content_artifacts,
-            routed_items=report_block_routes.get("call_breakdown") or [],
+            routed_items=routed_call_breakdown_items,
             score_by_stage=score_by_stage,
         )
+        if not (
+            _call_breakdown_is_llm3_owned(call_breakdown)
+            and _call_breakdown_matches_focus_case(
+                call_breakdown=call_breakdown,
+                decision=focus_case_selection_for_breakdown,
+                daily_focus=daily_coaching_focus,
+            )
+        ):
+            call_breakdown = None
     if call_breakdown is None:
         call_breakdown = _build_call_breakdown(
             improve_items=[],
@@ -6921,6 +7327,18 @@ def build_manager_daily_payload(
         call_breakdown=call_breakdown,
         daily_focus=daily_coaching_focus,
     )
+    focus_case_selection_for_breakdown = (
+        _focus_case_selection_from_view(situation_day_coaching_view)
+    )
+    if (
+        isinstance(focus_case_selection_for_breakdown, dict)
+        and call_breakdown
+        and str((call_breakdown_quality or {}).get("status") or "") != "blocked_mismatch"
+    ):
+        call_breakdown = _attach_focus_case_diagnostics(
+            block=call_breakdown,
+            decision=focus_case_selection_for_breakdown,
+        )
     additional_situations = _with_data_scope(additional_situations, coaching_data_scope)
     additional_situations, additional_situations_quality = _apply_additional_situations_quality_gate(
         additional_situations=additional_situations,
@@ -7625,6 +8043,20 @@ _STAGE_FUNNEL_ORDER: list[tuple[str, str, str]] = [
     ("cross_stage_transition", "Сквозной", "Сквозной критерий"),
 ]
 
+_STAGE_FOCUS_WEIGHTS: dict[str, float] = {
+    "contact_start": 0.85,
+    "qualification_primary": 1.25,
+    "needs_discovery": 1.40,
+    "presentation": 1.30,
+    "objection_handling": 1.35,
+    "completion_next_step": 1.15,
+    "sale_processing": 0.95,
+    "sale_final": 1.00,
+    "cross_stage_transition": 1.10,
+}
+_STAGE_FOCUS_SELECTION_METHOD = "weighted_focus_impact"
+_STAGE_FOCUS_CRITICAL_LOW_SCORE_THRESHOLD = 3.0
+
 _CRITERION_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("cs_", "contact_start"),
     ("qp_", "qualification_primary"),
@@ -7820,7 +8252,8 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
     """Average per-call stage scores across all artifacts, ordered by funnel.
 
     Score scale: 0–10 (stage_score / max_stage_score * 10).
-    Priority rule: first stage below 4.0 in funnel order is marked as priority.
+    Priority rule: weighted focus impact. Critical low scores are shown as
+    separate signals, but do not override the weighted focus.
     For the priority stage, criteria_detail is populated (avg per criterion, sorted asc).
     """
     stage_buckets: dict[str, list[float]] = {}
@@ -7922,17 +8355,80 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
                         "criterion_name": "",
                     }
                 )
-    rows: list[dict[str, Any]] = []
-    priority_found = False
-    source_rank = {"criteria_comment": 0, "gap": 1, "evidence": 2, "fallback": 3}
-    for stage_code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
-        scores = stage_buckets.get(stage_code)
+    configured_stage_codes = {stage_code for stage_code, _funnel_label, _stage_name in _STAGE_FUNNEL_ORDER}
+    stage_avgs: dict[str, float] = {}
+    stage_calls: dict[str, int] = {}
+    max_stage_calls = max(
+        (
+            len(scores)
+            for stage_code, scores in stage_buckets.items()
+            if stage_code in configured_stage_codes
+        ),
+        default=0,
+    )
+    for stage_code, scores in stage_buckets.items():
+        if stage_code not in configured_stage_codes:
+            continue
         if not scores:
             continue
-        avg = round(sum(scores) / len(scores), 1)
-        is_priority = not priority_found and avg < 4.0
-        if is_priority:
-            priority_found = True
+        stage_avgs[stage_code] = round(sum(scores) / len(scores), 1)
+        stage_calls[stage_code] = len(scores)
+
+    focus_metrics: dict[str, dict[str, Any]] = {}
+    priority_stage_code: str | None = None
+    for stage_code, avg in stage_avgs.items():
+        calls_count = stage_calls.get(stage_code, 0)
+        stage_weight = _STAGE_FOCUS_WEIGHTS.get(stage_code, 1.0)
+        coverage_factor = (
+            1.0
+            if max_stage_calls <= 0
+            else 0.6 + 0.4 * (calls_count / max_stage_calls)
+        )
+        focus_impact = (10 - avg) * stage_weight * coverage_factor
+        is_critical = avg < _STAGE_FOCUS_CRITICAL_LOW_SCORE_THRESHOLD
+        focus_metrics[stage_code] = {
+            "stage_weight": stage_weight,
+            "coverage_factor": round(coverage_factor, 2),
+            "focus_impact": round(focus_impact, 2),
+            "priority_selection_method": _STAGE_FOCUS_SELECTION_METHOD,
+            "critical_low_score_signal": is_critical,
+            "critical_low_score_override": False,
+        }
+
+    if focus_metrics:
+        candidate_stage_codes = list(focus_metrics)
+        funnel_rank = {
+            stage_code: index
+            for index, (stage_code, _funnel_label, _stage_name) in enumerate(_STAGE_FUNNEL_ORDER)
+        }
+        priority_stage_code = max(
+            candidate_stage_codes,
+            key=lambda code: (
+                float(focus_metrics[code].get("focus_impact") or 0.0),
+                10.0 - float(stage_avgs.get(code, 10.0)),
+                -funnel_rank.get(code, 999),
+            ),
+        )
+
+    rows: list[dict[str, Any]] = []
+    source_rank = {"criteria_comment": 0, "gap": 1, "evidence": 2, "fallback": 3}
+    for stage_code, funnel_label, stage_name in _STAGE_FUNNEL_ORDER:
+        avg = stage_avgs.get(stage_code)
+        if avg is None:
+            continue
+        calls_count = stage_calls.get(stage_code, 0)
+        metrics = focus_metrics.get(
+            stage_code,
+            {
+                "stage_weight": _STAGE_FOCUS_WEIGHTS.get(stage_code, 1.0),
+                "coverage_factor": 1.0,
+                "focus_impact": 0.0,
+                "priority_selection_method": _STAGE_FOCUS_SELECTION_METHOD,
+                "critical_low_score_signal": False,
+                "critical_low_score_override": False,
+            },
+        )
+        is_priority = stage_code == priority_stage_code
         criteria_detail: list[dict[str, Any]] | None = None
         if is_priority and crit_stage.get(stage_code):
             crits = []
@@ -7971,9 +8467,15 @@ def _aggregate_stage_scores(*, artifacts: list[ReportArtifact]) -> list[dict[str
             "funnel_label": funnel_label,
             "stage_name": stage_name,
             "score": avg,
-            "calls_count": len(scores),
+            "calls_count": calls_count,
             "is_priority": is_priority,
             "criteria_detail": criteria_detail,
+            "stage_weight": metrics["stage_weight"],
+            "coverage_factor": metrics["coverage_factor"],
+            "focus_impact": metrics["focus_impact"],
+            "priority_selection_method": metrics["priority_selection_method"],
+            "critical_low_score_signal": metrics["critical_low_score_signal"],
+            "critical_low_score_override": metrics["critical_low_score_override"],
             "problem_summary": problem_summary,
             "problem_source": problem_source,
             "problem_normalized_from": problem_normalized_from,
@@ -8749,6 +9251,7 @@ def _build_verified_situation_day_from_daily_composer(
     prepared = _prepare_daily_situation_day_result(
         artifacts=artifacts,
         result=raw_result,
+        daily_focus=daily_input.get("daily_focus") if isinstance(daily_input, dict) else daily_focus,
     )
     rejected = list((raw_result or {}).get("rejected_candidates") or []) if isinstance(raw_result, dict) else []
     selection_mode = str((raw_result or {}).get("selection_reason") or "daily_situation_composer_v1").strip()
@@ -8758,6 +9261,47 @@ def _build_verified_situation_day_from_daily_composer(
                 reason=selection_mode or "daily_situation_composer_insufficient",
                 rejected=rejected,
                 selection_mode="daily_situation_composer_v1",
+            ),
+            prepared,
+            daily_input,
+        )
+
+    focus_stage_code = _daily_focus_stage_code(daily_input.get("daily_focus"))
+    contract_rejection_reason = _focus_case_contract_rejection_reason(
+        decision=prepared.get("focus_case_selection")
+        if isinstance(prepared.get("focus_case_selection"), dict)
+        else dict((prepared.get("selection_diagnostics") or {}).get("focus_case_selection") or {}),
+        daily_focus=daily_input.get("daily_focus") if isinstance(daily_input, dict) else None,
+        known_call_ids={str(item.interaction.id) for item in artifacts},
+    )
+    if contract_rejection_reason:
+        prepared = dict(prepared)
+        quality = dict(prepared.get("quality_diagnostics") or {})
+        quality["report_layer_verification_status"] = "failed"
+        quality["report_layer_rejection_reason"] = contract_rejection_reason
+        prepared["quality_diagnostics"] = quality
+        return (
+            _no_verified_situation_day_result(
+                reason=contract_rejection_reason,
+                rejected=rejected,
+                selection_mode="daily_situation_composer_contract",
+            ),
+            prepared,
+            daily_input,
+        )
+
+    prepared_stage_code = str(
+        (dict(prepared.get("coaching_view") or {}).get("stage_code"))
+        or (dict(prepared.get("evidence_quote") or {}).get("stage_code"))
+        or ""
+    ).strip()
+    if focus_stage_code and prepared_stage_code and prepared_stage_code != focus_stage_code:
+        mismatch_reason = f"situation_stage_mismatch:{prepared_stage_code}"
+        return (
+            _no_verified_situation_day_result(
+                reason=mismatch_reason,
+                rejected=rejected,
+                selection_mode="blocked_mismatch",
             ),
             prepared,
             daily_input,
@@ -8808,8 +9352,26 @@ def _build_verified_situation_day_from_daily_composer(
     selection_diagnostics["report_layer_verification_status"] = "passed"
     selection_diagnostics.setdefault("selection_mode", selection_mode or "daily_situation_composer_v1")
     selection_diagnostics.setdefault("block", "situation_day")
+    decision = dict(
+        prepared.get("focus_case_selection")
+        or selection_diagnostics.get("focus_case_selection")
+        or {}
+    )
+    selection_diagnostics["focus_case_selection"] = decision
+    selection_diagnostics["case_status"] = decision["case_status"]
+    selection_diagnostics["evidence_level"] = decision["evidence_level"]
+    selection_diagnostics["wording_mode"] = decision["wording_mode"]
     verified["selection_diagnostics"] = selection_diagnostics
     verified.setdefault("coaching_view", {})["selection_diagnostics"] = selection_diagnostics
+    verified["coaching_view"] = _attach_focus_case_diagnostics(
+        block=verified.get("coaching_view"),
+        decision=decision,
+    )
+    if isinstance(prepared.get("call_breakdown"), dict):
+        verified["call_breakdown"] = _attach_focus_case_diagnostics(
+            block=prepared.get("call_breakdown"),
+            decision=decision,
+        )
     return verified, prepared, daily_input
 
 
@@ -8817,6 +9379,7 @@ def _prepare_daily_situation_day_result(
     *,
     artifacts: list[ReportArtifact],
     result: dict[str, Any] | None,
+    daily_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Normalize Daily Situation Composer output before transcript verification."""
     if not isinstance(result, dict):
@@ -8837,6 +9400,12 @@ def _prepare_daily_situation_day_result(
     dialogue_turns = _daily_situation_dialogue_turns(result.get("dialogue_turns"))
     evidence_quotes = _daily_situation_evidence_quotes(result.get("evidence_quotes"), fallback=quote)
     stage_code = str(result.get("stage_code") or "").strip()
+    focus_case_selection = _normalize_focus_case_decision_from_llm3(
+        daily_focus=daily_focus,
+        result=result,
+        fallback_selected_call_id=selected_call_id,
+        fallback_stage_code=stage_code,
+    )
     proof_type = str(result.get("proof_type") or "").strip() or "sequence_inference"
     selection_diagnostics = _semantic_case_selection_diagnostics(
         block_name="situation_day",
@@ -8854,6 +9423,11 @@ def _prepare_daily_situation_day_result(
     diagnostics = dict(result.get("diagnostics") or {})
     if diagnostics:
         selection_diagnostics["composer_diagnostics"] = diagnostics
+    if focus_case_selection:
+        selection_diagnostics["focus_case_selection"] = focus_case_selection
+        selection_diagnostics["case_status"] = focus_case_selection.get("case_status")
+        selection_diagnostics["evidence_level"] = focus_case_selection.get("evidence_level")
+        selection_diagnostics["wording_mode"] = focus_case_selection.get("wording_mode")
     coaching_view = {
         "source": SITUATION_DAY_DAILY_SOURCE,
         "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
@@ -8877,7 +9451,7 @@ def _prepare_daily_situation_day_result(
         "stage_label": _stage_name_for_code(stage_code, []) if stage_code else None,
         "selection_diagnostics": selection_diagnostics,
     }
-    return {
+    prepared = {
         "status": "verified",
         "selected_call_id": selected_call_id,
         "situation_title": coaching_view["pattern_title"],
@@ -8900,6 +9474,110 @@ def _prepare_daily_situation_day_result(
         "coaching_view": coaching_view,
         "selection_diagnostics": selection_diagnostics,
         "raw_daily_composer_result": result,
+    }
+    if focus_case_selection:
+        prepared["focus_case_selection"] = focus_case_selection
+    call_breakdown = _normalize_daily_llm3_call_breakdown(
+        result=result,
+        selected_call_ref=ref,
+        selected_call_id=selected_call_id,
+        focus_case_selection=focus_case_selection,
+    )
+    if call_breakdown is not None:
+        prepared["call_breakdown"] = call_breakdown
+    return prepared
+
+
+def _normalize_daily_llm3_call_breakdown(
+    *,
+    result: dict[str, Any],
+    selected_call_ref: dict[str, Any],
+    selected_call_id: str,
+    focus_case_selection: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Accept a manager-facing Call Breakdown only when LLM3 supplied it."""
+    raw = result.get("call_breakdown")
+    if not isinstance(raw, dict):
+        return None
+    decision = dict(focus_case_selection or {})
+    if str(decision.get("case_status") or "").strip() not in {"strong", "workable"}:
+        return None
+
+    expected_stage = str(decision.get("selected_case_stage_code") or result.get("stage_code") or "").strip()
+    raw_call_id = str(raw.get("call_id") or selected_call_id or "").strip()
+    raw_stage = str(raw.get("stage_code") or expected_stage or "").strip()
+    if raw_call_id != selected_call_id:
+        return None
+    if expected_stage and raw_stage and raw_stage != expected_stage:
+        return None
+
+    rows = [
+        [str(cell or "").strip() for cell in row[:4]]
+        for row in raw.get("rows") or []
+        if isinstance(row, list) and len(row) >= 4
+    ]
+    if not rows and isinstance(raw.get("moments"), list):
+        for index, item in enumerate(raw.get("moments") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            moment = str(item.get("moment") or item.get("title") or f"Момент {index}").strip()
+            what = str(item.get("what_happened") or item.get("what") or "").strip()
+            proof = str(
+                item.get("confirming_fragment")
+                or item.get("evidence")
+                or item.get("supporting_quote")
+                or ""
+            ).strip()
+            better = str(item.get("better_action") or item.get("recommendation") or item.get("better") or "").strip()
+            if what and better:
+                rows.append([moment, what, proof, better])
+    if not rows:
+        return None
+
+    summary_line = str(
+        raw.get("summary_line")
+        or selected_call_ref.get("client_call_reference")
+        or "Разбор выбранного звонка"
+    ).strip()
+    selection = dict(raw.get("selection_diagnostics") or {})
+    selection.update(
+        {
+            "selection_mode": selection.get("selection_mode") or "llm3_daily_call_breakdown",
+            "selected_call_id": selected_call_id,
+            "llm3_daily_call_breakdown": True,
+        }
+    )
+    return {
+        "status": "verified",
+        "is_placeholder": False,
+        "call_id": selected_call_id,
+        "client_label": selected_call_ref.get("client_label"),
+        "client_phone": selected_call_ref.get("client_phone"),
+        "date_label": selected_call_ref.get("date_label"),
+        "time_label": selected_call_ref.get("time_label"),
+        "client_call_reference": selected_call_ref.get("client_call_reference"),
+        "stage_code": raw_stage or None,
+        "stage_name": raw.get("stage_name") or selected_call_ref.get("stage_name"),
+        "stage_steps": [],
+        "worked": [],
+        "to_fix": [],
+        "recommendation": None,
+        "rows": rows[:4],
+        "moments": list(raw.get("moments") or []),
+        "summary_line": summary_line,
+        "call_story": str(raw.get("call_story") or "").strip(),
+        "what_manager_missed": str(raw.get("what_manager_missed") or "").strip(),
+        "better_path": str(raw.get("better_path") or "").strip(),
+        "dialogue_evidence": list(raw.get("dialogue_evidence") or []),
+        "key_turning_points": list(raw.get("key_turning_points") or []),
+        "source_note": "llm3_daily_situation.call_breakdown",
+        "call_breakdown_source": "llm3_daily_situation.call_breakdown",
+        "call_breakdown_evidence_strength": str(decision.get("evidence_level") or "workable"),
+        "call_breakdown_fragment_present": any(str(row[2] or "").strip() for row in rows),
+        "case_status": decision.get("case_status"),
+        "evidence_level": decision.get("evidence_level"),
+        "wording_mode": decision.get("wording_mode"),
+        "selection_diagnostics": selection,
     }
 
 
@@ -8924,7 +9602,7 @@ def _daily_situation_proof_pool_rejection_reason(
         None,
     )
     if selected_call is None:
-        return "selected_call_not_in_verified_proof_pool"
+        return None
 
     proof_scenes = [
         scene
@@ -8936,7 +9614,7 @@ def _daily_situation_proof_pool_rejection_reason(
         in {"verified_proof_card", "softened_proof_card"}
     ]
     if not proof_scenes:
-        return "selected_call_has_no_verified_manager_gap_scene"
+        return None
 
     raw_result = result.get("raw_daily_composer_result")
     source_owner = raw_result if isinstance(raw_result, dict) else result
@@ -9492,6 +10170,17 @@ def _no_verified_situation_day_result(
     selection_mode: str,
 ) -> dict[str, Any]:
     """Return an explicit empty Situation Day result after all candidates fail verification."""
+    case_status = "blocked_mismatch" if str(reason or "").startswith("situation_stage_mismatch:") else "weak_blocked"
+    decision = _focus_case_decision(
+        daily_focus=None,
+        case_status=case_status,
+        selected_call_id=None,
+        selected_case_stage_code=None,
+        selection_reason=reason,
+        evidence_level="weak",
+        wording_mode="blocked",
+        rejection_reasons=[reason] if reason else [],
+    )
     coaching_view = _build_situation_day_insufficient_view(
         reason=reason,
         previous_view=None,
@@ -9502,17 +10191,38 @@ def _no_verified_situation_day_result(
         rejected=rejected,
         selection_mode=selection_mode,
     )
+    diagnostics.update(
+        {
+            "case_status": case_status,
+            "evidence_level": "weak",
+            "wording_mode": "blocked",
+            "selection_reason": reason,
+            "rejection_reasons": decision["rejection_reasons"],
+            "focus_case_selection": decision,
+        }
+    )
     return {
         "situation_title": "Нет надежно подтвержденной ситуации дня",
         "evidence_quote": None,
         "dialogue_excerpt": None,
         "no_verified_situation_day": True,
-        "coaching_view": {**coaching_view, "selection_diagnostics": diagnostics},
+        "coaching_view": {
+            **coaching_view,
+            "case_status": case_status,
+            "evidence_level": "weak",
+            "wording_mode": "blocked",
+            "selection_reason": reason,
+            "rejection_reasons": decision["rejection_reasons"],
+            "selection_diagnostics": diagnostics,
+        },
         "selection_diagnostics": diagnostics,
         "evidence_packet": {
             "status": "insufficient",
             "proof_strength": "insufficient",
             "insufficiency_reason": reason,
+            "case_status": case_status,
+            "evidence_level": "weak",
+            "wording_mode": "blocked",
         },
     }
 
@@ -15869,23 +16579,6 @@ def _apply_call_breakdown_quality_gate(
 
     focus_stage = _daily_focus_stage_code(daily_focus)
     block_stage = str(call_breakdown.get("stage_code") or "").strip()
-    selection_mode = str(
-        dict(call_breakdown.get("selection_diagnostics") or {}).get("selection_mode")
-        or ""
-    ).strip()
-    allow_focus_stage_mismatch = (
-        source == "report_evidence.semantic_case"
-        and selection_mode == "best_semantic_case_after_focus_mismatch"
-    ) or (
-        source in {
-            "report_evidence.call_breakdown_composer.v1",
-            "report_evidence.call_breakdown_composer.v2",
-        }
-        and selection_mode == "same_call_as_verified_situation_day"
-    ) or (
-        source == "report_evidence.evidence_registry.call_breakdown_route.v1"
-        and selection_mode == "evidence_registry_router_call_breakdown"
-    )
     source_allows_optional_quote = source in {
         "report_evidence.block_candidates.call_breakdown",
         "report_evidence.semantic_case",
@@ -15926,15 +16619,33 @@ def _apply_call_breakdown_quality_gate(
             }
         )
 
-    for index, row in enumerate(rows, start=1):
-        if (
-            focus_stage
-            and block_stage
-            and block_stage != focus_stage
-            and not allow_focus_stage_mismatch
-        ):
+    if focus_stage and block_stage and block_stage != focus_stage:
+        for index, row in enumerate(rows, start=1):
             reject(index, "stage_mismatch", row)
-            continue
+        quality["status"] = "blocked_mismatch"
+        quality["render_block"] = False
+        quality["blocker_reason"] = f"call_breakdown_stage_mismatch:{block_stage}"
+        quality["focus_stage_code"] = focus_stage
+        quality["call_breakdown_stage_code"] = block_stage
+        result, quality = _call_breakdown_quality_fallback(call_breakdown=call_breakdown, quality=quality)
+        result["case_status"] = "blocked_mismatch"
+        result["evidence_level"] = "weak"
+        result["wording_mode"] = "blocked"
+        result["selection_reason"] = "call_breakdown_stage_mismatch"
+        diagnostics = dict(result.get("selection_diagnostics") or {})
+        diagnostics.update(
+            {
+                "case_status": "blocked_mismatch",
+                "evidence_level": "weak",
+                "wording_mode": "blocked",
+                "selection_reason": "call_breakdown_stage_mismatch",
+                "rejection_reasons": [quality["blocker_reason"]],
+            }
+        )
+        result["selection_diagnostics"] = diagnostics
+        return result, quality
+
+    for index, row in enumerate(rows, start=1):
         if len(row) != 4:
             quality["format_normalized_rows_count"] += 1
             issue_counts = quality["issue_class_counts"]
@@ -16995,7 +17706,7 @@ def _build_report_evidence_situation(
     selected_block_candidates = block_candidates
     block_selection_mode = "daily_focus"
     block_build_focus_stage_code = focus_stage_code
-    if not selected_block_candidates and block_relaxed_candidates:
+    if not selected_block_candidates and block_relaxed_candidates and not focus_stage_code:
         selected_block_candidates = block_relaxed_candidates
         block_selection_mode = "best_block_candidate_after_focus_mismatch"
         block_build_focus_stage_code = None
@@ -17042,7 +17753,7 @@ def _build_report_evidence_situation(
     selected_semantic_candidates = semantic_candidates
     semantic_selection_mode = "daily_focus"
     semantic_build_focus_stage_code = focus_stage_code
-    if not selected_semantic_candidates and semantic_relaxed_candidates:
+    if not selected_semantic_candidates and semantic_relaxed_candidates and not focus_stage_code:
         selected_semantic_candidates = semantic_relaxed_candidates
         semantic_selection_mode = "best_semantic_case_after_focus_mismatch"
         semantic_build_focus_stage_code = None

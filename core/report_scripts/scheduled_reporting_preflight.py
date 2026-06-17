@@ -6,18 +6,105 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from app.agents.calls.scheduled_reporting import ScheduledReviewableReportingService
+from app.agents.calls.reporting import parse_call_started_at
+from app.agents.calls.run_alerts import send_run_alert
+from app.agents.calls.scheduled_reporting import (
+    SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS,
+    ScheduledReviewableReportingService,
+)
+from app.core_shared.db.models import (
+    Analysis,
+    CallArtifact,
+    Interaction,
+    Manager,
+    ReportingSchedule,
+    ScheduledReportBatch,
+    ScheduledReportDraft,
+)
 from app.core_shared.db.session import get_db
 from app.core_shared.exceptions import ASAError
+
+
+SLA_TIMEZONE = "Asia/Almaty"
+SLA_PRECHECK_TIME = time(hour=9, minute=30)
+SLA_HARD_TIME = time(hour=10, minute=0)
+NO_AUDIO_INTERACTION_STATUS = "NO_AUDIO"
+UPSTREAM_ARTIFACT_KINDS = ("transcript", "transcript_segments", "llm1_first_pass")
+ACTIVE_MANAGER_DAILY_BATCH_STATUSES = (
+    "planned",
+    "queued",
+    "running",
+    "review_required",
+    "approved_for_delivery",
+    "delivered",
+    "failed",
+    "paused",
+)
+OPEN_BATCH_STATUSES = (
+    "planned",
+    "queued",
+    "running",
+    "review_required",
+    "approved_for_delivery",
+)
+RECOVERABLE_BATCH_STATUSES = (*OPEN_BATCH_STATUSES, "paused")
+SLA_ALERT_MAX_AFFECTED = 5
+DEFAULT_RECOVERY_REASON = (
+    "closed_by_operator_recovery: "
+    "superseded_test_batch_blocked_production_schedule"
+)
+SLA_REASON_LABELS = {
+    "sla_missed": "отчет не доставлен до SLA",
+    "missing_artifacts": "не хватило готовых данных для отчета",
+    "email_failed": "ошибка отправки email",
+    "manager_email_failed": "письмо менеджеру не отправлено",
+    "manager_email_blocked": "доставка письма менеджеру заблокирована",
+    "manager_email_not_started": "отправка письма менеджеру не началась",
+    "manager_email_planned": "отправка письма менеджеру еще не завершена",
+    "no_calls": "за день нет звонков в scope",
+    "no_audio": "звонки есть, но аудио недоступно",
+    "stt_error": "ошибка транскрибации",
+    "llm_error": "ошибка анализа",
+    "llm2_admission_non_commercial_or_unusable": "звонок не принят в коммерческий разбор",
+    "quota": "ограничение бюджета или лимита",
+    "budget": "ограничение бюджета или лимита",
+    "read_timeout": "таймаут при ожидании сервиса",
+    "ReadTimeout": "таймаут при ожидании сервиса",
+    "no_calls_for_report_day": "за день нет звонков в scope",
+    "no_audio_calls_for_report_day": "звонки есть, но аудио недоступно",
+    "upstream_stt_not_ready": "транскрибация еще не готова",
+    "upstream_llm1_not_ready": "первичный анализ еще не готов",
+    "analysis_not_ready": "анализ еще не готов",
+    "scheduled_batch_missing": "нет готового batch для отчета",
+    "scheduled_draft_missing": "нет готового черновика отчета",
+    "pdf_not_ready": "нет готового PDF отчета",
+    "manager_report_not_delivered": "отчет менеджеру не доставлен",
+}
+
+
+def _resolve_sla_report_date(
+    raw_date: str | None,
+    *,
+    now_utc: datetime | None = None,
+) -> date:
+    normalized = str(raw_date or "auto").strip().lower()
+    if normalized in {"", "auto", "previous_day", "prev_day", "yesterday"}:
+        current_utc = now_utc or datetime.now(UTC)
+        if current_utc.tzinfo is None:
+            current_utc = current_utc.replace(tzinfo=UTC)
+        local_now = current_utc.astimezone(ZoneInfo(SLA_TIMEZONE))
+        return local_now.date() - timedelta(days=1)
+    return date.fromisoformat(str(raw_date))
 
 
 def _normalize_manager_ids(values: list[str]) -> list[str]:
@@ -108,6 +195,10 @@ def _emit(result: dict[str, Any], *, as_json: bool) -> None:
         return
     if result.get("action") == "status":
         _print_status(result)
+    elif result.get("action") == "open_batch_diagnostics":
+        print(_format_open_batch_diagnostics(result))
+    elif result.get("action") == "open_batch_recovery":
+        print(_format_recovery_plan(result))
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -130,6 +221,1325 @@ def scan_due() -> dict[str, Any]:
         return {"status": "ok", "action": "scan_due", **summary}
 
 
+def _as_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _sla_local_dt(report_date: date, local_time: time) -> datetime:
+    return datetime.combine(report_date, local_time, tzinfo=ZoneInfo(SLA_TIMEZONE))
+
+
+def _sla_window(report_date: date) -> dict[str, str]:
+    precheck = _sla_local_dt(report_date, SLA_PRECHECK_TIME)
+    deadline = _sla_local_dt(report_date, SLA_HARD_TIME)
+    return {
+        "timezone": SLA_TIMEZONE,
+        "sla_precheck_at": precheck.isoformat(),
+        "sla_precheck_at_utc": precheck.astimezone(UTC).isoformat(),
+        "sla_deadline_at": deadline.isoformat(),
+        "sla_deadline_at_utc": deadline.astimezone(UTC).isoformat(),
+    }
+
+
+def _active_manager_daily_schedules(db: Any) -> list[Any]:
+    return (
+        db.query(ReportingSchedule)
+        .filter(
+            ReportingSchedule.deleted_at.is_(None),
+            ReportingSchedule.enabled.is_(True),
+            ReportingSchedule.preset == "manager_daily",
+        )
+        .order_by(ReportingSchedule.created_at.asc())
+        .all()
+    )
+
+
+def _manager_scope_from_schedules(db: Any, schedules: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for schedule in schedules:
+        manager_ids = [
+            str(item)
+            for item in (schedule.manager_ids or [])
+            if str(item or "").strip()
+        ]
+        if manager_ids:
+            managers = {
+                str(item.id): item
+                for item in db.query(Manager)
+                .filter(Manager.id.in_([UUID(item) for item in manager_ids]))
+                .all()
+            }
+            for manager_id in manager_ids:
+                key = (str(schedule.id), manager_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                manager = managers.get(manager_id)
+                rows.append(
+                    {
+                        "schedule_id": str(schedule.id),
+                        "department_id": str(schedule.department_id),
+                        "manager_id": manager_id,
+                        "manager_name": getattr(manager, "name", None),
+                        "manager_email": getattr(manager, "email", None),
+                        "manager_active": (
+                            bool(getattr(manager, "active", False))
+                            if manager is not None
+                            else False
+                        ),
+                        "manager_found": manager is not None,
+                        "schedule": _schedule_summary(schedule),
+                    }
+                )
+            continue
+
+        managers = (
+            db.query(Manager)
+            .filter(
+                Manager.department_id == schedule.department_id,
+                Manager.active.is_(True),
+            )
+            .order_by(Manager.name.asc())
+            .all()
+        )
+        for manager in managers:
+            manager_id = str(manager.id)
+            key = (str(schedule.id), manager_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "schedule_id": str(schedule.id),
+                    "department_id": str(schedule.department_id),
+                    "manager_id": manager_id,
+                    "manager_name": manager.name,
+                    "manager_email": manager.email,
+                    "manager_active": bool(manager.active),
+                    "manager_found": True,
+                    "schedule": _schedule_summary(schedule),
+                }
+            )
+    return rows
+
+
+def _schedule_summary(schedule: Any) -> dict[str, Any]:
+    return {
+        "id": str(schedule.id),
+        "department_id": str(schedule.department_id),
+        "enabled": bool(schedule.enabled),
+        "preset": schedule.preset,
+        "start_time": schedule.start_time,
+        "timezone": schedule.timezone,
+        "recurrence_type": schedule.recurrence_type,
+        "report_period_rule": schedule.report_period_rule,
+        "mode": schedule.mode,
+        "business_email_enabled": bool(schedule.business_email_enabled),
+        "review_required": bool(getattr(schedule, "review_required", True)),
+        "next_run_at": _as_iso(schedule.next_run_at),
+    }
+
+
+def _load_manager_day_interactions(
+    db: Any,
+    *,
+    department_id: str,
+    manager_id: str,
+    report_date: date,
+) -> list[Any]:
+    rows = (
+        db.query(Interaction)
+        .filter(
+            Interaction.department_id == UUID(department_id),
+            Interaction.manager_id == UUID(manager_id),
+            Interaction.type == "call",
+        )
+        .all()
+    )
+    selected: list[Any] = []
+    for interaction in rows:
+        started_at = parse_call_started_at(dict(interaction.metadata_ or {}))
+        if started_at is not None and started_at.date() == report_date:
+            selected.append(interaction)
+    return selected
+
+
+def _interaction_requires_upstream(interaction: Any) -> bool:
+    status = str(getattr(interaction, "status", "") or "").strip().upper()
+    return status != NO_AUDIO_INTERACTION_STATUS
+
+
+def _load_artifact_counts(db: Any, interactions: list[Any]) -> dict[str, Any]:
+    required_ids = [item.id for item in interactions if _interaction_requires_upstream(item)]
+    counts = {
+        "required_interactions": len(required_ids),
+        "ready_by_kind": {kind: 0 for kind in UPSTREAM_ARTIFACT_KINDS},
+        "present_by_kind": {kind: 0 for kind in UPSTREAM_ARTIFACT_KINDS},
+        "stt_ready": False,
+        "llm1_ready": False,
+    }
+    if not required_ids:
+        counts["stt_ready"] = True
+        counts["llm1_ready"] = True
+        return counts
+    artifacts = (
+        db.query(CallArtifact)
+        .filter(
+            CallArtifact.interaction_id.in_(required_ids),
+            CallArtifact.artifact_kind.in_(list(UPSTREAM_ARTIFACT_KINDS)),
+            CallArtifact.is_active.is_(True),
+        )
+        .all()
+    )
+    seen_ready: set[tuple[str, str]] = set()
+    seen_present: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        kind = str(artifact.artifact_kind or "")
+        if kind not in UPSTREAM_ARTIFACT_KINDS:
+            continue
+        interaction_id = str(artifact.interaction_id)
+        seen_present.add((interaction_id, kind))
+        if str(artifact.status or "").strip().lower() == "ready":
+            seen_ready.add((interaction_id, kind))
+    for kind in UPSTREAM_ARTIFACT_KINDS:
+        counts["present_by_kind"][kind] = sum(
+            1 for _, item_kind in seen_present if item_kind == kind
+        )
+        counts["ready_by_kind"][kind] = sum(1 for _, item_kind in seen_ready if item_kind == kind)
+    counts["stt_ready"] = all(
+        (str(interaction_id), "transcript") in seen_ready
+        and (str(interaction_id), "transcript_segments") in seen_ready
+        for interaction_id in required_ids
+    )
+    counts["llm1_ready"] = all(
+        (str(interaction_id), "llm1_first_pass") in seen_ready
+        for interaction_id in required_ids
+    )
+    return counts
+
+
+def _load_analysis_counts(db: Any, interactions: list[Any]) -> dict[str, Any]:
+    required_ids = [item.id for item in interactions if _interaction_requires_upstream(item)]
+    counts = {
+        "required_interactions": len(required_ids),
+        "present": 0,
+        "ready": 0,
+        "failed": 0,
+        "analysis_ready": False,
+    }
+    if not required_ids:
+        counts["analysis_ready"] = True
+        return counts
+    rows = db.query(Analysis).filter(Analysis.interaction_id.in_(required_ids)).all()
+    seen_present = {str(item.interaction_id) for item in rows}
+    seen_ready = {
+        str(item.interaction_id)
+        for item in rows
+        if not bool(getattr(item, "is_failed", False))
+    }
+    seen_failed = {
+        str(item.interaction_id)
+        for item in rows
+        if bool(getattr(item, "is_failed", False))
+    }
+    counts["present"] = len(seen_present)
+    counts["ready"] = len(seen_ready)
+    counts["failed"] = len(seen_failed)
+    counts["analysis_ready"] = all(str(item) in seen_ready for item in required_ids)
+    return counts
+
+
+def _load_manager_day_batch(
+    db: Any,
+    *,
+    schedule_id: str,
+    department_id: str,
+    manager_id: str,
+    report_date: date,
+) -> tuple[Any | None, list[Any]]:
+    batches = (
+        db.query(ScheduledReportBatch)
+        .filter(
+            ScheduledReportBatch.schedule_id == UUID(schedule_id),
+            ScheduledReportBatch.department_id == UUID(department_id),
+            ScheduledReportBatch.preset == "manager_daily",
+            ScheduledReportBatch.status.in_(list(ACTIVE_MANAGER_DAILY_BATCH_STATUSES)),
+        )
+        .order_by(ScheduledReportBatch.created_at.desc())
+        .all()
+    )
+    report_day = report_date.isoformat()
+    for batch in batches:
+        if not _batch_matches_manager_day(
+            batch=batch,
+            manager_id=manager_id,
+            report_day=report_day,
+        ):
+            continue
+        drafts = (
+            db.query(ScheduledReportDraft)
+            .filter(ScheduledReportDraft.batch_id == batch.id)
+            .order_by(ScheduledReportDraft.created_at.asc())
+            .all()
+        )
+        matching_drafts = [
+            draft
+            for draft in drafts
+            if _draft_matches_manager_day(draft=draft, manager_id=manager_id, report_day=report_day)
+        ]
+        return batch, matching_drafts or drafts
+    return None, []
+
+
+def _batch_matches_manager_day(*, batch: Any, manager_id: str, report_day: str) -> bool:
+    period = dict(batch.period or {})
+    if str(period.get("date_from") or "") != report_day:
+        return False
+    if str(period.get("date_to") or report_day) != report_day:
+        return False
+    filters = dict(batch.filters or {})
+    manager_ids = {str(item) for item in filters.get("manager_ids") or []}
+    if manager_id in manager_ids:
+        return True
+    observability = dict(batch.observability or {})
+    selection = dict(observability.get("scheduled_candidate_selection") or {})
+    return str(selection.get("manager_id") or "") == manager_id
+
+
+def _draft_matches_manager_day(*, draft: Any, manager_id: str, report_day: str) -> bool:
+    if str(draft.group_key or "") == f"manager_daily:{manager_id}:{report_day}":
+        return True
+    payload = dict(draft.generated_payload or {})
+    meta = dict(payload.get("meta") or {})
+    header = dict(payload.get("header") or {})
+    period = dict(meta.get("period") or {})
+    payload_report_day = str(header.get("report_date") or period.get("date_from") or "").strip()
+    payload_manager_id = str(meta.get("manager_id") or header.get("manager_id") or "").strip()
+    return payload_report_day == report_day and payload_manager_id == manager_id
+
+
+def _extract_manager_email_status(drafts: list[Any]) -> dict[str, Any]:
+    if not drafts:
+        return {"status": "not_started", "primary_email": None, "error": None}
+    for draft in drafts:
+        delivery = dict(draft.delivery or {})
+        transport = dict(delivery.get("transport") or delivery)
+        email = dict(transport.get("email_delivery") or {})
+        if email:
+            return {
+                "status": str(email.get("status") or "unknown"),
+                "primary_email": email.get("primary_email")
+                or (transport.get("resolved_email") or {}).get("primary_email"),
+                "error": email.get("error"),
+                "artifact": email.get("artifact"),
+            }
+    return {"status": "unknown", "primary_email": None, "error": None}
+
+
+def _extract_rop_status(batch: Any | None) -> dict[str, Any]:
+    if batch is None:
+        return {"status": "not_started", "reason": "batch_missing", "available": False}
+    observability = dict(batch.observability or {})
+    candidates = [
+        ((observability.get("summary") or {}).get("rop_daily_delivery") or {}),
+        (observability.get("rop_daily_delivery") or {}),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return {
+                "status": str(candidate.get("status") or "unknown"),
+                "reason": candidate.get("reason"),
+                "available": True,
+                "attachments_count": candidate.get("attachments_count"),
+                "target": candidate.get("target"),
+            }
+    return {"status": "unknown", "reason": "rop_status_not_recorded", "available": False}
+
+
+def _draft_pdf_ready(drafts: list[Any]) -> bool:
+    return any(
+        bool((dict(draft.artifact or {})).get("filename") or dict(draft.artifact or {}))
+        for draft in drafts
+    )
+
+
+def _existing_sla_fields(batch: Any | None, drafts: list[Any]) -> dict[str, Any]:
+    sources: list[dict[str, Any]] = []
+    if batch is not None:
+        observability = dict(batch.observability or {})
+        sources.extend([dict(observability.get("sla") or {}), observability])
+    for draft in drafts:
+        delivery = dict(draft.delivery or {})
+        sources.extend([dict(delivery.get("sla") or {}), delivery])
+    merged: dict[str, Any] = {}
+    for source in sources:
+        for key in (
+            "sla_deadline_at",
+            "sla_precheck_at",
+            "sla_hardcheck_at",
+            "delivered_at",
+            "sla_status",
+            "sla_missed",
+            "sla_missed_reason",
+            "late_delivery_at",
+            "manager_email_status",
+            "rop_email_status",
+        ):
+            if source.get(key) not in (None, ""):
+                merged[key] = source[key]
+    return merged
+
+
+def _derive_sla_state(
+    *,
+    report_date: date,
+    calls_total: int,
+    with_audio_calls: int,
+    upstream: dict[str, Any],
+    analysis: dict[str, Any],
+    batch: Any | None,
+    drafts: list[Any],
+    manager_email: dict[str, Any],
+    rop: dict[str, Any],
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    existing = _existing_sla_fields(batch, drafts)
+    window = _sla_window(report_date)
+    deadline_utc = datetime.fromisoformat(window["sla_deadline_at_utc"])
+    now_utc = now_utc or datetime.now(UTC)
+    pdf_ready = _draft_pdf_ready(drafts)
+    email_status = str(manager_email.get("status") or "not_started")
+    if calls_total == 0:
+        derived_status = "not_applicable"
+        reason = "no_calls_for_report_day"
+    elif with_audio_calls == 0:
+        derived_status = "not_applicable"
+        reason = "no_audio_calls_for_report_day"
+    elif not bool(upstream.get("stt_ready")):
+        derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
+        reason = "upstream_stt_not_ready"
+    elif not bool(upstream.get("llm1_ready")):
+        derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
+        reason = "upstream_llm1_not_ready"
+    elif not bool(analysis.get("analysis_ready")):
+        derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
+        reason = "analysis_not_ready"
+    elif batch is None:
+        derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
+        reason = "scheduled_batch_missing"
+    elif not drafts:
+        derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
+        reason = "scheduled_draft_missing"
+    elif not pdf_ready:
+        derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
+        reason = "pdf_not_ready"
+    elif email_status == "delivered":
+        if bool(existing.get("sla_missed")):
+            derived_status = "late"
+            reason = existing.get("sla_missed_reason") or "delivered_after_recorded_sla_miss"
+        else:
+            derived_status = "on_time"
+            reason = "manager_email_delivered"
+    elif email_status in {"blocked", "failed"}:
+        derived_status = "blocked"
+        reason = manager_email.get("error") or f"manager_email_{email_status}"
+    elif now_utc >= deadline_utc:
+        derived_status = "missed_pending"
+        reason = f"manager_email_{email_status or 'not_delivered'}"
+    else:
+        derived_status = "not_applicable"
+        reason = "sla_deadline_not_reached"
+
+    status = str(existing.get("sla_status") or derived_status)
+    missed_reason = existing.get("sla_missed_reason") or reason
+    return {
+        **window,
+        "delivered_at": existing.get("delivered_at")
+        or _as_iso(getattr(batch, "delivered_at", None)),
+        "sla_status": status,
+        "sla_missed": bool(existing.get("sla_missed", status in {"missed_pending", "blocked"})),
+        "sla_missed_reason": missed_reason,
+        "late_delivery_at": existing.get("late_delivery_at"),
+        "manager_email_status": existing.get("manager_email_status") or email_status,
+        "rop_email_status": existing.get("rop_email_status") or rop.get("status"),
+        "reason": missed_reason,
+    }
+
+
+def _build_manager_sla_row(
+    db: Any,
+    *,
+    scope: dict[str, Any],
+    report_date: date,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    interactions = _load_manager_day_interactions(
+        db,
+        department_id=scope["department_id"],
+        manager_id=scope["manager_id"],
+        report_date=report_date,
+    )
+    with_audio = [item for item in interactions if _interaction_requires_upstream(item)]
+    upstream = _load_artifact_counts(db, with_audio)
+    analysis = _load_analysis_counts(db, with_audio)
+    batch, drafts = _load_manager_day_batch(
+        db,
+        schedule_id=scope["schedule_id"],
+        department_id=scope["department_id"],
+        manager_id=scope["manager_id"],
+        report_date=report_date,
+    )
+    manager_email = _extract_manager_email_status(drafts)
+    rop = _extract_rop_status(batch)
+    sla = _derive_sla_state(
+        report_date=report_date,
+        calls_total=len(interactions),
+        with_audio_calls=len(with_audio),
+        upstream=upstream,
+        analysis=analysis,
+        batch=batch,
+        drafts=drafts,
+        manager_email=manager_email,
+        rop=rop,
+        now_utc=now_utc,
+    )
+    return {
+        **scope,
+        "report_date": report_date.isoformat(),
+        "calls": {
+            "total": len(interactions),
+            "with_audio": len(with_audio),
+            "no_audio": len(interactions) - len(with_audio),
+            "presence": bool(interactions),
+        },
+        "upstream": upstream,
+        "analysis": analysis,
+        "batch": _batch_summary(batch),
+        "drafts": [_draft_summary(item) for item in drafts],
+        "draft_pdf_ready": _draft_pdf_ready(drafts),
+        "manager_email": manager_email,
+        "rop_email": rop,
+        "sla": sla,
+    }
+
+
+def _batch_summary(batch: Any | None) -> dict[str, Any] | None:
+    if batch is None:
+        return None
+    return {
+        "id": str(batch.id),
+        "status": batch.status,
+        "planned_for": _as_iso(batch.planned_for),
+        "business_email_enabled": bool(batch.business_email_enabled),
+        "review_required": bool(batch.review_required),
+        "delivered_at": _as_iso(batch.delivered_at),
+        "failed_at": _as_iso(batch.failed_at),
+        "errors": list(batch.errors or []),
+    }
+
+
+def _draft_summary(draft: Any) -> dict[str, Any]:
+    return {
+        "id": str(draft.id),
+        "status": draft.status,
+        "group_key": draft.group_key,
+        "artifact": dict(draft.artifact or {}),
+        "pdf_ready": bool(dict(draft.artifact or {})),
+        "errors": list(draft.errors or []),
+    }
+
+
+def _needs_sla_attention(row: dict[str, Any], *, phase: str) -> bool:
+    if row["calls"]["with_audio"] <= 0:
+        return False
+    email_status = str((row.get("manager_email") or {}).get("status") or "")
+    if email_status == "delivered":
+        return False
+    sla_status = str((row.get("sla") or {}).get("sla_status") or "")
+    if phase == "precheck":
+        return True
+    return (
+        sla_status in {"missed_pending", "blocked", "not_applicable"}
+        or email_status != "delivered"
+    )
+
+
+def _attention_reason(row: dict[str, Any]) -> str:
+    sla = row.get("sla") or {}
+    reason = str(sla.get("reason") or sla.get("sla_missed_reason") or "").strip()
+    return reason or "manager_report_not_delivered"
+
+
+def _human_sla_reason(reason: Any) -> str:
+    raw = str(reason or "").strip()
+    if not raw:
+        return SLA_REASON_LABELS["manager_report_not_delivered"]
+    if raw in SLA_REASON_LABELS:
+        return SLA_REASON_LABELS[raw]
+    lowered = raw.lower()
+    for code, label in SLA_REASON_LABELS.items():
+        if lowered == code.lower():
+            return label
+    if raw.startswith(("{", "[")):
+        return "техническая ошибка доставки"
+    one_line = " ".join(raw.split())
+    return one_line[:77] + "..." if len(one_line) > 80 else one_line
+
+
+def _manager_alert_label(row: dict[str, Any]) -> str:
+    name = str(row.get("manager_name") or "").strip()
+    if name:
+        return name
+    email = str(row.get("manager_email") or "").strip()
+    if email:
+        return email
+    manager_id = str(row.get("manager_id") or "").strip()
+    return manager_id[:8] if manager_id else "unknown manager"
+
+
+def _sla_alert_line(row: dict[str, Any]) -> str:
+    return f"{_manager_alert_label(row)}: {_human_sla_reason(_attention_reason(row))}"
+
+
+def _bounded_lines(
+    lines: list[str],
+    *,
+    max_items: int,
+    omitted_label: str,
+) -> list[str]:
+    if len(lines) <= max_items:
+        return lines
+    omitted = len(lines) - max_items
+    return [*lines[:max_items], omitted_label.format(omitted=omitted)]
+
+
+def _sla_operator_summary(
+    *,
+    phase: str,
+    report_date: date,
+    rows: list[dict[str, Any]],
+) -> str:
+    run_id = f"manager_daily_sla:{report_date.isoformat()}:{phase}"
+    alert_lines = _bounded_lines(
+        [_sla_alert_line(row) for row in rows],
+        max_items=SLA_ALERT_MAX_AFFECTED,
+        omitted_label="Еще {omitted} см. в observability/logs.",
+    )
+    if phase == "hard":
+        title = f"Отчеты за {report_date.isoformat()}: SLA доставки пропущен"
+        happened = (
+            f"К 10:00 отчеты не доставлены. Затронуто менеджеров: {len(rows)}."
+        )
+        impact = "Менеджеры не получили ежедневный отчет вовремя."
+    else:
+        title = f"Отчеты за {report_date.isoformat()}: риск SLA доставки"
+        happened = (
+            f"К 09:30 есть отчеты не в delivered-состоянии. "
+            f"Затронуто менеджеров: {len(rows)}."
+        )
+        impact = "Менеджеры могут не получить ежедневный отчет вовремя."
+    affected_block = "\n".join(f"- {line}" for line in alert_lines) or "- none"
+    return "\n".join(
+        [
+            title,
+            "",
+            "Что случилось:",
+            happened,
+            "",
+            "Кого затронуло:",
+            affected_block,
+            "",
+            "На что влияет:",
+            impact,
+            "",
+            "Что проверить:",
+            "scheduled reporting batch, draft delivery, email delivery result.",
+            "",
+            f"Run: {run_id}",
+        ]
+    )
+
+
+def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = str((row.get("sla") or {}).get("sla_status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _send_sla_alert(
+    *,
+    phase: str,
+    report_date: date,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    level = "critical" if phase == "hard" else "warning"
+    event = "failed" if phase == "hard" else "blocked"
+    errors = _bounded_lines(
+        [_sla_alert_line(row) for row in rows],
+        max_items=SLA_ALERT_MAX_AFFECTED,
+        omitted_label="Еще {omitted} см. в observability/logs.",
+    )
+    run_id = f"manager_daily_sla:{report_date.isoformat()}:{phase}"
+    try:
+        return send_run_alert(
+            event,
+            run_id=run_id,
+            title=f"manager_daily SLA {phase}",
+            level=level,
+            requested_by="scheduled_reporting_preflight.sla-check",
+            scope={
+                "report_date": report_date.isoformat(),
+                "preset": "manager_daily",
+                "phase": phase,
+            },
+            counts={"affected_managers": len(rows)},
+            errors=errors,
+            operator_summary=_sla_operator_summary(
+                phase=phase,
+                report_date=report_date,
+                rows=rows,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - SLA checks must not fail because alerting failed
+        return {
+            "channel": "run_alert",
+            "event": event,
+            "level": level,
+            "run_id": run_id,
+            "status": "failed",
+            "error": str(exc),
+            "error_class": exc.__class__.__name__,
+        }
+
+
+def _mark_hard_sla_missed(
+    db: Any,
+    *,
+    rows: list[dict[str, Any]],
+    report_date: date,
+) -> dict[str, Any]:
+    marked: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    checked_at = datetime.now(UTC).isoformat()
+    window = _sla_window(report_date)
+    for row in rows:
+        batch_id = ((row.get("batch") or {}).get("id")) if row.get("batch") else None
+        if not batch_id:
+            gaps.append(
+                {
+                    "manager_id": row["manager_id"],
+                    "reason": "scheduled_batch_missing_no_safe_persistent_target",
+                }
+            )
+            continue
+        batch = (
+            db.query(ScheduledReportBatch)
+            .filter(ScheduledReportBatch.id == UUID(batch_id))
+            .first()
+        )
+        if batch is None:
+            gaps.append({"manager_id": row["manager_id"], "reason": "scheduled_batch_not_found"})
+            continue
+        reason = _attention_reason(row)
+        manager_email_status = str((row.get("manager_email") or {}).get("status") or "")
+        sla_status = (
+            "blocked"
+            if manager_email_status in {"blocked", "failed"}
+            else "missed_pending"
+        )
+        sla_payload = {
+            **window,
+            "sla_hardcheck_at": checked_at,
+            "sla_status": sla_status,
+            "sla_missed": True,
+            "sla_missed_reason": reason,
+            "manager_email_status": (row.get("manager_email") or {}).get("status"),
+            "rop_email_status": (row.get("rop_email") or {}).get("status"),
+        }
+        observability = dict(batch.observability or {})
+        manager_days = dict(
+            (observability.get("manager_daily_sla") or {}).get("manager_days") or {}
+        )
+        manager_days[row["manager_id"]] = sla_payload
+        observability["manager_daily_sla"] = {
+            **dict(observability.get("manager_daily_sla") or {}),
+            "last_hardcheck_at": checked_at,
+            "manager_days": manager_days,
+        }
+        observability.update(
+            {key: value for key, value in sla_payload.items() if key.startswith("sla_")}
+        )
+        batch.observability = observability
+
+        drafts = (
+            db.query(ScheduledReportDraft)
+            .filter(ScheduledReportDraft.batch_id == batch.id)
+            .all()
+        )
+        for draft in drafts:
+            if not _draft_matches_manager_day(
+                draft=draft,
+                manager_id=row["manager_id"],
+                report_day=report_date.isoformat(),
+            ):
+                continue
+            delivery = dict(draft.delivery or {})
+            delivery["sla"] = {**dict(delivery.get("sla") or {}), **sla_payload}
+            delivery.update(
+                {key: value for key, value in sla_payload.items() if key.startswith("sla_")}
+            )
+            draft.delivery = delivery
+        marked.append(
+            {
+                "manager_id": row["manager_id"],
+                "batch_id": batch_id,
+                "sla_status": sla_status,
+                "reason": reason,
+            }
+        )
+    if marked:
+        db.flush()
+    return {"marked": marked, "implementation_gaps": gaps}
+
+
+def sla_status(args: argparse.Namespace) -> dict[str, Any]:
+    report_date = _resolve_sla_report_date(args.date)
+    with get_db() as db:
+        schedules = _active_manager_daily_schedules(db)
+        scope = _manager_scope_from_schedules(db, schedules)
+        managers = [
+            _build_manager_sla_row(db, scope=item, report_date=report_date)
+            for item in scope
+        ]
+    return {
+        "status": "ok",
+        "action": "sla_status",
+        "report_date": report_date.isoformat(),
+        "sla": _sla_window(report_date),
+        "active_schedules_count": len(schedules),
+        "active_managers_count": len(managers),
+        "sla_status_counts": _status_counts(managers),
+        "managers": managers,
+    }
+
+
+def sla_check(args: argparse.Namespace) -> dict[str, Any]:
+    report_date = _resolve_sla_report_date(args.date)
+    phase = str(args.phase)
+    with get_db() as db:
+        schedules = _active_manager_daily_schedules(db)
+        scope = _manager_scope_from_schedules(db, schedules)
+        managers = [
+            _build_manager_sla_row(db, scope=item, report_date=report_date)
+            for item in scope
+        ]
+        affected = [row for row in managers if _needs_sla_attention(row, phase=phase)]
+        hard_mark = (
+            _mark_hard_sla_missed(db, rows=affected, report_date=report_date)
+            if phase == "hard"
+            else {"marked": [], "implementation_gaps": []}
+        )
+        alert = _send_sla_alert(phase=phase, report_date=report_date, rows=affected)
+    return {
+        "status": "ok",
+        "action": "sla_check",
+        "phase": phase,
+        "report_date": report_date.isoformat(),
+        "sla": _sla_window(report_date),
+        "affected_managers_count": len(affected),
+        "affected_managers": [
+            {
+                "schedule_id": row["schedule_id"],
+                "department_id": row["department_id"],
+                "manager_id": row["manager_id"],
+                "manager_name": row.get("manager_name"),
+                "reason": _attention_reason(row),
+                "sla_status": (row.get("sla") or {}).get("sla_status"),
+                "manager_email_status": (row.get("manager_email") or {}).get("status"),
+                "batch_id": (row.get("batch") or {}).get("id") if row.get("batch") else None,
+            }
+            for row in affected
+        ],
+        "affected_manager_statuses": affected,
+        "hard_mark": hard_mark,
+        "alert": alert
+        or {
+            "status": "skipped",
+            "reason": "no_affected_managers",
+            "payload": {
+                "report_date": report_date.isoformat(),
+                "phase": phase,
+                "affected_managers_count": 0,
+            },
+        },
+        "manager_statuses": managers,
+    }
+
+
+def _batch_period_summary(batch: Any) -> dict[str, Any]:
+    period = dict(getattr(batch, "period", None) or {})
+    return {
+        "date_from": period.get("date_from"),
+        "date_to": period.get("date_to"),
+        "raw": period,
+    }
+
+
+def _batch_manager_ids(batch: Any) -> list[str]:
+    filters = dict(getattr(batch, "filters", None) or {})
+    manager_ids = [
+        str(item)
+        for item in filters.get("manager_ids") or []
+        if str(item or "").strip()
+    ]
+    observability = dict(getattr(batch, "observability", None) or {})
+    selection = dict(observability.get("scheduled_candidate_selection") or {})
+    selected_manager = str(selection.get("manager_id") or "").strip()
+    if selected_manager and selected_manager not in manager_ids:
+        manager_ids.append(selected_manager)
+    return manager_ids
+
+
+def _is_manager_daily_blocker(schedule: Any, batch: Any) -> bool:
+    return (
+        str(getattr(schedule, "preset", "") or "") == "manager_daily"
+        and str(getattr(batch, "status", "") or "") in OPEN_BATCH_STATUSES
+    )
+
+
+def _blocker_reasons(schedule: Any, batch: Any) -> list[str]:
+    if not _is_manager_daily_blocker(schedule, batch):
+        return []
+    reasons = ["open batch on active manager_daily schedule"]
+    if bool(getattr(batch, "review_required", False)):
+        reasons.append("review_required=true")
+    if not bool(getattr(batch, "business_email_enabled", False)):
+        reasons.append("business_email_enabled=false")
+    return reasons
+
+
+def _blocked_by_draft_ids(drafts: list[Any]) -> list[str]:
+    return [str(getattr(draft, "id")) for draft in drafts if getattr(draft, "id", None)]
+
+
+def _blocked_by_draft_statuses(drafts: list[Any]) -> dict[str, str | None]:
+    return {
+        str(getattr(draft, "id")): getattr(draft, "status", None)
+        for draft in drafts
+        if getattr(draft, "id", None)
+    }
+
+
+def _open_batch_recovery_hint(batch: Any, *, is_blocker: bool) -> str | None:
+    if not is_blocker:
+        return None
+    batch_id = str(getattr(batch, "id"))
+    return (
+        "scheduled_reporting_preflight.py recover-open-batches "
+        f"--batch-id {batch_id} --target-status paused --apply"
+    )
+
+
+def _open_batch_row(schedule: Any, batch: Any, drafts: list[Any] | None = None) -> dict[str, Any]:
+    drafts = drafts or []
+    reasons = _blocker_reasons(schedule, batch)
+    is_blocker = bool(reasons)
+    batch_id = str(getattr(batch, "id"))
+    batch_status = getattr(batch, "status", None)
+    return {
+        "schedule_id": str(getattr(schedule, "id")),
+        "schedule_preset": getattr(schedule, "preset", None),
+        "schedule_enabled": bool(getattr(schedule, "enabled", False)),
+        "schedule_next_run_at": _as_iso(getattr(schedule, "next_run_at", None)),
+        "batch_id": batch_id,
+        "status": batch_status,
+        "period": _batch_period_summary(batch),
+        "manager_ids": _batch_manager_ids(batch),
+        "business_email_enabled": bool(getattr(batch, "business_email_enabled", False)),
+        "review_required": bool(getattr(batch, "review_required", False)),
+        "planned_for": _as_iso(getattr(batch, "planned_for", None)),
+        "created_at": _as_iso(getattr(batch, "created_at", None)),
+        "potential_manager_daily_blocker": is_blocker,
+        "blocker_reasons": reasons,
+        "blocked_by_batch_id": batch_id if is_blocker else None,
+        "blocked_by_batch_status": batch_status if is_blocker else None,
+        "blocked_by_draft_ids": _blocked_by_draft_ids(drafts) if is_blocker else [],
+        "blocked_by_draft_statuses": _blocked_by_draft_statuses(drafts) if is_blocker else {},
+        "blocker_scope": "open_batch_visibility" if is_blocker else None,
+        "recovery_hint": _open_batch_recovery_hint(batch, is_blocker=is_blocker),
+    }
+
+
+def _load_open_batch_rows(
+    db: Any,
+    *,
+    preset: str,
+    schedule_id: str | None,
+    report_date: date | None,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    schedule_query = db.query(ReportingSchedule).filter(
+        ReportingSchedule.deleted_at.is_(None),
+        ReportingSchedule.enabled.is_(True),
+    )
+    if schedule_id:
+        schedule_query = schedule_query.filter(ReportingSchedule.id == UUID(schedule_id))
+    if preset != "all":
+        schedule_query = schedule_query.filter(ReportingSchedule.preset == preset)
+    schedules = schedule_query.order_by(ReportingSchedule.created_at.asc()).all()
+    if not schedules:
+        return [], []
+
+    schedule_by_id = {str(schedule.id): schedule for schedule in schedules}
+    batches = (
+        db.query(ScheduledReportBatch)
+        .filter(
+            ScheduledReportBatch.schedule_id.in_([schedule.id for schedule in schedules]),
+            ScheduledReportBatch.status.in_(list(OPEN_BATCH_STATUSES)),
+        )
+        .order_by(ScheduledReportBatch.created_at.desc())
+        .all()
+    )
+    draft_rows = []
+    if batches:
+        draft_rows = (
+            db.query(ScheduledReportDraft)
+            .filter(ScheduledReportDraft.batch_id.in_([batch.id for batch in batches]))
+            .order_by(ScheduledReportDraft.created_at.asc())
+            .all()
+        )
+    drafts_by_batch_id: dict[str, list[Any]] = {}
+    for draft in draft_rows:
+        drafts_by_batch_id.setdefault(str(draft.batch_id), []).append(draft)
+    rows = [
+        _open_batch_row(
+            schedule_by_id[str(batch.schedule_id)],
+            batch,
+            drafts=drafts_by_batch_id.get(str(batch.id), []),
+        )
+        for batch in batches
+    ]
+    if report_date is not None:
+        day = report_date.isoformat()
+        rows = [
+            row
+            for row in rows
+            if (row["period"].get("date_from") == day or row["period"].get("date_to") == day)
+        ]
+    return schedules, rows
+
+
+def open_batches(args: argparse.Namespace) -> dict[str, Any]:
+    report_date = date.fromisoformat(args.date) if args.date else None
+    with get_db() as db:
+        schedules, rows = _load_open_batch_rows(
+            db,
+            preset=args.preset,
+            schedule_id=args.schedule_id,
+            report_date=report_date,
+        )
+    blockers = [row for row in rows if row["potential_manager_daily_blocker"]]
+    return {
+        "status": "ok",
+        "action": "open_batch_diagnostics",
+        "preset": args.preset,
+        "schedule_id": args.schedule_id,
+        "report_date": report_date.isoformat() if report_date else None,
+        "active_schedules_count": len(schedules),
+        "open_batches_count": len(rows),
+        "potential_manager_daily_blockers_count": len(blockers),
+        "open_batches": rows,
+    }
+
+
+def _format_bool(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _format_open_batch_diagnostics(result: dict[str, Any]) -> str:
+    rows = list(result.get("open_batches") or [])
+    blockers = int(result.get("potential_manager_daily_blockers_count") or 0)
+    lines = [
+        "Scheduled reporting open batch diagnostics",
+        f"Active schedules checked: {result.get('active_schedules_count', 0)}",
+        f"Open batches: {len(rows)}",
+        f"Potential manager_daily blockers: {blockers}",
+    ]
+    if not rows:
+        lines.append("No open batches found for the selected active schedules.")
+        return "\n".join(lines)
+
+    for row in rows:
+        period = dict(row.get("period") or {})
+        date_from = period.get("date_from") or "-"
+        date_to = period.get("date_to") or date_from
+        managers = ", ".join(row.get("manager_ids") or []) or "all/unknown"
+        marker = "BLOCKER" if row.get("potential_manager_daily_blocker") else "open"
+        lines.append(
+            " | ".join(
+                [
+                    f"- {marker}",
+                    f"batch={row.get('batch_id')}",
+                    f"schedule={row.get('schedule_id')}",
+                    f"preset={row.get('schedule_preset')}",
+                    f"status={row.get('status')}",
+                    f"period={date_from}..{date_to}",
+                    f"manager_ids={managers}",
+                    f"business_email_enabled={_format_bool(row.get('business_email_enabled'))}",
+                    f"review_required={_format_bool(row.get('review_required'))}",
+                ]
+            )
+        )
+        reasons = row.get("blocker_reasons") or []
+        if reasons:
+            lines.append(f"  blocker_reason: {', '.join(reasons)}")
+        if row.get("blocked_by_batch_id"):
+            draft_ids = ", ".join(row.get("blocked_by_draft_ids") or []) or "-"
+            lines.append(
+                "  blocked_by: "
+                f"batch={row.get('blocked_by_batch_id')} "
+                f"status={row.get('blocked_by_batch_status') or '-'} "
+                f"drafts={draft_ids}"
+            )
+        if row.get("recovery_hint"):
+            lines.append(f"  recovery_hint: {row['recovery_hint']}")
+    return "\n".join(lines)
+
+
+def _batch_period_starts_before(batch: Any, before_date: date) -> bool:
+    period = dict(getattr(batch, "period", None) or {})
+    raw_date = str(period.get("date_from") or "").strip()
+    if not raw_date:
+        return False
+    return date.fromisoformat(raw_date) < before_date
+
+
+def _recovery_plan_item(
+    *,
+    schedule: Any,
+    batch: Any,
+    target_status: str,
+    reason: str,
+) -> dict[str, Any]:
+    current_status = str(getattr(batch, "status", "") or "")
+    allowed_targets = SCHEDULED_REVIEWABLE_BATCH_ALLOWED_TRANSITIONS.get(current_status, ())
+    allowed = target_status in allowed_targets
+    return {
+        **_open_batch_row(schedule, batch),
+        "current_status": current_status,
+        "target_status": target_status,
+        "transition_allowed": allowed,
+        "action": "transition" if allowed else "skip",
+        "skip_reason": None if allowed else f"transition_not_allowed:{current_status}->{target_status}",
+        "recovery_reason": reason,
+    }
+
+
+def _build_recovery_plan(
+    *,
+    schedules: list[Any],
+    batches: list[Any],
+    target_status: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    schedule_by_id = {str(schedule.id): schedule for schedule in schedules}
+    return [
+        _recovery_plan_item(
+            schedule=schedule_by_id[str(batch.schedule_id)],
+            batch=batch,
+            target_status=target_status,
+            reason=reason,
+        )
+        for batch in batches
+        if str(batch.schedule_id) in schedule_by_id
+    ]
+
+
+def _load_recovery_targets(
+    db: Any,
+    *,
+    preset: str,
+    schedule_id: str | None,
+    batch_ids: list[str],
+    before_date: date | None,
+    statuses: list[str],
+) -> tuple[list[Any], list[Any]]:
+    schedule_query = db.query(ReportingSchedule).filter(
+        ReportingSchedule.deleted_at.is_(None),
+        ReportingSchedule.enabled.is_(True),
+    )
+    if schedule_id:
+        schedule_query = schedule_query.filter(ReportingSchedule.id == UUID(schedule_id))
+    if preset != "all":
+        schedule_query = schedule_query.filter(ReportingSchedule.preset == preset)
+    schedules = schedule_query.order_by(ReportingSchedule.created_at.asc()).all()
+    if not schedules:
+        return [], []
+
+    batch_query = db.query(ScheduledReportBatch).filter(
+        ScheduledReportBatch.schedule_id.in_([schedule.id for schedule in schedules]),
+        ScheduledReportBatch.status.in_(statuses),
+    )
+    if batch_ids:
+        batch_query = batch_query.filter(
+            ScheduledReportBatch.id.in_([UUID(batch_id) for batch_id in batch_ids])
+        )
+    batches = batch_query.order_by(ScheduledReportBatch.created_at.desc()).all()
+    if before_date is not None and not batch_ids:
+        batches = [batch for batch in batches if _batch_period_starts_before(batch, before_date)]
+    return schedules, batches
+
+
+def _apply_recovery_plan(
+    db: Any,
+    *,
+    service: ScheduledReviewableReportingService,
+    plan: list[dict[str, Any]],
+    target_status: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    applied: list[dict[str, Any]] = []
+    applied_at = datetime.now(UTC).isoformat()
+    for item in plan:
+        if item.get("action") != "transition":
+            continue
+        batch = (
+            db.query(ScheduledReportBatch)
+            .filter(ScheduledReportBatch.id == UUID(str(item["batch_id"])))
+            .first()
+        )
+        if batch is None:
+            applied.append({**item, "applied": False, "apply_error": "batch_not_found"})
+            continue
+        service._transition_batch_status(batch, target_status)
+        if target_status == "paused":
+            batch.paused_at = datetime.now(UTC)
+        elif target_status == "failed":
+            batch.failed_at = datetime.now(UTC)
+        errors = list(batch.errors or [])
+        errors.append(reason)
+        batch.errors = errors
+        observability = dict(batch.observability or {})
+        history = list(observability.get("operator_recovery") or [])
+        history.append(
+            {
+                "applied_at": applied_at,
+                "from_status": item.get("current_status"),
+                "to_status": target_status,
+                "reason": reason,
+                "tool": "scheduled_reporting_preflight.recover-open-batches",
+            }
+        )
+        observability["operator_recovery"] = history
+        batch.observability = observability
+        applied.append({**item, "applied": True, "applied_at": applied_at})
+    if applied:
+        db.flush()
+    return applied
+
+
+def recover_open_batches(args: argparse.Namespace) -> dict[str, Any]:
+    batch_ids = [str(item).strip() for item in args.batch_id or [] if str(item).strip()]
+    if not batch_ids and not args.before_date:
+        raise ASAError("recover-open-batches requires --before-date or one or more --batch-id values")
+    before_date = date.fromisoformat(args.before_date) if args.before_date else None
+    statuses = args.status or list(OPEN_BATCH_STATUSES)
+    reason = args.reason or DEFAULT_RECOVERY_REASON
+    with get_db() as db:
+        schedules, batches = _load_recovery_targets(
+            db,
+            preset=args.preset,
+            schedule_id=args.schedule_id,
+            batch_ids=batch_ids,
+            before_date=before_date,
+            statuses=statuses,
+        )
+        service = ScheduledReviewableReportingService(db=db)
+        plan = _build_recovery_plan(
+            schedules=schedules,
+            batches=batches,
+            target_status=args.target_status,
+            reason=reason,
+        )
+        applied = (
+            _apply_recovery_plan(
+                db,
+                service=service,
+                plan=plan,
+                target_status=args.target_status,
+                reason=reason,
+            )
+            if args.apply
+            else []
+        )
+    return {
+        "status": "ok",
+        "action": "open_batch_recovery",
+        "mode": "apply" if args.apply else "dry_run",
+        "preset": args.preset,
+        "schedule_id": args.schedule_id,
+        "before_date": before_date.isoformat() if before_date else None,
+        "target_status": args.target_status,
+        "reason": reason,
+        "matched_batches_count": len(plan),
+        "planned_transitions_count": len([item for item in plan if item["action"] == "transition"]),
+        "skipped_count": len([item for item in plan if item["action"] != "transition"]),
+        "applied_count": len([item for item in applied if item.get("applied")]),
+        "plan": plan,
+        "applied": applied,
+    }
+
+
+def _format_recovery_plan(result: dict[str, Any]) -> str:
+    mode = str(result.get("mode") or "dry_run")
+    plan = list(result.get("plan") or [])
+    lines = [
+        "Scheduled reporting open batch recovery",
+        f"Mode: {mode}",
+        f"Matched batches: {result.get('matched_batches_count', 0)}",
+        f"Planned transitions: {result.get('planned_transitions_count', 0)}",
+        f"Skipped: {result.get('skipped_count', 0)}",
+        f"Target status: {result.get('target_status')}",
+    ]
+    if mode != "apply":
+        lines.append("Dry run only: no database rows were changed. Re-run with --apply to apply.")
+    if not plan:
+        lines.append("No matching blocking batches found.")
+        return "\n".join(lines)
+    for item in plan:
+        period = dict(item.get("period") or {})
+        managers = ", ".join(item.get("manager_ids") or []) or "all/unknown"
+        action = item.get("action")
+        transition = f"{item.get('current_status')}->{item.get('target_status')}"
+        lines.append(
+            " | ".join(
+                [
+                    f"- {action}",
+                    f"batch={item.get('batch_id')}",
+                    f"schedule={item.get('schedule_id')}",
+                    f"transition={transition}",
+                    f"period={period.get('date_from') or '-'}..{period.get('date_to') or period.get('date_from') or '-'}",
+                    f"manager_ids={managers}",
+                    f"business_email_enabled={_format_bool(item.get('business_email_enabled'))}",
+                    f"review_required={_format_bool(item.get('review_required'))}",
+                ]
+            )
+        )
+        if item.get("skip_reason"):
+            lines.append(f"  skip_reason: {item['skip_reason']}")
+    if mode == "apply":
+        lines.append(f"Applied transitions: {result.get('applied_count', 0)}")
+    return "\n".join(lines)
+
+
 def _create_schedule_with_guardrails(
     *,
     service: ScheduledReviewableReportingService,
@@ -144,6 +1554,7 @@ def _create_schedule_with_guardrails(
     period_rule: str,
     mode: str,
     business_email_enabled: bool,
+    review_required: bool,
     allow_conflicts: bool,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -177,7 +1588,7 @@ def _create_schedule_with_guardrails(
         "report_period_rule": period_rule,
         "mode": mode,
         "business_email_enabled": bool(business_email_enabled),
-        "review_required": True,
+        "review_required": bool(review_required),
     }
     if dry_run:
         return {
@@ -200,6 +1611,7 @@ def _create_schedule_with_guardrails(
         report_period_rule=period_rule,
         mode=mode,
         business_email_enabled=business_email_enabled,
+        review_required=review_required,
     )
     return {
         "status": "ok",
@@ -226,6 +1638,7 @@ def create_schedule(args: argparse.Namespace) -> dict[str, Any]:
             period_rule=args.period_rule,
             mode=args.mode,
             business_email_enabled=args.business_email_enabled,
+            review_required=args.review_required,
             allow_conflicts=args.allow_conflicts,
         )
 
@@ -253,6 +1666,7 @@ def create_production_manager_daily_schedule(args: argparse.Namespace) -> dict[s
             period_rule="previous_day",
             mode=args.mode,
             business_email_enabled=args.business_email_enabled,
+            review_required=args.review_required,
             allow_conflicts=args.allow_conflicts,
             dry_run=args.dry_run,
         )
@@ -260,7 +1674,7 @@ def create_production_manager_daily_schedule(args: argparse.Namespace) -> dict[s
             "first_report_date": first_report_date.isoformat(),
             "derived_schedule_start_date": start_date,
             "manager_count": len(manager_ids),
-            "review_gate": True,
+            "review_gate": bool(args.review_required),
             "billable_pipeline_started": False,
         }
         return result
@@ -281,6 +1695,69 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("status", help="List schedules and recent review batches.")
     subparsers.add_parser("scan-due", help="Run one due-schedule scan.")
 
+    open_batch_parser = subparsers.add_parser(
+        "open-batches",
+        help="Show open batches on active schedules and flag manager_daily blockers.",
+    )
+    open_batch_parser.add_argument("--preset", default="manager_daily")
+    open_batch_parser.add_argument("--schedule-id")
+    open_batch_parser.add_argument(
+        "--date",
+        help="Optional report date filter in YYYY-MM-DD format.",
+    )
+
+    recovery_parser = subparsers.add_parser(
+        "recover-open-batches",
+        help="Dry-run-first recovery plan for old blocking open batches.",
+    )
+    recovery_parser.add_argument("--preset", default="manager_daily")
+    recovery_parser.add_argument("--schedule-id")
+    recovery_parser.add_argument("--batch-id", action="append", default=[])
+    recovery_parser.add_argument(
+        "--before-date",
+        help="Only target batches whose period.date_from is before this YYYY-MM-DD date.",
+    )
+    recovery_parser.add_argument(
+        "--status",
+        action="append",
+        choices=list(RECOVERABLE_BATCH_STATUSES),
+        help="Limit target batch statuses; may be repeated.",
+    )
+    recovery_parser.add_argument("--target-status", default="paused", choices=["paused", "failed"])
+    recovery_parser.add_argument("--reason", default=DEFAULT_RECOVERY_REASON)
+    recovery_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the planned allowed status transitions. Without this flag no rows are changed.",
+    )
+
+    sla_status_parser = subparsers.add_parser(
+        "sla-status",
+        help="Inspect manager_daily SLA readiness for one report date.",
+    )
+    sla_status_parser.add_argument(
+        "--date",
+        default="auto",
+        help=(
+            "Report date in YYYY-MM-DD format; default/auto means previous day "
+            f"in {SLA_TIMEZONE}."
+        ),
+    )
+
+    sla_check_parser = subparsers.add_parser(
+        "sla-check",
+        help="Run a safe manager_daily SLA precheck or hard check for one report date.",
+    )
+    sla_check_parser.add_argument(
+        "--date",
+        default="auto",
+        help=(
+            "Report date in YYYY-MM-DD format; default/auto means previous day "
+            f"in {SLA_TIMEZONE}."
+        ),
+    )
+    sla_check_parser.add_argument("--phase", required=True, choices=["precheck", "hard"])
+
     create = subparsers.add_parser("create", help="Create one schedule.")
     create.add_argument("--department-id", required=True)
     create.add_argument("--manager-id", action="append", default=[])
@@ -293,6 +1770,7 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--period-rule", default="previous_day")
     create.add_argument("--enabled", action=argparse.BooleanOptionalAction, default=True)
     create.add_argument("--business-email-enabled", action=argparse.BooleanOptionalAction, default=False)
+    create.add_argument("--review-required", action=argparse.BooleanOptionalAction, default=True)
     create.add_argument(
         "--allow-conflicts",
         action="store_true",
@@ -310,12 +1788,13 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="First manager_daily report date; schedule start_date is derived as the next day.",
     )
-    prod_create.add_argument("--start-time", default="08:00")
+    prod_create.add_argument("--start-time", default="04:00")
     prod_create.add_argument("--timezone", default="Asia/Almaty")
     prod_create.add_argument("--mode", default="build_missing_and_report")
     prod_create.add_argument("--expected-manager-count", type=int, default=4)
     prod_create.add_argument("--enabled", action=argparse.BooleanOptionalAction, default=True)
-    prod_create.add_argument("--business-email-enabled", action=argparse.BooleanOptionalAction, default=False)
+    prod_create.add_argument("--business-email-enabled", action=argparse.BooleanOptionalAction, default=True)
+    prod_create.add_argument("--review-required", action=argparse.BooleanOptionalAction, default=False)
     prod_create.add_argument("--allow-conflicts", action="store_true")
     prod_create.add_argument(
         "--dry-run",
@@ -333,6 +1812,14 @@ def main(argv: list[str] | None = None) -> int:
             result = status()
         elif args.command == "scan-due":
             result = scan_due()
+        elif args.command == "open-batches":
+            result = open_batches(args)
+        elif args.command == "recover-open-batches":
+            result = recover_open_batches(args)
+        elif args.command == "sla-status":
+            result = sla_status(args)
+        elif args.command == "sla-check":
+            result = sla_check(args)
         elif args.command == "create":
             result = create_schedule(args)
         elif args.command == "create-production-manager-daily":

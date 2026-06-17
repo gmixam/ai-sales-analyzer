@@ -43,8 +43,8 @@ def _interaction() -> SimpleNamespace:
     )
 
 
-def _artifact() -> LLM1FirstPassPayload:
-    return LLM1FirstPassPayload(
+def _artifact(*, include_speaker_role_mapping: bool = True) -> LLM1FirstPassPayload:
+    payload = LLM1FirstPassPayload(
         prompt_version="llm1_v1",
         provider="openai",
         model="gpt-test",
@@ -59,6 +59,42 @@ def _artifact() -> LLM1FirstPassPayload:
         data_quality={"transcript_quality": "sufficient"},
         analysis_focus=["Check whether the manager fixed a concrete next step."],
     )
+    if include_speaker_role_mapping:
+        payload.speaker_role_mapping = {
+            "source": "llm1_role_attribution",
+            "stt_provider": "openai",
+            "stt_model": "whisper-1",
+            "diarization_source": "whisper_time_segments_without_speaker_labels",
+            "roles": [
+                {
+                    "raw_speaker": "A",
+                    "role": "unknown",
+                    "confidence": "low",
+                    "evidence": [],
+                    "notes": "Whisper did not provide speaker diarization",
+                }
+            ],
+            "dialogue_turns": [
+                {
+                    "role": "client",
+                    "text": "Client: Please send the materials.",
+                    "confidence": "medium",
+                    "evidence": ["asks for materials"],
+                },
+                {
+                    "role": "manager",
+                    "text": "Manager: I will send them today.",
+                    "confidence": "medium",
+                    "evidence": ["commits to send materials"],
+                },
+            ],
+            "quality": {
+                "diarization_quality": "low",
+                "role_attribution_quality": "medium",
+                "warnings": ["technical_speaker_labels_unavailable"],
+            },
+        }
+    return payload
 
 
 class CallProcessingLLM1ExternalModeTests(unittest.TestCase):
@@ -122,6 +158,46 @@ class CallProcessingLLM1ExternalModeTests(unittest.TestCase):
         llm2.assert_called_once()
         self.assertEqual(captured["analysis_focus"], ["Check whether the manager fixed a concrete next step."])
         self.assertEqual(captured["classification"]["call_type"], "sales_primary")
+        self.assertEqual(
+            captured["speaker_role_mapping"]["diarization_source"],
+            "whisper_time_segments_without_speaker_labels",
+        )
+        self.assertEqual(captured["speaker_role_mapping"]["roles"][0]["role"], "unknown")
+        self.assertEqual(
+            captured["speaker_role_mapping"]["dialogue_turns"][1]["role"],
+            "manager",
+        )
+
+    def test_external_mode_accepts_legacy_artifact_without_speaker_mapping(self) -> None:
+        analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)
+        interaction = _interaction()
+        captured: dict = {}
+
+        def fake_llm2(**kwargs):
+            captured.update(kwargs["llm1_first_pass"])
+            return {"ok": True}
+
+        with patch.dict(
+            os.environ,
+            {"CALL_PROCESSING_MODE": "external_service"},
+            clear=False,
+        ), patch.object(
+            analyzer,
+            "_request_llm1_first_pass",
+            side_effect=AssertionError("LLM-1 runtime must not run"),
+        ), patch.object(
+            analyzer,
+            "_analyze_call_with_layered_llm2",
+            side_effect=fake_llm2,
+        ):
+            result = analyzer.analyze_call(
+                interaction=interaction,
+                instruction_version=APPROVED_INSTRUCTION_VERSION,
+                llm1_first_pass_artifact=_artifact(include_speaker_role_mapping=False),
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(captured["speaker_role_mapping"], {})
 
     def test_external_mode_missing_artifact_fails_before_llm2(self) -> None:
         analyzer = CallsAnalyzer(department_id=str(uuid4()), db=None)

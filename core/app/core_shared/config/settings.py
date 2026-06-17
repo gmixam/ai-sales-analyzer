@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     call_processing_mode: str = Field(default="legacy")
     call_processing_api_base_url: str = Field(default="")
     call_processing_access_grant_json: str = Field(default="")
-    call_processing_client_timeout_sec: int = Field(default=30, ge=1)
+    call_processing_client_timeout_sec: int = Field(default=180, ge=1)
     call_processing_daily_upstream_enabled: bool = Field(default=False)
     call_processing_daily_upstream_timezone: str = Field(default="Asia/Almaty")
     call_processing_daily_upstream_hour: int = Field(default=0, ge=0, le=23)

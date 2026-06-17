@@ -1,5 +1,7 @@
 """Pydantic schemas for OnlinePBX intake, STT, and interaction creation."""
 
+from typing import Any
+
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -51,5 +53,6 @@ class TranscriptResult(BaseModel):
     full_text: str
     segments: list[SpeakerSegment]
     speaker_a_is_manager: bool = True
+    diarization_metadata: dict[str, Any] = Field(default_factory=dict)
     confidence: float | None = None
     duration_sec: int | None = None

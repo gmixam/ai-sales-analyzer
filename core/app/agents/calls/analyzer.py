@@ -896,6 +896,34 @@ class CallsAnalyzer:
                 "analysis_focus": [
                     "short focus bullet about what matters most in the call",
                 ],
+                "speaker_role_mapping": {
+                    "source": "llm1_role_attribution",
+                    "stt_provider": "string-or-null",
+                    "stt_model": "string-or-null",
+                    "diarization_source": "provider_speaker_labels | whisper_time_segments_without_speaker_labels | unknown",
+                    "roles": [
+                        {
+                            "raw_speaker": "A",
+                            "role": "manager | client | unknown | context",
+                            "confidence": "low | medium | high",
+                            "evidence": ["short evidence from transcript"],
+                            "notes": "why this role is or is not reliable",
+                        }
+                    ],
+                    "dialogue_turns": [
+                        {
+                            "role": "manager | client | unknown | context",
+                            "text": "short exact or faithful transcript fragment",
+                            "confidence": "low | medium | high",
+                            "evidence": ["why this role is attributed"],
+                        }
+                    ],
+                    "quality": {
+                        "diarization_quality": "low | medium | high",
+                        "role_attribution_quality": "low | medium | high",
+                        "warnings": ["technical_speaker_labels_unavailable"],
+                    },
+                },
             },
             "approved_sources": {
                 "handoff": self._load_source_text("handoff", fallback_text=runtime_fallback_note),
@@ -929,12 +957,16 @@ class CallsAnalyzer:
                 ],
                 "optional_top_level_keys": [
                     "analysis_focus",
+                    "speaker_role_mapping",
                 ],
                 "rules": [
                     "Return one JSON object only.",
                     "Do not invent transcript facts.",
                     "Keep business-facing summary/follow-up text in Russian.",
                     "Do not return the full final scoring contract here.",
+                    "If STT metadata says Whisper has no speaker labels, do not treat speaker A as manager.",
+                    "Infer manager/client roles only from transcript evidence; otherwise use role=unknown and confidence=low.",
+                    "Return `speaker_role_mapping` with confidence, evidence, and quality warnings when role evidence exists or diarization is uncertain.",
                 ],
             },
         }
@@ -1847,7 +1879,7 @@ class CallsAnalyzer:
         summary = dict(llm1_first_pass.get("summary") or {})
         follow_up = dict(llm1_first_pass.get("follow_up") or {})
         data_quality = dict(llm1_first_pass.get("data_quality") or {})
-        return {
+        compact = {
             "classification": {
                 key: classification.get(key)
                 for key in (
@@ -1894,6 +1926,63 @@ class CallsAnalyzer:
             },
             "analysis_focus": list(llm1_first_pass.get("analysis_focus") or []),
         }
+        speaker_role_mapping = CallsAnalyzer._compact_speaker_role_mapping(
+            llm1_first_pass.get("speaker_role_mapping")
+        )
+        if speaker_role_mapping:
+            compact["speaker_role_mapping"] = speaker_role_mapping
+        return compact
+
+    @staticmethod
+    def _compact_speaker_role_mapping(value: Any) -> dict[str, Any]:
+        raw = value if isinstance(value, dict) else {}
+        if not raw:
+            return {}
+        quality = raw.get("quality") if isinstance(raw.get("quality"), dict) else {}
+        compact: dict[str, Any] = {
+            "source": raw.get("source") or "llm1_role_attribution",
+            "diarization_source": raw.get("diarization_source") or "unknown",
+            "quality": {
+                "diarization_quality": quality.get("diarization_quality") or "low",
+                "role_attribution_quality": quality.get("role_attribution_quality") or "low",
+                "warnings": CallsAnalyzer._as_limited_text_list(
+                    quality.get("warnings"),
+                    limit=4,
+                ),
+            },
+            "roles": [],
+            "dialogue_turns": [],
+        }
+        for item in raw.get("roles") or []:
+            if not isinstance(item, dict):
+                continue
+            compact["roles"].append(
+                {
+                    "raw_speaker": item.get("raw_speaker") or "unknown",
+                    "role": CallsAnalyzer._normalize_role_attribution_value(item.get("role")),
+                    "confidence": CallsAnalyzer._normalize_confidence_value(item.get("confidence")),
+                    "evidence": CallsAnalyzer._as_limited_text_list(item.get("evidence"), limit=2),
+                }
+            )
+            if len(compact["roles"]) >= 4:
+                break
+        for item in raw.get("dialogue_turns") or []:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            compact["dialogue_turns"].append(
+                {
+                    "role": CallsAnalyzer._normalize_role_attribution_value(item.get("role")),
+                    "text": text[:280],
+                    "confidence": CallsAnalyzer._normalize_confidence_value(item.get("confidence")),
+                    "evidence": CallsAnalyzer._as_limited_text_list(item.get("evidence"), limit=2),
+                }
+            )
+            if len(compact["dialogue_turns"]) >= 6:
+                break
+        return compact
 
     @staticmethod
     def _compact_edo_scope(value: Any) -> dict[str, Any]:
@@ -2979,7 +3068,7 @@ class CallsAnalyzer:
                         f"{exc}\n\n"
                         "Return one corrected JSON object only with keys "
                         "`classification`, `summary`, `follow_up`, `data_quality`, and optional "
-                        "`analysis_focus`."
+                        "`analysis_focus` and `speaker_role_mapping`."
                     ),
                 },
             ]
@@ -3365,7 +3454,120 @@ class CallsAnalyzer:
                 raw_first_pass.get("data_quality") or {},
             ),
             "analysis_focus": analysis_focus[:5],
+            "speaker_role_mapping": self._normalize_llm1_speaker_role_mapping(
+                raw_first_pass.get("speaker_role_mapping"),
+                interaction=interaction,
+            ),
         }
+
+    @staticmethod
+    def _normalize_llm1_speaker_role_mapping(
+        value: Any,
+        *,
+        interaction: Interaction,
+    ) -> dict[str, Any]:
+        """Normalize optional LLM1 role attribution while keeping old artifacts valid."""
+        raw = value if isinstance(value, dict) else {}
+        metadata = dict(getattr(interaction, "metadata_", None) or {})
+        diarization = metadata.get("diarization") if isinstance(metadata.get("diarization"), dict) else {}
+        roles: list[dict[str, Any]] = []
+        for item in raw.get("roles") or []:
+            if not isinstance(item, dict):
+                continue
+            raw_speaker = str(item.get("raw_speaker") or item.get("speaker") or "").strip() or "unknown"
+            role = CallsAnalyzer._normalize_role_attribution_value(item.get("role"))
+            confidence = CallsAnalyzer._normalize_confidence_value(item.get("confidence"))
+            evidence = CallsAnalyzer._as_limited_text_list(item.get("evidence"), limit=3)
+            roles.append(
+                {
+                    "raw_speaker": raw_speaker,
+                    "role": role,
+                    "confidence": confidence,
+                    "evidence": evidence,
+                    "notes": str(item.get("notes") or "").strip() or None,
+                }
+            )
+        dialogue_turns: list[dict[str, Any]] = []
+        for item in raw.get("dialogue_turns") or []:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            evidence = CallsAnalyzer._as_limited_text_list(item.get("evidence"), limit=3)
+            dialogue_turns.append(
+                {
+                    "role": CallsAnalyzer._normalize_role_attribution_value(item.get("role")),
+                    "text": text[:500],
+                    "confidence": CallsAnalyzer._normalize_confidence_value(item.get("confidence")),
+                    "evidence": evidence,
+                }
+            )
+            if len(dialogue_turns) >= 8:
+                break
+        quality = raw.get("quality") if isinstance(raw.get("quality"), dict) else {}
+        warnings = CallsAnalyzer._as_limited_text_list(
+            [
+                *CallsAnalyzer._as_limited_text_list(quality.get("warnings"), limit=12),
+                *CallsAnalyzer._as_limited_text_list(diarization.get("warnings"), limit=12),
+            ],
+            limit=12,
+        )
+        if not raw and not diarization:
+            return {}
+        return {
+            "source": str(raw.get("source") or "llm1_role_attribution").strip(),
+            "stt_provider": raw.get("stt_provider") or diarization.get("stt_provider"),
+            "stt_model": raw.get("stt_model") or diarization.get("stt_model"),
+            "diarization_source": raw.get("diarization_source")
+            or diarization.get("diarization_source")
+            or "unknown",
+            "roles": roles,
+            "dialogue_turns": dialogue_turns,
+            "quality": {
+                "diarization_quality": CallsAnalyzer._normalize_quality_value(
+                    quality.get("diarization_quality") or diarization.get("diarization_quality")
+                ),
+                "role_attribution_quality": CallsAnalyzer._normalize_quality_value(
+                    quality.get("role_attribution_quality")
+                    or ("low" if not roles and diarization else None)
+                ),
+                "warnings": list(dict.fromkeys(warnings))[:6],
+            },
+        }
+
+    @staticmethod
+    def _normalize_role_attribution_value(value: Any) -> str:
+        role = str(value or "").strip().lower()
+        if role in {"manager", "client", "unknown", "context"}:
+            return role
+        if role in {"agent", "operator", "sales", "менеджер"}:
+            return "manager"
+        if role in {"customer", "lead", "клиент"}:
+            return "client"
+        return "unknown"
+
+    @staticmethod
+    def _normalize_confidence_value(value: Any) -> str:
+        confidence = str(value or "").strip().lower()
+        return confidence if confidence in {"low", "medium", "high"} else "low"
+
+    @staticmethod
+    def _normalize_quality_value(value: Any) -> str:
+        quality = str(value or "").strip().lower()
+        return quality if quality in {"low", "medium", "high"} else "low"
+
+    @staticmethod
+    def _as_limited_text_list(value: Any, *, limit: int) -> list[str]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, str):
+            candidates: list[Any] = [value]
+        elif isinstance(value, (list, tuple, set)):
+            candidates = list(value)
+        else:
+            candidates = [value]
+        return [str(item).strip() for item in candidates if str(item).strip()][:limit]
 
     def _load_and_validate_contract(
         self,

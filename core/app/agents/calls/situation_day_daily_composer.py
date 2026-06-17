@@ -1,9 +1,9 @@
 """Daily Situation Day composer prototype for LLM3 report composition.
 
 The module accepts an already prepared day-level input package.  It does not
-reanalyze calls or read transcripts; it selects one grounded manager-gap scene
-and can optionally ask LLM3 to polish the final block under the same evidence
-constraints.
+reanalyze calls or read transcripts.  It packages LLM2 report evidence for
+LLM3, validates the LLM3 day-level decision, and preserves the decision object
+for downstream report gates.
 """
 
 from __future__ import annotations
@@ -25,6 +25,9 @@ MANAGER_GAP_TYPES = {"manager_gap", "manager_coaching_moment", "stage_gap"}
 FORBIDDEN_MANAGER_ERROR_TYPES = {"customer_signal", "service_issue", "tech_service", "support_issue"}
 WEAK_PROOF = {"weak", "low", "insufficient"}
 STRONG_OR_MEDIUM_PROOF = {"strong", "medium", "high", "direct", "indirect"}
+VISIBLE_CASE_STATUSES = {"strong", "workable"}
+BLOCKED_CASE_STATUSES = {"weak_blocked", "blocked_mismatch"}
+CASE_STATUSES = VISIBLE_CASE_STATUSES | BLOCKED_CASE_STATUSES
 
 
 @dataclass(slots=True, frozen=True)
@@ -50,6 +53,7 @@ class DailySituationCandidate:
     scripts: list[str] = field(default_factory=list)
     source_fact_ids: list[str] = field(default_factory=list)
     proof_strength: str | None = None
+    case_status_candidate: str | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_payload_item(self) -> dict[str, Any]:
@@ -75,6 +79,7 @@ class DailySituationCandidate:
             "scripts": list(self.scripts),
             "source_fact_ids": list(self.source_fact_ids),
             "proof_strength": self.proof_strength,
+            "case_status_candidate": self.case_status_candidate,
         }
 
     def to_rejected(self, reason: str) -> dict[str, Any]:
@@ -86,6 +91,7 @@ class DailySituationCandidate:
             "source": self.source,
             "stage_code": self.stage_code,
             "proof_type": self.proof_type,
+            "case_status_candidate": self.case_status_candidate,
             "reason": reason,
         }
 
@@ -120,6 +126,12 @@ def compose_daily_situation_day(
         return _insufficient(
             reason="no_manager_gap_scene",
             rejected_candidates=rejected,
+            focus_case_selection=_blocked_focus_case_selection(
+                daily_focus=daily_focus,
+                case_status="weak_blocked",
+                reason="no_manager_gap_scene",
+                rejected_candidates=rejected,
+            ),
             diagnostics={
                 "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
                 "candidate_count": len(candidates),
@@ -130,27 +142,6 @@ def compose_daily_situation_day(
             },
         )
 
-    focus_fallback_used = False
-    focus_eligible_count: int | None = None
-    if focus_stage_code:
-        focus_eligible = [
-            candidate for candidate in eligible if (candidate.stage_code or "").strip() == focus_stage_code
-        ]
-        focus_eligible_count = len(focus_eligible)
-        if focus_eligible:
-            rejected.extend(
-                item.to_rejected("non_focus_stage_manager_gap")
-                for item in eligible
-                if (item.stage_code or "").strip() != focus_stage_code
-            )
-            eligible = focus_eligible
-        else:
-            # Keep Situation Day evidence-rich instead of dropping to an empty
-            # block when the daily focus stage has no verified scene. The
-            # selected scene is still a verified manager-gap proof-card scene.
-            focus_fallback_used = True
-
-    selected = eligible[0]
     if llm3_diagnostics["llm3_enabled"]:
         llm3_result, llm3_diagnostics = _try_llm3_daily_situation(
             build_daily_situation_llm3_payload(
@@ -169,8 +160,8 @@ def compose_daily_situation_day(
                 "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
                 "candidate_count": len(candidates),
                 "eligible_count": len(eligible),
-                "focus_eligible_count": focus_eligible_count,
-                "focus_fallback_used": focus_fallback_used,
+                "focus_eligible_count": _focus_eligible_count(eligible, focus_stage_code),
+                "focus_fallback_used": False,
                 "daily_focus": daily_focus,
                 "extraction": extraction_diagnostics,
                 "llm3": llm3_diagnostics,
@@ -182,22 +173,25 @@ def compose_daily_situation_day(
             ]
             return llm3_result
 
-    return _result_from_candidate(
-        selected,
-        rejected_candidates=rejected + [
-            item.to_rejected("lower_ranked_manager_gap") for item in eligible[1:]
-        ],
-        selection_reason=(
-            "best_verified_manager_gap_scene_when_focus_stage_missing"
-            if focus_fallback_used
-            else "best_manager_gap_scene_by_score"
+    return _insufficient(
+        reason="llm3_focus_case_selection_unavailable",
+        rejected_candidates=rejected,
+        focus_case_selection=_blocked_focus_case_selection(
+            daily_focus=daily_focus,
+            case_status="weak_blocked",
+            reason=(
+                llm3_diagnostics.get("llm3_rejection_reason")
+                or llm3_diagnostics.get("llm3_error")
+                or "llm3_not_enabled"
+            ),
+            rejected_candidates=rejected,
         ),
         diagnostics={
             "composer_version": SITUATION_DAY_DAILY_COMPOSER_VERSION,
             "candidate_count": len(candidates),
             "eligible_count": len(eligible),
-            "focus_eligible_count": focus_eligible_count,
-            "focus_fallback_used": focus_fallback_used,
+            "focus_eligible_count": _focus_eligible_count(eligible, focus_stage_code),
+            "focus_fallback_used": False,
             "daily_focus": daily_focus,
             "extraction": extraction_diagnostics,
             "llm3": llm3_diagnostics,
@@ -222,43 +216,49 @@ def build_daily_situation_llm3_payload(daily_input: dict[str, Any]) -> dict[str,
     eligible = [candidate for candidate in candidates if _candidate_is_eligible(candidate)[0]]
     eligible.sort(key=_rank_key)
     focus_stage_code = _daily_focus_stage_code(daily_focus)
-    has_focus_stage_candidate = bool(
-        focus_stage_code
-        and any((candidate.stage_code or "").strip() == focus_stage_code for candidate in eligible)
-    )
-    instruction = (
-        "Choose one manager_gap candidate for Ситуация дня inside daily_focus.stage_code "
-        "or return insufficient."
-        if has_focus_stage_candidate
-        else (
-            "No exact manager_gap candidate exists inside daily_focus.stage_code. "
-            "Choose the strongest evidence-backed related manager_gap candidate, "
-            "explain how it illustrates the daily focus without changing facts, "
-            "or return insufficient if no candidate can be explained honestly."
-        )
-    )
+    focus_eligible_count = _focus_eligible_count(eligible, focus_stage_code)
     return {
         "contract_version": SITUATION_DAY_DAILY_PROMPT_VERSION,
         "daily_focus": daily_focus,
+        "candidate_ranking_note": (
+            "Candidates are technically ranked by existing LLM2 evidence quality and score "
+            "only to keep the prompt bounded. LLM3 owns the semantic case decision."
+        ),
+        "focus_candidate_count": focus_eligible_count,
+        "focus_case_selection_contract": {
+            "focus_stage_code": focus_stage_code or None,
+            "focus_stage_source": "score_by_stage.priority",
+            "allowed_case_status": [
+                "strong",
+                "workable",
+                "weak_blocked",
+                "blocked_mismatch",
+            ],
+            "visible_case_status": ["strong", "workable"],
+            "blocked_case_status": ["weak_blocked", "blocked_mismatch"],
+            "stage_gate": "selected_case_stage_code must equal daily_focus.stage_code for strong/workable",
+        },
         "instruction": (
-            f"{instruction} "
-            "Explain the selected episode as a coherent manager-facing mini-brief. "
+            "Choose the best educational case for the day inside daily_focus.stage_code. "
+            "If no strong case exists for that same stage, try a workable case with cautious wording. "
+            "If there is no readable same-stage case, return weak_blocked. "
+            "If a selected visible case uses another stage, return blocked_mismatch instead of using it. "
+            "Compose both the Situation Day meaning and the call-breakdown seed from the same selected case. "
             "Use only provided candidate fields; never use or request raw call text."
         ),
         "forbidden": [
             "Do not recalculate scores.",
             "Do not perform full call analysis.",
-            (
-                "Do not replace the selected candidate problem with a generic next-step issue. "
-                "When no exact focus-stage candidate exists, keep the selected candidate stage and explain "
-                "its relation to the daily focus honestly."
-            ),
+            "Do not select a visible case outside daily_focus.stage_code.",
+            "Do not replace the focus-stage problem with a generic next-step issue.",
             "Do not invent facts, quotes, scenes, scripts, call ids, names, volumes, dates, or products.",
             "Do not select customer_signal or service_issue as manager_error.",
         ],
         "candidates": [candidate.to_payload_item() for candidate in eligible[:8]],
         "required_output_keys": [
             "status",
+            "focus_case_selection",
+            "case_status",
             "selected_call_id",
             "situation_title",
             "moment_summary",
@@ -546,6 +546,14 @@ def _candidate_from_item(item: dict[str, Any], *, fallback_index: int) -> DailyS
             _first_text(item.get("proof_strength"), item.get("evidence_strength"), item.get("confidence"))
         )
         or None,
+        case_status_candidate=_norm(
+            _first_text(
+                item.get("case_status_candidate"),
+                item.get("case_status"),
+                item.get("evidence_level"),
+            )
+        )
+        or None,
         diagnostics={"raw_evidence_type": evidence_type},
     )
 
@@ -555,10 +563,10 @@ def _candidate_is_eligible(candidate: DailySituationCandidate) -> tuple[bool, st
         return False, f"{candidate.evidence_type}_forbidden"
     if candidate.evidence_type not in MANAGER_GAP_TYPES:
         return False, "not_manager_gap"
-    if candidate.proof_strength and candidate.proof_strength in WEAK_PROOF:
-        return False, "weak_proof"
-    if candidate.proof_strength and candidate.proof_strength not in STRONG_OR_MEDIUM_PROOF:
-        return False, "weak_proof"
+    if candidate.proof_strength and candidate.proof_strength == "insufficient":
+        return False, "insufficient_proof"
+    if candidate.case_status_candidate == "weak_blocked":
+        return False, "weak_blocked_candidate"
     if not candidate.evidence_scene:
         return False, "no_evidence_scene"
     if not candidate.manager_error:
@@ -572,9 +580,15 @@ def _result_from_candidate(
     rejected_candidates: list[dict[str, Any]],
     selection_reason: str,
     diagnostics: dict[str, Any],
+    focus_case_selection: dict[str, Any] | None = None,
+    raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    decision = focus_case_selection or {}
+    case_status = _norm(decision.get("case_status")) or "workable"
     return {
         "status": "verified",
+        "case_status": case_status,
+        "focus_case_selection": decision,
         "selected_call_id": candidate.call_id,
         "situation_title": candidate.situation_title,
         "moment_summary": candidate.moment_summary,
@@ -593,6 +607,11 @@ def _result_from_candidate(
         "rejected_candidates": rejected_candidates,
         "selection_reason": selection_reason,
         "source_fact_ids": list(candidate.source_fact_ids),
+        "evidence_level": _norm(decision.get("evidence_level")) or candidate.proof_strength,
+        "wording_mode": _norm(decision.get("wording_mode")) or (
+            "confident" if case_status == "strong" else "cautious"
+        ),
+        "call_breakdown_seed": _as_dict((raw or {}).get("call_breakdown_seed")),
         "diagnostics": diagnostics,
     }
 
@@ -602,9 +621,14 @@ def _insufficient(
     reason: str,
     rejected_candidates: list[dict[str, Any]],
     diagnostics: dict[str, Any],
+    focus_case_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    decision = focus_case_selection or {}
+    case_status = _norm(decision.get("case_status")) or "weak_blocked"
     return {
         "status": "insufficient",
+        "case_status": case_status,
+        "focus_case_selection": decision,
         "selected_call_id": None,
         "situation_title": None,
         "moment_summary": None,
@@ -620,6 +644,9 @@ def _insufficient(
         "rejected_candidates": rejected_candidates,
         "selection_reason": reason,
         "source_fact_ids": [],
+        "evidence_level": _norm(decision.get("evidence_level")) or "weak",
+        "wording_mode": _norm(decision.get("wording_mode")) or "blocked",
+        "call_breakdown_seed": {},
         "diagnostics": diagnostics,
     }
 
@@ -877,23 +904,55 @@ def _normalize_llm3_daily_situation(
     *,
     daily_focus: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    if _norm(raw.get("status")) != "verified":
+    decision = _focus_case_selection_from_raw(raw, daily_focus=daily_focus)
+    case_status = _norm(decision.get("case_status"))
+    if case_status in BLOCKED_CASE_STATUSES:
+        return (
+            _insufficient(
+                reason=case_status,
+                rejected_candidates=[],
+                focus_case_selection=decision,
+                diagnostics={
+                    "llm3_composed": True,
+                    "llm3_blocked": True,
+                    "llm3_status": _norm(raw.get("status")),
+                },
+            ),
+            "",
+        )
+    if case_status not in VISIBLE_CASE_STATUSES:
+        return None, "case_status_missing_or_invalid"
+    if _norm(raw.get("status")) not in {"verified", "strong", "workable"}:
         return None, "status_not_verified"
     selected_call_id = _first_text(raw.get("selected_call_id"))
     selected = next((candidate for candidate in candidates if candidate.call_id == selected_call_id), None)
     if selected is None:
         return None, "selected_call_id_not_in_payload"
     focus_stage_code = _daily_focus_stage_code(daily_focus)
-    has_focus_stage_candidate = bool(
-        focus_stage_code
-        and any((candidate.stage_code or "").strip() == focus_stage_code for candidate in candidates)
-    )
-    if (
-        focus_stage_code
-        and has_focus_stage_candidate
-        and (selected.stage_code or "").strip() != focus_stage_code
-    ):
-        return None, "selected_candidate_not_in_daily_focus_stage"
+    selected_case_stage_code = _first_text(decision.get("selected_case_stage_code"), raw.get("stage_code"), selected.stage_code)
+    if focus_stage_code and selected_case_stage_code != focus_stage_code:
+        blocked = {
+            **decision,
+            "case_status": "blocked_mismatch",
+            "selected_call_id": selected_call_id,
+            "selected_case_stage_code": selected_case_stage_code,
+            "selection_reason": _first_text(decision.get("selection_reason"), "selected_case_stage_mismatch"),
+            "evidence_level": _first_text(decision.get("evidence_level"), "weak"),
+            "wording_mode": "blocked",
+            "rejection_reasons": list(decision.get("rejection_reasons") or []) + [
+                f"selected_case_stage_code:{selected_case_stage_code}",
+                f"daily_focus.stage_code:{focus_stage_code}",
+            ],
+        }
+        return (
+            _insufficient(
+                reason="blocked_mismatch",
+                rejected_candidates=[],
+                focus_case_selection=blocked,
+                diagnostics={"llm3_composed": True, "llm3_blocked": True},
+            ),
+            "",
+        )
     if _llm3_claim_replaces_focus_with_next_step(raw, selected=selected, daily_focus=daily_focus):
         return None, "llm3_output_replaced_focus_with_generic_next_step"
     raw_stage_code = _first_text(raw.get("stage_code"))
@@ -962,9 +1021,75 @@ def _normalize_llm3_daily_situation(
             selection_reason=_first_text(raw.get("selection_reason"), "llm3_daily_situation_selection")
             or "llm3_daily_situation_selection",
             diagnostics=diagnostics,
+            focus_case_selection=decision,
+            raw=raw,
         ),
         "",
     )
+
+
+def _focus_case_selection_from_raw(
+    raw: dict[str, Any],
+    *,
+    daily_focus: dict[str, Any] | None,
+) -> dict[str, Any]:
+    decision = _as_dict(raw.get("focus_case_selection"))
+    focus_stage_code = _daily_focus_stage_code(daily_focus)
+    case_status = _norm(_first_text(decision.get("case_status"), raw.get("case_status")))
+    selected_call_id = _first_text(decision.get("selected_call_id"), raw.get("selected_call_id")) or None
+    selected_case_stage_code = _first_text(
+        decision.get("selected_case_stage_code"),
+        raw.get("selected_case_stage_code"),
+        raw.get("stage_code"),
+    ) or None
+    rejection_reasons = decision.get("rejection_reasons")
+    if not isinstance(rejection_reasons, list):
+        rejection_reasons = []
+    return {
+        "focus_stage_code": _first_text(focus_stage_code, decision.get("focus_stage_code")) or None,
+        "focus_stage_source": _first_text(
+            decision.get("focus_stage_source"),
+            raw.get("focus_stage_source"),
+            "score_by_stage.priority",
+        ),
+        "case_status": case_status,
+        "selected_call_id": selected_call_id,
+        "selected_case_stage_code": selected_case_stage_code,
+        "selection_reason": _first_text(decision.get("selection_reason"), raw.get("selection_reason")),
+        "evidence_level": _norm(
+            _first_text(decision.get("evidence_level"), raw.get("evidence_level"), raw.get("proof_strength"))
+        )
+        or None,
+        "wording_mode": _norm(_first_text(decision.get("wording_mode"), raw.get("wording_mode"))) or None,
+        "rejection_reasons": [_first_text(item) for item in rejection_reasons if _first_text(item)],
+    }
+
+
+def _blocked_focus_case_selection(
+    *,
+    daily_focus: dict[str, Any] | None,
+    case_status: str,
+    reason: str,
+    rejected_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "focus_stage_code": _daily_focus_stage_code(daily_focus) or None,
+        "focus_stage_source": "score_by_stage.priority",
+        "case_status": case_status,
+        "selected_call_id": None,
+        "selected_case_stage_code": None,
+        "selection_reason": reason,
+        "evidence_level": "weak",
+        "wording_mode": "blocked",
+        "rejection_reasons": [reason]
+        + [_first_text(item.get("reason")) for item in rejected_candidates if _first_text(item.get("reason"))],
+    }
+
+
+def _focus_eligible_count(candidates: list[DailySituationCandidate], focus_stage_code: str) -> int | None:
+    if not focus_stage_code:
+        return None
+    return sum(1 for candidate in candidates if (candidate.stage_code or "").strip() == focus_stage_code)
 
 
 def _llm3_claim_replaces_focus_with_next_step(

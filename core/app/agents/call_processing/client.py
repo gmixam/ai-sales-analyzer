@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 import httpx
 from pydantic import ValidationError
@@ -225,6 +225,8 @@ def _artifact_row_from_api(payload: dict[str, Any]) -> SimpleNamespace:
 class HttpCallProcessingClient:
     """HTTP client implementation for split analysis deployments."""
 
+    READ_TIMEOUT_REASON = "call_processing_client_read_timeout"
+
     def __init__(
         self,
         *,
@@ -245,6 +247,11 @@ class HttpCallProcessingClient:
         self.requested_by = requested_by or self.access_grant.client_id
         self.timeout_sec = timeout_sec
 
+    def _raise_read_timeout(self, operation: str, exc: httpx.ReadTimeout) -> NoReturn:
+        raise ASAError(
+            f"{self.READ_TIMEOUT_REASON}: operation={operation} timeout_sec={self.timeout_sec}"
+        ) from exc
+
     def _headers(self) -> dict[str, str]:
         return {
             "X-Call-Processing-Grant": self.access_grant.model_dump_json(),
@@ -262,12 +269,15 @@ class HttpCallProcessingClient:
             mode=EnsureMode(mode),
             requested_by=self.requested_by,
         )
-        with httpx.Client(timeout=self.timeout_sec) as client:
-            response = client.post(
-                f"{self.base_url}/call-processing/ensure",
-                json=request.model_dump(mode="json"),
-                headers=self._headers(),
-            )
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                response = client.post(
+                    f"{self.base_url}/call-processing/ensure",
+                    json=request.model_dump(mode="json"),
+                    headers=self._headers(),
+                )
+        except httpx.ReadTimeout as exc:
+            self._raise_read_timeout("ensure_processed_calls", exc)
         if response.status_code >= 400:
             raise ASAError(f"call-processing ensure failed: status={response.status_code} body={response.text[:500]}")
         return EnsureResponse.model_validate(response.json())
@@ -284,12 +294,15 @@ class HttpCallProcessingClient:
             mode=EnsureMode(mode),
             requested_by=self.requested_by,
         )
-        async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
-            response = await client.post(
-                f"{self.base_url}/call-processing/ensure",
-                json=request.model_dump(mode="json"),
-                headers=self._headers(),
-            )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
+                response = await client.post(
+                    f"{self.base_url}/call-processing/ensure",
+                    json=request.model_dump(mode="json"),
+                    headers=self._headers(),
+                )
+        except httpx.ReadTimeout as exc:
+            self._raise_read_timeout("ensure_processed_calls_async", exc)
         if response.status_code >= 400:
             raise ASAError(f"call-processing ensure failed: status={response.status_code} body={response.text[:500]}")
         return EnsureResponse.model_validate(response.json())
@@ -301,15 +314,18 @@ class HttpCallProcessingClient:
     ) -> list[Any]:
         scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
         kinds = _coerce_required_artifacts(required_artifacts)
-        with httpx.Client(timeout=self.timeout_sec) as client:
-            response = client.get(
-                f"{self.base_url}/call-processing/artifacts",
-                params={
-                    "scope": scope_model.model_dump_json(exclude_none=True),
-                    "artifact_kinds": ",".join(kind.value for kind in kinds),
-                },
-                headers=self._headers(),
-            )
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                response = client.get(
+                    f"{self.base_url}/call-processing/artifacts",
+                    params={
+                        "scope": scope_model.model_dump_json(exclude_none=True),
+                        "artifact_kinds": ",".join(kind.value for kind in kinds),
+                    },
+                    headers=self._headers(),
+                )
+        except httpx.ReadTimeout as exc:
+            self._raise_read_timeout("get_processed_artifacts", exc)
         if response.status_code >= 400:
             raise ASAError(f"call-processing artifact read failed: status={response.status_code} body={response.text[:500]}")
         payload = response.json()
@@ -319,11 +335,14 @@ class HttpCallProcessingClient:
         self,
         interaction_id: uuid.UUID | str,
     ) -> LLM1FirstPassPayload | None:
-        with httpx.Client(timeout=self.timeout_sec) as client:
-            response = client.get(
-                f"{self.base_url}/call-processing/artifacts/{interaction_id}/llm1_first_pass",
-                headers=self._headers(),
-            )
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                response = client.get(
+                    f"{self.base_url}/call-processing/artifacts/{interaction_id}/llm1_first_pass",
+                    headers=self._headers(),
+                )
+        except httpx.ReadTimeout as exc:
+            self._raise_read_timeout("get_llm1_first_pass_artifact", exc)
         if response.status_code == 404:
             return None
         if response.status_code >= 400:

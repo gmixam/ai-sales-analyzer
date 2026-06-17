@@ -297,13 +297,59 @@ class LLM2LayeredRuntimeTests(unittest.TestCase):
         ), patch.object(
             analyzer,
             "_request_llm1_first_pass",
-            return_value={"analysis_focus": []},
+            return_value={
+                "analysis_focus": [],
+                "speaker_role_mapping": {
+                    "source": "llm1_role_attribution",
+                    "diarization_source": "whisper_time_segments_without_speaker_labels",
+                    "roles": [
+                        {
+                            "raw_speaker": "A",
+                            "role": "unknown",
+                            "confidence": "low",
+                            "evidence": [],
+                        }
+                    ],
+                    "dialogue_turns": [
+                        {
+                            "role": "client",
+                            "text": "Client: Please send the materials in WhatsApp.",
+                            "confidence": "medium",
+                            "evidence": ["asks for materials"],
+                        },
+                        {
+                            "role": "manager",
+                            "text": "Manager: Sure, I will send the information.",
+                            "confidence": "medium",
+                            "evidence": ["commits to send information"],
+                        },
+                    ],
+                    "quality": {
+                        "diarization_quality": "low",
+                        "role_attribution_quality": "medium",
+                        "warnings": ["technical_speaker_labels_unavailable"],
+                    },
+                },
+            },
         ), patch.object(analyzer, "_request_llm_content", side_effect=fake_request):
             result = analyzer.analyze_call(
                 interaction=interaction,
                 instruction_version=APPROVED_INSTRUCTION_VERSION,
             )
 
+        llm2a_first_pass = captured_payloads["llm2a_facts_scenes"]["llm1_first_pass"]
+        self.assertEqual(
+            llm2a_first_pass["speaker_role_mapping"]["diarization_source"],
+            "whisper_time_segments_without_speaker_labels",
+        )
+        self.assertEqual(
+            llm2a_first_pass["speaker_role_mapping"]["roles"][0]["role"],
+            "unknown",
+        )
+        self.assertEqual(
+            llm2a_first_pass["speaker_role_mapping"]["dialogue_turns"][1]["role"],
+            "manager",
+        )
         expected_scope = responses["llm2a_facts_scenes"]["edo_scope"]
         self.assertEqual(
             captured_payloads["llm2b_scoring_gaps"]["edo_scope"],

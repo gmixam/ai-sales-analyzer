@@ -66,12 +66,20 @@ def test_run_alert_subject_and_body_formatting() -> None:
 
     assert email.recipient == "ops@example.test"
     assert email.subject == "[AI Sales Analyzer][WARNING] Production run blocked: run-123"
-    assert "Event: blocked" in email.body
-    assert "Run ID: run-123" in email.body
-    assert "Time UTC: 2026-06-15T08:30:00+00:00" in email.body
-    assert "- processed: 7" in email.body
-    assert '"department_id": "sales"' in email.body
-    assert "Provider budget reached" in email.body
+    assert email.body.startswith(email.operator_summary)
+    assert "Что случилось:" in email.body
+    assert "Кого/что затронуло:" not in email.body
+    assert "Что затронуто:" in email.body
+    assert "На что влияет:" in email.body
+    assert "Что проверить:" in email.body
+    assert "Run: run-123" in email.body
+    assert "- Event: blocked" in email.body
+    assert "- Run ID: run-123" in email.body
+    assert "- Time UTC: 2026-06-15T08:30:00+00:00" in email.body
+    assert "processed: 7" in email.body
+    assert "ограничение бюджета или лимита" in email.body
+    assert '"department_id": "sales"' not in email.body
+    assert '{"error_class"' not in email.body
 
 
 def test_run_alert_uses_default_admin_recipient_config() -> None:
@@ -102,6 +110,7 @@ def test_blocked_run_sends_email_alert() -> None:
     assert sent[0]["email_to"] == "admin@dogovor24.kz"
     assert "Production run blocked" in sent[0]["subject"]
     assert "quota_blocked" in sent[0]["text"]
+    assert "Технические детали: см. observability/logs." in sent[0]["text"]
 
 
 def test_completed_run_sends_only_when_success_alert_enabled() -> None:
@@ -203,6 +212,8 @@ def test_blocked_run_sends_telegram_alert_when_enabled() -> None:
     assert sent[0]["chat_id"] == "74665909"
     assert "Production run blocked" in sent[0]["text"]
     assert "quota_blocked" in sent[0]["text"]
+    assert "Alert metadata:" not in sent[0]["text"]
+    assert sent[0]["text"].endswith("Run: run-blocked")
 
 
 def test_telegram_alert_respects_min_level() -> None:
@@ -222,3 +233,93 @@ def test_telegram_alert_respects_min_level() -> None:
     assert result["channel"] == "telegram"
     assert result["status"] == "skipped"
     assert result["reason"] == "alert_on_success_disabled"
+
+
+def test_operator_summary_is_used_for_email_and_exact_telegram_text() -> None:
+    sent_email: list[dict[str, Any]] = []
+    sent_telegram: list[dict[str, str]] = []
+    summary = "\n".join(
+        [
+            "Отчеты за 2026-06-15: проблема с доставкой",
+            "",
+            "Что случилось:",
+            "Не доставлены отчеты 2 менеджерам до SLA 10:00.",
+            "",
+            "Кого затронуло:",
+            "- Тимур: ошибка отправки email",
+            "",
+            "На что влияет:",
+            "Менеджеры не получили ежедневный отчет вовремя.",
+            "",
+            "Что проверить:",
+            "scheduled reporting batch, draft delivery, email delivery result.",
+            "",
+            "Run: manager_daily_sla:2026-06-15:hard",
+        ]
+    )
+
+    def fake_email_sender(**kwargs: Any) -> dict[str, Any]:
+        sent_email.append(kwargs)
+        return {"status": "sent"}
+
+    def fake_telegram_sender(chat_id: str, text: str) -> dict[str, Any]:
+        sent_telegram.append({"chat_id": chat_id, "text": text})
+        return {"status": "sent"}
+
+    email_result = send_run_alert(
+        "blocked",
+        run_id="manager_daily_sla:2026-06-15:hard",
+        operator_summary=summary,
+        details={"managers": [{"manager": "Тимур", "payload": {"secret": True}}]},
+        app_settings=_settings(alert_email_enabled=True),
+        email_sender=fake_email_sender,
+    )
+    telegram_result = send_run_alert(
+        "blocked",
+        run_id="manager_daily_sla:2026-06-15:hard",
+        operator_summary=summary,
+        errors=[{"manager": "Тимур", "error_class": "email_failed"}],
+        details={"raw": [{"secret": True}]},
+        app_settings=_settings(
+            alert_telegram_enabled=True,
+            alert_telegram_chat_id="74665909",
+            telegram_bot_token="telegram-token",
+        ),
+        telegram_sender=fake_telegram_sender,
+    )
+
+    assert email_result["status"] == "sent"
+    assert telegram_result["status"] == "sent"
+    assert sent_email[0]["text"].startswith(summary)
+    assert "Технические детали: см. observability/logs." in sent_email[0]["text"]
+    assert "secret" not in sent_email[0]["text"]
+    assert sent_telegram[0]["text"] == summary
+
+
+def test_fallback_operator_summary_bounds_dict_errors_without_raw_payloads() -> None:
+    errors = [
+        {"manager": f"Manager {index}", "error_class": "email_failed", "details": {"raw": index}}
+        for index in range(1, 9)
+    ]
+
+    email = build_run_alert_email(
+        "failed",
+        run_id="manager_daily_sla:2026-06-15:hard",
+        counts={"failed_reports": 8, "partial_reports": 2, "nested": {"raw": True}},
+        scope={"date": "2026-06-15", "managers": [{"name": "hidden"}]},
+        errors=errors,
+        details={"blockers": [{"manager": "Hidden", "payload": {"raw": True}}]},
+        app_settings=_settings(alert_email_to="ops@example.test"),
+        now=datetime(2026, 6, 15, 10, 0, tzinfo=UTC),
+    )
+
+    assert len(email.operator_summary) <= 1500
+    assert "Manager 1: ошибка отправки email" in email.operator_summary
+    assert "Manager 5: ошибка отправки email" in email.operator_summary
+    assert "Manager 6: ошибка отправки email" not in email.operator_summary
+    assert "Еще 4 см. в observability/logs." in email.operator_summary
+    assert "failed_reports: 8" in email.operator_summary
+    assert "partial_reports: 2" in email.operator_summary
+    assert "{'raw':" not in email.body
+    assert '"raw"' not in email.body
+    assert "hidden" not in email.body

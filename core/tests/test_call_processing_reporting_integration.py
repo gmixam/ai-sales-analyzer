@@ -116,6 +116,9 @@ class _FakeEnsureClient:
             requested_by="edo-analysis-reporting",
             planned={
                 "interactions_total": 3,
+                "source_targeted_total": 5,
+                "source_ingest_created": 4,
+                "source_ingest_skipped": 1,
                 "artifacts_ready": 6,
                 "artifacts_missing": 1,
                 "artifacts_backfilled": 2,
@@ -417,7 +420,8 @@ def test_manager_daily_external_service_ensure_uses_async_client_and_exposes_sou
     assert summary["call_processing_artifacts_backfilled"] == 2
     assert summary["call_processing_provider_calls_made"] == 4
     assert summary["call_processing_costs"]["total_current_run_cost_usdt"] == 0.015
-    assert summary["targeted_source_records_total"] == 3
+    assert summary["targeted_source_records_total"] == 5
+    assert summary["already_persisted_source_records_total"] == 5
 
 
 def test_manager_daily_external_service_ensure_accepts_legacy_response_without_costs() -> None:

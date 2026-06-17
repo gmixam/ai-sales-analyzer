@@ -75,6 +75,8 @@ from app.agents.calls.schemas import CDRRecord  # noqa: E402
 from app.agents.calls.report_templates import (  # noqa: E402
     _call_context_label,
     _build_unclassified_summary_note,
+    _render_html_section,
+    _section_to_text_lines,
     build_report_render_model,
 )
 from app.agents.calls.verification_report_runner import (  # noqa: E402
@@ -1222,6 +1224,120 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertTrue(scope["low_coverage"])
         self.assertIn("Покрытие низкое", scope["note"])
 
+    def test_manager_daily_stage_scores_weighted_focus_prefers_high_impact_middle_stage(self) -> None:
+        artifact = _artifact(55.0, "problematic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "criteria_results": [
+                    {
+                        "criterion_code": "cs_permission",
+                        "criterion_name": "Проверка уместности",
+                        "score": 7,
+                        "max_score": 20,
+                        "comment": "Старт был недостаточно адаптирован.",
+                    }
+                ],
+            },
+            {
+                "stage_code": "needs_discovery",
+                "stage_name": "Выявление детальных потребностей",
+                "criteria_results": [
+                    {
+                        "criterion_code": "nd_depth",
+                        "criterion_name": "Глубина сценария",
+                        "score": 10,
+                        "max_score": 20,
+                        "comment": "Сценарии клиента не были раскрыты.",
+                    }
+                ],
+            },
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        stages = {item["stage_code"]: item for item in payload["score_by_stage"]}
+        priority_stages = [item for item in payload["score_by_stage"] if item.get("is_priority")]
+
+        self.assertEqual([item["stage_code"] for item in priority_stages], ["needs_discovery"])
+        self.assertEqual(stages["contact_start"]["score"], 3.5)
+        self.assertEqual(stages["needs_discovery"]["score"], 5.0)
+        self.assertIsNone(stages["contact_start"].get("criteria_detail"))
+        self.assertIsNotNone(stages["needs_discovery"].get("criteria_detail"))
+        self.assertEqual(stages["needs_discovery"]["criteria_detail"][0]["name"], "Глубина сценария")
+        self.assertEqual(stages["needs_discovery"]["criteria_detail"][0]["score"], 5.0)
+        self.assertAlmostEqual(stages["needs_discovery"]["stage_weight"], 1.4)
+        self.assertAlmostEqual(stages["needs_discovery"]["coverage_factor"], 1.0)
+        self.assertAlmostEqual(stages["needs_discovery"]["focus_impact"], 7.0)
+        self.assertEqual(stages["needs_discovery"]["priority_selection_method"], "weighted_focus_impact")
+        self.assertFalse(stages["needs_discovery"]["critical_low_score_override"])
+
+    def test_manager_daily_stage_scores_critical_low_score_is_signal_not_priority_override(self) -> None:
+        artifact = _artifact(45.0, "problematic")
+        artifact.analysis.scores_detail["score_by_stage"] = [
+            {
+                "stage_code": "contact_start",
+                "stage_name": "Первичный контакт",
+                "criteria_results": [
+                    {
+                        "criterion_code": "cs_permission",
+                        "criterion_name": "Проверка уместности",
+                        "score": 2,
+                        "max_score": 10,
+                        "comment": "Менеджер не получил разрешение продолжить разговор.",
+                    }
+                ],
+            },
+            {
+                "stage_code": "needs_discovery",
+                "stage_name": "Выявление детальных потребностей",
+                "criteria_results": [
+                    {
+                        "criterion_code": "nd_depth",
+                        "criterion_name": "Глубина сценария",
+                        "score": 3,
+                        "max_score": 10,
+                        "comment": "Сценарии клиента раскрыты слабо.",
+                    }
+                ],
+            },
+        ]
+
+        payload = build_manager_daily_payload(
+            department_id=str(uuid4()),
+            department_name="Отдел продаж",
+            artifacts=[artifact],
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+            mode="report_from_ready_data_only",
+            model_override=None,
+        )
+
+        stages = {item["stage_code"]: item for item in payload["score_by_stage"]}
+        priority_stages = [item for item in payload["score_by_stage"] if item.get("is_priority")]
+
+        self.assertEqual([item["stage_code"] for item in priority_stages], ["needs_discovery"])
+        self.assertEqual(stages["contact_start"]["score"], 2.0)
+        self.assertEqual(stages["needs_discovery"]["score"], 3.0)
+        self.assertAlmostEqual(stages["contact_start"]["stage_weight"], 0.85)
+        self.assertAlmostEqual(stages["contact_start"]["coverage_factor"], 1.0)
+        self.assertAlmostEqual(stages["contact_start"]["focus_impact"], 6.8)
+        self.assertTrue(stages["contact_start"]["critical_low_score_signal"])
+        self.assertFalse(stages["contact_start"]["critical_low_score_override"])
+        self.assertFalse(stages["contact_start"]["is_priority"])
+        self.assertIsNone(stages["contact_start"].get("criteria_detail"))
+        self.assertTrue(stages["needs_discovery"]["is_priority"])
+        self.assertTrue(stages["needs_discovery"].get("priority_selection_method"))
+
     def test_manager_daily_edo_scope_controls_sales_scoring_display_without_report_inference(self) -> None:
         manager = _manager()
 
@@ -1550,14 +1666,14 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(call_diagnostics["semantic_case_filtered_reason"], "semantic_case_missing")
         self.assertEqual(call_diagnostics["report_evidence_source"], "report_evidence_v1")
         block_diagnostics = payload["report_evidence_diagnostics"]["blocks"]
-        self.assertEqual(block_diagnostics["situation_day"]["report_evidence_source"], "report_evidence_v1")
-        self.assertEqual(block_diagnostics["call_breakdown"]["report_evidence_source"], "report_evidence_v1")
+        self.assertEqual(block_diagnostics["situation_day"]["report_evidence_source"], "legacy_fallback")
+        self.assertEqual(block_diagnostics["call_breakdown"]["report_evidence_source"], "legacy_fallback")
         self.assertEqual(block_diagnostics["voice_of_customer"]["report_evidence_source"], "report_evidence_v1")
-        self.assertEqual(payload["situation_evidence_quote"]["source"], "report_evidence.situation_candidates")
-        self.assertEqual(payload["situation_day_coaching_view"]["source"], "report_evidence")
-        self.assertEqual(payload["situation_day_coaching_view"]["pattern_title"], "Контекст процесса не уточнён")
-        self.assertEqual(payload["call_breakdown"]["source_note"], "report_evidence.manager_coaching_moments")
-        self.assertIn("Следующий шаг остался общим", payload["call_breakdown"]["rows"][0][1])
+        self.assertIsNone(payload["situation_evidence_quote"])
+        self.assertEqual(payload["situation_day_coaching_view"]["case_status"], "weak_blocked")
+        self.assertEqual(payload["situation_day_coaching_view"]["selection_reason"], "no_manager_gap_scene")
+        self.assertEqual(payload["call_breakdown"]["source_note"], "legacy_fallback_disabled")
+        self.assertEqual(payload["call_breakdown"]["rows"], [])
         self.assertEqual(payload["voice_of_customer"]["source_note"], "report_evidence.voice_of_customer")
         self.assertEqual(payload["voice_of_customer"]["situations"][0]["quote"], "Скиньте в WhatsApp, я посмотрю.")
         self.assertEqual(payload["additional_situations"]["source_note"], "report_evidence.additional_situations")
@@ -1849,26 +1965,15 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         diagnostics = payload["report_evidence_diagnostics"]
         self.assertFalse(diagnostics["calls"][0]["report_evidence_valid"])
-        self.assertEqual(diagnostics["blocks"]["situation_day"]["report_evidence_source"], "block_candidates")
+        self.assertEqual(diagnostics["blocks"]["situation_day"]["report_evidence_source"], "legacy_fallback")
         coaching_view = payload["situation_day_coaching_view"]
-        self.assertEqual(coaching_view["source"], "report_evidence.block_candidates.situation_day")
-        self.assertEqual(coaching_view["stage_code"], "qualification_primary")
-        self.assertEqual(
-            coaching_view["selection_diagnostics"]["selection_mode"],
-            "best_block_candidate_after_focus_mismatch",
-        )
-        self.assertEqual(payload["daily_coaching_focus"]["stage_code"], "qualification_primary")
-        self.assertEqual(
-            payload["daily_coaching_focus"]["focus_override_reason"],
-            "best_block_candidate_after_focus_mismatch",
-        )
-        self.assertEqual(payload["focus_stage_deep_dive"]["stage_code"], "qualification_primary")
-        self.assertEqual(sections["challenge"]["focus_stage_code"], "qualification_primary")
-        self.assertEqual(sections["main_focus_for_tomorrow"]["focus_stage_code"], "qualification_primary")
-        self.assertNotIn(
-            "situation_stage_mismatch:qualification_primary",
-            payload["daily_coaching_focus_validation"]["issues"],
-        )
+        self.assertEqual(coaching_view["case_status"], "weak_blocked")
+        self.assertEqual(coaching_view["selection_reason"], "no_manager_gap_scene")
+        self.assertEqual(payload["daily_coaching_focus"]["stage_code"], "completion_next_step")
+        self.assertEqual(payload["focus_stage_deep_dive"]["stage_code"], "completion_next_step")
+        self.assertEqual(sections["challenge"]["focus_stage_code"], "completion_next_step")
+        self.assertEqual(sections["main_focus_for_tomorrow"]["focus_stage_code"], "completion_next_step")
+        self.assertIn("no_manager_gap_scene", payload["daily_coaching_focus_validation"]["render_blockers"])
 
     def test_manager_daily_semantic_coaching_moment_does_not_require_fragment(self) -> None:
         artifact = _artifact(64.0, "basic")
@@ -2050,15 +2155,13 @@ class ManualReportingPayloadTests(unittest.TestCase):
             model_override=None,
         )
 
-        self.assertEqual(payload["situation_evidence_quote"]["call_id"], str(aligned_artifact.interaction.id))
-        situation_diagnostics = payload["report_evidence_diagnostics"]["blocks"]["situation_day"][
-            "selection_diagnostics"
-        ]
-        rejected_reasons = {
-            item["rejection_reason"]
-            for item in situation_diagnostics["rejected_candidates"]
-        }
-        self.assertIn("problem_signal_mismatch", rejected_reasons)
+        self.assertIsNone(payload["situation_evidence_quote"])
+        self.assertEqual(payload["situation_day_coaching_view"]["case_status"], "weak_blocked")
+        self.assertEqual(
+            payload["situation_day_coaching_view"]["selection_reason"],
+            "no_manager_gap_scene",
+        )
+        self.assertIn("no_manager_gap_scene", payload["daily_coaching_focus_validation"]["render_blockers"])
 
     def test_report_layer_situation_day_rejects_counter_evidence_proof_quote(self) -> None:
         quote = "А вы, Жанар, может быть, кем являетесь в компании?"
@@ -2208,7 +2311,12 @@ class ManualReportingPayloadTests(unittest.TestCase):
             model_override=None,
         )
 
-        self.assertEqual(payload["situation_evidence_quote"]["call_id"], str(fallback_artifact.interaction.id))
+        self.assertIsNone(payload["situation_evidence_quote"])
+        self.assertEqual(payload["situation_day_coaching_view"]["case_status"], "weak_blocked")
+        self.assertEqual(
+            payload["situation_day_coaching_view"]["selection_reason"],
+            "no_manager_gap_scene",
+        )
         proof_call_diagnostics = next(
             item
             for item in payload["report_evidence_diagnostics"]["calls"]
@@ -2392,7 +2500,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         }
         self.assertIn("customer_signal_without_manager_gap", rejected_reasons)
 
-    def test_call_breakdown_prefers_report_evidence_moment_with_fragment(self) -> None:
+    def test_call_breakdown_report_evidence_moment_without_llm3_decision_renders_empty(self) -> None:
         artifact = _artifact(70.0, "basic")
         artifact.interaction.text = (
             "Менеджер начал с общего вопроса. "
@@ -2406,6 +2514,23 @@ class ManualReportingPayloadTests(unittest.TestCase):
             "scenario_type": "cold_outbound",
             "analysis_eligibility": "eligible",
         }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Контекст процесса не уточнён.",
+                    }
+                ],
+            }
+        ]
         detail["gaps"] = [{"criterion_code": "qp_current_process", "title": "Legacy gap"}]
         evidence_detail = _valid_report_evidence_detail()
         evidence_detail["report_evidence"]["manager_coaching_moments"] = [
@@ -2448,12 +2573,92 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         breakdown = payload["call_breakdown"]
-        self.assertEqual(breakdown["source_note"], "report_evidence.manager_coaching_moments")
-        self.assertTrue(breakdown["call_breakdown_fragment_present"])
-        self.assertEqual(breakdown["call_breakdown_evidence_strength"], "strong")
-        self.assertIn("Клиент попросил КП", breakdown["rows"][0][1])
-        self.assertIn("коммерческое предложение", breakdown["rows"][0][2])
-        self.assertNotEqual(breakdown["rows"][0][2], "—")
+        self.assertEqual(breakdown["source_note"], "legacy_fallback_disabled")
+        self.assertEqual(breakdown["rows"], [])
+        self.assertFalse(breakdown["call_breakdown_fragment_present"])
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "insufficient_evidence")
+        self.assertIn("no_manager_gap_scene", payload["daily_coaching_focus_validation"]["render_blockers"])
+
+    def test_call_breakdown_accepts_llm3_owned_same_focus_case(self) -> None:
+        artifact = _artifact(70.0, "basic")
+        artifact.interaction.text = (
+            "Клиент: Скиньте в WhatsApp, я посмотрю. "
+            "Менеджер: Хорошо, отправлю информацию."
+        )
+        detail = artifact.analysis.scores_detail
+        detail["classification"] = {
+            "call_type": "sales_primary",
+            "scenario_type": "cold_outbound",
+            "analysis_eligibility": "eligible",
+        }
+        detail["score_by_stage"] = [
+            {
+                "stage_code": "qualification_primary",
+                "stage_name": "Квалификация и первичная потребность",
+                "stage_score": 0,
+                "max_stage_score": 2,
+                "criteria_results": [
+                    {
+                        "criterion_code": "qp_current_process",
+                        "criterion_name": "Текущий процесс",
+                        "score": 0,
+                        "max_score": 2,
+                        "comment": "Контекст процесса не уточнён.",
+                    }
+                ],
+            }
+        ]
+        detail.update(_valid_report_evidence_detail())
+        raw_llm3 = {
+            "status": "verified",
+            "selected_call_id": str(artifact.interaction.id),
+            "selected_case_stage_code": "qualification_primary",
+            "case_status": "workable",
+            "evidence_level": "workable",
+            "wording_mode": "cautious",
+            "selection_reason": "best_available_focus_stage_case",
+            "stage_code": "qualification_primary",
+            "situation_title": "Контекст процесса не уточнён",
+            "what_happened": "Судя по фрагменту, менеджер согласился отправить материалы без уточнения процесса.",
+            "manager_error": "Не хватило вопроса о текущем документообороте.",
+            "why_it_matters": "Материалы могут не попасть в реальную задачу клиента.",
+            "next_time_action": "Уточнить текущий процесс до отправки материалов.",
+            "supporting_quote": "Скиньте в WhatsApp, я посмотрю.",
+            "evidence_quotes": ["Скиньте в WhatsApp, я посмотрю."],
+            "source_fact_ids": [],
+            "call_breakdown": {
+                "call_id": str(artifact.interaction.id),
+                "stage_code": "qualification_primary",
+                "summary_line": "Алия: разбор выбранного звонка.",
+                "rows": [
+                    [
+                        "Момент 1",
+                        "Клиент просит материалы, но процесс не уточняется.",
+                        "Клиент: Скиньте в WhatsApp, я посмотрю. Менеджер: Хорошо, отправлю информацию.",
+                        "Спросить, как сейчас подписываются документы.",
+                    ]
+                ],
+            },
+        }
+
+        with patch("app.agents.calls.reporting.compose_daily_situation_day", return_value=raw_llm3):
+            payload = build_manager_daily_payload(
+                department_id=str(uuid4()),
+                department_name="Отдел продаж",
+                artifacts=[artifact],
+                period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                filters=ReportRunFilters(date_from="2026-03-25", date_to="2026-03-25"),
+                mode="report_from_ready_data_only",
+                model_override=None,
+            )
+
+        breakdown = payload["call_breakdown"]
+        self.assertEqual(payload["daily_coaching_focus_validation"]["status"], "passed")
+        self.assertEqual(breakdown["call_breakdown_source"], "llm3_daily_situation.call_breakdown")
+        self.assertEqual(breakdown["call_id"], str(artifact.interaction.id))
+        self.assertEqual(breakdown["stage_code"], "qualification_primary")
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "passed")
+        self.assertIn("Клиент просит материалы", breakdown["rows"][0][1])
 
     def test_situation_client_reaction_prefers_client_grounded_evidence(self) -> None:
         artifact = _artifact(64.0, "basic")
@@ -5593,7 +5798,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertNotIn("Наберите внутренний номер", rendered)
         self.assertEqual(excerpt["evidence_quality"], "indirect")
 
-    def test_manager_daily_call_breakdown_prefers_meaningful_fallback_over_greeting_only(self) -> None:
+    def test_manager_daily_call_breakdown_does_not_use_meaningful_transcript_fallback(self) -> None:
         weak = _artifact(10.0, "problematic", call_date="2026-03-25 09:00:00")
         weak.interaction.text = "ТЕЛЕФОННЫЙ ЗВОНОК. Алло. Добрый день."
         weak.interaction.metadata_["segments"] = [
@@ -5655,11 +5860,13 @@ class ManualReportingPayloadTests(unittest.TestCase):
             model_override=None,
         )
 
-        self.assertEqual(payload["call_breakdown"]["client_label"], "Содержательный клиент")
-        self.assertEqual(payload["call_breakdown"]["fallback_evidence_quality"], "indirect")
-        self.assertGreaterEqual(payload["call_breakdown"]["fallback_evidence_score"], 4)
+        self.assertEqual(payload["call_breakdown"]["source_note"], "legacy_fallback_disabled")
+        self.assertIsNone(payload["call_breakdown"]["client_label"])
+        self.assertEqual(payload["call_breakdown"]["rows"], [])
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "insufficient_evidence")
+        self.assertNotIn("fallback_evidence_quality", payload["call_breakdown"])
 
-    def test_manager_daily_call_breakdown_accepts_text_only_gap_items(self) -> None:
+    def test_manager_daily_call_breakdown_rejects_text_only_gap_items_without_llm3(self) -> None:
         artifact = _artifact(42.0, "problematic")
         artifact.interaction.text = "Клиент попросил коммерческое предложение в WhatsApp, но процесс не был уточнен."
         detail = artifact.analysis.scores_detail
@@ -5692,7 +5899,9 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
 
         self.assertFalse(payload["call_breakdown"]["is_placeholder"])
-        self.assertEqual(payload["call_breakdown"]["client_label"], "Текстовый gap")
+        self.assertEqual(payload["call_breakdown"]["source_note"], "legacy_fallback_disabled")
+        self.assertIsNone(payload["call_breakdown"]["client_label"])
+        self.assertEqual(payload["call_breakdown"]["rows"], [])
         self.assertEqual(
             payload["analysis_improve"][0]["label"],
             "Менеджер не выяснил, как устроен текущий процесс у клиента.",
@@ -5733,7 +5942,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertFalse(payload["call_breakdown"]["call_breakdown_fragment_present"])
         self.assertEqual(payload["call_breakdown"]["call_breakdown_evidence_strength"], "missing")
         self.assertEqual(payload["call_breakdown_quality"]["status"], "insufficient_evidence")
-        self.assertGreaterEqual(payload["call_breakdown_quality"]["filtered_rows_count"], 1)
+        self.assertEqual(payload["call_breakdown_quality"]["filtered_rows_count"], 0)
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
         self.assertEqual(sections["call_breakdown"]["rows"], [])
         self.assertIn("Недостаточно подтверждённых фрагментов", payload["call_breakdown"]["summary_line"])
@@ -5828,10 +6037,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         quality = payload["call_breakdown_quality"]
         self.assertEqual(quality["status"], "insufficient_evidence")
-        self.assertEqual(
-            quality["filtered_reasons"].get("recommendation_polarity_mismatch"),
-            1,
-        )
+        self.assertEqual(quality["filtered_reasons"].get("recommendation_polarity_mismatch"), None)
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
         breakdown_text = " ".join(
             [sections["call_breakdown"]["summary_line"]]
@@ -5885,7 +6091,7 @@ class ManualReportingPayloadTests(unittest.TestCase):
             model_override=None,
         )
 
-        self.assertEqual(payload["call_breakdown_quality"]["status"], "passed")
+        self.assertEqual(payload["call_breakdown_quality"]["status"], "insufficient_evidence")
         sections = {section["id"]: section for section in build_report_render_model(payload)["sections"]}
         breakdown_text = " ".join(
             [sections["call_breakdown"]["summary_line"]]
@@ -5893,7 +6099,8 @@ class ManualReportingPayloadTests(unittest.TestCase):
         )
         self.assertNotIn("говорить.: Менеджер", breakdown_text)
         self.assertNotIn(".:", breakdown_text)
-        self.assertIn("сначала уточнить", breakdown_text.lower())
+        self.assertNotIn("сначала уточнить", breakdown_text.lower())
+        self.assertIn("Недостаточно подтверждённых фрагментов", breakdown_text)
 
     def test_gate5_block2_call_breakdown_keeps_diagnostic_fragment_marker_rows(self) -> None:
         payload = build_manager_daily_payload(
@@ -5950,6 +6157,132 @@ class ManualReportingPayloadTests(unittest.TestCase):
 
         self.assertIn("Менеджер дошёл до следующего шага", rendered)
         self.assertNotIn("В выбранном звонке видно", rendered)
+
+    def _situation_day_render_payload(
+        self,
+        coaching_view: dict[str, Any],
+        *,
+        dialogue_ref: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "meta": {
+                "preset": "manager_daily",
+                "period": {"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            },
+            "header": {
+                "manager_name": "Эльмира Кешубаева",
+                "report_date": "2026-03-25",
+                "department_name": "Отдел продаж",
+            },
+            "kpi_overview": {"calls_count": 1},
+            "selection_model": {"raw_calls_total": 1, "meaningful_calls_total": 1, "included_in_report_total": 1},
+            "call_outcomes_summary": {},
+            "focus_of_week": {"text": "Держим фокус на выявлении потребности."},
+            "score_by_stage": [
+                {
+                    "stage_code": "needs_discovery",
+                    "stage_name": "Выявление детальных потребностей",
+                    "score": 4,
+                    "calls_count": 1,
+                    "is_priority": True,
+                }
+            ],
+            "daily_coaching_focus": {
+                "stage_code": "needs_discovery",
+                "stage_name": "Выявление детальных потребностей",
+            },
+            "key_problem_of_day": {"call_example": {}},
+            "recommendations": [],
+            "call_list": [],
+            "situation_day_coaching_view": coaching_view,
+            "situation_dialogue_excerpt": {"client_call_reference": dialogue_ref} if dialogue_ref else {},
+            "situation_evidence_quote": {},
+            "situation_day_evidence_packet": {},
+            "call_breakdown": {},
+            "voice_of_customer": {},
+            "additional_situations": {},
+            "call_tomorrow": {"contacts": []},
+        }
+
+    def test_situation_day_insufficient_uses_unified_review_layout(self) -> None:
+        payload = self._situation_day_render_payload(
+            {
+                "situation_day_evidence_status": "insufficient",
+                "proof_strength": "weak",
+                "stage_label": "Выявление детальных потребностей",
+                "stage_score_label": "2.0/5",
+                "pattern_title": "Потребность клиента раскрыта не полностью",
+                "what_happened": (
+                    "В доступной сцене не видно, чтобы менеджер отдельно уточнил боль, "
+                    "текущий процесс и критерии перехода к покупке."
+                ),
+                "meaning": "Это рабочий учебный пример по фокусному этапу, но вывод нужно читать осторожно.",
+                "what_was_missing": "Не хватило вопросов про боль, текущий процесс и критерии решения.",
+                "next_time_action": "В следующий раз сначала уточнить задачу клиента и критерии успешного демо.",
+                "scripts": ["Что именно хотите проверить на демо: подписание, маршруты или роли сотрудников?"],
+            },
+            dialogue_ref="Звонок: +77075324094 · 15 июня 2026, 14:10",
+        )
+
+        report = build_report_render_model(payload)
+        section = {item["id"]: item for item in report["sections"]}["main_focus_for_tomorrow"]
+        rendered_text = "\n".join(_section_to_text_lines(section))
+        rendered_html = _render_html_section(section)
+
+        self.assertEqual(
+            [row[0] for row in section["review_rows"]],
+            ["Что это значит", "Что не хватило в разговоре", "Что делать в следующий раз"],
+        )
+        self.assertIn("Пример из сегодня: Звонок: +77075324094", rendered_text)
+        self.assertIn("Что это значит | Это рабочий учебный пример", rendered_text)
+        self.assertIn("Что не хватило в разговоре | Не хватило вопросов", rendered_text)
+        self.assertIn("Что делать в следующий раз | В следующий раз сначала уточнить", rendered_text)
+        self.assertIn("<table><tbody><tr><th>Что это значит</th>", rendered_html)
+        self.assertNotIn("Нет надежно подтвержденной ситуации дня.", rendered_text)
+        self.assertNotIn("Почему это важно", rendered_text)
+        self.assertNotIn("Как сказать", rendered_text)
+        self.assertNotIn("Причина:", rendered_text)
+
+    def test_situation_day_workable_keeps_same_review_layout(self) -> None:
+        payload = self._situation_day_render_payload(
+            {
+                "situation_day_evidence_status": "workable",
+                "case_status": "workable",
+                "stage_label": "Выявление детальных потребностей",
+                "stage_score_label": "2.0/5",
+                "pattern_title": "Критерии покупки не раскрыты",
+                "what_happened": "Судя по фрагменту, клиент готов смотреть демо, но критерии покупки не проговорены.",
+                "meaning": "Интерес есть, но без критериев демо может остаться консультацией.",
+                "what_was_missing": "Не прозвучал вопрос, по каким признакам клиент поймет, что сервис подходит.",
+                "next_time_action": "Спросить критерии перехода от демо к платному тарифу.",
+            }
+        )
+
+        report = build_report_render_model(payload)
+        section = {item["id"]: item for item in report["sections"]}["main_focus_for_tomorrow"]
+        rendered_text = "\n".join(_section_to_text_lines(section))
+
+        self.assertEqual(len(section["review_rows"]), 3)
+        self.assertIn("Судя по фрагменту", rendered_text)
+        self.assertIn("Что не хватило в разговоре | Не прозвучал вопрос", rendered_text)
+        self.assertIn("Статус доказательства: рабочий учебный пример", rendered_text)
+        self.assertNotIn("workable", rendered_text)
+        self.assertNotIn("Почему это важно", rendered_text)
+        self.assertNotIn("Как сказать", rendered_text)
+
+    def test_situation_day_docx_generator_has_no_insufficient_visual_branch(self) -> None:
+        repo_root = CORE_ROOT.parent if (CORE_ROOT.parent / "scripts").exists() else CORE_ROOT
+        script_path = repo_root / "scripts" / "generate_docx_report.js"
+        if not script_path.exists():
+            self.skipTest("repo-level DOCX generator is not mounted in this test environment")
+        script = script_path.read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            's.coaching_view?.situation_day_evidence_status === "insufficient"',
+            script,
+        )
+        self.assertNotIn('subHeading("Почему это важно")', script)
+        self.assertIn("buildSituationReviewRows", script)
 
     def test_manager_daily_payload_focus_stage_deep_dive_uses_stage_specific_fallbacks(self) -> None:
         artifact = _artifact(50.0, "problematic")
@@ -6385,6 +6718,46 @@ class ManualReportingPayloadTests(unittest.TestCase):
         self.assertEqual(counters["excluded_calls_total"], 1)
         self.assertEqual(counters["excluded_call_samples"][0]["reason"], "too_short_or_no_speech")
         self.assertFalse(counters["excluded_call_samples"][0]["has_transcript"])
+
+    def test_build_selection_model_counters_no_audio_cdr_excluded_from_meaningful_denominator(self) -> None:
+        """PILOT-25: NO_AUDIO CDR is raw/excluded, not meaningful or missing analysis."""
+        no_audio_cdr = ReportArtifact(
+            interaction=SimpleNamespace(
+                id=uuid4(),
+                status="NO_AUDIO",
+                duration_sec=0,
+                text="",
+                raw_ref="",
+                metadata_={
+                    "source_status": "missed",
+                    "direction": "out",
+                },
+            ),
+            analysis=None,
+            manager=_manager(),
+            call_started_at=datetime.fromisoformat("2026-03-25T09:00:00").replace(tzinfo=UTC),
+        )
+        normal = _artifact(82.0, "strong")
+
+        is_meaningful, reason = _classify_meaningful_call(no_audio_cdr)
+        counters = _build_selection_model_counters(
+            window_artifacts=[no_audio_cdr, normal],
+            usable_artifacts=[normal],
+        )
+
+        self.assertFalse(is_meaningful)
+        self.assertEqual(reason, "too_short_or_no_speech")
+        self.assertEqual(counters["raw_calls_total"], 2)
+        self.assertEqual(counters["no_transcript_calls_total"], 1)
+        self.assertEqual(counters["meaningful_calls_total"], 1)
+        self.assertEqual(counters["meaningful_ready_analysis_total"], 1)
+        self.assertEqual(counters["analyzed_calls_total"], 1)
+        self.assertEqual(counters["included_in_report_total"], 1)
+        self.assertEqual(counters["excluded_calls_total"], 1)
+        self.assertEqual(counters["exclusion_reasons"]["too_short_or_no_speech"], 1)
+        self.assertEqual(counters["exclusion_reasons"]["not_enough_analysis"], 0)
+        self.assertEqual(counters["processing_reasons"]["not_enough_analysis"], 0)
+        self.assertEqual(counters["excluded_call_samples"][0]["source_status"], "missed")
 
     def test_build_selection_model_counters_short_transcript_not_excluded(self) -> None:
         short_with_transcript = ReportArtifact(
@@ -9394,6 +9767,101 @@ class ManualReportingStatusTests(unittest.TestCase):
         self.assertEqual(observability["summary"]["execution_model"], "persisted_only")
         self.assertEqual(observability["stages"][0]["status"], "skipped")
         self.assertEqual(observability["stages"][5]["status"], "skipped")
+
+    def test_manager_daily_run_monitor_spec_builds_short_operator_summary(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+        reports = [
+            {
+                "status": "partial",
+                "errors": ["manager_email_failed"],
+                "readiness_reason_codes": ["missing_artifacts"],
+            },
+            {
+                "status": "skip_accumulate",
+                "errors": ["analysis_missing:test"],
+                "readiness": {"readiness_reason_codes": ["missing_artifacts"]},
+            },
+        ]
+        observability = {
+            "blockers": [
+                {
+                    "scope": {"raw_json_should_not_leak": True},
+                    "details": {"manager": "Эльмира", "reason": "missing_artifacts"},
+                }
+            ]
+        }
+
+        specs = CallsManualReportingOrchestrator._build_run_monitor_alert_specs(
+            orchestrator,
+            preset=resolve_report_preset("manager_daily"),
+            period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+            mode="build_missing_and_report",
+            delivery_options=resolve_report_delivery_options(delivery_mode="telegram_and_email"),
+            reports=reports,
+            overall_status="partial",
+            errors=["email_failed"],
+            observability=observability,
+        )
+
+        self.assertEqual(len(specs), 1)
+        summary = specs[0]["operator_summary"]
+        self.assertIn("Что случилось:", summary)
+        self.assertIn("Что затронуто:", summary)
+        self.assertIn("На что влияет:", summary)
+        self.assertIn("Что проверить:", summary)
+        self.assertIn("Run: manual-report:manager_daily:2026-03-25:2026-03-25", summary)
+        self.assertIn("reports: 2", summary)
+        self.assertIn("partial: 1", summary)
+        self.assertIn("skip_accumulate: 1", summary)
+        self.assertIn("missing_artifacts: не хватило готовых данных для отчета", summary)
+        self.assertNotIn("Blockers:", summary)
+        self.assertNotIn("raw_json_should_not_leak", summary)
+        self.assertNotIn("{", summary)
+        self.assertLess(len(summary), 1500)
+        self.assertEqual(specs[0]["details"]["blockers"], observability["blockers"])
+
+    def test_manager_daily_run_monitor_alert_passes_operator_summary_to_send_run_alert(self) -> None:
+        orchestrator = object.__new__(CallsManualReportingOrchestrator)
+
+        class FakeDelivery:
+            def send_email_message(self, **_kwargs):
+                return {"channel": "email", "status": "sent"}
+
+        orchestrator.delivery = FakeDelivery()
+
+        with patch("app.agents.calls.reporting.send_run_alert") as send_alert:
+            send_alert.return_value = {
+                "channel": "email",
+                "recipient": "admin@dogovor24.kz",
+                "status": "sent",
+                "subject": "Manager daily run needs attention",
+            }
+            alerts = CallsManualReportingOrchestrator._send_run_monitor_alerts(
+                orchestrator,
+                preset=resolve_report_preset("manager_daily"),
+                period={"date_from": "2026-03-25", "date_to": "2026-03-25"},
+                mode="build_missing_and_report",
+                delivery_options=resolve_report_delivery_options(delivery_mode="telegram_and_email"),
+                reports=[
+                    {
+                        "status": "partial",
+                        "errors": ["Email delivery failed: timeout"],
+                    }
+                ],
+                overall_status="partial",
+                errors=[],
+                observability={"blockers": [{"details": {"raw": "json"}}]},
+            )
+
+        self.assertEqual(alerts[0]["status"], "sent")
+        self.assertEqual(send_alert.call_args.args[0], "blocked")
+        operator_summary = send_alert.call_args.kwargs["operator_summary"]
+        self.assertIn("Показатели:", operator_summary)
+        self.assertIn("Основные причины:", operator_summary)
+        self.assertIn("Email delivery failed: timeout: ошибка отправки email", operator_summary)
+        self.assertIn("Что проверить:", operator_summary)
+        self.assertNotIn("Blockers:", operator_summary)
+        self.assertNotIn('"details"', operator_summary)
 
     def test_terminal_run_skip_accumulate_blocks_manager_email_and_sends_admin_alert(self) -> None:
         orchestrator = object.__new__(CallsManualReportingOrchestrator)

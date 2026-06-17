@@ -394,7 +394,7 @@ def _manager_daily_email_html(
 def _manager_daily_focus_summary(report: dict[str, Any]) -> str:
     section = next((item for item in report.get("sections") or [] if item.get("id") == "main_focus_for_tomorrow"), {})
     coaching_view = dict(section.get("coaching_view") or {})
-    if _situation_day_is_insufficient(coaching_view):
+    if _situation_day_is_weak_blocked(coaching_view) and not _situation_day_narrative_parts(coaching_view):
         return "нет надежно подтвержденной ситуации дня"
     return (
         str(coaching_view.get("pattern_title") or "").strip()
@@ -474,8 +474,17 @@ def _situation_day_is_insufficient(coaching_view: dict[str, Any]) -> bool:
     return str(coaching_view.get("situation_day_evidence_status") or "").strip() == "insufficient"
 
 
+def _situation_day_is_weak_blocked(coaching_view: dict[str, Any]) -> bool:
+    status_values = {
+        str(coaching_view.get("case_status") or "").strip().lower(),
+        str(coaching_view.get("evidence_level") or "").strip().lower(),
+        str(coaching_view.get("situation_day_evidence_status") or "").strip().lower(),
+    }
+    return bool(status_values.intersection({"weak_blocked", "blocked"}))
+
+
 def _situation_section_is_insufficient(section: dict[str, Any]) -> bool:
-    return _situation_day_is_insufficient(dict(section.get("coaching_view") or {}))
+    return _situation_day_is_weak_blocked(dict(section.get("coaching_view") or {}))
 
 
 def _situation_day_insufficient_message(_coaching_view: dict[str, Any]) -> str:
@@ -483,21 +492,21 @@ def _situation_day_insufficient_message(_coaching_view: dict[str, Any]) -> str:
 
 
 def _render_situation_day_text_lines(coaching_view: dict[str, Any]) -> list[str]:
-    if _situation_day_is_insufficient(coaching_view):
-        return [_situation_day_insufficient_message(coaching_view)]
     parts = _situation_day_narrative_parts(coaching_view)
-    if not parts:
-        return ["Что произошло: Нет данных"]
-    return [f"Что произошло: {parts[0]}", *parts[1:]]
+    lines = [f"Что произошло: {parts[0]}", *parts[1:]] if parts else ["Что произошло: Нет данных"]
+    rows = _situation_day_review_rows(coaching_view)
+    if rows:
+        lines.append("Поле | Содержание")
+        lines.extend([f"{label} | {value}" for label, value in rows])
+    return lines
 
 
 def _render_situation_day_html_body(coaching_view: dict[str, Any]) -> str:
-    if _situation_day_is_insufficient(coaching_view):
-        return f"<p class=\"muted\">{html.escape(_situation_day_insufficient_message(coaching_view))}</p>"
     parts = _situation_day_narrative_parts(coaching_view)
     if not parts:
-        return "<p><strong>Что произошло:</strong> Нет данных</p>"
-    body = [f"<p><strong>Что произошло:</strong> {html.escape(parts[0])}</p>"]
+        body = ["<p><strong>Что произошло:</strong> Нет данных</p>"]
+    else:
+        body = [f"<p><strong>Что произошло:</strong> {html.escape(parts[0])}</p>"]
     for part in parts[1:]:
         if part.startswith("Сторона "):
             speaker, _, quote = part.partition(":")
@@ -506,7 +515,65 @@ def _render_situation_day_html_body(coaching_view: dict[str, Any]) -> str:
             body.append(f"<p><em>{html.escape(part)}</em></p>")
         else:
             body.append(f"<p>{html.escape(part)}</p>")
+    table_html = _render_situation_day_review_table_html(coaching_view)
+    if table_html:
+        body.append(table_html)
     return "".join(body)
+
+
+def _situation_day_review_rows(coaching_view: dict[str, Any]) -> list[tuple[str, str]]:
+    scripts = [
+        _clean_reader_text(str(item or ""))
+        for item in (coaching_view.get("scripts") or [])
+        if _clean_reader_text(str(item or ""))
+    ]
+    next_action_parts = [
+        _clean_reader_text(str(coaching_view.get("next_time_action") or "")),
+        *[f"Пример: {item}" for item in scripts[:2]],
+    ]
+    rows = [
+        (
+            "Что это значит",
+            _clean_reader_text(
+                str(
+                    coaching_view.get("meaning")
+                    or coaching_view.get("why_it_matters")
+                    or coaching_view.get("why_action_follows")
+                    or ""
+                )
+            ),
+        ),
+        (
+            "Что не хватило в разговоре",
+            _clean_reader_text(
+                str(
+                    coaching_view.get("what_was_missing")
+                    or coaching_view.get("manager_error")
+                    or coaching_view.get("missing_action")
+                    or ""
+                )
+            ),
+        ),
+        (
+            "Что делать в следующий раз",
+            _clean_reader_text(" ".join(part for part in next_action_parts if part)),
+        ),
+    ]
+    return [(label, value) for label, value in rows if value]
+
+
+def _render_situation_day_review_table_html(coaching_view: dict[str, Any]) -> str:
+    rows = _situation_day_review_rows(coaching_view)
+    if not rows:
+        return ""
+    row_html = "".join(
+        "<tr>"
+        f"<th>{html.escape(label)}</th>"
+        f"<td>{html.escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return f"<table><tbody>{row_html}</tbody></table>"
 
 
 def _situation_day_narrative_parts(coaching_view: dict[str, Any]) -> list[str]:
@@ -910,6 +977,7 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
         else "Полный отчёт" if _readiness_outcome == "full_report"
         else None
     )
+    situation_coaching_view = _clean_reader_value(dict(payload.get("situation_day_coaching_view") or {}))
     sections = [
         {
             **_section_meta(template, "report_header"),
@@ -972,7 +1040,8 @@ def _build_manager_daily_model(*, payload: dict[str, Any], template: ReportTempl
                 recommendations=list(payload.get("recommendations") or []),
             ),
             "call_example": dict(payload["key_problem_of_day"].get("call_example") or {}),
-            "coaching_view": _clean_reader_value(dict(payload.get("situation_day_coaching_view") or {})),
+            "coaching_view": situation_coaching_view,
+            "review_rows": _situation_day_review_rows(situation_coaching_view),
             "dialogue_excerpt": dict(payload.get("situation_dialogue_excerpt") or {}),
             "evidence_quote": dict(payload.get("situation_evidence_quote") or {}),
             "evidence_packet": dict(payload.get("situation_day_evidence_packet") or {}),
@@ -1371,7 +1440,11 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                         str(row.get("calls_count") or 0),
                         "—",
                         str(row.get("bar_text") or "—"),
-                        "●" if row.get("is_priority") else ("✓" if row.get("bar_pct", 0) >= 80 else "—"),
+                        "●"
+                        if row.get("is_priority")
+                        else "!"
+                        if row.get("critical_low_score_signal")
+                        else ("✓" if row.get("bar_pct", 0) >= 80 else "—"),
                     ]
                 )
             )
@@ -1394,9 +1467,6 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                 if stage_label
                 else ""
             )
-            evidence_status = str(coaching_view.get("situation_day_evidence_status") or "").strip()
-            if _situation_day_is_insufficient(coaching_view):
-                return [_situation_day_insufficient_message(coaching_view)]
             example_ref = (
                 dict(section.get("dialogue_excerpt") or {}).get("client_call_reference")
                 or dict(section.get("evidence_quote") or {}).get("client_call_reference")
@@ -1408,15 +1478,13 @@ def _section_to_text_lines(section: dict[str, Any]) -> list[str]:
                 focus_stage,
                 (
                     f"{section.get('example_label') or 'Пример из сегодня'}: {example_ref}"
-                    if example_ref and evidence_status != "insufficient"
+                    if example_ref
                     else ""
                 ),
             ]
             lines.extend(_render_situation_day_text_lines(coaching_view))
             if coaching_view.get("situation_day_evidence_status"):
                 lines.append("Статус доказательства: " + _evidence_status_display_text(coaching_view))
-            if evidence_status == "insufficient" and coaching_view.get("insufficiency_reason"):
-                lines.append(f"Причина: {coaching_view.get('insufficiency_reason')}")
             return [line for line in lines if line and not line.endswith(": ")]
         lines = [
             str(section.get("situation_title") or section.get("label") or "Ситуация дня"),
@@ -1818,7 +1886,7 @@ def _render_html_section(section: dict[str, Any]) -> str:
                 f"<td>{html.escape(str(row.get('calls_count') or 0))}</td>"
                 "<td>—</td>"
                 f"<td>{html.escape(str(row.get('bar_text') or '—'))}</td>"
-                f"<td>{'●' if row.get('is_priority') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
+                f"<td>{'●' if row.get('is_priority') else '!' if row.get('critical_low_score_signal') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
                 "</tr>"
             )
             for crit in row.get("criteria_detail") or []:
@@ -1858,23 +1926,11 @@ def _render_html_section(section: dict[str, Any]) -> str:
         )
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
-            if _situation_day_is_insufficient(coaching_view):
-                return (
-                    f"<section class=\"{' '.join(classes)}\">{title}"
-                    f"<div class=\"section-body\">{_render_situation_day_html_body(coaching_view)}</div></section>"
-                )
             status_html = ""
-            evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):
-                reason = str(coaching_view.get("insufficiency_reason") or "")
                 status_html = (
                     "<p class=\"muted\"><strong>Статус доказательства:</strong> "
                     f"{html.escape(_evidence_status_display_text(coaching_view))}</p>"
-                    + (
-                        f"<p class=\"muted\"><strong>Причина:</strong> {html.escape(reason)}</p>"
-                        if evidence_status == "insufficient" and reason
-                        else ""
-                    )
                 )
             dialogue_ref = str(
                 (dict(section.get("dialogue_excerpt") or {}).get("client_call_reference"))
@@ -1885,8 +1941,8 @@ def _render_html_section(section: dict[str, Any]) -> str:
                 "<div class=\"mini-card\">"
                 f"<strong>{html.escape(example_label)}:</strong> {html.escape(dialogue_ref)}"
                 "</div>"
-                if dialogue_ref and evidence_status != "insufficient"
-                else "" if evidence_status == "insufficient" else example_html
+                if dialogue_ref
+                else example_html
             )
             return (
                 f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"
@@ -2583,39 +2639,20 @@ def _render_manager_daily_pdf_report(
     )
     focus_top = review_bottom + 10
     draw_section_bar(page2, top=focus_top, title=focus["label"], color=amber)
-    if _situation_section_is_insufficient(focus):
-        draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=86, fill=light_blue)
-        draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=86, fill=accent)
-        draw_text(
-            page2,
-            left=margin + 12,
-            top=focus_top + 48,
-            text=_situation_day_insufficient_message(dict(focus.get("coaching_view") or {})),
-            size=9.2,
-            color=black,
-            max_width=width - (margin * 2) - 24,
-        )
+    draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=230, fill=light_blue)
+    draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=230, fill=accent)
+    draw_text(page2, left=margin + 12, top=focus_top + 42, text=str(focus.get("situation_title") or focus["label"]), size=10.2, color=accent, max_width=width - (margin * 2) - 24)
+    focus_note = str(focus.get("scope_note") or "")
+    body_top = focus_top + 80 if focus_note else focus_top + 62
+    if focus_note:
+        draw_text(page2, left=margin + 12, top=focus_top + 62, text=focus_note, size=8.2, color=muted, max_width=width - (margin * 2) - 24)
+    coaching_view = dict(focus.get("coaching_view") or {})
+    if coaching_view:
+        focus_lines = _render_situation_day_text_lines(coaching_view)
+        focus_body = "\n".join(focus_lines[:7])
     else:
-        draw_rect(page2, left=margin, top=focus_top + 30, box_width=width - (margin * 2), box_height=230, fill=light_blue)
-        draw_rect(page2, left=margin, top=focus_top + 30, box_width=4, box_height=230, fill=accent)
-        draw_text(page2, left=margin + 12, top=focus_top + 42, text=str(focus.get("situation_title") or focus["label"]), size=10.2, color=accent, max_width=width - (margin * 2) - 24)
-        focus_note = str(focus.get("scope_note") or "")
-        body_top = focus_top + 80 if focus_note else focus_top + 62
-        if focus_note:
-            draw_text(page2, left=margin + 12, top=focus_top + 62, text=focus_note, size=8.2, color=muted, max_width=width - (margin * 2) - 24)
-        draw_text(page2, left=margin + 12, top=body_top, text=str(focus.get("body") or ""), size=9.0, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page2, left=margin + 12, top=body_top + 32, text=f"Что хотел клиент: {focus.get('client_need') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page2, left=margin + 12, top=body_top + 58, text=f"Наша задача: {focus.get('manager_task') or 'Нет данных'}", size=8.5, color=black, max_width=width - (margin * 2) - 24)
-        example = dict(focus.get("call_example") or {})
-        example_line = ""
-        if example.get("client_call_reference") or example.get("client_label") or example.get("time_label"):
-            example_line = f"{focus.get('example_label') or 'Пример'}: {example.get('client_call_reference') or example.get('client_label') or 'Клиент'}"
-        if example_line:
-            draw_text(page2, left=margin + 12, top=focus_top + 150, text=example_line, size=8.3, color=accent, max_width=width - (margin * 2) - 24)
-        script_top = focus_top + 170
-        for idx, script in enumerate((focus.get("scripts") or [])[:3], start=1):
-            draw_text(page2, left=margin + 12, top=script_top + ((idx - 1) * 16), text=f"{idx}. {script}", size=8.2, color=black, max_width=width - (margin * 2) - 24)
-        draw_text(page2, left=margin + 12, top=focus_top + 220, text=f"Почему работает: {focus.get('why_it_works') or ''}", size=8.0, color=muted, max_width=width - (margin * 2) - 24)
+        focus_body = str(focus.get("body") or "")
+    draw_text(page2, left=margin + 12, top=body_top, text=focus_body, size=9.0, color=black, max_width=width - (margin * 2) - 24)
     footer(page2, 2)
 
     page3 = add_page()
@@ -3684,6 +3721,7 @@ def _build_stage_score_rows(score_by_stage: list[dict[str, Any]]) -> list[dict[s
             "bar_pct": bar_pct,
             "bar_text": _progress_bar_20(score_on_5),
             "is_priority": bool(item.get("is_priority")),
+            "critical_low_score_signal": bool(item.get("critical_low_score_signal")),
             "criteria_detail": list(item.get("criteria_detail") or []) or None,
             "problem_summary": str(item.get("problem_summary") or ""),
             "problem_wording_warnings": list(item.get("problem_wording_warnings") or []),
@@ -5114,10 +5152,13 @@ def _evidence_status_display_text(coaching_view: dict[str, Any]) -> str:
         {
             "verified": "подтверждено",
             "proven": "подтверждено",
+            "strong": "подтверждено",
+            "workable": "рабочий учебный пример",
             "softened": "частично подтверждено",
             "soften": "частично подтверждено",
             "insufficient": "недостаточно данных",
             "failed": "недостаточно данных",
+            "weak_blocked": "недостаточно данных",
         },
     )
     strength = _localized_service_label(
@@ -5438,7 +5479,7 @@ def _manager_status_text_color(
                 f"<td>{html.escape(str(row.get('calls_count') or 0))}</td>"
                 "<td>—</td>"
                 f"<td>{html.escape(str(row.get('bar_text') or '—'))}</td>"
-                f"<td>{'●' if row.get('is_priority') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
+                f"<td>{'●' if row.get('is_priority') else '!' if row.get('critical_low_score_signal') else ('✓' if row.get('bar_pct', 0) >= 80 else '—')}</td>"
                 "</tr>"
             )
             for crit in row.get("criteria_detail") or []:
@@ -5478,24 +5519,11 @@ def _manager_status_text_color(
         )
         coaching_view = dict(section.get("coaching_view") or {})
         if coaching_view:
-            if _situation_day_is_insufficient(coaching_view):
-                return (
-                    f"<section class=\"{' '.join(classes)}\">{title}"
-                    f"<div class=\"section-body\">{_render_situation_day_html_body(coaching_view)}</div></section>"
-                )
             status_html = ""
-            evidence_status = str(coaching_view.get("situation_day_evidence_status") or "")
             if coaching_view.get("situation_day_evidence_status"):
-                strength = str(coaching_view.get("proof_strength") or "")
-                reason = str(coaching_view.get("insufficiency_reason") or "")
                 status_html = (
                     "<p class=\"muted\"><strong>Статус доказательства:</strong> "
-                    f"{html.escape(evidence_status + (f' / {strength}' if strength else ''))}</p>"
-                    + (
-                        f"<p class=\"muted\"><strong>Причина:</strong> {html.escape(reason)}</p>"
-                        if evidence_status == "insufficient" and reason
-                        else ""
-                    )
+                    f"{html.escape(_evidence_status_display_text(coaching_view))}</p>"
                 )
             dialogue_ref = str(
                 (dict(section.get("dialogue_excerpt") or {}).get("client_call_reference"))
@@ -5506,8 +5534,8 @@ def _manager_status_text_color(
                 "<div class=\"mini-card\">"
                 f"<strong>{html.escape(example_label)}:</strong> {html.escape(dialogue_ref)}"
                 "</div>"
-                if dialogue_ref and evidence_status != "insufficient"
-                else "" if evidence_status == "insufficient" else example_html
+                if dialogue_ref
+                else example_html
             )
             return (
                 f"<section class=\"{' '.join(classes)}\">{title}<div class=\"section-body\"><article class=\"focus-panel\">"

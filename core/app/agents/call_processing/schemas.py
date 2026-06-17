@@ -158,6 +158,7 @@ class LLM1FirstPassPayload(BaseModel):
     follow_up: dict[str, Any] = Field(default_factory=dict)
     data_quality: dict[str, Any] = Field(default_factory=dict)
     analysis_focus: dict[str, Any] | list[Any] = Field(default_factory=dict)
+    speaker_role_mapping: dict[str, Any] = Field(default_factory=dict)
     error: ArtifactError = Field(default_factory=ArtifactError)
 
     @field_validator("schema_version")
