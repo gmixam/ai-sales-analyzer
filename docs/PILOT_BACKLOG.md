@@ -48,6 +48,10 @@ delivery.
 - `docs/PILOT33_MANAGER_DAILY_OPEN_BATCH_GUARD_TZ.md` - ТЗ по исправлению
   scheduled guard, из-за которого старые `review_required` batches блокируют
   новый `manager_daily` auto-run.
+- `docs/PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md` - ТЗ по concrete
+  diagnostics для duplicate/open-batch blocker ids.
+- `docs/PILOT35_MANAGER_DAILY_SILENT_SKIP_GUARD_TZ.md` - ТЗ по защите
+  `manager_daily` schedule от тихого пропуска без batch/draft/alert.
 
 ## Правило работы
 
@@ -95,6 +99,7 @@ delivery.
 | PILOT-32 | Лучший учебный кейс для `СИТУАЦИЯ ДНЯ` / `РАЗБОР ЗВОНКА` | `implemented_first_pass_llm_ownership` | ТЗ: [`docs/PILOT32_FOCUS_CASE_SELECTION_TZ.md`](PILOT32_FOCUS_CASE_SELECTION_TZ.md). Внедрен second pass под архитектурное правило: смысловой выбор кейса и содержательные тексты `СИТУАЦИИ ДНЯ` / `РАЗБОР ЗВОНКА` формирует LLM3 на базе LLM2 evidence; Report Layer только проверяет контракт/stage/call id и блокирует нарушенный render; legacy/report-evidence/transcript/gaps fallback больше не строит смысловой breakdown | Проверено: Report Layer focused `20 passed, 1 skipped`; LLM3 composer `13 passed`; `py_compile`, `node --check`, `git diff --check` OK. До `done`: rerender Толегена за `2026-06-15` и визуально проверить, что `sale_final` не подменяет `needs_discovery`, а LLM3-owned case отображается корректно или дается neutral empty-state |
 | PILOT-33 | `manager_daily` open-batch guard блокирует новый день | `implemented_first_pass` | ТЗ: [`docs/PILOT33_MANAGER_DAILY_OPEN_BATCH_GUARD_TZ.md`](PILOT33_MANAGER_DAILY_OPEN_BATCH_GUARD_TZ.md). First pass внедрен: `manager_daily` больше не применяет общий `_has_open_batch(schedule_id)` до выбора manager-day; duplicate protection уточнена на `schedule_id + manager_id + report_date`; non-manager_daily guard сохранен; добавлены `open-batches` diagnostics и dry-run-first `recover-open-batches`. Recovery/catch-up 2026-06-17 выполнен: `3` старых batch за `2026-06-15` переведены `review_required -> paused`; за `2026-06-16` без повторного STT/LLM1 достроены LLM2/Report Layer; Алишер и Толеген получили email, РОП получил копии, SLA=`late`; Тимур no-audio остался `review_required/missing_recipient`, Илья no-calls `not_applicable`; schedule сохранен на следующий auto-run `2026-06-17T23:00:00+00:00`. Visibility fix: `paused` исключен из default open-batch diagnostics, explicit recovery `--status paused` сохранен | Проверено: scheduler guard tests `8 passed`; preflight/recovery/SLA tests `12 passed`; full focused scheduled/preflight `28 passed`; live post-check подтверждает delivered batches Алишера/Толегена, а `open-batches` больше не шумит старыми paused recovery batches. Следующий шаг: наблюдать следующий auto-run; оставшийся хвост — duplicate diagnostics желательно дополнить concrete blocker id/alert |
 | PILOT-34 | Concrete diagnostics для duplicate/open-batch | `implemented_first_pass` | ТЗ: [`docs/PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md`](PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md). Внедрено: duplicate guard получил `_manager_day_duplicate_diagnostics(...)` с concrete `blocked_by_batch_id` / `blocked_by_draft_id`, `_has_manager_day_duplicate(...) -> bool` остался совместимым wrapper, `scheduled_candidate_selection` сохраняет `skipped_already_reported_details`, а `open-batches` JSON/human output показывает blocker ids, draft ids/statuses и recovery hint | Проверено: focused duplicate/open-batch/recovery/blocker suite `14 passed, 24 deselected, 2 subtests passed`; весь `test_scheduled_reporting.py` `19 passed, 2 subtests passed`; preflight focused `6 passed, 13 deselected`; `py_compile` и `git diff --check` OK |
+| PILOT-35 | `manager_daily` silent-skip guard | `implemented_first_pass` | ТЗ: [`docs/PILOT35_MANAGER_DAILY_SILENT_SKIP_GUARD_TZ.md`](PILOT35_MANAGER_DAILY_SILENT_SKIP_GUARD_TZ.md). Внедрено: zero-batch guard создает failed diagnostic batch с reason `manager_daily_zero_batches_after_candidate_selection`; `scheduled_manager_daily_run` summary сохраняет реальные/diagnostic batches, failed/review/report-ready counts и `status=ok|partial|failed`; failed/no-draft run получает short operator alert без raw JSON; SLA precheck/hardcheck registration покрыт тестами | Проверено: scheduled reporting / run alerts / preflight focused `41 passed, 12 deselected, 2 subtests passed`; split runtime SLA focused `6 passed, 14 deselected`; `py_compile`, `git diff --check`, sync `core/report_scripts` vs `scripts` OK. До `done`: подтвердить первый реальный auto-run `04:00` и SLA window `09:30/10:00` |
 
 ### P2 - Ежедневный отчет для РОП
 
@@ -195,32 +200,34 @@ delivery.
 4. PILOT-28 - на следующем реальном warning/error alert проверить, что
    Telegram/почта дают короткое резюме проблемы, влияния и следующего действия
    без raw JSON.
-5. PILOT-29 - утвердить и реализовать усиление speaker role attribution на
+5. PILOT-35 - наблюдать первый реальный auto-run `04:00` и SLA window
+   `09:30/10:00`, чтобы перевести implemented first pass в `done`.
+6. PILOT-29 - утвердить и реализовать усиление speaker role attribution на
    текущем Whisper STT без смены модели.
-6. PILOT-31 - проверить на контрольном manager_daily отчете, что weighted focus
+7. PILOT-31 - проверить на контрольном manager_daily отчете, что weighted focus
    stage в `БАЛЛЫ ПО ЭТАПАМ` выбирает управленчески логичный этап, не меняя
    сами баллы.
-7. PILOT-32 - проверить first pass под LLM ownership на rerender Толегена за
+8. PILOT-32 - проверить first pass под LLM ownership на rerender Толегена за
    `2026-06-15`: LLM3 выбирает и пишет учебный кейс дня, Report Layer только
    проверяет контракт и stage/call gates.
-8. PILOT-25 - подтвердить на следующем upstream cycle, что новые missed CDR
+9. PILOT-25 - подтвердить на следующем upstream cycle, что новые missed CDR
    сразу сохраняются как `NO_AUDIO` и не создают missing STT requirements.
-9. PILOT-20 - controlled rerender/ready-only проверка на реальных отчетах после
+10. PILOT-20 - controlled rerender/ready-only проверка на реальных отчетах после
    denominator fix: убедиться, что отчеты с высоким coverage содержательных
    звонков больше не остаются `signal_report` только из-за normal exclusions.
-10. PILOT-22 - controlled rerender после first pass: проверить Тимура за
+11. PILOT-22 - controlled rerender после first pass: проверить Тимура за
    `2026-06-11`, что отчет и письмо отражают только выбранный день, даже если
    данных мало.
-11. PILOT-23 - controlled rerender после first pass: проверить Толегена за
+12. PILOT-23 - controlled rerender после first pass: проверить Толегена за
    `2026-06-11`, что верхний блок и `БАЛЛЫ ПО ЭТАПАМ` стали компактными без
    изменения цифр.
-12. PILOT-21 - bounded audit `call_tomorrow` в `signal_report`: понять, это
+13. PILOT-21 - bounded audit `call_tomorrow` в `signal_report`: понять, это
    устаревший тест или реальный дефект блока `КОНТАКТЫ В РАБОТУ`.
-13. PILOT-17 - контрольный rerender/прогон после first pass, потому что false
+14. PILOT-17 - контрольный rerender/прогон после first pass, потому что false
    `Договорённость` напрямую бьет по доверию к отчету.
-14. PILOT-19 - прозрачность scoring, потому что менеджеры должны понимать,
+15. PILOT-19 - прозрачность scoring, потому что менеджеры должны понимать,
    какие звонки и критерии реально вошли в баллы.
-14. PILOT-13 - ФИО контакта, чтобы Report Layer не пытался достраивать имя.
-15. PILOT-02 / PILOT-06 - controlled schedule flow без UI.
+16. PILOT-13 - ФИО контакта, чтобы Report Layer не пытался достраивать имя.
+17. PILOT-02 / PILOT-06 - controlled schedule flow без UI.
 
 После закрытия P1 переходить к `rop_daily_digest`.

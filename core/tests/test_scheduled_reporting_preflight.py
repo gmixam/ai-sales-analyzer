@@ -390,6 +390,65 @@ class ScheduledReportingPreflightCliTests(unittest.TestCase):
             {"raw_manager_payload": {"kept": True}},
         )
 
+    def test_sla_beat_entries_and_routes_are_registered_for_analysis_runtime(self) -> None:
+        from app.core_shared.workers.celery_app import (
+            ANALYSIS_QUEUE,
+            MANAGER_DAILY_SLA_HARDCHECK_TASK,
+            MANAGER_DAILY_SLA_PRECHECK_TASK,
+            MANAGER_DAILY_SLA_TIMEZONE,
+            build_beat_schedule,
+            build_task_routes,
+        )
+
+        schedule = build_beat_schedule("analysis")
+        routes = build_task_routes("analysis")
+
+        self.assertEqual(MANAGER_DAILY_SLA_TIMEZONE, "Asia/Almaty")
+        precheck = schedule["manager_daily_sla_precheck"]
+        hardcheck = schedule["manager_daily_sla_hardcheck"]
+        self.assertEqual(precheck["task"], MANAGER_DAILY_SLA_PRECHECK_TASK)
+        self.assertEqual(hardcheck["task"], MANAGER_DAILY_SLA_HARDCHECK_TASK)
+        self.assertEqual(precheck["kwargs"], {"report_date": "auto"})
+        self.assertEqual(hardcheck["kwargs"], {"report_date": "auto"})
+        self.assertEqual(precheck["options"], {"queue": ANALYSIS_QUEUE})
+        self.assertEqual(hardcheck["options"], {"queue": ANALYSIS_QUEUE})
+        self.assertEqual(routes[MANAGER_DAILY_SLA_PRECHECK_TASK], {"queue": ANALYSIS_QUEUE})
+        self.assertEqual(routes[MANAGER_DAILY_SLA_HARDCHECK_TASK], {"queue": ANALYSIS_QUEUE})
+
+        precheck_cron = precheck["schedule"]
+        hardcheck_cron = hardcheck["schedule"]
+        self.assertEqual(str(precheck_cron._orig_hour), "9")
+        self.assertEqual(str(precheck_cron._orig_minute), "30")
+        self.assertEqual(str(precheck_cron._orig_day_of_week), "1-5")
+        self.assertEqual(str(hardcheck_cron._orig_hour), "10")
+        self.assertEqual(str(hardcheck_cron._orig_minute), "0")
+        self.assertEqual(str(hardcheck_cron._orig_day_of_week), "1-5")
+
+    def test_sla_worker_tasks_are_registered_without_billable_pipeline(self) -> None:
+        from app.core_shared.workers import tasks  # noqa: F401
+        from app.core_shared.workers.celery_app import (
+            MANAGER_DAILY_SLA_HARDCHECK_TASK,
+            MANAGER_DAILY_SLA_PRECHECK_TASK,
+            celery_app,
+        )
+
+        self.assertIn(MANAGER_DAILY_SLA_PRECHECK_TASK, celery_app.tasks)
+        self.assertIn(MANAGER_DAILY_SLA_HARDCHECK_TASK, celery_app.tasks)
+
+        with patch.object(preflight, "sla_check", return_value={"status": "ok"}) as sla_check:
+            precheck_result = celery_app.tasks[MANAGER_DAILY_SLA_PRECHECK_TASK].run(
+                report_date="auto"
+            )
+            hardcheck_result = celery_app.tasks[MANAGER_DAILY_SLA_HARDCHECK_TASK].run(
+                report_date="auto"
+            )
+
+        self.assertFalse(precheck_result["billable_pipeline_started"])
+        self.assertFalse(hardcheck_result["billable_pipeline_started"])
+        self.assertEqual(precheck_result["phase"], "precheck")
+        self.assertEqual(hardcheck_result["phase"], "hard")
+        self.assertEqual(sla_check.call_count, 2)
+
     def test_open_batch_diagnostics_formats_operator_text_and_marks_blocker(self) -> None:
         payload = {
             "status": "ok",

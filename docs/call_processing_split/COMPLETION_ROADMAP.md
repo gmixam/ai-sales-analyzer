@@ -669,7 +669,7 @@ ALERT_TELEGRAM_MIN_LEVEL=warning
 
 ### SPLIT-COMPLETE-07F — Duplicate/open-batch diagnostics
 
-Статус: `draft_ready`
+Статус: `implemented_first_pass`
 
 ТЗ: [`docs/PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md`](../PILOT34_DUPLICATE_OPEN_BATCH_DIAGNOSTICS_TZ.md)
 
@@ -710,6 +710,46 @@ ALERT_TELEGRAM_MIN_LEVEL=warning
 - preflight focused `open_batch/recovery/blocker` ->
   `6 passed, 13 deselected`;
 - `py_compile` и `git diff --check` -> OK.
+
+### SPLIT-COMPLETE-07G — Manager daily silent-skip guard
+
+Статус: `draft_ready`
+
+ТЗ: [`docs/PILOT35_MANAGER_DAILY_SILENT_SKIP_GUARD_TZ.md`](../PILOT35_MANAGER_DAILY_SILENT_SKIP_GUARD_TZ.md)
+
+Контекст:
+
+- scheduled analysis может обработать due schedule и сдвинуть `next_run_at`,
+  но не создать ни одного `scheduled_report_batches` /
+  `scheduled_report_drafts`;
+- такой сценарий нельзя считать успешным unattended запуском, потому что
+  менеджеры и РОП не получают отчеты, а оператор не получает понятный сигнал.
+
+Что сделать:
+
+- [x] добавить zero-batch guard для `manager_daily`;
+- [x] сохранять per-manager selection diagnostics;
+- [x] использовать concrete duplicate/open-batch ids из `PILOT-34`;
+- [x] отправлять короткий operator alert без raw JSON;
+- [x] сохранять `scheduled_manager_daily_run` summary;
+- [ ] подтвердить, что SLA-check `09:30/10:00` реально страхует delivery без
+  Codex в первом production window.
+
+Критерий готовности:
+
+- если schedule processed, но batches/drafts не появились, создается failed
+  diagnostic record и отправляется short alert;
+- по каждому менеджеру понятно, почему отчет создан/не создан;
+- первый следующий production auto-run подтвержден как `ok` или сам прислал
+  понятную проблему.
+
+Проверено в first pass:
+
+- scheduled reporting / run alerts / preflight focused:
+  `41 passed, 12 deselected, 2 subtests passed`;
+- split runtime SLA focused: `6 passed, 14 deselected`;
+- `py_compile`, `git diff --check` и sync `core/report_scripts` vs `scripts`
+  прошли.
 
 ## Ответ на вопрос про “вчерашний полный день”
 

@@ -296,6 +296,88 @@ def test_operator_summary_is_used_for_email_and_exact_telegram_text() -> None:
     assert sent_telegram[0]["text"] == summary
 
 
+def test_manager_daily_zero_batch_operator_summary_hides_structured_payloads() -> None:
+    sent_email: list[dict[str, Any]] = []
+    sent_telegram: list[dict[str, str]] = []
+    summary = "\n".join(
+        [
+            "[WARN] Daily reports: отчеты не созданы за 2026-06-17",
+            "",
+            "Что случилось:",
+            "Scheduled analysis обработал расписание, но не создал report batches.",
+            "",
+            "Кого затронуло:",
+            "- Тимур: analysis_ready=8, batch не создан",
+            "- Толеген: analysis_ready=27, batch не создан",
+            "",
+            "На что влияет:",
+            "Менеджеры и РОП не получат ежедневные отчеты автоматически.",
+            "",
+            "Что проверить:",
+            "scheduled_candidate_selection, open-batches, analysis_worker logs.",
+            "",
+            "Run: manager_daily:schedule-1:2026-06-17",
+        ]
+    )
+    structured_details = {
+        "reason": "manager_daily_zero_batches_after_candidate_selection",
+        "managers": [
+            {"manager_name": "Тимур", "analysis_ready": 8, "raw_payload": {"hidden": True}},
+            {"manager_name": "Толеген", "analysis_ready": 27, "raw_payload": {"hidden": True}},
+        ],
+    }
+
+    def fake_email_sender(**kwargs: Any) -> dict[str, Any]:
+        sent_email.append(kwargs)
+        return {"status": "sent"}
+
+    def fake_telegram_sender(chat_id: str, text: str) -> dict[str, Any]:
+        sent_telegram.append({"chat_id": chat_id, "text": text})
+        return {"status": "sent"}
+
+    send_run_alert(
+        "blocked",
+        run_id="manager_daily:schedule-1:2026-06-17",
+        title="manager_daily zero batches",
+        level="warning",
+        scope={"report_date": "2026-06-17", "manager_scope": structured_details["managers"]},
+        counts={"expected_managers": 2, "batches_created": 0},
+        errors=[structured_details],
+        details=structured_details,
+        operator_summary=summary,
+        app_settings=_settings(alert_email_enabled=True),
+        email_sender=fake_email_sender,
+    )
+    send_run_alert(
+        "blocked",
+        run_id="manager_daily:schedule-1:2026-06-17",
+        title="manager_daily zero batches",
+        level="warning",
+        scope={"report_date": "2026-06-17", "manager_scope": structured_details["managers"]},
+        counts={"expected_managers": 2, "batches_created": 0},
+        errors=[structured_details],
+        details=structured_details,
+        operator_summary=summary,
+        app_settings=_settings(
+            alert_telegram_enabled=True,
+            alert_telegram_chat_id="74665909",
+            telegram_bot_token="telegram-token",
+        ),
+        telegram_sender=fake_telegram_sender,
+    )
+
+    email_text = sent_email[0]["text"]
+    telegram_text = sent_telegram[0]["text"]
+    assert email_text.startswith(summary)
+    assert telegram_text == summary
+    for text in (email_text, telegram_text):
+        assert "manager_daily_zero_batches_after_candidate_selection" not in text
+        assert "raw_payload" not in text
+        assert "{'manager_name'" not in text
+        assert '"manager_name"' not in text
+        assert "hidden" not in text
+
+
 def test_fallback_operator_summary_bounds_dict_errors_without_raw_payloads() -> None:
     errors = [
         {"manager": f"Manager {index}", "error_class": "email_failed", "details": {"raw": index}}

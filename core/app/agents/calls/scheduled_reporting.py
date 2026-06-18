@@ -20,6 +20,7 @@ from app.agents.calls.reporting import (
     render_report_email,
     resolve_report_preset,
 )
+from app.agents.calls.run_alerts import send_run_alert
 from app.core_shared.db.models import (
     Department,
     Interaction,
@@ -812,6 +813,10 @@ class ScheduledReviewableReportingService:
                 lookback_days=lookback_days,
             )
         scan_started_at = datetime.now(UTC).isoformat()
+        created_batches: list[ScheduledReportBatch] = []
+        selected_manager_days_count = 0
+        skipped_manager_days = 0
+        selection_details: list[dict[str, Any]] = []
         for manager_id in list(schedule.manager_ids or []):
             selection = self._select_manager_day_candidate(
                 schedule=schedule,
@@ -820,22 +825,586 @@ class ScheduledReviewableReportingService:
                 lookback_days=lookback_days,
                 scan_started_at=scan_started_at,
             )
+            selection_details.append(selection.to_observability())
             if selection.selected_report_date:
-                self._run_due_manager_day_selection(
+                selected_manager_days_count += 1
+                batch = self._run_due_manager_day_selection(
                     schedule=schedule,
                     planned_for=planned_for,
                     selection=selection,
                 )
             else:
-                self._record_skipped_manager_day_selection(
+                skipped_manager_days += 1
+                batch = self._record_skipped_manager_day_selection(
                     schedule=schedule,
                     planned_for=planned_for,
                     selection=selection,
                 )
+            if batch is not None:
+                created_batches.append(batch)
+
+        created_batches_before_guard_count = len(created_batches)
+        failure_reason = None
+        alert_records: list[dict[str, Any]] = []
+        manager_scope = [str(item) for item in list(schedule.manager_ids or [])]
+        has_expected_or_candidate_scope = bool(manager_scope) or bool(selection_details)
+        if created_batches_before_guard_count <= 0 and has_expected_or_candidate_scope:
+            failure_reason = "manager_daily_zero_batches_after_candidate_selection"
+            preliminary_summary = self._manager_daily_run_summary(
+                schedule=schedule,
+                planned_for=planned_for,
+                candidate_dates=candidate_dates,
+                lookback_days=lookback_days,
+                scan_started_at=scan_started_at,
+                selected_manager_days_count=selected_manager_days_count,
+                skipped_manager_days=skipped_manager_days,
+                created_batches_count=0,
+                created_batches_before_guard_count=0,
+                batch_status_counts=self._manager_daily_batch_status_counts([]),
+                failure_reason=failure_reason,
+                alert_records=[],
+                selection_details=selection_details,
+            )
+            alert_records = [
+                self._send_manager_daily_zero_batch_alert(
+                    schedule=schedule,
+                    planned_for=planned_for,
+                    run_summary=preliminary_summary,
+                )
+            ]
+            diagnostic_batch = self._record_manager_daily_zero_batch_failure(
+                schedule=schedule,
+                planned_for=planned_for,
+                failure_reason=failure_reason,
+                alert_records=alert_records,
+            )
+            created_batches.append(diagnostic_batch)
+        elif created_batches_before_guard_count > 0:
+            batch_status_counts = self._manager_daily_batch_status_counts(created_batches)
+            preliminary_summary = self._manager_daily_run_summary(
+                schedule=schedule,
+                planned_for=planned_for,
+                candidate_dates=candidate_dates,
+                lookback_days=lookback_days,
+                scan_started_at=scan_started_at,
+                selected_manager_days_count=selected_manager_days_count,
+                skipped_manager_days=skipped_manager_days,
+                created_batches_count=len(created_batches),
+                created_batches_before_guard_count=created_batches_before_guard_count,
+                batch_status_counts=batch_status_counts,
+                failure_reason=None,
+                alert_records=[],
+                selection_details=selection_details,
+            )
+            if (
+                preliminary_summary["status"] == "failed"
+                and int(preliminary_summary["failed_batches_count"] or 0) > 0
+                and int(preliminary_summary["report_ready_batches_count"] or 0) <= 0
+            ):
+                failure_reason = str(
+                    preliminary_summary.get("failure_reason")
+                    or "manager_daily_failed_batches_without_report_ready_batches"
+                )
+                alert_records = [
+                    self._send_manager_daily_failed_no_ready_alert(
+                        schedule=schedule,
+                        planned_for=planned_for,
+                        run_summary={
+                            **preliminary_summary,
+                            "failure_reason": failure_reason,
+                        },
+                    )
+                ]
+
+        run_summary = self._manager_daily_run_summary(
+            schedule=schedule,
+            planned_for=planned_for,
+            candidate_dates=candidate_dates,
+            lookback_days=lookback_days,
+            scan_started_at=scan_started_at,
+            selected_manager_days_count=selected_manager_days_count,
+            skipped_manager_days=skipped_manager_days,
+            created_batches_count=len(created_batches),
+            created_batches_before_guard_count=created_batches_before_guard_count,
+            batch_status_counts=self._manager_daily_batch_status_counts(
+                created_batches[:created_batches_before_guard_count]
+            ),
+            failure_reason=failure_reason,
+            alert_records=alert_records,
+            selection_details=selection_details,
+        )
+        for batch in created_batches:
+            batch.observability = self._with_manager_daily_run_summary(
+                observability=dict(batch.observability or {}),
+                run_summary=run_summary,
+            )
+            batch.diagnostics = self._with_manager_daily_run_summary(
+                observability=dict(batch.diagnostics or {}),
+                run_summary=run_summary,
+            )
 
         schedule.last_planned_at = planned_for
         schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
         self.db.flush()
+
+    @staticmethod
+    def _manager_daily_run_summary(
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        candidate_dates: list[str],
+        lookback_days: int,
+        scan_started_at: str,
+        selected_manager_days_count: int,
+        skipped_manager_days: int,
+        created_batches_count: int,
+        created_batches_before_guard_count: int,
+        batch_status_counts: dict[str, int],
+        failure_reason: str | None,
+        alert_records: list[dict[str, Any]],
+        selection_details: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Return stable run-level diagnostics for one scheduled manager_daily scan."""
+        manager_scope = [str(item) for item in list(getattr(schedule, "manager_ids", None) or [])]
+        report_date = candidate_dates[-1] if candidate_dates else None
+        selection_summary = [
+            ScheduledReviewableReportingService._manager_daily_selection_summary(item)
+            for item in selection_details
+        ]
+        skipped = [
+            dict(item)
+            for item in selection_summary
+            if str(item.get("selection_status") or "") != "selected"
+        ]
+        failed_batches_count = int(batch_status_counts.get("failed_batches_count") or 0)
+        review_required_batches_count = int(
+            batch_status_counts.get("review_required_batches_count") or 0
+        )
+        approved_for_delivery_batches_count = int(
+            batch_status_counts.get("approved_for_delivery_batches_count") or 0
+        )
+        delivered_batches_count = int(batch_status_counts.get("delivered_batches_count") or 0)
+        report_ready_batches_count = int(batch_status_counts.get("report_ready_batches_count") or 0)
+        effective_failure_reason = failure_reason
+        if effective_failure_reason is None and failed_batches_count > 0 and report_ready_batches_count <= 0:
+            effective_failure_reason = "manager_daily_failed_batches_without_report_ready_batches"
+        if effective_failure_reason:
+            status = "failed"
+        elif failed_batches_count > 0:
+            status = "partial"
+        else:
+            status = "ok"
+        diagnostic_batches_created = max(
+            0,
+            created_batches_count - created_batches_before_guard_count,
+        )
+        return {
+            "schema_version": "scheduled_manager_daily_run_v1",
+            "schedule_id": str(schedule.id),
+            "planned_for": _isoformat_utc(planned_for),
+            "timezone": str(schedule.timezone),
+            "report_period_rule": str(schedule.report_period_rule),
+            "report_date": report_date,
+            "candidate_dates": list(candidate_dates),
+            "lookback_days": lookback_days,
+            "scan_started_at": scan_started_at,
+            "manager_scope": manager_scope,
+            "managers_count": len(manager_scope),
+            "expected_managers": len(manager_scope),
+            "expected_manager_days": len(manager_scope) * len(candidate_dates),
+            "candidate_manager_days": len(selection_details),
+            "selected_manager_days": selected_manager_days_count,
+            "selected_manager_days_count": selected_manager_days_count,
+            "skipped": skipped,
+            "skipped_manager_days": skipped_manager_days,
+            "report_batches_created": created_batches_before_guard_count,
+            "batches_created": created_batches_before_guard_count,
+            "diagnostic_batches_created": diagnostic_batches_created,
+            "records_created": created_batches_count,
+            "created_batches_count": created_batches_count,
+            "created_batches_before_guard_count": created_batches_before_guard_count,
+            "failed_batches_count": failed_batches_count,
+            "review_required_batches_count": review_required_batches_count,
+            "approved_for_delivery_batches_count": approved_for_delivery_batches_count,
+            "delivered_batches_count": delivered_batches_count,
+            "report_ready_batches_count": report_ready_batches_count,
+            "status": status,
+            "failure_reason": effective_failure_reason,
+            "alerts": [dict(item) for item in alert_records],
+            "selection_summary": selection_summary,
+            "selection_details": [dict(item) for item in selection_details],
+        }
+
+    @staticmethod
+    def _manager_daily_batch_status_counts(
+        batches: list[ScheduledReportBatch],
+    ) -> dict[str, int]:
+        """Count real manager-day batch outcomes; diagnostic guard records are passed separately."""
+        statuses = [str(getattr(batch, "status", "") or "") for batch in batches]
+        review_required_batches_count = statuses.count("review_required")
+        approved_for_delivery_batches_count = statuses.count("approved_for_delivery")
+        delivered_batches_count = statuses.count("delivered")
+        report_ready_batches_count = (
+            review_required_batches_count
+            + approved_for_delivery_batches_count
+            + delivered_batches_count
+        )
+        return {
+            "failed_batches_count": statuses.count("failed"),
+            "review_required_batches_count": review_required_batches_count,
+            "approved_for_delivery_batches_count": approved_for_delivery_batches_count,
+            "delivered_batches_count": delivered_batches_count,
+            "report_ready_batches_count": report_ready_batches_count,
+        }
+
+    @staticmethod
+    def _manager_daily_selection_summary(selection: dict[str, Any]) -> dict[str, Any]:
+        """Reduce raw candidate-selection diagnostics to one operator-readable row."""
+        candidate_dates = [str(item) for item in list(selection.get("candidate_dates") or [])]
+        selected_report_date = str(selection.get("selected_report_date") or "").strip()
+        skipped_already_reported_dates = [
+            str(item) for item in list(selection.get("skipped_already_reported_dates") or [])
+        ]
+        skipped_empty_dates = [
+            str(item) for item in list(selection.get("skipped_empty_dates") or [])
+        ]
+        skipped_not_ready_dates = [
+            str(item) for item in list(selection.get("skipped_not_ready_dates") or [])
+        ]
+        blocker_details = [
+            dict(item)
+            for item in list(selection.get("skipped_already_reported_details") or [])
+            if isinstance(item, dict)
+        ]
+        blocker = blocker_details[0] if blocker_details else {}
+        report_date = (
+            selected_report_date
+            or str(blocker.get("report_date") or "").strip()
+            or (skipped_already_reported_dates[-1] if skipped_already_reported_dates else "")
+            or (skipped_empty_dates[-1] if skipped_empty_dates else "")
+            or (skipped_not_ready_dates[-1] if skipped_not_ready_dates else "")
+            or (candidate_dates[-1] if candidate_dates else "")
+            or None
+        )
+        selection_reason = str(selection.get("selection_reason") or "").strip()
+        blocked_by_reason = str(blocker.get("blocked_by_reason") or "").strip()
+        if selected_report_date:
+            selection_status = "selected"
+            reason = "selected"
+        elif blocker:
+            selection_status = "blocked"
+            reason = (
+                "blocked_by_open_batch"
+                if blocked_by_reason == "matching_open_batch"
+                else "already_reported"
+            )
+        elif skipped_empty_dates:
+            selection_status = "skipped"
+            reason = "no_calls"
+        elif skipped_not_ready_dates:
+            selection_status = "skipped"
+            reason = "analysis_not_ready"
+        else:
+            selection_status = "skipped"
+            reason = selection_reason or "no_candidate"
+
+        return {
+            "manager_id": str(selection.get("manager_id") or ""),
+            "manager_name": selection.get("manager_name"),
+            "report_date": report_date,
+            "selection_status": selection_status,
+            "reason": reason,
+            "selection_reason": selection_reason,
+            "calls_total": 0 if reason == "no_calls" else None,
+            "calls_with_audio": None,
+            "stt_ready": None,
+            "llm1_ready": None,
+            "analysis_ready": None,
+            "blocked_by_batch_id": blocker.get("blocked_by_batch_id"),
+            "blocked_by_batch_status": blocker.get("blocked_by_batch_status"),
+            "blocked_by_draft_id": blocker.get("blocked_by_draft_id"),
+            "blocked_by_draft_status": blocker.get("blocked_by_draft_status"),
+            "blocked_by_reason": blocker.get("blocked_by_reason"),
+            "match_source": blocker.get("match_source"),
+            "recovery_hint": (
+                f"inspect scheduled_report_batches id={blocker.get('blocked_by_batch_id')}"
+                if blocker.get("blocked_by_batch_id")
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _with_manager_daily_run_summary(
+        *,
+        observability: dict[str, Any],
+        run_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach stable manager_daily run counters without hiding existing fields."""
+        merged = dict(observability or {})
+        payload = dict(run_summary)
+        merged["scheduled_manager_daily_run"] = payload
+        for key in (
+            "report_batches_created",
+            "batches_created",
+            "created_batches_count",
+            "diagnostic_batches_created",
+            "expected_managers",
+            "selected_manager_days",
+            "selected_manager_days_count",
+            "skipped_manager_days",
+            "failed_batches_count",
+            "review_required_batches_count",
+            "report_ready_batches_count",
+            "status",
+            "failure_reason",
+        ):
+            merged[key] = payload.get(key)
+        return merged
+
+    def _send_manager_daily_zero_batch_alert(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        run_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Send a short fail-safe alert when a scheduled manager_daily run created no batch."""
+        failure_reason = str(run_summary.get("failure_reason") or "manager_daily_zero_batches")
+        report_date = str(run_summary.get("report_date") or planned_for.date().isoformat())
+        run_id = f"manager_daily:{schedule.id}:{report_date}"
+        operator_summary = self._manager_daily_zero_batch_operator_summary(
+            schedule=schedule,
+            run_summary=run_summary,
+            run_id=run_id,
+        )
+        try:
+            attempt = send_run_alert(
+                "blocked",
+                run_id=run_id,
+                status="blocked",
+                title="Manager daily scheduled run created no batch",
+                level="warning",
+                requested_by="scheduled_reviewable_reporting",
+                scope={
+                    "preset": "manager_daily",
+                    "schedule_id": str(schedule.id),
+                    "department_id": str(schedule.department_id),
+                    "planned_for": _isoformat_utc(planned_for),
+                    "candidate_dates": list(run_summary.get("candidate_dates") or []),
+                },
+                counts={
+                    "expected_managers": run_summary.get("expected_managers"),
+                    "selected_manager_days": run_summary.get("selected_manager_days"),
+                    "skipped_manager_days": run_summary.get("skipped_manager_days"),
+                    "created_batches": run_summary.get("batches_created"),
+                },
+                errors=[failure_reason],
+                details={
+                    "failure_reason": failure_reason,
+                    "scheduled_manager_daily_run": run_summary,
+                },
+                operator_summary=operator_summary,
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostic batch must still be persisted
+            attempt = {
+                "channel": "email",
+                "recipient": None,
+                "status": "failed",
+                "subject": None,
+                "error": str(exc),
+                "error_class": exc.__class__.__name__,
+            }
+        alert = {
+            "kind": "manager_daily_scheduled_zero_batch",
+            "channel": attempt.get("channel", "email"),
+            "target": attempt.get("recipient"),
+            "severity": "warning",
+            "trigger": failure_reason,
+            "status": attempt.get("status", "unknown"),
+            "subject": attempt.get("subject"),
+            "reason_codes": [failure_reason],
+            "operator_summary": operator_summary,
+        }
+        for key in ("delivery", "reason", "error", "error_class"):
+            if attempt.get(key) is not None:
+                alert[key] = attempt[key]
+        return alert
+
+    def _send_manager_daily_failed_no_ready_alert(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        run_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Alert when manager_daily created only failed/no-draft manager-day records."""
+        failure_reason = str(
+            run_summary.get("failure_reason")
+            or "manager_daily_failed_batches_without_report_ready_batches"
+        )
+        report_date = str(run_summary.get("report_date") or planned_for.date().isoformat())
+        run_id = f"manager_daily:{schedule.id}:{report_date}"
+        operator_summary = self._manager_daily_failed_no_ready_operator_summary(
+            run_summary=run_summary,
+            run_id=run_id,
+        )
+        try:
+            attempt = send_run_alert(
+                "blocked",
+                run_id=run_id,
+                status="blocked",
+                title="Manager daily reports are not ready",
+                level="warning",
+                requested_by="scheduled_reviewable_reporting",
+                scope={
+                    "preset": "manager_daily",
+                    "schedule_id": str(schedule.id),
+                    "department_id": str(schedule.department_id),
+                    "planned_for": _isoformat_utc(planned_for),
+                    "candidate_dates": list(run_summary.get("candidate_dates") or []),
+                },
+                counts={
+                    "expected_managers": run_summary.get("expected_managers"),
+                    "selected_manager_days": run_summary.get("selected_manager_days"),
+                    "skipped_manager_days": run_summary.get("skipped_manager_days"),
+                    "failed_batches": run_summary.get("failed_batches_count"),
+                    "report_ready_batches": run_summary.get("report_ready_batches_count"),
+                    "created_batches": run_summary.get("batches_created"),
+                },
+                errors=[failure_reason],
+                details={
+                    "failure_reason": failure_reason,
+                    "scheduled_manager_daily_run": run_summary,
+                },
+                operator_summary=operator_summary,
+            )
+        except Exception as exc:  # noqa: BLE001 - schedule advancement must not depend on alerting
+            attempt = {
+                "channel": "email",
+                "recipient": None,
+                "status": "failed",
+                "subject": None,
+                "error": str(exc),
+                "error_class": exc.__class__.__name__,
+            }
+        alert = {
+            "kind": "manager_daily_scheduled_failed_no_ready_batch",
+            "channel": attempt.get("channel", "email"),
+            "target": attempt.get("recipient"),
+            "severity": "warning",
+            "trigger": failure_reason,
+            "status": attempt.get("status", "unknown"),
+            "subject": attempt.get("subject"),
+            "reason_codes": [failure_reason],
+            "operator_summary": operator_summary,
+        }
+        for key in ("delivery", "reason", "error", "error_class"):
+            if attempt.get(key) is not None:
+                alert[key] = attempt[key]
+        return alert
+
+    @staticmethod
+    def _manager_daily_zero_batch_operator_summary(
+        *,
+        schedule: ReportingSchedule,
+        run_summary: dict[str, Any],
+        run_id: str,
+    ) -> str:
+        """Build a short operator alert body without embedding raw diagnostics JSON."""
+        report_date = str(run_summary.get("report_date") or "-")
+        selected = int(run_summary.get("selected_manager_days") or 0)
+        skipped = int(run_summary.get("skipped_manager_days") or 0)
+        expected = int(run_summary.get("expected_managers") or 0)
+        rows = [dict(item) for item in list(run_summary.get("selection_summary") or [])]
+        affected_lines: list[str] = []
+        for row in rows[:5]:
+            label = str(row.get("manager_name") or row.get("manager_id") or "unknown")
+            reason = str(row.get("reason") or row.get("selection_reason") or "not_created")
+            analysis_ready = row.get("analysis_ready")
+            blocker = row.get("blocked_by_batch_id")
+            suffix = "batch not created"
+            if analysis_ready is not None:
+                suffix = f"analysis_ready={analysis_ready}, {suffix}"
+            if blocker:
+                suffix = (
+                    f"{suffix}; blocker batch={blocker}"
+                    f" status={row.get('blocked_by_batch_status') or '-'}"
+                )
+            affected_lines.append(f"- {label}: {reason}, {suffix}")
+        if len(rows) > 5:
+            affected_lines.append(f"- {len(rows) - 5} more in observability/logs.")
+        if not affected_lines:
+            affected_lines.append("- No manager selection rows were recorded.")
+
+        lines = [
+            f"Daily reports: batches were not created for {report_date}",
+            "",
+            "What happened:",
+            "Scheduled analysis processed the manager_daily schedule but created no report batches.",
+            "",
+            "Affected scope:",
+            *affected_lines,
+            "",
+            "Impact:",
+            "Managers and ROP will not receive daily reports automatically.",
+            "",
+            "What to check:",
+            "scheduled_candidate_selection, open-batches diagnostics, analysis_worker logs.",
+            "",
+            (
+                f"Summary: expected_managers={expected}, selected={selected}, "
+                f"skipped={skipped}, batches_created=0."
+            ),
+            f"Run: {run_id}",
+        ]
+        text = "\n".join(lines)
+        if len(text) <= 1500:
+            return text
+        return text[:1450].rstrip() + f"\nRun: {run_id}"
+
+    @staticmethod
+    def _manager_daily_failed_no_ready_operator_summary(
+        *,
+        run_summary: dict[str, Any],
+        run_id: str,
+    ) -> str:
+        """Build a short alert body for failed manager-day batches without raw JSON."""
+        report_date = str(run_summary.get("report_date") or "-")
+        failed = int(run_summary.get("failed_batches_count") or 0)
+        ready = int(run_summary.get("report_ready_batches_count") or 0)
+        created = int(run_summary.get("batches_created") or 0)
+        rows = [dict(item) for item in list(run_summary.get("selection_summary") or [])]
+        affected_lines: list[str] = []
+        for row in rows[:5]:
+            label = str(row.get("manager_name") or row.get("manager_id") or "unknown")
+            reason = str(row.get("reason") or row.get("selection_reason") or "failed")
+            affected_lines.append(f"- {label}: {reason}, report not ready")
+        if len(rows) > 5:
+            affected_lines.append(f"- {len(rows) - 5} more in observability/logs.")
+        if not affected_lines:
+            affected_lines.append("- Manager-day batch failed before report-ready output.")
+        lines = [
+            f"Daily reports: reports are not ready for {report_date}",
+            "",
+            "What happened:",
+            "Scheduled analysis created manager_daily batch records, but none became report-ready.",
+            "",
+            "Affected scope:",
+            *affected_lines,
+            "",
+            "Impact:",
+            "Reports are not ready; managers may not receive daily emails automatically.",
+            "",
+            "What to check:",
+            "scheduled_candidate_selection, batch errors, report rendering/delivery observability.",
+            "",
+            f"Summary: batches_created={created}, failed_batches={failed}, report_ready={ready}.",
+            f"Run: {run_id}",
+        ]
+        text = "\n".join(lines)
+        if len(text) <= 1500:
+            return text
+        return text[:1450].rstrip() + f"\nRun: {run_id}"
 
     def _select_manager_day_candidate(
         self,
@@ -1158,11 +1727,11 @@ class ScheduledReviewableReportingService:
         schedule: ReportingSchedule,
         planned_for: datetime,
         selection: ScheduledManagerDaySelection,
-    ) -> None:
+    ) -> ScheduledReportBatch | None:
         """Run the orchestrator for one selected manager/report-date pair."""
         report_date = str(selection.selected_report_date or "")
         if not report_date:
-            return
+            return None
         period = SchedulePeriod(date_from=report_date, date_to=report_date)
         production_auto_delivery = _manager_daily_auto_delivery_enabled(schedule)
         sla_deadline = _manager_daily_sla_deadline(
@@ -1218,7 +1787,7 @@ class ScheduledReviewableReportingService:
                 missed_reason="report_run_failed",
             )
             self.db.flush()
-            return
+            return batch
 
         base_observability = self._with_candidate_selection_observability(
             observability=dict(result.get("observability") or {}),
@@ -1310,6 +1879,7 @@ class ScheduledReviewableReportingService:
         else:
             batch.failed_at = datetime.now(UTC)
         self.db.flush()
+        return batch
 
     @staticmethod
     def _unique_errors(values: list[Any]) -> list[str]:
@@ -1597,7 +2167,7 @@ class ScheduledReviewableReportingService:
         schedule: ReportingSchedule,
         planned_for: datetime,
         selection: ScheduledManagerDaySelection,
-    ) -> None:
+    ) -> ScheduledReportBatch:
         """Persist an operator-visible no-draft record for empty/already-reported windows."""
         fallback_period = _compute_report_period(
             rule=schedule.report_period_rule,
@@ -1643,6 +2213,63 @@ class ScheduledReviewableReportingService:
         self._transition_batch_status(batch, "failed")
         batch.failed_at = datetime.now(UTC)
         self.db.flush()
+        return batch
+
+    def _record_manager_daily_zero_batch_failure(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        failure_reason: str,
+        alert_records: list[dict[str, Any]],
+    ) -> ScheduledReportBatch:
+        """Persist a diagnostic failed batch when a due manager_daily scan made no records."""
+        fallback_period = _compute_report_period(
+            rule=schedule.report_period_rule,
+            local_run_at=planned_for.astimezone(ZoneInfo(schedule.timezone)),
+        )
+        batch = self._create_scheduled_batch(
+            schedule=schedule,
+            planned_for=planned_for,
+            period=fallback_period,
+            manager_ids=[str(item) for item in list(schedule.manager_ids or [])],
+            selection=None,
+        )
+        batch.observability = self._with_manager_daily_sla_observability(
+            observability={
+                "status": "failed",
+                "run_state": "failed_without_scheduled_batch",
+                "failure_reason": failure_reason,
+                "blockers": [failure_reason],
+                "alerts": [dict(item) for item in alert_records],
+                "summary": {
+                    "alerts": {
+                        "attempted": len(alert_records),
+                        "statuses": [
+                            str(item.get("status") or "unknown") for item in alert_records
+                        ],
+                    }
+                },
+            },
+            sla_deadline=_manager_daily_sla_deadline(
+                planned_for=planned_for,
+                timezone_name=str(schedule.timezone),
+            ),
+            review_required=_schedule_requires_review(schedule),
+            status="blocked",
+            missed_reason=failure_reason,
+        )
+        batch.diagnostics = {
+            "scheduled_manager_daily_run": {
+                "failure_reason": failure_reason,
+                "created_batches_before_guard_count": 0,
+            }
+        }
+        batch.errors = [failure_reason]
+        self._transition_batch_status(batch, "failed")
+        batch.failed_at = datetime.now(UTC)
+        self.db.flush()
+        return batch
 
     def _create_scheduled_batch(
         self,

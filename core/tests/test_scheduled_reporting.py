@@ -214,6 +214,36 @@ class ScheduledReportingSplitComplete04Tests(unittest.TestCase):
         self.assertEqual(batch.observability["selected_report_date"], "2026-06-15")
         self.assertEqual(batch.observability["lookback_days"], 1)
         self.assertEqual(batch.observability["selection_reason"], "selected_previous_day_with_calls")
+        self.assertEqual(batch.observability["created_batches_count"], 1)
+        self.assertEqual(batch.observability["report_batches_created"], 1)
+        self.assertEqual(batch.observability["batches_created"], 1)
+        self.assertEqual(batch.observability["diagnostic_batches_created"], 0)
+        self.assertEqual(batch.observability["expected_managers"], 1)
+        self.assertEqual(batch.observability["selected_manager_days"], 1)
+        self.assertEqual(batch.observability["selected_manager_days_count"], 1)
+        self.assertEqual(batch.observability["skipped_manager_days"], 0)
+        self.assertEqual(batch.observability["failed_batches_count"], 0)
+        self.assertEqual(batch.observability["review_required_batches_count"], 1)
+        self.assertEqual(batch.observability["report_ready_batches_count"], 1)
+        self.assertEqual(batch.observability["status"], "ok")
+        self.assertIsNone(batch.observability["failure_reason"])
+        summary = batch.observability["scheduled_manager_daily_run"]
+        self.assertEqual(summary["schedule_id"], str(schedule.id))
+        self.assertEqual(summary["report_date"], "2026-06-15")
+        self.assertEqual(summary["planned_for"], "2026-06-16T03:00:00+00:00")
+        self.assertEqual(summary["expected_managers"], 1)
+        self.assertEqual(summary["selected_manager_days"], 1)
+        self.assertEqual(summary["skipped_manager_days"], 0)
+        self.assertEqual(summary["report_batches_created"], 1)
+        self.assertEqual(summary["batches_created"], 1)
+        self.assertEqual(summary["diagnostic_batches_created"], 0)
+        self.assertEqual(summary["failed_batches_count"], 0)
+        self.assertEqual(summary["review_required_batches_count"], 1)
+        self.assertEqual(summary["report_ready_batches_count"], 1)
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["failure_reason"])
+        self.assertEqual(summary["selection_summary"][0]["selection_status"], "selected")
+        self.assertEqual(summary["selection_summary"][0]["reason"], "selected")
 
     def test_running_manager_day_batch_blocks_duplicate_batch_creation(self) -> None:
         service = _make_service()
@@ -594,13 +624,219 @@ class ScheduledReportingSplitComplete04Tests(unittest.TestCase):
                 }
 
         with patch("app.agents.calls.scheduled_reporting.CallsManualReportingOrchestrator", FakeOrchestrator):
-            service._run_due_schedule(schedule=schedule, now_utc=datetime(2026, 6, 16, 3, 30, tzinfo=UTC))
+            with patch("app.agents.calls.scheduled_reporting.send_run_alert") as send_alert:
+                send_alert.return_value = {
+                    "channel": "email",
+                    "recipient": "admin@dogovor24.kz",
+                    "status": "skipped",
+                    "subject": "reports not ready",
+                    "reason": "alert_email_disabled",
+                }
+                service._run_due_schedule(
+                    schedule=schedule,
+                    now_utc=datetime(2026, 6, 16, 3, 30, tzinfo=UTC),
+                )
 
         self.assertEqual(run_calls, [])
         self.assertEqual(len(added), 1)
         self.assertEqual(added[0].observability["selected_report_date"], None)
         self.assertEqual(added[0].observability["candidate_dates"], ["2026-06-15"])
         self.assertEqual(added[0].errors, ["no_candidate_empty_previous_day"])
+        self.assertEqual(added[0].observability["created_batches_count"], 1)
+        self.assertEqual(added[0].observability["report_batches_created"], 1)
+        self.assertEqual(added[0].observability["batches_created"], 1)
+        self.assertEqual(added[0].observability["diagnostic_batches_created"], 0)
+        self.assertEqual(added[0].observability["expected_managers"], 1)
+        self.assertEqual(added[0].observability["selected_manager_days"], 0)
+        self.assertEqual(added[0].observability["selected_manager_days_count"], 0)
+        self.assertEqual(added[0].observability["skipped_manager_days"], 1)
+        self.assertEqual(added[0].observability["failed_batches_count"], 1)
+        self.assertEqual(added[0].observability["review_required_batches_count"], 0)
+        self.assertEqual(added[0].observability["report_ready_batches_count"], 0)
+        self.assertEqual(added[0].observability["status"], "failed")
+        self.assertEqual(
+            added[0].observability["failure_reason"],
+            "manager_daily_failed_batches_without_report_ready_batches",
+        )
+        summary = added[0].observability["scheduled_manager_daily_run"]
+        self.assertEqual(summary["report_date"], "2026-06-15")
+        self.assertEqual(summary["report_batches_created"], 1)
+        self.assertEqual(summary["batches_created"], 1)
+        self.assertEqual(summary["failed_batches_count"], 1)
+        self.assertEqual(summary["review_required_batches_count"], 0)
+        self.assertEqual(summary["report_ready_batches_count"], 0)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(
+            summary["failure_reason"],
+            "manager_daily_failed_batches_without_report_ready_batches",
+        )
+        self.assertEqual(summary["skipped"][0]["reason"], "no_calls")
+        self.assertEqual(summary["skipped"][0]["calls_total"], 0)
+        self.assertEqual(summary["alerts"][0]["kind"], "manager_daily_scheduled_failed_no_ready_batch")
+        self.assertEqual(send_alert.call_args.args[0], "blocked")
+        alert_kwargs = send_alert.call_args.kwargs
+        self.assertEqual(alert_kwargs["counts"]["failed_batches"], 1)
+        self.assertEqual(alert_kwargs["counts"]["report_ready_batches"], 0)
+        self.assertIn("reports are not ready", alert_kwargs["operator_summary"])
+        self.assertIn("managers may not receive daily emails", alert_kwargs["operator_summary"])
+        self.assertNotIn("[{", alert_kwargs["operator_summary"])
+
+    def test_manager_daily_zero_batch_guard_creates_failed_batch_and_alerts(self) -> None:
+        service = _make_service()
+        added = []
+        schedule = _manager_daily_schedule(planned_for=datetime(2026, 6, 17, 23, 0, tzinfo=UTC))
+        service.db = SimpleNamespace(add=lambda item: added.append(item), flush=lambda: None)
+        service._has_open_batch = lambda **_kwargs: False
+        service._get_batch_for_occurrence = lambda **_kwargs: None
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 6, 18, 23, 0, tzinfo=UTC)
+        service._load_manager_interactions_by_day = lambda **kwargs: {
+            item: [] for item in kwargs["candidate_dates"]
+        }
+        service._has_manager_day_duplicate = lambda **_kwargs: False
+        service._record_skipped_manager_day_selection = lambda **_kwargs: None
+
+        with patch("app.agents.calls.scheduled_reporting.send_run_alert") as send_alert:
+            send_alert.return_value = {
+                "channel": "email",
+                "recipient": "admin@dogovor24.kz",
+                "status": "skipped",
+                "subject": "zero batch",
+                "reason": "alert_email_disabled",
+            }
+            service._run_due_schedule(
+                schedule=schedule,
+                now_utc=datetime(2026, 6, 17, 23, 30, tzinfo=UTC),
+            )
+
+        self.assertEqual(len(added), 1)
+        batch = added[0]
+        self.assertEqual(batch.status, "failed")
+        self.assertEqual(batch.errors, ["manager_daily_zero_batches_after_candidate_selection"])
+        self.assertEqual(batch.observability["created_batches_count"], 1)
+        self.assertEqual(batch.observability["report_batches_created"], 0)
+        self.assertEqual(batch.observability["batches_created"], 0)
+        self.assertEqual(batch.observability["diagnostic_batches_created"], 1)
+        self.assertEqual(batch.observability["expected_managers"], 1)
+        self.assertEqual(batch.observability["selected_manager_days"], 0)
+        self.assertEqual(batch.observability["selected_manager_days_count"], 0)
+        self.assertEqual(batch.observability["skipped_manager_days"], 1)
+        self.assertEqual(batch.observability["failed_batches_count"], 0)
+        self.assertEqual(batch.observability["review_required_batches_count"], 0)
+        self.assertEqual(batch.observability["report_ready_batches_count"], 0)
+        self.assertEqual(batch.observability["status"], "failed")
+        self.assertEqual(
+            batch.observability["failure_reason"],
+            "manager_daily_zero_batches_after_candidate_selection",
+        )
+        summary = batch.observability["scheduled_manager_daily_run"]
+        self.assertEqual(summary["schedule_id"], str(schedule.id))
+        self.assertEqual(summary["report_date"], "2026-06-17")
+        self.assertEqual(summary["expected_managers"], 1)
+        self.assertEqual(summary["selected_manager_days"], 0)
+        self.assertEqual(summary["skipped_manager_days"], 1)
+        self.assertEqual(summary["report_batches_created"], 0)
+        self.assertEqual(summary["batches_created"], 0)
+        self.assertEqual(summary["diagnostic_batches_created"], 1)
+        self.assertEqual(summary["failed_batches_count"], 0)
+        self.assertEqual(summary["review_required_batches_count"], 0)
+        self.assertEqual(summary["report_ready_batches_count"], 0)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(
+            summary["failure_reason"],
+            "manager_daily_zero_batches_after_candidate_selection",
+        )
+        self.assertEqual(summary["skipped"][0]["reason"], "no_calls")
+        self.assertEqual(
+            summary["created_batches_before_guard_count"],
+            0,
+        )
+        self.assertEqual(batch.observability["alerts"][0]["status"], "skipped")
+        self.assertEqual(send_alert.call_args.args[0], "blocked")
+        alert_kwargs = send_alert.call_args.kwargs
+        self.assertEqual(
+            alert_kwargs["run_id"],
+            f"manager_daily:{schedule.id}:2026-06-17",
+        )
+        self.assertEqual(alert_kwargs["counts"]["created_batches"], 0)
+        self.assertIn("Daily reports: batches were not created", alert_kwargs["operator_summary"])
+        self.assertIn("batches_created=0", alert_kwargs["operator_summary"])
+        self.assertNotIn("[{", alert_kwargs["operator_summary"])
+        self.assertEqual(schedule.last_planned_at, datetime(2026, 6, 17, 23, 0, tzinfo=UTC))
+        self.assertEqual(schedule.next_run_at, datetime(2026, 6, 18, 23, 0, tzinfo=UTC))
+
+    def test_manager_daily_selected_failed_batch_without_draft_alerts_immediately(self) -> None:
+        service = _make_service()
+        added = []
+        schedule = _manager_daily_schedule(planned_for=datetime(2026, 6, 16, 3, 0, tzinfo=UTC))
+        service.db = SimpleNamespace(add=lambda item: added.append(item), flush=lambda: None)
+        service._has_open_batch = lambda **_kwargs: False
+        service._get_batch_for_occurrence = lambda **_kwargs: None
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 6, 17, 23, 0, tzinfo=UTC)
+        service._load_manager_interactions_by_day = lambda **_kwargs: {
+            "2026-06-15": [
+                _interaction_for_day(
+                    manager_id=schedule.manager_ids[0],
+                    report_date="2026-06-15",
+                )
+            ],
+        }
+        service._has_manager_day_duplicate = lambda **_kwargs: False
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                self.delivery = SimpleNamespace()
+
+            async def run_report(self, **kwargs):
+                return {
+                    "reports": [],
+                    "observability": {"pipeline": "ready_data_only"},
+                    "diagnostics": {},
+                    "errors": ["no_deliverable_report"],
+                }
+
+        with patch("app.agents.calls.scheduled_reporting.CallsManualReportingOrchestrator", FakeOrchestrator):
+            with patch("app.agents.calls.scheduled_reporting.send_run_alert") as send_alert:
+                send_alert.return_value = {
+                    "channel": "email",
+                    "recipient": "admin@dogovor24.kz",
+                    "status": "skipped",
+                    "subject": "reports not ready",
+                    "reason": "alert_email_disabled",
+                }
+                service._run_due_schedule(
+                    schedule=schedule,
+                    now_utc=datetime(2026, 6, 16, 3, 30, tzinfo=UTC),
+                )
+
+        self.assertEqual(len(added), 1)
+        batch = added[0]
+        self.assertEqual(batch.status, "failed")
+        self.assertEqual(batch.observability["report_batches_created"], 1)
+        self.assertEqual(batch.observability["batches_created"], 1)
+        self.assertEqual(batch.observability["diagnostic_batches_created"], 0)
+        self.assertEqual(batch.observability["failed_batches_count"], 1)
+        self.assertEqual(batch.observability["review_required_batches_count"], 0)
+        self.assertEqual(batch.observability["report_ready_batches_count"], 0)
+        self.assertEqual(batch.observability["status"], "failed")
+        self.assertEqual(
+            batch.observability["failure_reason"],
+            "manager_daily_failed_batches_without_report_ready_batches",
+        )
+        summary = batch.observability["scheduled_manager_daily_run"]
+        self.assertEqual(summary["selected_manager_days"], 1)
+        self.assertEqual(summary["skipped_manager_days"], 0)
+        self.assertEqual(summary["report_batches_created"], 1)
+        self.assertEqual(summary["failed_batches_count"], 1)
+        self.assertEqual(summary["report_ready_batches_count"], 0)
+        self.assertEqual(summary["alerts"][0]["kind"], "manager_daily_scheduled_failed_no_ready_batch")
+        self.assertEqual(send_alert.call_count, 1)
+        alert_kwargs = send_alert.call_args.kwargs
+        self.assertEqual(alert_kwargs["counts"]["created_batches"], 1)
+        self.assertEqual(alert_kwargs["counts"]["failed_batches"], 1)
+        self.assertEqual(alert_kwargs["counts"]["report_ready_batches"], 0)
+        self.assertIn("Daily reports: reports are not ready", alert_kwargs["operator_summary"])
+        self.assertIn("report_ready=0", alert_kwargs["operator_summary"])
+        self.assertNotIn("[{", alert_kwargs["operator_summary"])
 
     def test_duplicate_manager_day_report_key_is_skipped_before_orchestrator_run(self) -> None:
         service = _make_service()
