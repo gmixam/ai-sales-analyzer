@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from app.agents.call_processing import EnsureResponse, ProcessingRunStatus
 from app.core_shared.workers import tasks
@@ -150,6 +153,42 @@ def test_manager_daily_sla_hardcheck_delegates_to_sla_check_not_scan_due(monkeyp
     assert result["task"] == "calls.manager_daily_sla_hardcheck"
     assert result["task_status"] == "completed"
     assert result["billable_pipeline_started"] is False
+
+
+def test_manager_daily_sla_preflight_import_does_not_depend_on_cwd_sys_path(monkeypatch) -> None:
+    core_root = Path(tasks.__file__).resolve().parents[3]
+
+    monkeypatch.setattr(sys, "path", [item for item in sys.path if item != str(core_root)])
+    monkeypatch.delitem(sys.modules, "report_scripts.scheduled_reporting_preflight", raising=False)
+    monkeypatch.delitem(sys.modules, "report_scripts", raising=False)
+
+    module = tasks._load_scheduled_reporting_preflight()
+
+    assert hasattr(module, "sla_check")
+    assert str(core_root) in sys.path
+
+
+def test_manager_daily_sla_failure_alerts_and_reraises(monkeypatch) -> None:
+    sent: list[dict[str, object]] = []
+
+    def fake_load_preflight():
+        raise ModuleNotFoundError("No module named 'report_scripts'")
+
+    def fake_send_run_alert(*args, **kwargs):
+        sent.append({"args": args, "kwargs": kwargs})
+        return {"channel": "telegram", "status": "sent"}
+
+    monkeypatch.setattr(tasks, "_load_scheduled_reporting_preflight", fake_load_preflight)
+    monkeypatch.setattr(tasks, "send_run_alert", fake_send_run_alert)
+
+    with pytest.raises(ModuleNotFoundError, match="report_scripts"):
+        tasks.manager_daily_sla_hardcheck(report_date="2026-06-18")
+
+    assert len(sent) == 1
+    assert sent[0]["args"] == ("failed",)
+    assert sent[0]["kwargs"]["run_id"] == "manager_daily_sla:2026-06-18:hard"
+    assert sent[0]["kwargs"]["level"] == "critical"
+    assert "scheduled_reporting_preflight.sla-check" in sent[0]["kwargs"]["operator_summary"]
 
 
 def test_scheduled_upstream_dry_run_uses_call_processing_ensure_contract(monkeypatch) -> None:

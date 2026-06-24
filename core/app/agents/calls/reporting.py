@@ -64,6 +64,8 @@ from app.agents.call_processing import (
     CallProcessingClient,
     CallProcessingMode,
     EnsureMode,
+    ProcessingRunReadiness,
+    ProcessingRunStatus,
     ProcessingScope,
     RequiredArtifactKind,
     build_call_processing_client,
@@ -1036,6 +1038,8 @@ class CallsManualReportingOrchestrator:
         send_email: bool = False,
         delivery_mode: str | None = None,
         send_telegram_test: bool = False,
+        send_manager_daily_rop_bundle: bool = True,
+        retain_runtime_rop_bundle_attachments: bool = False,
     ) -> dict[str, Any]:
         """Execute one bounded manual reporting run."""
         preset = resolve_report_preset(preset_code)
@@ -1082,8 +1086,35 @@ class CallsManualReportingOrchestrator:
                         filters=filters,
                         period=source_period,
                         mode=normalized_mode,
+                        wait_for_upstream_readiness=(
+                            preset.code == "manager_daily"
+                            and normalized_mode == "build_missing_and_report"
+                            and delivery_options.send_business_email
+                        ),
                     )
                     source_summary["execution_model"] = execution_model
+                    if source_summary.get("call_processing_waiting_upstream"):
+                        reason = str(source_summary.get("call_processing_readiness") or "waiting_upstream")
+                        return self._build_terminal_run_result(
+                            preset=preset,
+                            mode=normalized_mode,
+                            period=period,
+                            source_period=source_period,
+                            diagnostics_context=diagnostics_context,
+                            filters=filters,
+                            source_summary=source_summary,
+                            build_summary=self._empty_build_summary(),
+                            reports=[],
+                            selected_interactions_count=0,
+                            final_selected_interactions_count=0,
+                            overall_status=reason,
+                            errors=[reason],
+                            artifacts=[],
+                            delivery_options=delivery_options,
+                            pre_run_alerts=start_alerts,
+                            send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+                            retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
+                        )
                 except ASAError as exc:
                     error_token = f"call_processing_ensure_failed:{exc}"
                     if normalized_mode == "report_from_ready_data_only":
@@ -1109,6 +1140,8 @@ class CallsManualReportingOrchestrator:
                             artifacts=[],
                             delivery_options=delivery_options,
                             pre_run_alerts=start_alerts,
+                            send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+                            retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
                         )
             else:
                 try:
@@ -1144,6 +1177,8 @@ class CallsManualReportingOrchestrator:
                             artifacts=[],
                             delivery_options=delivery_options,
                             pre_run_alerts=start_alerts,
+                            send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+                            retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
                         )
         interactions = self._select_interactions(filters=filters, period=source_period)
         if not interactions:
@@ -1180,6 +1215,8 @@ class CallsManualReportingOrchestrator:
                     artifacts=[],
                     delivery_options=delivery_options,
                     pre_run_alerts=start_alerts,
+                    send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+                    retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
                 )
             return self._build_terminal_run_result(
                 preset=preset,
@@ -1198,6 +1235,8 @@ class CallsManualReportingOrchestrator:
                 artifacts=[],
                 delivery_options=delivery_options,
                 pre_run_alerts=start_alerts,
+                send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+                retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
             )
 
         artifacts, build_summary, build_errors = await self._prepare_artifacts(
@@ -1245,6 +1284,8 @@ class CallsManualReportingOrchestrator:
             artifacts=artifacts,
             delivery_options=delivery_options,
             pre_run_alerts=start_alerts,
+            send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+            retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
         )
 
     def _build_terminal_run_result(
@@ -1267,17 +1308,30 @@ class CallsManualReportingOrchestrator:
         artifacts: list[ReportArtifact] | None = None,
         delivery_options: ReportDeliveryOptions | None = None,
         pre_run_alerts: list[dict[str, Any]] | None = None,
+        send_manager_daily_rop_bundle: bool = True,
+        retain_runtime_rop_bundle_attachments: bool = False,
     ) -> dict[str, Any]:
         """Build the final structured run response for success and blocked outcomes."""
         quota_blocker = _extract_quota_blocker(build_summary=build_summary, errors=errors or [])
         resolved_delivery_options = delivery_options or resolve_report_delivery_options(send_email=send_email)
-        rop_daily_delivery = self._send_manager_daily_rop_bundle(
-            preset=preset,
-            period=period,
-            delivery_options=resolved_delivery_options,
-            reports=reports,
-        )
-        self._strip_runtime_report_attachments(reports)
+        if send_manager_daily_rop_bundle:
+            rop_daily_delivery = self._send_manager_daily_rop_bundle(
+                preset=preset,
+                period=period,
+                delivery_options=resolved_delivery_options,
+                reports=reports,
+            )
+        else:
+            rop_daily_delivery = {
+                "enabled": bool(settings.manager_daily_rop_email_enabled),
+                "target": str(settings.manager_daily_rop_email_to or "").strip() or None,
+                "status": "skipped",
+                "reason": "deferred_to_scheduled_rop_digest",
+                "attachments_count": 0,
+                "attached_reports": [],
+            }
+        if not retain_runtime_rop_bundle_attachments:
+            self._strip_runtime_report_attachments(reports)
         result = {
             "status": overall_status,
             "preset": preset.code,
@@ -1645,12 +1699,90 @@ class CallsManualReportingOrchestrator:
             max_duration_sec=filters.max_duration_sec,
         )
 
+    @staticmethod
+    def _call_processing_readiness_from_run(
+        run: ProcessingRunReadiness | None,
+    ) -> str:
+        """Map upstream run state to manager_daily handoff readiness."""
+        if run is None:
+            return "upstream_missing"
+        status = str(run.status or "").strip().lower()
+        counts = dict(run.counts or {})
+        artifacts_missing = int(counts.get("artifacts_missing") or 0)
+        if status == ProcessingRunStatus.READY.value and artifacts_missing <= 0:
+            return "ready"
+        if status == ProcessingRunStatus.PARTIAL.value:
+            return "upstream_partial"
+        if status in {ProcessingRunStatus.BLOCKED.value, ProcessingRunStatus.FAILED.value}:
+            return "upstream_blocked"
+        if status in {ProcessingRunStatus.QUEUED.value, ProcessingRunStatus.RUNNING.value}:
+            return "waiting_upstream"
+        return "upstream_not_ready"
+
+    def _call_processing_summary_from_run(
+        self,
+        *,
+        period: dict[str, str],
+        run: ProcessingRunReadiness | None,
+        readiness: str | None = None,
+        waiting: bool = False,
+        ensure_skipped: bool = False,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Build source summary from a read-only upstream run lookup."""
+        summary = self._empty_source_summary(
+            period=period,
+            execution_model=self._resolve_execution_model(
+                preset=resolve_report_preset("manager_daily"),
+            ),
+        )
+        counts = dict(getattr(run, "counts", None) or {})
+        interactions_total = int(counts.get("interactions_total") or 0)
+        source_targeted_total = int(counts.get("source_targeted_total") or interactions_total)
+        source_persisted_total = int(counts.get("source_ingest_created") or 0) + int(
+            counts.get("source_ingest_skipped") or 0
+        )
+        if source_persisted_total <= 0:
+            source_persisted_total = source_targeted_total
+        summary.update(
+            {
+                "call_processing_mode": CallProcessingMode.EXTERNAL_SERVICE.value,
+                "call_processing_run_id": getattr(run, "run_id", None),
+                "call_processing_status": str(getattr(run, "status", None) or "") or None,
+                "call_processing_scope_hash": getattr(run, "scope_hash", None),
+                "call_processing_readiness": readiness or self._call_processing_readiness_from_run(run),
+                "call_processing_waiting_upstream": bool(waiting),
+                "call_processing_ensure_skipped": bool(ensure_skipped),
+                "call_processing_artifacts_ready": int(counts.get("artifacts_ready") or 0),
+                "call_processing_artifacts_missing": int(counts.get("artifacts_missing") or 0),
+                "call_processing_artifacts_backfilled": int(counts.get("artifacts_backfilled") or 0),
+                "targeted_source_records_total": source_targeted_total,
+                "already_persisted_source_records_total": source_persisted_total,
+                "missing_source_records_total": int(counts.get("artifacts_missing") or 0),
+                "last_finished_at": (
+                    run.finished_at.isoformat()
+                    if run is not None and run.finished_at is not None
+                    else None
+                ),
+                "last_seen_at": (
+                    (run.updated_at or run.heartbeat_at or run.created_at).isoformat()
+                    if run is not None
+                    and (run.updated_at is not None or run.heartbeat_at is not None or run.created_at is not None)
+                    else None
+                ),
+            }
+        )
+        if error:
+            summary["call_processing_readiness_error"] = error
+        return summary
+
     async def _ensure_call_processing_source_artifacts(
         self,
         *,
         filters: ReportRunFilters,
         period: dict[str, str],
         mode: str,
+        wait_for_upstream_readiness: bool = False,
     ) -> dict[str, Any]:
         """Ask call-processing to prepare source/STT/LLM1 artifacts for the scope."""
         summary = self._empty_source_summary(
@@ -1669,11 +1801,59 @@ class CallsManualReportingOrchestrator:
             RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
             RequiredArtifactKind.LLM1_FIRST_PASS,
         ]
+        latest_lookup = getattr(client, "get_latest_run_for_scope", None)
+        latest_run = latest_lookup(scope, required_artifacts) if callable(latest_lookup) else None
+        latest_readiness = self._call_processing_readiness_from_run(latest_run)
+        if latest_readiness == "ready":
+            return self._call_processing_summary_from_run(
+                period=period,
+                run=latest_run,
+                readiness=latest_readiness,
+                ensure_skipped=True,
+            )
+        if wait_for_upstream_readiness and latest_run is not None:
+            return self._call_processing_summary_from_run(
+                period=period,
+                run=latest_run,
+                readiness=latest_readiness,
+                waiting=True,
+                ensure_skipped=True,
+            )
+        if wait_for_upstream_readiness and latest_run is None:
+            return self._call_processing_summary_from_run(
+                period=period,
+                run=None,
+                readiness="upstream_missing",
+                waiting=True,
+                ensure_skipped=True,
+            )
         ensure_async = getattr(client, "ensure_processed_calls_async", None)
-        if callable(ensure_async):
-            response = await ensure_async(scope, required_artifacts, mode=ensure_mode)
-        else:
-            response = client.ensure_processed_calls(scope, required_artifacts, mode=ensure_mode)
+        try:
+            if callable(ensure_async):
+                response = await ensure_async(scope, required_artifacts, mode=ensure_mode)
+            else:
+                response = client.ensure_processed_calls(scope, required_artifacts, mode=ensure_mode)
+        except ASAError as exc:
+            if not wait_for_upstream_readiness:
+                raise
+            refreshed_run = latest_lookup(scope, required_artifacts) if callable(latest_lookup) else latest_run
+            refreshed_readiness = self._call_processing_readiness_from_run(refreshed_run)
+            if refreshed_readiness == "ready":
+                return self._call_processing_summary_from_run(
+                    period=period,
+                    run=refreshed_run,
+                    readiness=refreshed_readiness,
+                    ensure_skipped=True,
+                    error=str(exc),
+                )
+            return self._call_processing_summary_from_run(
+                period=period,
+                run=refreshed_run,
+                readiness=refreshed_readiness,
+                waiting=True,
+                ensure_skipped=True,
+                error=str(exc),
+            )
         planned = dict(response.planned or {})
         response_costs = getattr(response, "costs", None)
         interactions_total = int(planned.get("interactions_total") or 0)
@@ -1688,6 +1868,17 @@ class CallsManualReportingOrchestrator:
             "call_processing_run_id": response.run_id,
             "call_processing_status": str(response.status),
             "call_processing_scope_hash": response.scope_hash,
+            "call_processing_readiness": self._call_processing_readiness_from_run(
+                ProcessingRunReadiness(
+                    run_id=response.run_id,
+                    status=response.status,
+                    scope_hash=response.scope_hash,
+                    requested_by=response.requested_by,
+                    counts=planned,
+                )
+            ),
+            "call_processing_waiting_upstream": False,
+            "call_processing_ensure_skipped": False,
             "call_processing_artifacts_ready": int(planned.get("artifacts_ready") or 0),
             "call_processing_artifacts_missing": int(planned.get("artifacts_missing") or 0),
             "call_processing_artifacts_backfilled": int(planned.get("artifacts_backfilled") or 0),
@@ -3016,7 +3207,17 @@ class CallsManualReportingOrchestrator:
 
         report_statuses = [str(report.get("status") or "unknown") for report in reports]
         alert_statuses = {"skip_accumulate", "missing_artifacts", "blocked", "partial", "review_required"}
-        should_alert = overall_status in {"blocked", "failed", "partial", "no_data"} or any(
+        should_alert = overall_status in {
+            "blocked",
+            "failed",
+            "partial",
+            "no_data",
+            "waiting_upstream",
+            "upstream_partial",
+            "upstream_blocked",
+            "upstream_missing",
+            "upstream_not_ready",
+        } or any(
             status in alert_statuses for status in report_statuses
         )
         if not should_alert and not settings.alert_email_on_success:
@@ -3047,7 +3248,17 @@ class CallsManualReportingOrchestrator:
             "skip_accumulate"
             if "skip_accumulate" in report_statuses
             else "blocked_or_partial_run"
-            if overall_status in {"blocked", "failed", "partial", "no_data"}
+            if overall_status in {
+                "blocked",
+                "failed",
+                "partial",
+                "no_data",
+                "waiting_upstream",
+                "upstream_partial",
+                "upstream_blocked",
+                "upstream_missing",
+                "upstream_not_ready",
+            }
             else "manager_daily_review_required"
             if should_alert
             else "manager_daily_completed"
@@ -3610,7 +3821,19 @@ class CallsManualReportingOrchestrator:
         """Map internal reporting statuses to the UI run-state indicator."""
         if status in {"completed", "delivered", "ready"}:
             return "completed"
-        if status in {"blocked", "partial", "no_data", "recipient_blocked", "missing_artifacts", "review_required"}:
+        if status in {
+            "blocked",
+            "partial",
+            "no_data",
+            "recipient_blocked",
+            "missing_artifacts",
+            "review_required",
+            "waiting_upstream",
+            "upstream_partial",
+            "upstream_blocked",
+            "upstream_missing",
+            "upstream_not_ready",
+        }:
             return "blocked"
         return "failed"
 
@@ -4692,6 +4915,7 @@ class CallsManualReportingOrchestrator:
             delivery_targets = self._resolve_delivery_targets(
                 preset=preset,
                 artifacts=usable,
+                payload=payload,
             )
             primary_email = delivery_targets["primary_email"]
             cc_emails = delivery_targets["cc_emails"]
@@ -5138,6 +5362,7 @@ class CallsManualReportingOrchestrator:
         *,
         preset: ReportPreset,
         artifacts: list[ReportArtifact],
+        payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Resolve primary recipient and monitoring copy for the report."""
         department = (
@@ -5152,14 +5377,18 @@ class CallsManualReportingOrchestrator:
         )
 
         if preset.recipient_kind == "manager":
-            manager = artifacts[0].manager
-            if manager is None or not manager.email:
+            manager = self._resolve_manager_daily_recipient_manager(
+                artifacts=artifacts,
+                payload=payload,
+            )
+            primary_email = str(getattr(manager, "email", None) or "").strip()
+            if manager is None or not primary_email:
                 raise DeliveryError(
                     "manager_daily recipient is not resolvable. Expected manager email in Bitrix-synced manager card."
                 )
             return {
-                "primary_email": manager.email,
-                "cc_emails": [email for email in [monitoring_email] if email and email != manager.email],
+                "primary_email": primary_email,
+                "cc_emails": [email for email in [monitoring_email] if email and email != primary_email],
             }
 
         primary_email = (
@@ -5176,6 +5405,68 @@ class CallsManualReportingOrchestrator:
             "primary_email": primary_email,
             "cc_emails": [email for email in [monitoring_email] if email and email != primary_email],
         }
+
+    def _resolve_manager_daily_recipient_manager(
+        self,
+        *,
+        artifacts: list[ReportArtifact],
+        payload: dict[str, Any] | None,
+    ) -> Manager | None:
+        """Resolve the manager entity used for manager_daily business delivery."""
+        attached_manager = artifacts[0].manager if artifacts else None
+        if attached_manager is not None and str(getattr(attached_manager, "email", None) or "").strip():
+            return attached_manager
+
+        manager_id = self._manager_daily_recipient_manager_id(
+            artifacts=artifacts,
+            payload=payload,
+        )
+        if manager_id is None:
+            return attached_manager
+        manager = (
+            self.db.query(Manager)
+            .filter(
+                Manager.id == manager_id,
+                Manager.department_id == self.department_id,
+            )
+            .first()
+        )
+        return manager or attached_manager
+
+    @staticmethod
+    def _manager_daily_recipient_manager_id(
+        *,
+        artifacts: list[ReportArtifact],
+        payload: dict[str, Any] | None,
+    ) -> UUID | None:
+        """Return the single manager id from payload metadata or report artifacts."""
+        candidates: list[str] = []
+        payload_dict = dict(payload or {})
+        meta = dict(payload_dict.get("meta") or {})
+        header = dict(payload_dict.get("header") or {})
+        for value in (meta.get("manager_id"), header.get("manager_id")):
+            candidate = str(value or "").strip()
+            if candidate:
+                candidates.append(candidate)
+        for artifact in artifacts:
+            interaction_manager_id = getattr(artifact.interaction, "manager_id", None)
+            if interaction_manager_id is not None:
+                candidates.append(str(interaction_manager_id))
+            artifact_manager = artifact.manager
+            artifact_manager_id = getattr(artifact_manager, "id", None)
+            if artifact_manager_id is not None:
+                candidates.append(str(artifact_manager_id))
+
+        valid_candidates: list[str] = []
+        for item in dict.fromkeys(candidates):
+            try:
+                valid_candidates.append(str(UUID(item)))
+            except ValueError:
+                continue
+        unique_candidates = list(dict.fromkeys(valid_candidates))
+        if len(unique_candidates) != 1:
+            return None
+        return UUID(unique_candidates[0])
 
     def _resolve_rop_weekly_email_from_bitrix_head(
         self,

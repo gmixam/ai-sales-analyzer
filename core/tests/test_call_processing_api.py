@@ -244,6 +244,62 @@ def test_artifacts_route_allows_reader_and_filters_allowed_kinds(monkeypatch) ->
     assert response.json()["artifact_kinds"] == ["transcript", "llm1_first_pass"]
 
 
+def test_latest_run_route_returns_exact_scope_readiness(monkeypatch) -> None:
+    client = TestClient(app)
+    run_id = uuid4()
+
+    class FakeProcessingRunRepository:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        def latest_for_scope(self, *, scope: ProcessingScope, required_artifacts: list[object]):
+            assert scope.source == "onlinepbx"
+            assert [str(item.value if hasattr(item, "value") else item) for item in required_artifacts] == [
+                "transcript",
+                "llm1_first_pass",
+            ]
+            return type(
+                "Run",
+                (),
+                {
+                    "id": run_id,
+                    "requested_by": "scheduled_call_processing_upstream",
+                    "scope_json": _scope(),
+                    "scope_hash": "scope-hash",
+                    "required_artifacts": ["transcript", "llm1_first_pass"],
+                    "mode": "ensure",
+                    "status": "ready",
+                    "started_at": None,
+                    "finished_at": None,
+                    "heartbeat_at": None,
+                    "counts_json": {"artifacts_ready": 4, "artifacts_missing": 0},
+                    "errors_json": [],
+                    "created_at": None,
+                    "updated_at": None,
+                },
+            )()
+
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+    monkeypatch.setattr(call_processing_routes, "ProcessingRunRepository", FakeProcessingRunRepository)
+    try:
+        response = client.get(
+            "/call-processing/runs/latest",
+            headers={"X-Call-Processing-Grant": _grant("reader")},
+            params={
+                "scope": json.dumps(_scope()),
+                "required_artifacts": "transcript,llm1_first_pass",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == str(run_id)
+    assert payload["status"] == "ready"
+    assert payload["counts"]["artifacts_missing"] == 0
+
+
 def test_single_artifact_route_returns_latest_active_for_reader(monkeypatch) -> None:
     client = TestClient(app)
     interaction_id = uuid4()

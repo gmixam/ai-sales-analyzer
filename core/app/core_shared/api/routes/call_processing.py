@@ -107,6 +107,15 @@ def _parse_artifact_kinds(raw: str | None) -> list[ArtifactKind]:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
+def _parse_required_artifact_kinds(raw: str | None) -> list[RequiredArtifactKind]:
+    if not raw:
+        return []
+    try:
+        return [RequiredArtifactKind(item.strip()) for item in raw.split(",") if item.strip()]
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
 def _run_to_dict(run: Any) -> dict[str, Any]:
     return {
         "run_id": str(run.id),
@@ -202,6 +211,22 @@ async def ensure_call_processing(
         provider_call_budget=grant.provider_call_budget_per_run,
     )
     return response.model_dump(mode="json")
+
+
+@router.get("/runs/latest")
+async def get_latest_run_for_scope(
+    scope: str = Query(..., description="ProcessingScope JSON"),
+    required_artifacts: str | None = Query(default=None),
+    _grant: AccessGrant = Depends(require_reader),
+    db: Any = Depends(get_session),
+) -> dict[str, Any]:
+    run = ProcessingRunRepository(db).latest_for_scope(
+        scope=_parse_scope(scope),
+        required_artifacts=_parse_required_artifact_kinds(required_artifacts),
+    )
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+    return _run_to_dict(run)
 
 
 @router.get("/runs/{run_id}")

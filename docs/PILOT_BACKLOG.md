@@ -1,6 +1,6 @@
 # Pilot Backlog
 
-Дата актуализации: 2026-06-17
+Дата актуализации: 2026-06-19
 
 ## Назначение
 
@@ -52,6 +52,10 @@ delivery.
   diagnostics для duplicate/open-batch blocker ids.
 - `docs/PILOT35_MANAGER_DAILY_SILENT_SKIP_GUARD_TZ.md` - ТЗ по защите
   `manager_daily` schedule от тихого пропуска без batch/draft/alert.
+- `docs/PILOT36_MANAGER_DAILY_AUTOMATION_STABILIZATION_TZ.md` - epic-ТЗ по
+  стабилизации production `manager_daily` после live-проверки `2026-06-18`:
+  lock от дублей, SLA-check, recovery, production statuses, recipient resolver,
+  ROP digest и короткие итоги автозапуска.
 
 ## Правило работы
 
@@ -69,6 +73,22 @@ delivery.
    привязать к существующей задаче или создать новую `PILOT-*`.
 
 ## Очередность работ
+
+### P0 - Стабилизация автоматического `manager_daily`
+
+Цель: production-расписание каждый день должно приходить к понятному состоянию:
+по каждому менеджеру либо один доставленный отчет, либо один объясненный
+финальный статус; SLA-check работает без Codex; РОП получает понятную сводку.
+
+Работа ведется по одному блоку за раз: сначала мини-ТЗ на утверждение, затем
+реализация, проверка и переход к следующему блоку.
+
+| ID | Задача | Статус | Что сделать | Проверка результата |
+| --- | --- | --- | --- | --- |
+| PILOT-36A | Защита запуска и SLA | `implemented_first_pass` | Реализован first pass: перед созданием `manager_daily` batch добавлен PostgreSQL advisory transaction lock по ключу `schedule_id + planned_for + manager_id/report_date`; scheduled SLA-check больше не зависит от хрупкого `report_scripts` import и имеет fallback loader; `sla-status` выбирает главный batch по приоритету, где delivered/manager-email-sent важнее поздних failed-дублей, а все кандидаты остаются в diagnostics | Проверено: `py_compile`, `git diff --check`, sync `core/report_scripts` vs `scripts`; focused docker pytest `66 passed, 1 skipped, 5 subtests passed`; live `sla-status --date 2026-06-18` теперь выбирает delivered batch для Толегена и Тимура, а failed duplicates видны в `diagnostics.batch_candidates`. Остаток: старые open blockers за 2026-06-18 закрываются в PILOT-36B |
+| PILOT-36B | Recovery текущего состояния 2026-06-18 | `implemented_first_pass` | Выполнен safe recovery через `scheduled_reporting_preflight.py recover-open-batches`: 5 старых open blockers за `2026-06-18` переведены `review_required -> paused` с причиной `PILOT-36B_2026-06-18_duplicate_open_blocker_recovery`; rows не удалялись; delivered batches Тимура/Толегена и failed historical duplicates Ильи/Тимура/Толегена не менялись | Проверено: dry-run `matched=5/planned=5/skipped=0`, apply `applied=5`; `open-batches --date 2026-06-18` вернул `open_batches_count=0`, `potential_manager_daily_blockers_count=0`; `sla-status --date 2026-06-18` остается понятным: Алишер `blocked/missing_recipient` на paused diagnostic batch, Илья `not_applicable`, Тимур и Толеген `delivered/on_time` |
+| PILOT-36C | Доставка и production-статусы | `implemented_first_pass` | Реализован first pass: `manager_daily` recipient resolver теперь добирает `Manager.email` из БД по single-manager scope/payload/artifacts, если `ReportArtifact.manager` не присоединен; production schedule (`review_required=false`, `business_email_enabled=true`) больше не оставляет blocked delivery outcomes финальным `review_required`; batch/draft observability нормализует `delivered`, `missing_recipient`, `analysis_not_ready`, `delivery_failed`, `no_calls/not_applicable`, `paused` | Проверено: `py_compile`, `git diff --check`, sync `core/report_scripts` vs `scripts`; docker focused pytest `/app/tests/test_scheduled_reporting.py /app/tests/test_scheduled_reporting_preflight.py` -> `49 passed`; read-only `sla-status --date 2026-06-18` показывает Алишера: `manager_card_email=g.alisher@dogovor24.kz`, historical delivery recipient пустой, PDF ready, reason `missing_recipient`. Новых писем/STT/LLM/report generation не запускалось |
+| PILOT-36D | ROP digest, частичная готовность и короткие итоги | `implemented_first_pass` | Scheduled `manager_daily` больше не шлёт per-manager ROP-copy из каждого одиночного `run_report`; после общего scan собирается один ROP digest по всем менеджерам scope, со статусами `delivered/no_calls/not_ready/missing_recipient/delivery_failed/blocked/will_retry/review_required/already_reported`, готовыми PDF во вложении и observability `scheduled_rop_daily_digest` без binary content | Проверено: `git diff --check`, `py_compile`, docker focused pytest `/app/tests/test_scheduled_reporting.py` -> `29 passed, 5 subtests passed`; manual ROP bundle smoke -> `3 passed`. Реальная отправка/production restart не выполнялись |
 
 ### P1 - Надежность дневного пилота
 
@@ -108,7 +128,7 @@ delivery.
 
 | ID | Задача | Статус | Что сделать | Проверка результата |
 | --- | --- | --- | --- | --- |
-| PILOT-05 | `rop_daily_digest` | `planned` | Добавить ежедневный email для РОП: сводка по менеджерам, статусы прогонов, кому отправлено, основные blockers; приложить PDF отчетов менеджеров | Один email РОП содержит 2-3 manager_daily PDF attachments и корректный текстовый summary |
+| PILOT-05 | `rop_daily_digest` | `implemented_first_pass` | First pass закрыт через `PILOT-36D`: scheduled `manager_daily` отправляет один ежедневный ROP digest после финального состояния scan; прикладывает готовые manager PDF и показывает строку статуса по каждому менеджеру scope | Один email РОП содержит manager_daily PDF attachments по доставленным менеджерам и summary по всем менеджерам; промежуточный digest не шлётся, если upstream ещё ждёт hourly retry |
 
 ### P3 - Расписание и delivery gate
 
@@ -184,24 +204,25 @@ delivery.
 | 2026-06-16-auto-schedule-01 | PILOT-24 | `implemented_first_pass` | Первый unattended split-runtime сработал частично: `00:00` upstream за `2026-06-15` построил `50` STT и `50` LLM1, cost около `1.127513 USDT`, status=`partial`, Telegram alert sent. `08:00` reporting schedule сработал и сдвинул `next_run_at` на следующий день, но создал `8` failed batches и `0` drafts/PDF. Причины: manager_daily scheduled branch догонял старые даты (`2026-06-09`, `2026-06-10`) вместо strict previous day, analysis -> call-processing ловил `ReadTimeout`, минутный beat создал повторные попытки пока первый scan выполнялся около `95s`. First pass исправления внедрен: strict previous-day, duplicate/open-batch guard, retry после failed без draft, timeout `180`. |
 | 2026-06-16-no-audio-cdr-01 | PILOT-25 | `implemented_first_pass` | Аудит STT за `2026-06-15`: в scope `91` interaction, `50` answered получили STT/LLM1, `41` missed (`duration_sec=0`, empty `raw_ref`) остались без STT. Failed STT artifacts нет. Причина: split upstream сохранял targeted CDR напрямую через `save_interactions(targeted)`, а `save_interactions()` всем новым rows ставил `status='ELIGIBLE'`; старый `filter_eligible()` в этом path не применялся. First pass исправляет новые записи и artifact planning; bounded cleanup старых `41` строк выполнен, контрольный report rerun собрал PDF по Алишеру/Тимуру/Толегену. |
 | 2026-06-16-auto-delivery-sla-01 | PILOT-26 | `production_active_first_pass` | Агенты реализовали first pass production auto-delivery/SLA: core scheduled branch использует `review_required=false` как production режим, CLI добавил `sla-status/sla-check`, runtime-mounted `scripts/scheduled_reporting_preflight.py` синхронизирован с `core/report_scripts`. Dry-run production-create подтверждает целевой payload `04:00 Asia/Almaty`, `business_email_enabled=true`, `review_required=false`. Runtime activation выполнен: active schedule `97e6c120-6aa3-4664-99ae-3982054698d7` теперь `04:00`, `review_required=false`, `business_email_enabled=true`, `next_run_at=2026-06-17T04:00:00+05:00`. |
+| 2026-06-19-auto-delivery-sla-01 | PILOT-36 | `new` | Live-аудит запуска за `2026-06-18`: `call_processing` в `00:00 Asia/Almaty` завершился успешно и подготовил STT/LLM1; `analysis` schedule в `04:00 Asia/Almaty` стартовал, но создал `16` manager_daily batches вместо ожидаемых `4`. По Алишеру `4` open `review_required` с `missing_recipient`, хотя `managers.email=g.alisher@dogovor24.kz`; по Тимуру есть delivered + open `review_required` + failed; по Толегену delivered batch есть, но поздние failed `no_candidate_all_reported` сбивают `sla-status`; SLA precheck/hardcheck в `09:30/10:00` упали с `ModuleNotFoundError: report_scripts`. Вывод: расписание запускается, но требуется stabilization epic `PILOT-36`. |
+| 2026-06-24-upstream-analysis-handoff-01 | PILOT-36E | `implemented_first_pass` | Восстановление report date `2026-06-23` подтвердило дефект handoff: ручной `call_processing ensure` по 4 пилотным менеджерам довел upstream до `ready` (`artifacts_missing=0`, построено `29` STT и `30` LLM1), но `analysis/build_missing_and_report` снова уперся в synchronous `call_processing_client_read_timeout=180`. First pass реализован: добавлен latest upstream readiness lookup по exact scope, `build_missing_and_report` short-circuit-ит повторный full ensure при upstream `ready` и продолжает missing LLM2/report path; если upstream еще не готов, production manager-day получает `waiting_upstream` / `upstream_partial` / `upstream_blocked` / `upstream_missing` и hourly retry `05:00`, `06:00`, `07:00`, `08:00`, `09:00 Asia/Almaty`; после `09:00` статус `upstream_not_ready_before_deadline`. Проверено focused tests `82 passed, 5 subtests passed`. Следующий шаг: controlled no-business-delivery проверка или наблюдение ближайшего auto-run. |
 
 ## Следующий рекомендуемый шаг
 
-Начать с P1:
+Начать с P0:
 
-1. PILOT-24 - провести controlled verification или дождаться следующего
-   auto-window: подтвердить, что schedule строит только previous day, не плодит
-   дубли, создает review draft/PDF и не включает business email.
-2. PILOT-26 - наблюдать первый auto-delivery день до `10:00`; если нужен SLA
-   alert без участия Codex, привязать `sla-check --phase precheck/hard` к
-   отдельному расписанию/beat.
-3. PILOT-27 - реализовать automatic SLA-check schedule (`09:30/10:00`), чтобы
-   контроль доставки работал без ручного запуска Codex.
-4. PILOT-28 - на следующем реальном warning/error alert проверить, что
-   Telegram/почта дают короткое резюме проблемы, влияния и следующего действия
-   без raw JSON.
-5. PILOT-35 - наблюдать первый реальный auto-run `04:00` и SLA window
-   `09:30/10:00`, чтобы перевести implemented first pass в `done`.
+1. PILOT-36A - подготовить мини-ТЗ "Защита запуска и SLA", утвердить, затем
+   реализовать lock от дублей, SLA-check import fix и batch-priority в
+   `sla-status`.
+2. PILOT-36B - после 36A выполнить recovery текущих дублей за `2026-06-18` и
+   проверить `open-batches`.
+3. PILOT-36C - после recovery починить recipient resolver и production
+   terminal statuses.
+4. PILOT-36E - закрыть handoff `call_processing -> analysis`: upstream
+   readiness lookup, resume LLM2 после ready STT/LLM1 и retry вместо
+   `call_processing_client_read_timeout=180`.
+5. PILOT-36D - выполнено first pass: scheduled ROP daily digest отправляется
+   одним письмом после финального состояния manager_daily scan.
 6. PILOT-29 - утвердить и реализовать усиление speaker role attribution на
    текущем Whisper STT без смены модели.
 7. PILOT-31 - проверить на контрольном manager_daily отчете, что weighted focus

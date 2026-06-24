@@ -129,6 +129,18 @@ class _FakeService:
         return self.interactions
 
 
+class _FakeRunRepository:
+    rows: list[SimpleNamespace] = []
+    calls: list[dict[str, object]] = []
+
+    def __init__(self, _session: object) -> None:
+        pass
+
+    def latest_for_scope(self, *, scope: object, required_artifacts: list[object] | None = None):
+        self.calls.append({"scope": scope, "required_artifacts": list(required_artifacts or [])})
+        return self.rows[0] if self.rows else None
+
+
 def _scope() -> ProcessingScope:
     return ProcessingScope(
         department_id=str(uuid.uuid4()),
@@ -279,6 +291,49 @@ def test_get_processed_artifacts_reads_latest_active_artifacts_for_scope() -> No
     ]
 
 
+def test_local_client_reads_latest_run_for_exact_scope(monkeypatch) -> None:
+    scope = _scope()
+    run_id = uuid.uuid4()
+    _FakeRunRepository.rows = [
+        SimpleNamespace(
+            id=run_id,
+            status="ready",
+            scope_hash="scope-hash",
+            requested_by="scheduled_call_processing_upstream",
+            required_artifacts=["transcript", "llm1_first_pass"],
+            mode="ensure",
+            counts_json={"artifacts_ready": 6, "artifacts_missing": 0},
+            errors_json=[],
+            started_at=None,
+            finished_at=None,
+            heartbeat_at=None,
+            created_at=None,
+            updated_at=None,
+        )
+    ]
+    _FakeRunRepository.calls = []
+    monkeypatch.setattr(call_processing_client_module, "ProcessingRunRepository", _FakeRunRepository)
+    client = LocalCallProcessingClient(
+        object(),
+        service=_FakeService(),
+        artifacts=_FakeArtifactRepository(),
+    )
+
+    readiness = client.get_latest_run_for_scope(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+    )
+
+    assert readiness is not None
+    assert readiness.run_id == str(run_id)
+    assert readiness.status == ProcessingRunStatus.READY
+    assert readiness.counts["artifacts_missing"] == 0
+    assert _FakeRunRepository.calls[0]["required_artifacts"] == [
+        RequiredArtifactKind.TRANSCRIPT,
+        RequiredArtifactKind.LLM1_FIRST_PASS,
+    ]
+
+
 def test_llm1_artifact_adapter_fails_for_invalid_artifact() -> None:
     interaction_id = uuid.uuid4()
     missing_prompt_version = _llm1_artifact(interaction_id, payload={"provider": "openai", "model": "gpt-test"})
@@ -344,6 +399,20 @@ class _FakeHttpClient:
 
     def get(self, url: str, *, headers: dict, params: dict | None = None):
         self.calls.append(("GET", url, {"headers": headers, "params": params or {}}))
+        if url.endswith("/runs/latest"):
+            return _FakeResponse(
+                200,
+                {
+                    "run_id": "run-latest",
+                    "status": "ready",
+                    "scope_hash": "hash-latest",
+                    "requested_by": "scheduled_call_processing_upstream",
+                    "required_artifacts": ["transcript", "llm1_first_pass"],
+                    "mode": "ensure",
+                    "counts": {"artifacts_ready": 4, "artifacts_missing": 0},
+                    "errors": [],
+                },
+            )
         if url.endswith("/llm1_first_pass"):
             return _FakeResponse(
                 200,
@@ -432,6 +501,29 @@ def test_http_client_posts_ensure_and_reads_llm1_artifact(monkeypatch) -> None:
     assert _FakeHttpClient.calls[0][1] == "http://call-processing.test/call-processing/ensure"
     assert _FakeHttpClient.calls[1][0] == "GET"
     assert _FakeHttpClient.calls[1][1].endswith("/llm1_first_pass")
+
+
+def test_http_client_reads_latest_run_for_scope(monkeypatch) -> None:
+    _FakeHttpClient.calls = []
+    monkeypatch.setattr(call_processing_client_module.httpx, "Client", _FakeHttpClient)
+    client = HttpCallProcessingClient(
+        base_url="http://call-processing.test",
+        access_grant=_grant(),
+        requested_by="edo-analysis",
+    )
+
+    readiness = client.get_latest_run_for_scope(
+        _scope(),
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+    )
+
+    assert readiness is not None
+    assert readiness.run_id == "run-latest"
+    assert readiness.status == ProcessingRunStatus.READY
+    assert readiness.counts["artifacts_missing"] == 0
+    assert _FakeHttpClient.calls[0][0] == "GET"
+    assert _FakeHttpClient.calls[0][1] == "http://call-processing.test/call-processing/runs/latest"
+    assert _FakeHttpClient.calls[0][2]["params"]["required_artifacts"] == "transcript,llm1_first_pass"
 
 
 def test_http_client_read_timeout_uses_diagnostic_reason(monkeypatch) -> None:

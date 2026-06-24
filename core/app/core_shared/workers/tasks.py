@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.machinery
+import importlib.util
+import sys
 from argparse import Namespace
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -31,6 +37,12 @@ DAILY_UPSTREAM_REQUIRED_ARTIFACTS: tuple[RequiredArtifactKind, ...] = (
     RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
     RequiredArtifactKind.LLM1_FIRST_PASS,
 )
+
+_REPORT_SCRIPTS_PACKAGE = "report_scripts"
+_SCHEDULED_REPORTING_PREFLIGHT_MODULE = (
+    f"{_REPORT_SCRIPTS_PACKAGE}.scheduled_reporting_preflight"
+)
+_SCHEDULED_REPORTING_PREFLIGHT_FILE = "scheduled_reporting_preflight.py"
 
 
 @celery_app.task(name="calls.scan_scheduled_reviewable_reporting")
@@ -66,7 +78,7 @@ def _run_manager_daily_sla_check(*, phase: str, report_date: str) -> dict[str, A
     )
     started_at = datetime.now(UTC)
     try:
-        from report_scripts import scheduled_reporting_preflight
+        scheduled_reporting_preflight = _load_scheduled_reporting_preflight()
 
         result = scheduled_reporting_preflight.sla_check(
             Namespace(date=report_date, phase=phase)
@@ -85,6 +97,98 @@ def _run_manager_daily_sla_check(*, phase: str, report_date: str) -> dict[str, A
         "billable_pipeline_started": False,
         "sla_check": result,
     }
+
+
+def _load_scheduled_reporting_preflight() -> ModuleType:
+    """Import the runtime-mounted scheduled reporting preflight module."""
+    _ensure_report_scripts_import_roots()
+    try:
+        return importlib.import_module(_SCHEDULED_REPORTING_PREFLIGHT_MODULE)
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            _REPORT_SCRIPTS_PACKAGE,
+            _SCHEDULED_REPORTING_PREFLIGHT_MODULE,
+        }:
+            raise
+        module_path = _find_scheduled_reporting_preflight_path()
+        if module_path is None:
+            raise
+        return _load_report_script_module_from_path(module_path)
+
+
+def _ensure_report_scripts_import_roots() -> None:
+    """Make report_scripts importable without relying on Celery's cwd."""
+    for root in _report_scripts_import_root_candidates():
+        if not (root / _REPORT_SCRIPTS_PACKAGE).is_dir():
+            continue
+        root_str = str(root)
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+
+
+def _report_scripts_import_root_candidates() -> tuple[Path, ...]:
+    core_root = Path(__file__).resolve().parents[3]
+    return _unique_paths((core_root, Path("/app")))
+
+
+def _find_scheduled_reporting_preflight_path() -> Path | None:
+    core_root = Path(__file__).resolve().parents[3]
+    candidates = _unique_paths(
+        (
+            core_root / _REPORT_SCRIPTS_PACKAGE / _SCHEDULED_REPORTING_PREFLIGHT_FILE,
+            Path("/app") / _REPORT_SCRIPTS_PACKAGE / _SCHEDULED_REPORTING_PREFLIGHT_FILE,
+            core_root.parent / "scripts" / _SCHEDULED_REPORTING_PREFLIGHT_FILE,
+        )
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_report_script_module_from_path(module_path: Path) -> ModuleType:
+    package = sys.modules.get(_REPORT_SCRIPTS_PACKAGE)
+    if package is None:
+        package = ModuleType(_REPORT_SCRIPTS_PACKAGE)
+        package.__path__ = [str(module_path.parent)]  # type: ignore[attr-defined]
+        package.__package__ = _REPORT_SCRIPTS_PACKAGE
+        package.__spec__ = importlib.machinery.ModuleSpec(
+            _REPORT_SCRIPTS_PACKAGE,
+            loader=None,
+            is_package=True,
+        )
+        sys.modules[_REPORT_SCRIPTS_PACKAGE] = package
+
+    spec = importlib.util.spec_from_file_location(
+        _SCHEDULED_REPORTING_PREFLIGHT_MODULE,
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(
+            f"Cannot load {_SCHEDULED_REPORTING_PREFLIGHT_MODULE} from {module_path}"
+        )
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_SCHEDULED_REPORTING_PREFLIGHT_MODULE] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(_SCHEDULED_REPORTING_PREFLIGHT_MODULE, None)
+        raise
+    setattr(package, "scheduled_reporting_preflight", module)
+    return module
+
+
+def _unique_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return tuple(unique)
 
 
 def _parse_report_date(value: str | None, timezone_name: str) -> date:

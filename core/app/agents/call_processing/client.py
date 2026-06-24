@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from app.agents.call_processing.repositories import (
     DEFAULT_ARTIFACT_VERSIONS,
     ArtifactRepository,
+    ProcessingRunRepository,
 )
 from app.agents.call_processing.schemas import (
     AccessGrant,
@@ -23,6 +24,7 @@ from app.agents.call_processing.schemas import (
     EnsureRequest,
     EnsureResponse,
     LLM1FirstPassPayload,
+    ProcessingRunReadiness,
     ProcessingScope,
     RequiredArtifactKind,
 )
@@ -60,6 +62,13 @@ class CallProcessingClient(Protocol):
         required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
     ) -> list[Any]:
         """Return latest active artifacts for in-scope calls."""
+
+    def get_latest_run_for_scope(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> ProcessingRunReadiness | None:
+        """Return the newest upstream run for the exact normalized scope."""
 
     def get_llm1_first_pass_artifact(
         self,
@@ -126,6 +135,25 @@ def llm1_first_pass_payload_from_artifact(artifact: Any) -> LLM1FirstPassPayload
     return validated
 
 
+def processing_run_readiness_from_row(row: Any) -> ProcessingRunReadiness:
+    """Adapt a persisted call-processing run to the read-only client contract."""
+    return ProcessingRunReadiness(
+        run_id=str(row.id),
+        status=getattr(row, "status", None),
+        scope_hash=str(getattr(row, "scope_hash", "") or ""),
+        requested_by=getattr(row, "requested_by", None),
+        required_artifacts=list(getattr(row, "required_artifacts", None) or []),
+        mode=getattr(row, "mode", None),
+        counts=dict(getattr(row, "counts_json", None) or {}),
+        errors=list(getattr(row, "errors_json", None) or []),
+        started_at=getattr(row, "started_at", None),
+        finished_at=getattr(row, "finished_at", None),
+        heartbeat_at=getattr(row, "heartbeat_at", None),
+        created_at=getattr(row, "created_at", None),
+        updated_at=getattr(row, "updated_at", None),
+    )
+
+
 class LocalCallProcessingClient:
     """In-process client implementation for the monolith transition period."""
 
@@ -139,6 +167,7 @@ class LocalCallProcessingClient:
     ) -> None:
         self.session = session
         self.artifacts = artifacts or ArtifactRepository(session)
+        self.runs = ProcessingRunRepository(session)
         self.service = service or CallProcessingService(
             session,
             artifacts=self.artifacts,
@@ -182,6 +211,19 @@ class LocalCallProcessingClient:
         interactions = self.service._find_interactions(scope_model)
         interaction_ids = [interaction.id for interaction in interactions]
         return self.artifacts.list_latest_active(interaction_ids, required)
+
+    def get_latest_run_for_scope(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> ProcessingRunReadiness | None:
+        row = self.runs.latest_for_scope(
+            scope=scope,
+            required_artifacts=_coerce_required_artifacts(required_artifacts),
+        )
+        if row is None:
+            return None
+        return processing_run_readiness_from_row(row)
 
     def get_llm1_first_pass_artifact(
         self,
@@ -330,6 +372,31 @@ class HttpCallProcessingClient:
             raise ASAError(f"call-processing artifact read failed: status={response.status_code} body={response.text[:500]}")
         payload = response.json()
         return [_artifact_row_from_api(item) for item in payload.get("artifacts", [])]
+
+    def get_latest_run_for_scope(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> ProcessingRunReadiness | None:
+        scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
+        kinds = _coerce_required_artifacts(required_artifacts)
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                response = client.get(
+                    f"{self.base_url}/call-processing/runs/latest",
+                    params={
+                        "scope": scope_model.model_dump_json(exclude_none=True),
+                        "required_artifacts": ",".join(kind.value for kind in kinds),
+                    },
+                    headers=self._headers(),
+                )
+        except httpx.ReadTimeout as exc:
+            self._raise_read_timeout("get_latest_run_for_scope", exc)
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise ASAError(f"call-processing run read failed: status={response.status_code} body={response.text[:500]}")
+        return ProcessingRunReadiness.model_validate(response.json())
 
     def get_llm1_first_pass_artifact(
         self,

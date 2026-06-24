@@ -14,6 +14,7 @@ from app.agents.calls.reporting import (
     resolve_report_delivery_options,
     resolve_report_preset,
 )
+from app.core_shared.exceptions import ASAError
 
 
 def _interaction(*, text: str = "Готовый транскрипт") -> SimpleNamespace:
@@ -180,6 +181,70 @@ class _LegacyEnsureClientWithoutCosts:
                 "artifacts_backfilled": 0,
             },
             quota={"provider_calls_made": 0},
+        )
+
+
+class _ReadyLatestRunClient:
+    def __init__(self) -> None:
+        self.latest_calls: list[dict[str, object]] = []
+        self.ensure_calls: list[dict[str, object]] = []
+
+    def get_latest_run_for_scope(self, scope, required_artifacts):
+        self.latest_calls.append({"scope": scope, "required_artifacts": list(required_artifacts)})
+        return SimpleNamespace(
+            run_id="run-ready",
+            status=ProcessingRunStatus.READY,
+            scope_hash="hash-ready",
+            requested_by="scheduled_call_processing_upstream",
+            required_artifacts=["transcript", "transcript_segments", "llm1_first_pass"],
+            mode="ensure",
+            counts={
+                "interactions_total": 3,
+                "source_targeted_total": 3,
+                "artifacts_ready": 9,
+                "artifacts_missing": 0,
+                "artifacts_backfilled": 0,
+            },
+            errors=[],
+            started_at=None,
+            finished_at=datetime(2026, 6, 3, 23, 30, tzinfo=UTC),
+            heartbeat_at=None,
+            created_at=None,
+            updated_at=datetime(2026, 6, 3, 23, 30, tzinfo=UTC),
+        )
+
+    async def ensure_processed_calls_async(self, *_args, **_kwargs):
+        self.ensure_calls.append({"called": True})
+        raise AssertionError("ready upstream must skip full ensure")
+
+
+class _TimeoutRunningLatestRunClient:
+    def __init__(self) -> None:
+        self.latest_calls = 0
+        self.ensure_calls = 0
+
+    def get_latest_run_for_scope(self, scope, required_artifacts):
+        self.latest_calls += 1
+        return SimpleNamespace(
+            run_id="run-running",
+            status=ProcessingRunStatus.RUNNING,
+            scope_hash="hash-running",
+            requested_by="scheduled_call_processing_upstream",
+            required_artifacts=["transcript", "transcript_segments", "llm1_first_pass"],
+            mode="ensure",
+            counts={"interactions_total": 3, "artifacts_ready": 4, "artifacts_missing": 5},
+            errors=[],
+            started_at=None,
+            finished_at=None,
+            heartbeat_at=datetime(2026, 6, 3, 23, 20, tzinfo=UTC),
+            created_at=None,
+            updated_at=datetime(2026, 6, 3, 23, 20, tzinfo=UTC),
+        )
+
+    async def ensure_processed_calls_async(self, *_args, **_kwargs):
+        self.ensure_calls += 1
+        raise ASAError(
+            "call_processing_client_read_timeout: operation=ensure_processed_calls_async timeout_sec=180"
         )
 
 
@@ -449,6 +514,61 @@ def test_manager_daily_external_service_ensure_accepts_legacy_response_without_c
     assert summary["call_processing_run_id"] == "legacy-run-without-costs"
     assert summary["call_processing_artifacts_ready"] == 4
     assert "call_processing_costs" not in summary
+
+
+def test_manager_daily_external_service_ready_latest_run_skips_ensure_for_resume() -> None:
+    client = _ReadyLatestRunClient()
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    orchestrator.call_processing_client = client
+
+    summary = asyncio.run(
+        CallsManualReportingOrchestrator._ensure_call_processing_source_artifacts(
+            orchestrator,
+            filters=ReportRunFilters(
+                manager_extensions={"322"},
+                date_from="2026-06-03",
+                date_to="2026-06-03",
+            ),
+            period={"date_from": "2026-06-03", "date_to": "2026-06-03"},
+            mode="build_missing_and_report",
+            wait_for_upstream_readiness=True,
+        )
+    )
+
+    assert len(client.latest_calls) == 1
+    assert client.ensure_calls == []
+    assert summary["call_processing_readiness"] == "ready"
+    assert summary["call_processing_ensure_skipped"] is True
+    assert summary["call_processing_run_id"] == "run-ready"
+    assert summary["call_processing_artifacts_missing"] == 0
+
+
+def test_manager_daily_external_service_running_upstream_returns_waiting_without_failed_timeout() -> None:
+    client = _TimeoutRunningLatestRunClient()
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    orchestrator.call_processing_client = client
+
+    summary = asyncio.run(
+        CallsManualReportingOrchestrator._ensure_call_processing_source_artifacts(
+            orchestrator,
+            filters=ReportRunFilters(
+                manager_extensions={"322"},
+                date_from="2026-06-03",
+                date_to="2026-06-03",
+            ),
+            period={"date_from": "2026-06-03", "date_to": "2026-06-03"},
+            mode="build_missing_and_report",
+            wait_for_upstream_readiness=True,
+        )
+    )
+
+    assert client.latest_calls == 1
+    assert client.ensure_calls == 0
+    assert summary["call_processing_waiting_upstream"] is True
+    assert summary["call_processing_readiness"] == "waiting_upstream"
+    assert summary["call_processing_run_id"] == "run-running"
 
 
 def test_build_run_observability_external_service_merges_upstream_and_downstream_costs() -> None:

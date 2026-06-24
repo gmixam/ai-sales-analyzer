@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.agents.calls.delivery import CallsDelivery
 from app.agents.calls.reporting import (
     CallsManualReportingOrchestrator,
     REPORTING_ALLOWED_MODES,
@@ -21,6 +24,7 @@ from app.agents.calls.reporting import (
     resolve_report_preset,
 )
 from app.agents.calls.run_alerts import send_run_alert
+from app.core_shared.config.settings import settings
 from app.core_shared.db.models import (
     Department,
     Interaction,
@@ -29,7 +33,7 @@ from app.core_shared.db.models import (
     ScheduledReportBatch,
     ScheduledReportDraft,
 )
-from app.core_shared.exceptions import ASAError
+from app.core_shared.exceptions import ASAError, DeliveryError
 
 SCHEDULED_REVIEWABLE_OPERATING_MODE = "scheduled_reviewable_reporting"
 SCHEDULED_REVIEWABLE_ALLOWED_RECURRENCE = ("daily", "weekly")
@@ -77,7 +81,17 @@ SCHEDULED_MANAGER_DAILY_REPORTED_DRAFT_STATUSES = (
     "review_required",
     "delivered",
 )
+SCHEDULED_MANAGER_DAILY_IDEMPOTENCY_LOCK_NAMESPACE = "scheduled_manager_daily_v1"
 MANAGER_DAILY_SLA_DEADLINE_TIME = time(10, 0)
+MANAGER_DAILY_UPSTREAM_RETRY_HOURS = (5, 6, 7, 8, 9)
+MANAGER_DAILY_UPSTREAM_PENDING_REASONS = {
+    "waiting_upstream",
+    "upstream_partial",
+    "upstream_blocked",
+    "upstream_missing",
+    "upstream_not_ready",
+}
+MANAGER_DAILY_UPSTREAM_DEADLINE_REASON = "upstream_not_ready_before_deadline"
 MANAGER_DAILY_EDITABLE_BLOCKS = (
     "top_summary",
     "focus_wording",
@@ -214,6 +228,22 @@ def _manager_daily_sla_deadline(*, planned_for: datetime, timezone_name: str) ->
         tzinfo=ZoneInfo(timezone_name),
     )
     return local_deadline.astimezone(UTC)
+
+
+def _manager_daily_next_upstream_retry_at(
+    *,
+    planned_for: datetime,
+    now_utc: datetime,
+    timezone_name: str,
+) -> datetime | None:
+    """Return the next hourly upstream readiness checkpoint before the deadline."""
+    timezone = ZoneInfo(timezone_name)
+    local_day = planned_for.astimezone(timezone).date()
+    for hour in MANAGER_DAILY_UPSTREAM_RETRY_HOURS:
+        candidate = datetime.combine(local_day, time(hour, 0), tzinfo=timezone).astimezone(UTC)
+        if candidate > now_utc:
+            return candidate
+    return None
 
 
 def _isoformat_utc(value: datetime | None) -> str | None:
@@ -814,8 +844,10 @@ class ScheduledReviewableReportingService:
             )
         scan_started_at = datetime.now(UTC).isoformat()
         created_batches: list[ScheduledReportBatch] = []
+        rop_digest_report_items: list[dict[str, Any]] = []
         selected_manager_days_count = 0
         skipped_manager_days = 0
+        idempotency_blocked_manager_days = 0
         selection_details: list[dict[str, Any]] = []
         for manager_id in list(schedule.manager_ids or []):
             selection = self._select_manager_day_candidate(
@@ -825,21 +857,53 @@ class ScheduledReviewableReportingService:
                 lookback_days=lookback_days,
                 scan_started_at=scan_started_at,
             )
-            selection_details.append(selection.to_observability())
             if selection.selected_report_date:
+                duplicate_diagnostics = self._manager_day_creation_guard_diagnostics(
+                    schedule=schedule,
+                    planned_for=planned_for,
+                    selection=selection,
+                )
+                if duplicate_diagnostics["has_duplicate"]:
+                    blocked_selection = self._selection_blocked_by_creation_guard(
+                        selection=selection,
+                        duplicate_diagnostics=duplicate_diagnostics,
+                    )
+                    selection_details.append(blocked_selection.to_observability())
+                    skipped_manager_days += 1
+                    idempotency_blocked_manager_days += 1
+                    continue
+
+                selection_details.append(selection.to_observability())
                 selected_manager_days_count += 1
                 batch = self._run_due_manager_day_selection(
                     schedule=schedule,
                     planned_for=planned_for,
                     selection=selection,
+                    creation_guarded=True,
+                    rop_digest_report_items=rop_digest_report_items,
                 )
             else:
-                skipped_manager_days += 1
-                batch = self._record_skipped_manager_day_selection(
-                    schedule=schedule,
-                    planned_for=planned_for,
-                    selection=selection,
-                )
+                pending_retry = self._pending_upstream_retry_for_selection(selection=selection)
+                if pending_retry is not None:
+                    retry_selection, existing_batch = pending_retry
+                    selection_details.append(retry_selection.to_observability())
+                    selected_manager_days_count += 1
+                    batch = self._run_due_manager_day_selection(
+                        schedule=schedule,
+                        planned_for=planned_for,
+                        selection=retry_selection,
+                        creation_guarded=True,
+                        existing_batch=existing_batch,
+                        rop_digest_report_items=rop_digest_report_items,
+                    )
+                else:
+                    selection_details.append(selection.to_observability())
+                    skipped_manager_days += 1
+                    batch = self._record_skipped_manager_day_selection(
+                        schedule=schedule,
+                        planned_for=planned_for,
+                        selection=selection,
+                    )
             if batch is not None:
                 created_batches.append(batch)
 
@@ -848,6 +912,9 @@ class ScheduledReviewableReportingService:
         alert_records: list[dict[str, Any]] = []
         manager_scope = [str(item) for item in list(schedule.manager_ids or [])]
         has_expected_or_candidate_scope = bool(manager_scope) or bool(selection_details)
+        if created_batches_before_guard_count <= 0 and idempotency_blocked_manager_days > 0:
+            self.db.flush()
+            return
         if created_batches_before_guard_count <= 0 and has_expected_or_candidate_scope:
             failure_reason = "manager_daily_zero_batches_after_candidate_selection"
             preliminary_summary = self._manager_daily_run_summary(
@@ -943,8 +1010,61 @@ class ScheduledReviewableReportingService:
                 run_summary=run_summary,
             )
 
+        upstream_waiting_batches = [
+            batch for batch in created_batches if self._is_upstream_waiting_batch(batch)
+        ]
         schedule.last_planned_at = planned_for
-        schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+        scheduled_rop_digest = {
+            "enabled": bool(settings.manager_daily_rop_email_enabled),
+            "target": str(settings.manager_daily_rop_email_to or "").strip() or None,
+            "status": "skipped",
+            "reason": "not_attempted",
+        }
+        if upstream_waiting_batches:
+            retry_at = _manager_daily_next_upstream_retry_at(
+                planned_for=planned_for,
+                now_utc=now_utc,
+                timezone_name=str(schedule.timezone),
+            )
+            if retry_at is not None:
+                schedule.next_run_at = retry_at
+                scheduled_rop_digest["reason"] = "waiting_upstream_retry_scheduled"
+            else:
+                for batch in upstream_waiting_batches:
+                    self._finalize_upstream_not_ready_before_deadline(
+                        batch=batch,
+                        planned_for=planned_for,
+                        timezone_name=str(schedule.timezone),
+                    )
+                scheduled_rop_digest = self._send_scheduled_manager_daily_rop_digest(
+                    schedule=schedule,
+                    planned_for=planned_for,
+                    run_summary=run_summary,
+                    batches=created_batches,
+                    report_items=rop_digest_report_items,
+                )
+                schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+        else:
+            if _manager_daily_auto_delivery_enabled(schedule):
+                scheduled_rop_digest = self._send_scheduled_manager_daily_rop_digest(
+                    schedule=schedule,
+                    planned_for=planned_for,
+                    run_summary=run_summary,
+                    batches=created_batches,
+                    report_items=rop_digest_report_items,
+                )
+            else:
+                scheduled_rop_digest["reason"] = "production_auto_delivery_disabled"
+            schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+        for batch in created_batches:
+            batch.observability = self._with_scheduled_rop_daily_digest(
+                observability=dict(batch.observability or {}),
+                digest=scheduled_rop_digest,
+            )
+            batch.diagnostics = self._with_scheduled_rop_daily_digest(
+                observability=dict(batch.diagnostics or {}),
+                digest=scheduled_rop_digest,
+            )
         self.db.flush()
 
     @staticmethod
@@ -984,12 +1104,17 @@ class ScheduledReviewableReportingService:
             batch_status_counts.get("approved_for_delivery_batches_count") or 0
         )
         delivered_batches_count = int(batch_status_counts.get("delivered_batches_count") or 0)
+        upstream_waiting_batches_count = int(
+            batch_status_counts.get("upstream_waiting_batches_count") or 0
+        )
         report_ready_batches_count = int(batch_status_counts.get("report_ready_batches_count") or 0)
         effective_failure_reason = failure_reason
         if effective_failure_reason is None and failed_batches_count > 0 and report_ready_batches_count <= 0:
             effective_failure_reason = "manager_daily_failed_batches_without_report_ready_batches"
         if effective_failure_reason:
             status = "failed"
+        elif upstream_waiting_batches_count > 0:
+            status = "waiting_upstream"
         elif failed_batches_count > 0:
             status = "partial"
         else:
@@ -1027,6 +1152,7 @@ class ScheduledReviewableReportingService:
             "review_required_batches_count": review_required_batches_count,
             "approved_for_delivery_batches_count": approved_for_delivery_batches_count,
             "delivered_batches_count": delivered_batches_count,
+            "upstream_waiting_batches_count": upstream_waiting_batches_count,
             "report_ready_batches_count": report_ready_batches_count,
             "status": status,
             "failure_reason": effective_failure_reason,
@@ -1034,6 +1160,361 @@ class ScheduledReviewableReportingService:
             "selection_summary": selection_summary,
             "selection_details": [dict(item) for item in selection_details],
         }
+
+    def _send_scheduled_manager_daily_rop_digest(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        run_summary: dict[str, Any],
+        batches: list[ScheduledReportBatch],
+        report_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Send one daily ROP digest for the whole scheduled manager_daily scan."""
+        target = str(settings.manager_daily_rop_email_to or "").strip()
+        report_date = str(run_summary.get("report_date") or planned_for.date().isoformat())
+        rows = self._scheduled_manager_daily_rop_rows(
+            schedule=schedule,
+            run_summary=run_summary,
+            batches=batches,
+            report_items=report_items,
+        )
+        attachments = self._scheduled_manager_daily_rop_attachments(report_items=report_items)
+        summary: dict[str, Any] = {
+            "schema_version": "scheduled_manager_daily_rop_digest_v1",
+            "enabled": bool(settings.manager_daily_rop_email_enabled),
+            "target": target or None,
+            "status": "skipped",
+            "reason": None,
+            "report_date": report_date,
+            "rows_count": len(rows),
+            "attachments_count": len(attachments),
+            "attached_reports": [
+                {
+                    "manager_id": item.get("manager_id"),
+                    "manager_name": item.get("manager_name"),
+                    "filename": item.get("filename"),
+                    "email_status": item.get("email_status"),
+                }
+                for item in report_items
+                if isinstance(item.get("attachment"), dict)
+            ],
+            "rows": rows,
+        }
+        if not _manager_daily_auto_delivery_enabled(schedule):
+            summary["reason"] = "production_auto_delivery_disabled"
+            return summary
+        if not settings.manager_daily_rop_email_enabled:
+            summary["reason"] = "manager_daily_rop_email_disabled"
+            return summary
+        if not target:
+            summary.update({"status": "blocked", "reason": "manager_daily_rop_email_to_missing"})
+            return summary
+        if not settings.has_smtp:
+            summary.update({"status": "blocked", "reason": "smtp_not_configured"})
+            return summary
+        if not rows:
+            summary["reason"] = "no_manager_rows"
+            return summary
+
+        subject = f"Ежедневная сводка по отчётам ЭДО — {report_date}"
+        text = self._render_scheduled_manager_daily_rop_digest_text(
+            report_date=report_date,
+            rows=rows,
+            attachments_count=len(attachments),
+        )
+        try:
+            delivery = CallsDelivery(
+                department_id=str(schedule.department_id),
+                db=self.db,
+            ).send_email_message(
+                email_to=target,
+                subject=subject,
+                text=text,
+                attachments=attachments,
+            )
+        except DeliveryError as exc:
+            summary.update({"status": "failed", "reason": str(exc), "subject": subject})
+            return summary
+
+        summary.update(
+            {
+                "status": delivery.get("status") or "sent",
+                "reason": None,
+                "subject": subject,
+                "delivery": delivery,
+            }
+        )
+        return summary
+
+    def _scheduled_manager_daily_rop_rows(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        run_summary: dict[str, Any],
+        batches: list[ScheduledReportBatch],
+        report_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return one ROP digest row per manager in schedule scope."""
+        manager_ids = [str(item) for item in list(getattr(schedule, "manager_ids", None) or [])]
+        manager_names = self._manager_names_by_id(manager_ids=manager_ids)
+        selection_by_manager = {
+            str(item.get("manager_id") or ""): dict(item)
+            for item in list(run_summary.get("selection_summary") or [])
+            if isinstance(item, dict)
+        }
+        batch_by_manager = {
+            manager_id: batch
+            for batch in batches
+            for manager_id in self._batch_manager_ids(batch=batch)
+        }
+        item_by_manager = {
+            str(item.get("manager_id") or ""): dict(item)
+            for item in report_items
+            if isinstance(item, dict)
+        }
+        rows: list[dict[str, Any]] = []
+        for manager_id in manager_ids:
+            selection = selection_by_manager.get(manager_id, {})
+            batch = batch_by_manager.get(manager_id)
+            item = item_by_manager.get(manager_id, {})
+            manager_name = (
+                str(item.get("manager_name") or "").strip()
+                or str(selection.get("manager_name") or "").strip()
+                or manager_names.get(manager_id)
+                or manager_id
+            )
+            report_date = (
+                str(item.get("report_date") or "").strip()
+                or str(selection.get("report_date") or "").strip()
+                or str(run_summary.get("report_date") or "").strip()
+                or None
+            )
+            status, reason = self._scheduled_manager_daily_rop_status(
+                selection=selection,
+                batch=batch,
+                report_item=item,
+            )
+            row = {
+                "manager_id": manager_id,
+                "manager_name": manager_name,
+                "report_date": report_date,
+                "status": status,
+                "reason": reason,
+                "manager_email_status": item.get("email_status")
+                or self._batch_observability_value(batch=batch, key="manager_email_status")
+                or "not_started",
+                "batch_status": str(getattr(batch, "status", "") or "") or None,
+                "attachment": "attached" if isinstance(item.get("attachment"), dict) else "not_attached",
+            }
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _scheduled_manager_daily_rop_status(
+        *,
+        selection: dict[str, Any],
+        batch: ScheduledReportBatch | None,
+        report_item: dict[str, Any],
+    ) -> tuple[str, str]:
+        email_status = str(report_item.get("email_status") or "").strip()
+        if email_status == "delivered":
+            return "delivered", "отчёт отправлен менеджеру; PDF приложен к сводке РОП"
+        if email_status in {"failed", "blocked"}:
+            reason = str(report_item.get("reason") or "").strip()
+            if "missing_recipient" in reason or "recipient" in reason:
+                return "missing_recipient", reason or "не найден email получателя"
+            return "delivery_failed", reason or "ошибка доставки менеджеру"
+
+        if batch is not None:
+            batch_status = str(getattr(batch, "status", "") or "").strip()
+            observability = dict(getattr(batch, "observability", None) or {})
+            missed_reason = str(observability.get("sla_missed_reason") or "").strip()
+            upstream_reason = str(observability.get("upstream_waiting_reason") or "").strip()
+            if batch_status == "paused" or observability.get("upstream_waiting"):
+                return "will_retry", upstream_reason or "ожидаем готовность транскрибации/LLM1"
+            if batch_status == "failed":
+                if missed_reason == MANAGER_DAILY_UPSTREAM_DEADLINE_REASON:
+                    return "not_ready", "артефакты не готовы до дедлайна"
+                return "blocked", missed_reason or "отчёт не сформирован"
+            if batch_status in {"review_required", "approved_for_delivery"}:
+                return "review_required", "отчёт готов, но не отправлен автоматически"
+            if batch_status == "delivered":
+                return "delivered", "отчёт доставлен"
+
+        selection_reason = str(selection.get("reason") or selection.get("selection_reason") or "").strip()
+        if selection_reason == "no_calls":
+            return "no_calls", "за день нет звонков для отчёта"
+        if selection_reason in {"analysis_not_ready", "not_ready"}:
+            return "not_ready", "анализ ещё не готов"
+        if selection_reason in {"already_reported", "blocked_by_open_batch"}:
+            return "already_reported", "отчёт уже был создан или есть открытый batch"
+        return "not_ready", selection_reason or "нет готового отчёта"
+
+    @staticmethod
+    def _scheduled_manager_daily_rop_attachments(
+        *,
+        report_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        attachments: list[dict[str, Any]] = []
+        used_filenames: set[str] = set()
+        for item in report_items:
+            attachment = item.get("attachment")
+            if not isinstance(attachment, dict) or not attachment.get("content"):
+                continue
+            filename = ScheduledReviewableReportingService._dedupe_attachment_filename(
+                str(attachment.get("filename") or "manager_daily_report.pdf"),
+                used_filenames=used_filenames,
+            )
+            item["filename"] = filename
+            attachments.append(
+                {
+                    "filename": filename,
+                    "content": attachment["content"],
+                    "maintype": "application",
+                    "subtype": "pdf",
+                }
+            )
+        return attachments
+
+    @staticmethod
+    def _render_scheduled_manager_daily_rop_digest_text(
+        *,
+        report_date: str,
+        rows: list[dict[str, Any]],
+        attachments_count: int,
+    ) -> str:
+        delivered = sum(1 for row in rows if row.get("status") == "delivered")
+        blocked = sum(1 for row in rows if row.get("status") in {"blocked", "delivery_failed", "missing_recipient"})
+        pending = sum(1 for row in rows if row.get("status") in {"not_ready", "will_retry", "review_required"})
+        no_calls = sum(1 for row in rows if row.get("status") == "no_calls")
+        status_lines = [
+            (
+                f"- {row.get('manager_name')}: {row.get('status')} — "
+                f"{row.get('reason') or 'без комментария'}"
+            )
+            for row in rows
+        ]
+        return "\n".join(
+            [
+                "Добрый день.",
+                "",
+                f"Ежедневная сводка по отчётам менеджеров ЭДО за {report_date}.",
+                "",
+                (
+                    f"Итог: отправлено менеджерам — {delivered}; не готово/ожидает — {pending}; "
+                    f"нет звонков — {no_calls}; требует внимания — {blocked}."
+                ),
+                f"PDF во вложении: {attachments_count}.",
+                "",
+                "Статусы по менеджерам:",
+                *status_lines,
+                "",
+                "Это автоматическая сводка после scheduled manager_daily delivery.",
+            ]
+        )
+
+    def _scheduled_rop_digest_report_item(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        selection: ScheduledManagerDaySelection,
+        report: dict[str, Any],
+        assessment: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(report.get("payload") or {})
+        header = dict(payload.get("header") or {})
+        manager_name = str(header.get("manager_name") or "").strip()
+        if not manager_name:
+            manager_name = self._manager_names_by_id(manager_ids=[selection.manager_id]).get(
+                selection.manager_id,
+                selection.manager_id,
+            )
+        email_status = str(assessment.get("manager_email_status") or "").strip() or "unknown"
+        runtime_attachment = report.get("_runtime_rop_bundle_attachment")
+        attachment = None
+        if (
+            email_status == "delivered"
+            and isinstance(runtime_attachment, dict)
+            and runtime_attachment.get("content")
+        ):
+            attachment = {
+                "filename": runtime_attachment.get("filename") or "manager_daily_report.pdf",
+                "content": runtime_attachment["content"],
+            }
+        return {
+            "manager_id": selection.manager_id,
+            "manager_name": manager_name,
+            "report_date": selection.selected_report_date,
+            "report_status": report.get("status"),
+            "email_status": email_status,
+            "sla_status": assessment.get("sla_status"),
+            "reason": assessment.get("sla_missed_reason"),
+            "attachment": attachment,
+            "department_id": str(schedule.department_id),
+        }
+
+    def _manager_names_by_id(self, *, manager_ids: list[str]) -> dict[str, str]:
+        """Best-effort manager-name lookup for scheduled digest rows."""
+        normalized = [str(item) for item in manager_ids if str(item or "").strip()]
+        if not normalized:
+            return {}
+        try:
+            rows = self.db.query(Manager).filter(Manager.id.in_([UUID(item) for item in normalized])).all()
+        except Exception:  # noqa: BLE001 - diagnostics must not depend on ORM availability in tests
+            return {}
+        result: dict[str, str] = {}
+        for row in rows:
+            manager_id = str(getattr(row, "id", "") or "")
+            name = str(getattr(row, "name", "") or "").strip()
+            if manager_id and name:
+                result[manager_id] = name
+        return result
+
+    @staticmethod
+    def _batch_manager_ids(*, batch: ScheduledReportBatch) -> list[str]:
+        filters = dict(getattr(batch, "filters", None) or {})
+        return [str(item) for item in list(filters.get("manager_ids") or []) if str(item or "").strip()]
+
+    @staticmethod
+    def _batch_observability_value(*, batch: ScheduledReportBatch | None, key: str) -> Any:
+        if batch is None:
+            return None
+        return dict(getattr(batch, "observability", None) or {}).get(key)
+
+    @staticmethod
+    def _dedupe_attachment_filename(filename: str, *, used_filenames: set[str]) -> str:
+        candidate = filename.strip() or "manager_daily_report.pdf"
+        if candidate not in used_filenames:
+            used_filenames.add(candidate)
+            return candidate
+        if "." in candidate:
+            stem, suffix = candidate.rsplit(".", 1)
+            suffix = f".{suffix}"
+        else:
+            stem, suffix = candidate, ""
+        counter = 2
+        while True:
+            next_candidate = f"{stem}_{counter}{suffix}"
+            if next_candidate not in used_filenames:
+                used_filenames.add(next_candidate)
+                return next_candidate
+            counter += 1
+
+    @staticmethod
+    def _with_scheduled_rop_daily_digest(
+        *,
+        observability: dict[str, Any],
+        digest: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(observability or {})
+        safe_digest = {
+            key: value
+            for key, value in dict(digest or {}).items()
+            if key not in {"delivery"}
+        }
+        merged["scheduled_rop_daily_digest"] = safe_digest
+        return merged
 
     @staticmethod
     def _manager_daily_batch_status_counts(
@@ -1044,6 +1525,11 @@ class ScheduledReviewableReportingService:
         review_required_batches_count = statuses.count("review_required")
         approved_for_delivery_batches_count = statuses.count("approved_for_delivery")
         delivered_batches_count = statuses.count("delivered")
+        upstream_waiting_batches_count = sum(
+            1
+            for batch in batches
+            if ScheduledReviewableReportingService._is_upstream_waiting_batch(batch)
+        )
         report_ready_batches_count = (
             review_required_batches_count
             + approved_for_delivery_batches_count
@@ -1054,6 +1540,7 @@ class ScheduledReviewableReportingService:
             "review_required_batches_count": review_required_batches_count,
             "approved_for_delivery_batches_count": approved_for_delivery_batches_count,
             "delivered_batches_count": delivered_batches_count,
+            "upstream_waiting_batches_count": upstream_waiting_batches_count,
             "report_ready_batches_count": report_ready_batches_count,
         }
 
@@ -1093,11 +1580,12 @@ class ScheduledReviewableReportingService:
             reason = "selected"
         elif blocker:
             selection_status = "blocked"
-            reason = (
-                "blocked_by_open_batch"
-                if blocked_by_reason == "matching_open_batch"
-                else "already_reported"
-            )
+            if blocked_by_reason == "matching_open_batch":
+                reason = "blocked_by_open_batch"
+            elif blocked_by_reason == "manager_day_idempotency_lock_busy":
+                reason = "blocked_by_idempotency_lock"
+            else:
+                reason = "already_reported"
         elif skipped_empty_dates:
             selection_status = "skipped"
             reason = "no_calls"
@@ -1525,6 +2013,86 @@ class ScheduledReviewableReportingService:
             )["has_duplicate"]
         )
 
+    @staticmethod
+    def _is_upstream_waiting_batch(batch: ScheduledReportBatch) -> bool:
+        observability = dict(getattr(batch, "observability", None) or {})
+        return (
+            str(getattr(batch, "status", "") or "") == "paused"
+            and bool(observability.get("upstream_waiting"))
+            and str(observability.get("upstream_waiting_reason") or "")
+            in MANAGER_DAILY_UPSTREAM_PENDING_REASONS
+        )
+
+    def _load_scheduled_batch_by_id(self, batch_id: str) -> ScheduledReportBatch | None:
+        try:
+            batch_uuid = UUID(str(batch_id))
+        except ValueError:
+            return None
+        get = getattr(self.db, "get", None)
+        if callable(get):
+            row = get(ScheduledReportBatch, batch_uuid)
+            if row is not None:
+                return row
+        rows = self.db.query(ScheduledReportBatch).filter(ScheduledReportBatch.id == batch_uuid).all()
+        for row in rows:
+            if str(getattr(row, "id", "") or "") == str(batch_uuid):
+                return row
+        return None
+
+    def _find_upstream_waiting_batch_by_key(
+        self,
+        *,
+        manager_id: str,
+        report_date: str,
+    ) -> ScheduledReportBatch | None:
+        rows = (
+            self.db.query(ScheduledReportBatch)
+            .filter(ScheduledReportBatch.status == "paused")
+            .all()
+        )
+        for row in rows:
+            if not self._is_upstream_waiting_batch(row):
+                continue
+            if self._batch_matches_manager_day_key(
+                batch=row,
+                manager_id=manager_id,
+                report_date=report_date,
+            ):
+                return row
+        return None
+
+    def _pending_upstream_retry_for_selection(
+        self,
+        *,
+        selection: ScheduledManagerDaySelection,
+    ) -> tuple[ScheduledManagerDaySelection, ScheduledReportBatch] | None:
+        """Return an existing pending-upstream batch that should be retried now."""
+        for detail in selection.skipped_already_reported_details:
+            if str(detail.get("blocked_by_reason") or "") != "matching_open_batch":
+                continue
+            batch_id = str(detail.get("blocked_by_batch_id") or "").strip()
+            batch = self._load_scheduled_batch_by_id(batch_id)
+            report_date = str(detail.get("report_date") or "").strip()
+            if not report_date:
+                continue
+            if batch is None:
+                batch = self._find_upstream_waiting_batch_by_key(
+                    manager_id=selection.manager_id,
+                    report_date=report_date,
+                )
+            if batch is None or not self._is_upstream_waiting_batch(batch):
+                continue
+            retry_selection = replace(
+                selection,
+                selected_report_date=report_date,
+                skipped_already_reported_dates=[
+                    item for item in selection.skipped_already_reported_dates if item != report_date
+                ],
+                selection_reason="retry_waiting_upstream",
+            )
+            return retry_selection, batch
+        return None
+
     def _manager_day_duplicate_diagnostics(
         self,
         *,
@@ -1630,6 +2198,127 @@ class ScheduledReviewableReportingService:
                     return diagnostics
         return diagnostics
 
+    def _manager_day_creation_guard_diagnostics(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        planned_for: datetime,
+        selection: ScheduledManagerDaySelection,
+    ) -> dict[str, Any]:
+        """Protect manager_daily batch creation for one schedule/planned/manager/day key."""
+        report_date = str(selection.selected_report_date or "")
+        diagnostics = self._manager_day_duplicate_diagnostics(
+            schedule_id=schedule.id,
+            department_id=schedule.department_id,
+            preset=schedule.preset,
+            manager_id=selection.manager_id,
+            report_date=report_date,
+        )
+        if diagnostics["has_duplicate"]:
+            return diagnostics
+
+        lock_key = self._manager_day_creation_lock_key(
+            schedule_id=schedule.id,
+            planned_for=planned_for,
+            manager_id=selection.manager_id,
+            report_date=report_date,
+        )
+        if not self._try_acquire_manager_day_creation_lock(lock_key=lock_key):
+            diagnostics.update(
+                {
+                    "has_duplicate": True,
+                    "blocked_by_reason": "manager_day_idempotency_lock_busy",
+                    "match_source": "advisory_lock",
+                    "planned_for": _isoformat_utc(planned_for),
+                    "lock_key": lock_key,
+                }
+            )
+            return diagnostics
+
+        return self._manager_day_duplicate_diagnostics(
+            schedule_id=schedule.id,
+            department_id=schedule.department_id,
+            preset=schedule.preset,
+            manager_id=selection.manager_id,
+            report_date=report_date,
+        )
+
+    def _try_acquire_manager_day_creation_lock(self, *, lock_key: str) -> bool:
+        """Acquire a PostgreSQL transaction advisory lock, falling back open in non-DB tests."""
+        execute = getattr(self.db, "execute", None)
+        if not callable(execute):
+            return True
+
+        bind = None
+        get_bind = getattr(self.db, "get_bind", None)
+        if callable(get_bind):
+            bind = get_bind()
+        dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "")
+        if dialect_name and dialect_name != "postgresql":
+            return True
+
+        result = execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
+            {"lock_id": self._manager_day_creation_lock_id(lock_key)},
+        )
+        scalar = getattr(result, "scalar", None)
+        if callable(scalar):
+            return bool(scalar())
+        scalar_one = getattr(result, "scalar_one", None)
+        if callable(scalar_one):
+            return bool(scalar_one())
+        return bool(result)
+
+    @staticmethod
+    def _manager_day_creation_lock_key(
+        *,
+        schedule_id: UUID,
+        planned_for: datetime,
+        manager_id: str,
+        report_date: str,
+    ) -> str:
+        """Return the stable idempotency key for one scheduled manager-day occurrence."""
+        return ":".join(
+            [
+                SCHEDULED_MANAGER_DAILY_IDEMPOTENCY_LOCK_NAMESPACE,
+                str(schedule_id),
+                _isoformat_utc(planned_for),
+                str(manager_id),
+                str(report_date),
+            ]
+        )
+
+    @staticmethod
+    def _manager_day_creation_lock_id(lock_key: str) -> int:
+        """Map a lock key to PostgreSQL's signed bigint advisory-lock namespace."""
+        digest = hashlib.blake2b(lock_key.encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, byteorder="big", signed=False)
+        if value >= 2**63:
+            value -= 2**64
+        return value
+
+    @staticmethod
+    def _selection_blocked_by_creation_guard(
+        *,
+        selection: ScheduledManagerDaySelection,
+        duplicate_diagnostics: dict[str, Any],
+    ) -> ScheduledManagerDaySelection:
+        """Return selection diagnostics for a race blocked after candidate selection."""
+        report_date = str(selection.selected_report_date or "")
+        skipped_dates = list(selection.skipped_already_reported_dates)
+        if report_date and report_date not in skipped_dates:
+            skipped_dates.append(report_date)
+        return replace(
+            selection,
+            selected_report_date=None,
+            skipped_already_reported_dates=skipped_dates,
+            skipped_already_reported_details=[
+                *list(selection.skipped_already_reported_details),
+                dict(duplicate_diagnostics),
+            ],
+            selection_reason="no_candidate_after_idempotency_guard",
+        )
+
     @staticmethod
     def _empty_manager_day_duplicate_diagnostics(
         *,
@@ -1727,11 +2416,22 @@ class ScheduledReviewableReportingService:
         schedule: ReportingSchedule,
         planned_for: datetime,
         selection: ScheduledManagerDaySelection,
+        creation_guarded: bool = False,
+        existing_batch: ScheduledReportBatch | None = None,
+        rop_digest_report_items: list[dict[str, Any]] | None = None,
     ) -> ScheduledReportBatch | None:
         """Run the orchestrator for one selected manager/report-date pair."""
         report_date = str(selection.selected_report_date or "")
         if not report_date:
             return None
+        if not creation_guarded and existing_batch is None:
+            duplicate_diagnostics = self._manager_day_creation_guard_diagnostics(
+                schedule=schedule,
+                planned_for=planned_for,
+                selection=selection,
+            )
+            if duplicate_diagnostics["has_duplicate"]:
+                return None
         period = SchedulePeriod(date_from=report_date, date_to=report_date)
         production_auto_delivery = _manager_daily_auto_delivery_enabled(schedule)
         sla_deadline = _manager_daily_sla_deadline(
@@ -1743,13 +2443,20 @@ class ScheduledReviewableReportingService:
             date_from=period.date_from,
             date_to=period.date_to,
         )
-        batch = self._create_scheduled_batch(
+        batch = existing_batch or self._create_scheduled_batch(
             schedule=schedule,
             planned_for=planned_for,
             period=period,
             manager_ids=[selection.manager_id],
             selection=selection,
         )
+        if existing_batch is not None:
+            batch.planned_for = planned_for
+            batch.period = {"date_from": period.date_from, "date_to": period.date_to}
+            batch.filters = {
+                "manager_ids": [selection.manager_id],
+                "manager_extensions": [],
+            }
         self._transition_batch_status(batch, "queued")
         batch.queued_at = datetime.now(UTC)
         self.db.flush()
@@ -1770,6 +2477,8 @@ class ScheduledReviewableReportingService:
                     filters=filters,
                     model_override=None,
                     send_email=production_auto_delivery,
+                    send_manager_daily_rop_bundle=False,
+                    retain_runtime_rop_bundle_attachments=production_auto_delivery,
                 )
             )
         except Exception as exc:
@@ -1803,6 +2512,7 @@ class ScheduledReviewableReportingService:
         draft_assessments: list[dict[str, Any]] = []
         rop_daily_delivery = dict(result.get("rop_daily_delivery") or {})
         completed_at = datetime.now(UTC)
+        upstream_pending_reason = self._manager_daily_upstream_pending_reason(result)
         for report in result.get("reports") or []:
             payload = dict(report.get("payload") or {})
             if not payload:
@@ -1845,12 +2555,24 @@ class ScheduledReviewableReportingService:
             self.db.add(draft)
             drafts_created += 1
             draft_assessments.append(assessment)
+            if production_auto_delivery and rop_digest_report_items is not None:
+                rop_digest_report_items.append(
+                    self._scheduled_rop_digest_report_item(
+                        schedule=schedule,
+                        selection=selection,
+                        report=report,
+                        assessment=assessment,
+                    )
+                )
 
         if production_auto_delivery:
-            next_batch_status = self._manager_daily_production_batch_status(
-                drafts_created=drafts_created,
-                assessments=draft_assessments,
-            )
+            if upstream_pending_reason:
+                next_batch_status = "paused"
+            else:
+                next_batch_status = self._manager_daily_production_batch_status(
+                    drafts_created=drafts_created,
+                    assessments=draft_assessments,
+                )
         else:
             next_batch_status = "review_required" if drafts_created > 0 else "failed"
         batch.observability = self._with_manager_daily_batch_delivery_observability(
@@ -1861,9 +2583,18 @@ class ScheduledReviewableReportingService:
             sla_deadline=sla_deadline,
             rop_daily_delivery=rop_daily_delivery,
         )
+        if upstream_pending_reason:
+            batch.observability = self._with_manager_daily_upstream_wait_observability(
+                observability=dict(batch.observability or {}),
+                selection=selection,
+                sla_deadline=sla_deadline,
+                reason=upstream_pending_reason,
+                source_summary=dict(result.get("observability", {}).get("summary", {}).get("source") or {}),
+            )
         batch.errors = self._unique_errors(
             [
                 *list(batch.errors or []),
+                *([upstream_pending_reason] if upstream_pending_reason else []),
                 *[
                     error
                     for assessment in draft_assessments
@@ -1876,6 +2607,8 @@ class ScheduledReviewableReportingService:
             batch.review_required_at = datetime.now(UTC)
         elif batch.status == "delivered":
             batch.delivered_at = completed_at
+        elif batch.status == "paused":
+            batch.paused_at = datetime.now(UTC)
         else:
             batch.failed_at = datetime.now(UTC)
         self.db.flush()
@@ -1890,6 +2623,111 @@ class ScheduledReviewableReportingService:
             if error and error not in errors:
                 errors.append(error)
         return errors
+
+    @staticmethod
+    def _manager_daily_upstream_pending_reason(result: dict[str, Any]) -> str | None:
+        """Return the upstream waiting reason from a reporting run result."""
+        status = str(result.get("status") or "").strip()
+        if status in MANAGER_DAILY_UPSTREAM_PENDING_REASONS:
+            return status
+        errors = {str(item).strip() for item in list(result.get("errors") or [])}
+        for reason in MANAGER_DAILY_UPSTREAM_PENDING_REASONS:
+            if reason in errors:
+                return reason
+        source = dict(
+            ((result.get("observability") or {}).get("summary") or {}).get("source")
+            or {}
+        )
+        reason = str(source.get("call_processing_readiness") or "").strip()
+        if reason in MANAGER_DAILY_UPSTREAM_PENDING_REASONS and bool(
+            source.get("call_processing_waiting_upstream")
+        ):
+            return reason
+        return None
+
+    def _with_manager_daily_upstream_wait_observability(
+        self,
+        *,
+        observability: dict[str, Any],
+        selection: ScheduledManagerDaySelection,
+        sla_deadline: datetime,
+        reason: str,
+        source_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach pending upstream handoff details to one manager-day batch."""
+        rop_email_status = str(observability.get("rop_email_status") or "skipped")
+        merged = self._with_manager_daily_sla_observability(
+            observability=observability,
+            sla_deadline=sla_deadline,
+            review_required=False,
+            status="blocked",
+            missed_reason=reason,
+            manager_email_status="not_started",
+            rop_email_status=rop_email_status,
+            sla_missed=False,
+        )
+        merged.update(
+            {
+                "status": reason,
+                "run_state": "waiting_upstream",
+                "upstream_waiting": True,
+                "upstream_waiting_reason": reason,
+                "manager_email_status": "not_started",
+                "scheduled_candidate_selection": selection.to_observability(),
+                "call_processing_run_id": source_summary.get("call_processing_run_id"),
+                "call_processing_scope_hash": source_summary.get("call_processing_scope_hash"),
+                "call_processing_status": source_summary.get("call_processing_status"),
+                "call_processing_readiness": source_summary.get("call_processing_readiness") or reason,
+                "artifacts_ready": source_summary.get("call_processing_artifacts_ready"),
+                "artifacts_missing": source_summary.get("call_processing_artifacts_missing"),
+                "last_finished_at": source_summary.get("last_finished_at"),
+                "last_seen_at": source_summary.get("last_seen_at"),
+                "next_action": "retry_upstream_readiness",
+                "blockers": [reason],
+            }
+        )
+        if rop_email_status:
+            merged["rop_email_status"] = rop_email_status
+        return merged
+
+    def _finalize_upstream_not_ready_before_deadline(
+        self,
+        *,
+        batch: ScheduledReportBatch,
+        planned_for: datetime,
+        timezone_name: str,
+    ) -> None:
+        """Turn an exhausted upstream wait into a terminal manager-day status."""
+        sla_deadline = _manager_daily_sla_deadline(
+            planned_for=planned_for,
+            timezone_name=timezone_name,
+        )
+        observability = dict(batch.observability or {})
+        observability.update(
+            {
+                "status": MANAGER_DAILY_UPSTREAM_DEADLINE_REASON,
+                "run_state": "failed",
+                "upstream_waiting": False,
+                "upstream_waiting_reason": MANAGER_DAILY_UPSTREAM_DEADLINE_REASON,
+                "next_action": "manual_upstream_check",
+                "blockers": [MANAGER_DAILY_UPSTREAM_DEADLINE_REASON],
+            }
+        )
+        batch.observability = self._with_manager_daily_sla_observability(
+            observability=observability,
+            sla_deadline=sla_deadline,
+            review_required=False,
+            status="blocked",
+            missed_reason=MANAGER_DAILY_UPSTREAM_DEADLINE_REASON,
+            manager_email_status="not_started",
+            rop_email_status=str(observability.get("rop_email_status") or "skipped"),
+            sla_missed=True,
+        )
+        batch.errors = self._unique_errors(
+            [*list(batch.errors or []), MANAGER_DAILY_UPSTREAM_DEADLINE_REASON]
+        )
+        self._transition_batch_status(batch, "failed")
+        batch.failed_at = datetime.now(UTC)
 
     @staticmethod
     def _manager_daily_report_gate_block_reason(report: dict[str, Any]) -> str | None:
@@ -1940,6 +2778,7 @@ class ScheduledReviewableReportingService:
         artifact = dict(report.get("artifact") or {})
         pdf_filename = str(artifact.get("filename") or "").strip()
         gate_block_reason = self._manager_daily_report_gate_block_reason(report)
+        cc_emails = list(resolved_email.get("cc_emails") or email.get("cc_emails") or [])
 
         if not production_auto_delivery:
             return {
@@ -1949,6 +2788,9 @@ class ScheduledReviewableReportingService:
                 "sla_missed": False,
                 "sla_missed_reason": None,
                 "manager_email_status": email_status or "skipped",
+                "primary_email": primary_email or None,
+                "cc_emails": cc_emails,
+                "recipient_resolve_status": "resolved" if primary_email else "not_required",
                 "delivered_at": None,
                 "late_delivery_at": None,
                 "errors": [],
@@ -1960,20 +2802,27 @@ class ScheduledReviewableReportingService:
         elif not primary_email:
             blocker = "missing_recipient"
         elif gate_block_reason:
-            blocker = gate_block_reason
+            blocker = "analysis_not_ready"
 
         if blocker:
             missed = completed_at > sla_deadline
             return {
                 "sla_deadline_at": _isoformat_utc(sla_deadline),
-                "draft_status": "review_required",
+                "draft_status": "failed",
                 "sla_status": "blocked",
                 "sla_missed": missed,
                 "sla_missed_reason": blocker,
-                "manager_email_status": email_status or "blocked",
+                "manager_email_status": "blocked",
+                "primary_email": primary_email or None,
+                "cc_emails": cc_emails,
+                "recipient_resolve_status": "missing" if blocker == "missing_recipient" else "resolved",
                 "delivered_at": None,
                 "late_delivery_at": None,
-                "errors": [blocker],
+                "errors": (
+                    [blocker]
+                    if blocker == gate_block_reason
+                    else self._unique_errors([blocker, gate_block_reason])
+                ),
             }
 
         if email_status == "delivered":
@@ -1985,27 +2834,29 @@ class ScheduledReviewableReportingService:
                 "sla_missed": late,
                 "sla_missed_reason": "delivered_after_sla_deadline" if late else None,
                 "manager_email_status": "delivered",
+                "primary_email": primary_email or None,
+                "cc_emails": cc_emails,
+                "recipient_resolve_status": "resolved",
                 "delivered_at": completed_at,
                 "late_delivery_at": completed_at if late else None,
                 "errors": [],
             }
 
         delivery_failed = email_status in {"failed", "blocked"} or bool(email_error)
-        reason = (
-            "manager_email_delivery_failed"
-            if delivery_failed
-            else "manager_email_not_delivered"
-        )
+        reason = "delivery_failed" if delivery_failed else "manager_email_not_delivered"
         if email_error:
             reason = f"{reason}:{email_error}"
         missed = completed_at > sla_deadline
         return {
             "sla_deadline_at": _isoformat_utc(sla_deadline),
-            "draft_status": "failed" if delivery_failed else "review_required",
+            "draft_status": "failed",
             "sla_status": "blocked" if delivery_failed else "missed_pending",
             "sla_missed": missed,
             "sla_missed_reason": reason,
             "manager_email_status": email_status or "not_started",
+            "primary_email": primary_email or None,
+            "cc_emails": cc_emails,
+            "recipient_resolve_status": "resolved",
             "delivered_at": None,
             "late_delivery_at": None,
             "errors": [reason],
@@ -2039,6 +2890,9 @@ class ScheduledReviewableReportingService:
                     else None
                 ),
                 "manager_email_status": assessment.get("manager_email_status"),
+                "primary_email": assessment.get("primary_email"),
+                "cc_emails": list(assessment.get("cc_emails") or []),
+                "recipient_resolve_status": assessment.get("recipient_resolve_status"),
                 "rop_email_status": str(rop_daily_delivery.get("status") or "skipped"),
                 "rop_daily_delivery": rop_daily_delivery,
             }
@@ -2059,7 +2913,7 @@ class ScheduledReviewableReportingService:
             return "delivered"
         if statuses and statuses.issubset({"failed"}):
             return "failed"
-        return "review_required"
+        return "failed"
 
     def _with_manager_daily_batch_delivery_observability(
         self,
@@ -2100,6 +2954,9 @@ class ScheduledReviewableReportingService:
         first = assessments[0]
         delivered_at = first.get("delivered_at")
         late_delivery_at = first.get("late_delivery_at")
+        primary_email = str(first.get("primary_email") or "").strip() or None
+        cc_emails = list(first.get("cc_emails") or [])
+        recipient_resolve_status = str(first.get("recipient_resolve_status") or "").strip() or None
         if len(delivered_assessments) == len(assessments):
             status = (
                 "late"
@@ -2124,6 +2981,9 @@ class ScheduledReviewableReportingService:
             missed_reason=reason,
             manager_email_status=str(first.get("manager_email_status") or "unknown"),
             rop_email_status=str(rop_daily_delivery.get("status") or "skipped"),
+            primary_email=primary_email,
+            cc_emails=cc_emails,
+            recipient_resolve_status=recipient_resolve_status,
             sla_missed=missed,
             delivered_at=delivered_at if isinstance(delivered_at, datetime) else None,
             late_delivery_at=late_delivery_at if isinstance(late_delivery_at, datetime) else None,
@@ -2139,6 +2999,9 @@ class ScheduledReviewableReportingService:
         missed_reason: str | None,
         manager_email_status: str | None = None,
         rop_email_status: str | None = None,
+        primary_email: str | None = None,
+        cc_emails: list[str] | None = None,
+        recipient_resolve_status: str | None = None,
         sla_missed: bool | None = None,
         delivered_at: datetime | None = None,
         late_delivery_at: datetime | None = None,
@@ -2155,6 +3018,9 @@ class ScheduledReviewableReportingService:
                 "sla_missed_reason": missed_reason,
                 "late_delivery_at": _isoformat_utc(late_delivery_at),
                 "manager_email_status": manager_email_status,
+                "primary_email": primary_email,
+                "cc_emails": list(cc_emails or []),
+                "recipient_resolve_status": recipient_resolve_status,
                 "rop_email_status": rop_email_status,
                 "review_required": bool(review_required),
             }

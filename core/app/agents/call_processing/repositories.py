@@ -230,6 +230,29 @@ class ProcessingRunRepository:
         )
         return list(self.session.scalars(stmt).all())
 
+    def latest_for_scope(
+        self,
+        *,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | str] | None = None,
+    ) -> CallProcessingRun | None:
+        """Return the newest run for an exact normalized processing scope."""
+        model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
+        scope_hash = stable_scope_hash(model)
+        stmt = select(CallProcessingRun).where(CallProcessingRun.scope_hash == scope_hash)
+        stmt = stmt.order_by(
+            CallProcessingRun.updated_at.desc(),
+            CallProcessingRun.created_at.desc(),
+        )
+        if required_artifacts:
+            required = sorted({str(_coerce_value(kind)) for kind in required_artifacts})
+            for run in self.session.scalars(stmt).all():
+                actual = sorted({str(item) for item in list(run.required_artifacts or [])})
+                if actual == required:
+                    return run
+            return None
+        return self.session.scalars(stmt).first()
+
     def status(self, run_id: uuid.UUID | str) -> ProcessingRunStatus | None:
         run = self.get(run_id)
         return ProcessingRunStatus(run.status) if run is not None else None

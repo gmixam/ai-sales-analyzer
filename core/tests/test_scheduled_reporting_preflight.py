@@ -98,6 +98,103 @@ def fake_db():
     yield SimpleNamespace()
 
 
+class _FakeColumn:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __eq__(self, value: object) -> tuple[str, str, object]:  # type: ignore[override]
+        return ("eq", self.name, value)
+
+    def in_(self, values: object) -> tuple[str, str, object]:
+        return ("in", self.name, values)
+
+    def asc(self) -> tuple[str, str]:
+        return ("asc", self.name)
+
+    def desc(self) -> tuple[str, str]:
+        return ("desc", self.name)
+
+
+class _FakeScheduledReportBatch:
+    schedule_id = _FakeColumn("schedule_id")
+    department_id = _FakeColumn("department_id")
+    preset = _FakeColumn("preset")
+    status = _FakeColumn("status")
+    created_at = _FakeColumn("created_at")
+
+
+class _FakeScheduledReportDraft:
+    batch_id = _FakeColumn("batch_id")
+    created_at = _FakeColumn("created_at")
+
+
+class _FakeBatchQuery:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.rows = list(rows)
+
+    def filter(self, *args: object) -> "_FakeBatchQuery":
+        return self
+
+    def order_by(self, *args: object) -> "_FakeBatchQuery":
+        return self
+
+    def all(self) -> list[SimpleNamespace]:
+        return sorted(
+            self.rows,
+            key=lambda item: getattr(item, "created_at", datetime.min.replace(tzinfo=UTC)),
+            reverse=True,
+        )
+
+
+class _FakeDraftQuery:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.rows = list(rows)
+        self.batch_id: object | None = None
+
+    def filter(self, *args: object) -> "_FakeDraftQuery":
+        for item in args:
+            if (
+                isinstance(item, tuple)
+                and len(item) == 3
+                and item[0] == "eq"
+                and item[1] == "batch_id"
+            ):
+                self.batch_id = item[2]
+        return self
+
+    def order_by(self, *args: object) -> "_FakeDraftQuery":
+        return self
+
+    def all(self) -> list[SimpleNamespace]:
+        rows = [
+            item
+            for item in self.rows
+            if self.batch_id is None or getattr(item, "batch_id", None) == self.batch_id
+        ]
+        return sorted(
+            rows,
+            key=lambda item: getattr(item, "created_at", datetime.min.replace(tzinfo=UTC)),
+        )
+
+
+class _FakeScheduledReportingDb:
+    def __init__(
+        self,
+        *,
+        batches: list[SimpleNamespace],
+        drafts: list[SimpleNamespace],
+    ) -> None:
+        self.batches = batches
+        self.drafts = drafts
+
+    def query(self, model: object) -> _FakeBatchQuery | _FakeDraftQuery:
+        if model is _FakeScheduledReportBatch:
+            return _FakeBatchQuery(self.batches)
+        if model is _FakeScheduledReportDraft:
+            return _FakeDraftQuery(self.drafts)
+        raise AssertionError(f"unexpected query model: {model!r}")
+
+
 def _run_with_fake_service(args: list[str]) -> tuple[int, str, str]:
     FakeScheduleService.created = []
     stdout = StringIO()
@@ -276,6 +373,156 @@ class ScheduledReportingPreflightCliTests(unittest.TestCase):
         self.assertEqual(state["sla_status"], "missed_pending")
         self.assertEqual(state["reason"], "manager_email_planned")
         self.assertTrue(state["sla_missed"])
+
+    def test_sla_state_marks_pdf_ready_without_email_as_missing_recipient(self) -> None:
+        state = preflight._derive_sla_state(
+            report_date=date.fromisoformat("2026-06-15"),
+            calls_total=1,
+            with_audio_calls=1,
+            upstream={"stt_ready": True, "llm1_ready": True},
+            analysis={"analysis_ready": True},
+            batch=SimpleNamespace(delivered_at=None, observability={}),
+            drafts=[SimpleNamespace(artifact={"filename": "manager.pdf"}, delivery={})],
+            manager_email={
+                "status": "blocked",
+                "primary_email": None,
+                "error": "Business email delivery is enabled, but primary recipient is not resolved.",
+            },
+            rop={"status": "not_started"},
+            now_utc=datetime.fromisoformat("2026-06-15T05:00:00+00:00"),
+        )
+
+        self.assertEqual(state["sla_status"], "blocked")
+        self.assertEqual(state["reason"], "missing_recipient")
+        self.assertEqual(state["manager_email_status"], "blocked")
+
+    def test_sla_alert_label_uses_manager_card_email_when_name_missing(self) -> None:
+        row = {
+            "manager_name": None,
+            "manager_card_email": "g.alisher@dogovor24.kz",
+            "manager_email": {"status": "blocked", "primary_email": None},
+            "manager_id": MANAGER_IDS[0],
+        }
+
+        self.assertEqual(preflight._manager_alert_label(row), "g.alisher@dogovor24.kz")
+
+    def test_sla_status_batch_selection_prefers_delivered_over_later_failed_duplicate(
+        self,
+    ) -> None:
+        manager_id = MANAGER_IDS[0]
+        schedule_id = "11111111-1111-4111-8111-111111111111"
+        report_day = "2026-06-18"
+        delivered_batch = SimpleNamespace(
+            id="22222222-2222-4222-8222-222222222222",
+            schedule_id=schedule_id,
+            department_id=DEPARTMENT_ID,
+            preset="manager_daily",
+            status="delivered",
+            period={"date_from": report_day, "date_to": report_day},
+            filters={"manager_ids": [manager_id]},
+            observability={
+                "sla_status": "on_time",
+                "manager_email_status": "delivered",
+                "delivered_at": "2026-06-18T03:10:00+00:00",
+            },
+            diagnostics={},
+            business_email_enabled=True,
+            review_required=False,
+            planned_for=datetime.fromisoformat("2026-06-18T03:00:00+00:00"),
+            created_at=datetime.fromisoformat("2026-06-18T03:00:00+00:00"),
+            delivered_at=datetime.fromisoformat("2026-06-18T03:10:00+00:00"),
+            failed_at=None,
+            errors=[],
+        )
+        failed_duplicate = SimpleNamespace(
+            id="33333333-3333-4333-8333-333333333333",
+            schedule_id=schedule_id,
+            department_id=DEPARTMENT_ID,
+            preset="manager_daily",
+            status="failed",
+            period={"date_from": report_day, "date_to": report_day},
+            filters={"manager_ids": [manager_id]},
+            observability={
+                "sla_status": "not_applicable",
+                "sla_missed_reason": "no_candidate_all_reported",
+                "scheduled_candidate_selection": {
+                    "manager_id": manager_id,
+                    "selection_reason": "no_candidate_all_reported",
+                },
+            },
+            diagnostics={},
+            business_email_enabled=True,
+            review_required=False,
+            planned_for=datetime.fromisoformat("2026-06-18T04:00:00+00:00"),
+            created_at=datetime.fromisoformat("2026-06-18T04:00:00+00:00"),
+            delivered_at=None,
+            failed_at=datetime.fromisoformat("2026-06-18T04:01:00+00:00"),
+            errors=["no_candidate_all_reported"],
+        )
+        delivered_draft = SimpleNamespace(
+            id="44444444-4444-4444-8444-444444444444",
+            batch_id=delivered_batch.id,
+            status="delivered",
+            group_key=f"manager_daily:{manager_id}:{report_day}",
+            generated_payload={},
+            artifact={"filename": "manager.pdf"},
+            delivery={
+                "sla_status": "on_time",
+                "manager_email_status": "delivered",
+                "delivered_at": "2026-06-18T03:10:00+00:00",
+                "transport": {
+                    "email_delivery": {
+                        "status": "delivered",
+                        "primary_email": "manager@example.com",
+                    }
+                },
+            },
+            errors=[],
+            created_at=datetime.fromisoformat("2026-06-18T03:05:00+00:00"),
+        )
+        db = _FakeScheduledReportingDb(
+            batches=[failed_duplicate, delivered_batch],
+            drafts=[delivered_draft],
+        )
+
+        with patch.object(preflight, "ScheduledReportBatch", _FakeScheduledReportBatch):
+            with patch.object(preflight, "ScheduledReportDraft", _FakeScheduledReportDraft):
+                batch, drafts, diagnostics = preflight._load_manager_day_batch(
+                    db,
+                    schedule_id=schedule_id,
+                    department_id=DEPARTMENT_ID,
+                    manager_id=manager_id,
+                    report_date=date.fromisoformat(report_day),
+                )
+
+        manager_email = preflight._extract_manager_email_status(drafts)
+        sla = preflight._derive_sla_state(
+            report_date=date.fromisoformat(report_day),
+            calls_total=1,
+            with_audio_calls=1,
+            upstream={"stt_ready": True, "llm1_ready": True},
+            analysis={"analysis_ready": True},
+            batch=batch,
+            drafts=drafts,
+            manager_email=manager_email,
+            rop={"status": "delivered"},
+            now_utc=datetime.fromisoformat("2026-06-18T05:00:00+00:00"),
+        )
+
+        self.assertEqual(batch.id, delivered_batch.id)
+        self.assertEqual([draft.id for draft in drafts], [delivered_draft.id])
+        self.assertEqual(manager_email["status"], "delivered")
+        self.assertEqual(sla["sla_status"], "on_time")
+        self.assertEqual(sla["delivered_at"], "2026-06-18T03:10:00+00:00")
+        self.assertEqual(diagnostics["selected_batch_id"], delivered_batch.id)
+        self.assertEqual(len(diagnostics["batch_candidates"]), 2)
+        self.assertEqual(diagnostics["batch_candidates"][0]["id"], delivered_batch.id)
+        self.assertTrue(diagnostics["batch_candidates"][0]["selected"])
+        self.assertEqual(diagnostics["batch_candidates"][1]["id"], failed_duplicate.id)
+        self.assertEqual(
+            diagnostics["batch_candidates"][1]["scheduled_candidate_selection_reason"],
+            "no_candidate_all_reported",
+        )
 
     def test_sla_precheck_alert_sends_concise_warning_summary(self) -> None:
         rows = [

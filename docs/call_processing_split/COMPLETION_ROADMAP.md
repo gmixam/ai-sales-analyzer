@@ -751,6 +751,51 @@ ALERT_TELEGRAM_MIN_LEVEL=warning
 - `py_compile`, `git diff --check` и sync `core/report_scripts` vs `scripts`
   прошли.
 
+### SPLIT-COMPLETE-07H — Manager daily production stabilization
+
+Статус: `implemented_first_pass_in_progress`
+
+ТЗ: [`docs/PILOT36_MANAGER_DAILY_AUTOMATION_STABILIZATION_TZ.md`](../PILOT36_MANAGER_DAILY_AUTOMATION_STABILIZATION_TZ.md)
+
+Контекст:
+
+- live-аудит auto-run за `2026-06-18` подтвердил, что расписание стартует:
+  `call_processing` отработал в `00:00 Asia/Almaty`, `analysis` schedule
+  стартовал в `04:00 Asia/Almaty`;
+- проблема не в запуске beat, а в устойчивости выполнения после старта:
+  создано `16` manager_daily batches вместо ожидаемых `4`, осталось `5`
+  open blockers, SLA precheck/hardcheck упали с
+  `ModuleNotFoundError: report_scripts`;
+- у Алишера email есть в `managers.email`, но delivery получил
+  `primary_email=None`;
+- по Толегену delivered batch есть, но поздние failed duplicates сбивают
+  итоговый `sla-status`.
+
+Что сделать:
+
+- [x] PILOT-36A: lock/idempotency guard для `schedule_id + planned_for +
+  manager_id/report_date`, SLA-check import fix, корректный batch-priority в
+  `sla-status`;
+- [ ] PILOT-36B: recovery текущих open/duplicate batches за `2026-06-18`;
+- [ ] PILOT-36C: recipient resolver и production terminal statuses без
+  финального `review_required`;
+- [ ] PILOT-36D: ROP daily digest, partial readiness и короткий итог
+  автозапуска.
+
+Критерий готовности:
+
+- следующий production auto-run приходит к одному понятному финальному статусу
+  по каждому менеджеру;
+- `open-batches` не показывает зависшие дубли текущего дня;
+- SLA-check `09:30/10:00` работает без Codex;
+- РОП получает один daily digest с готовыми PDF и статусом проблемных
+  менеджеров.
+
+PILOT-36A first pass проверен 2026-06-19: focused docker pytest
+`66 passed, 1 skipped, 5 subtests passed`; live `sla-status --date 2026-06-18`
+теперь выбирает delivered batch для Тимура и Толегена, а failed/open duplicates
+показывает в diagnostics.
+
 ## Ответ на вопрос про “вчерашний полный день”
 
 Да, 2026-06-14 мы сделали provider-backed прогон за полный отчетный день

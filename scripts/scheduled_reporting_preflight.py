@@ -85,6 +85,8 @@ SLA_REASON_LABELS = {
     "upstream_stt_not_ready": "транскрибация еще не готова",
     "upstream_llm1_not_ready": "первичный анализ еще не готов",
     "analysis_not_ready": "анализ еще не готов",
+    "missing_recipient": "нет email получателя для отчета",
+    "delivery_failed": "техническая ошибка отправки отчета",
     "scheduled_batch_missing": "нет готового batch для отчета",
     "scheduled_draft_missing": "нет готового черновика отчета",
     "pdf_not_ready": "нет готового PDF отчета",
@@ -229,6 +231,18 @@ def _as_iso(value: Any) -> str | None:
     return str(value)
 
 
+def _as_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 def _sla_local_dt(report_date: date, local_time: time) -> datetime:
     return datetime.combine(report_date, local_time, tzinfo=ZoneInfo(SLA_TIMEZONE))
 
@@ -287,6 +301,7 @@ def _manager_scope_from_schedules(db: Any, schedules: list[Any]) -> list[dict[st
                         "manager_id": manager_id,
                         "manager_name": getattr(manager, "name", None),
                         "manager_email": getattr(manager, "email", None),
+                        "manager_card_email": getattr(manager, "email", None),
                         "manager_active": (
                             bool(getattr(manager, "active", False))
                             if manager is not None
@@ -320,6 +335,7 @@ def _manager_scope_from_schedules(db: Any, schedules: list[Any]) -> list[dict[st
                     "manager_id": manager_id,
                     "manager_name": manager.name,
                     "manager_email": manager.email,
+                    "manager_card_email": manager.email,
                     "manager_active": bool(manager.active),
                     "manager_found": True,
                     "schedule": _schedule_summary(schedule),
@@ -461,7 +477,7 @@ def _load_manager_day_batch(
     department_id: str,
     manager_id: str,
     report_date: date,
-) -> tuple[Any | None, list[Any]]:
+) -> tuple[Any | None, list[Any], dict[str, Any]]:
     batches = (
         db.query(ScheduledReportBatch)
         .filter(
@@ -474,6 +490,7 @@ def _load_manager_day_batch(
         .all()
     )
     report_day = report_date.isoformat()
+    candidates: list[dict[str, Any]] = []
     for batch in batches:
         if not _batch_matches_manager_day(
             batch=batch,
@@ -492,8 +509,176 @@ def _load_manager_day_batch(
             for draft in drafts
             if _draft_matches_manager_day(draft=draft, manager_id=manager_id, report_day=report_day)
         ]
-        return batch, matching_drafts or drafts
-    return None, []
+        candidate_drafts = matching_drafts or drafts
+        priority, priority_reason = _manager_day_batch_priority(batch, candidate_drafts)
+        candidates.append(
+            {
+                "batch": batch,
+                "drafts": candidate_drafts,
+                "priority": priority,
+                "priority_reason": priority_reason,
+            }
+        )
+    if not candidates:
+        return None, [], {
+            "selection_strategy": "manager_day_priority",
+            "selected_batch_id": None,
+            "batch_candidates": [],
+        }
+
+    ordered = sorted(candidates, key=_manager_day_batch_sort_key)
+    selected = ordered[0]
+    selected_batch_id = str(getattr(selected["batch"], "id"))
+    diagnostics = {
+        "selection_strategy": "manager_day_priority",
+        "selected_batch_id": selected_batch_id,
+        "batch_candidates": [
+            _manager_day_batch_candidate_summary(
+                candidate,
+                selected_batch_id=selected_batch_id,
+            )
+            for candidate in ordered
+        ],
+    }
+    return selected["batch"], selected["drafts"], diagnostics
+
+
+def _manager_day_batch_sort_key(candidate: dict[str, Any]) -> tuple[int, float, str]:
+    batch = candidate["batch"]
+    return (
+        int(candidate["priority"]),
+        -_batch_sort_timestamp(batch),
+        str(getattr(batch, "id", "")),
+    )
+
+
+def _batch_sort_timestamp(batch: Any) -> float:
+    for value in (
+        getattr(batch, "created_at", None),
+        getattr(batch, "planned_for", None),
+        getattr(batch, "delivered_at", None),
+        getattr(batch, "failed_at", None),
+    ):
+        if value is None:
+            continue
+        if hasattr(value, "timestamp"):
+            return float(value.timestamp())
+    return 0.0
+
+
+def _manager_day_batch_priority(batch: Any, drafts: list[Any]) -> tuple[int, str]:
+    existing = _existing_sla_fields(batch, drafts)
+    batch_status = str(getattr(batch, "status", "") or "").strip()
+    sla_status = str(existing.get("sla_status") or "").strip()
+    manager_email_status = str(
+        existing.get("manager_email_status")
+        or _extract_manager_email_status(drafts).get("status")
+        or ""
+    ).strip()
+    reason_text = " ".join(_manager_day_batch_reason_tokens(batch, drafts, existing)).lower()
+
+    if (
+        batch_status == "delivered"
+        or getattr(batch, "delivered_at", None) is not None
+        or manager_email_status == "delivered"
+        or sla_status in {"on_time", "late"}
+        or any(str(getattr(draft, "status", "") or "") == "delivered" for draft in drafts)
+    ):
+        return 0, "delivered_or_manager_email_sent"
+
+    if (
+        batch_status in {"review_required", "approved_for_delivery"}
+        or sla_status == "blocked"
+        or manager_email_status == "blocked"
+        or "missing_recipient" in reason_text
+        or "review_required" in reason_text
+    ):
+        return 1, "blocked_missing_recipient_or_review_required"
+
+    if (
+        batch_status == "failed"
+        or sla_status == "not_applicable"
+        or "no_calls" in reason_text
+        or "no_candidate" in reason_text
+    ):
+        return 2, "failed_no_calls_or_not_applicable"
+
+    return 3, "fallback_latest"
+
+
+def _manager_day_batch_reason_tokens(
+    batch: Any,
+    drafts: list[Any],
+    existing: dict[str, Any],
+) -> list[str]:
+    tokens: list[str] = []
+    observability = dict(getattr(batch, "observability", None) or {})
+    diagnostics = dict(getattr(batch, "diagnostics", None) or {})
+    selection = dict(
+        observability.get("scheduled_candidate_selection")
+        or diagnostics.get("scheduled_candidate_selection")
+        or {}
+    )
+    for source in (
+        existing,
+        observability,
+        diagnostics,
+        selection,
+    ):
+        for key in (
+            "sla_missed_reason",
+            "failure_reason",
+            "selection_reason",
+            "reason",
+            "status",
+            "run_state",
+        ):
+            value = source.get(key)
+            if value not in (None, ""):
+                tokens.append(str(value))
+    tokens.extend(str(item) for item in list(getattr(batch, "errors", None) or []))
+    for draft in drafts:
+        tokens.extend(str(item) for item in list(getattr(draft, "errors", None) or []))
+    return tokens
+
+
+def _manager_day_batch_candidate_summary(
+    candidate: dict[str, Any],
+    *,
+    selected_batch_id: str,
+) -> dict[str, Any]:
+    batch = candidate["batch"]
+    drafts = list(candidate.get("drafts") or [])
+    existing = _existing_sla_fields(batch, drafts)
+    observability = dict(getattr(batch, "observability", None) or {})
+    diagnostics = dict(getattr(batch, "diagnostics", None) or {})
+    selection = dict(
+        observability.get("scheduled_candidate_selection")
+        or diagnostics.get("scheduled_candidate_selection")
+        or {}
+    )
+    batch_id = str(getattr(batch, "id"))
+    return {
+        "id": batch_id,
+        "selected": batch_id == selected_batch_id,
+        "selection_priority": int(candidate["priority"]),
+        "selection_reason": candidate["priority_reason"],
+        "status": getattr(batch, "status", None),
+        "created_at": _as_iso(getattr(batch, "created_at", None)),
+        "planned_for": _as_iso(getattr(batch, "planned_for", None)),
+        "delivered_at": _as_iso(getattr(batch, "delivered_at", None)),
+        "failed_at": _as_iso(getattr(batch, "failed_at", None)),
+        "sla_status": existing.get("sla_status"),
+        "sla_missed_reason": existing.get("sla_missed_reason"),
+        "manager_email_status": existing.get("manager_email_status")
+        or _extract_manager_email_status(drafts).get("status"),
+        "scheduled_candidate_selection_reason": selection.get("selection_reason"),
+        "draft_ids": [str(getattr(draft, "id")) for draft in drafts],
+        "draft_statuses": {
+            str(getattr(draft, "id")): getattr(draft, "status", None) for draft in drafts
+        },
+        "errors": list(getattr(batch, "errors", None) or []),
+    }
 
 
 def _batch_matches_manager_day(*, batch: Any, manager_id: str, report_day: str) -> bool:
@@ -614,6 +799,15 @@ def _derive_sla_state(
     now_utc = now_utc or datetime.now(UTC)
     pdf_ready = _draft_pdf_ready(drafts)
     email_status = str(manager_email.get("status") or "not_started")
+    delivered_at = existing.get("delivered_at") or _as_iso(getattr(batch, "delivered_at", None))
+    batch_delivered = bool(
+        batch is not None
+        and (
+            str(getattr(batch, "status", "") or "") == "delivered"
+            or delivered_at
+            or str(existing.get("manager_email_status") or "") == "delivered"
+        )
+    )
     if calls_total == 0:
         derived_status = "not_applicable"
         reason = "no_calls_for_report_day"
@@ -632,6 +826,13 @@ def _derive_sla_state(
     elif batch is None:
         derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
         reason = "scheduled_batch_missing"
+    elif batch_delivered:
+        delivered_dt = _as_datetime(delivered_at)
+        missed = bool(existing.get("sla_missed"))
+        if "sla_missed" not in existing and delivered_dt is not None:
+            missed = delivered_dt > deadline_utc
+        derived_status = "late" if missed else "on_time"
+        reason = "delivered_after_sla_deadline" if missed else "manager_email_delivered"
     elif not drafts:
         derived_status = "missed_pending" if now_utc >= deadline_utc else "not_applicable"
         reason = "scheduled_draft_missing"
@@ -647,7 +848,13 @@ def _derive_sla_state(
             reason = "manager_email_delivered"
     elif email_status in {"blocked", "failed"}:
         derived_status = "blocked"
-        reason = manager_email.get("error") or f"manager_email_{email_status}"
+        primary_email = str(manager_email.get("primary_email") or "").strip()
+        if pdf_ready and not primary_email:
+            reason = "missing_recipient"
+        elif primary_email:
+            reason = "delivery_failed"
+        else:
+            reason = manager_email.get("error") or f"manager_email_{email_status}"
     elif now_utc >= deadline_utc:
         derived_status = "missed_pending"
         reason = f"manager_email_{email_status or 'not_delivered'}"
@@ -659,13 +866,15 @@ def _derive_sla_state(
     missed_reason = existing.get("sla_missed_reason") or reason
     return {
         **window,
-        "delivered_at": existing.get("delivered_at")
-        or _as_iso(getattr(batch, "delivered_at", None)),
+        "delivered_at": delivered_at,
         "sla_status": status,
-        "sla_missed": bool(existing.get("sla_missed", status in {"missed_pending", "blocked"})),
+        "sla_missed": bool(
+            existing.get("sla_missed", status in {"missed_pending", "blocked", "late"})
+        ),
         "sla_missed_reason": missed_reason,
         "late_delivery_at": existing.get("late_delivery_at"),
-        "manager_email_status": existing.get("manager_email_status") or email_status,
+        "manager_email_status": existing.get("manager_email_status")
+        or ("delivered" if batch_delivered else email_status),
         "rop_email_status": existing.get("rop_email_status") or rop.get("status"),
         "reason": missed_reason,
     }
@@ -687,7 +896,7 @@ def _build_manager_sla_row(
     with_audio = [item for item in interactions if _interaction_requires_upstream(item)]
     upstream = _load_artifact_counts(db, with_audio)
     analysis = _load_analysis_counts(db, with_audio)
-    batch, drafts = _load_manager_day_batch(
+    batch, drafts, batch_diagnostics = _load_manager_day_batch(
         db,
         schedule_id=scope["schedule_id"],
         department_id=scope["department_id"],
@@ -708,6 +917,9 @@ def _build_manager_sla_row(
         rop=rop,
         now_utc=now_utc,
     )
+    manager_card_email = scope.get("manager_card_email")
+    if manager_card_email is None and not isinstance(scope.get("manager_email"), dict):
+        manager_card_email = scope.get("manager_email")
     return {
         **scope,
         "report_date": report_date.isoformat(),
@@ -722,9 +934,11 @@ def _build_manager_sla_row(
         "batch": _batch_summary(batch),
         "drafts": [_draft_summary(item) for item in drafts],
         "draft_pdf_ready": _draft_pdf_ready(drafts),
+        "manager_card_email": manager_card_email,
         "manager_email": manager_email,
         "rop_email": rop,
         "sla": sla,
+        "diagnostics": batch_diagnostics,
     }
 
 
@@ -795,7 +1009,7 @@ def _manager_alert_label(row: dict[str, Any]) -> str:
     name = str(row.get("manager_name") or "").strip()
     if name:
         return name
-    email = str(row.get("manager_email") or "").strip()
+    email = str(row.get("manager_card_email") or "").strip()
     if email:
         return email
     manager_id = str(row.get("manager_id") or "").strip()

@@ -271,6 +271,26 @@ class EnsureResponse(BaseModel):
     costs: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProcessingRunReadiness(BaseModel):
+    """Read-only processing-run state used by analysis before starting work."""
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    run_id: str
+    status: ProcessingRunStatus
+    scope_hash: str
+    requested_by: str | None = None
+    required_artifacts: list[str] = Field(default_factory=list)
+    mode: str | None = None
+    counts: dict[str, Any] = Field(default_factory=dict)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class AccessGrant(BaseModel):
     """Per service/employee call-processing access grant."""
 
