@@ -229,9 +229,9 @@ async def get_latest_run_for_scope(
     return _run_to_dict(run)
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id:uuid}")
 async def get_run(
-    run_id: str,
+    run_id: uuid.UUID,
     _grant: AccessGrant = Depends(require_reader),
     db: Any = Depends(get_session),
 ) -> dict[str, Any]:

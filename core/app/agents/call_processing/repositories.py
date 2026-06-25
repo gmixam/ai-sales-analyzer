@@ -210,9 +210,13 @@ class ProcessingRunRepository:
         return run
 
     def get(self, run_id: uuid.UUID | str) -> CallProcessingRun | None:
+        try:
+            normalized_run_id = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
+        except (TypeError, ValueError, AttributeError):
+            return None
         if hasattr(self.session, "get"):
-            return self.session.get(CallProcessingRun, run_id)
-        stmt = select(CallProcessingRun).where(CallProcessingRun.id == run_id)
+            return self.session.get(CallProcessingRun, normalized_run_id)
+        stmt = select(CallProcessingRun).where(CallProcessingRun.id == normalized_run_id)
         return self.session.scalars(stmt).first()
 
     def list_open(self) -> list[CallProcessingRun]:

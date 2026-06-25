@@ -1079,6 +1079,11 @@ class CallsManualReportingOrchestrator:
         execution_model = self._resolve_execution_model(preset=preset)
         source_summary = self._empty_source_summary(period=source_period, execution_model=execution_model)
         source_discovery_errors: list[str] = []
+        wait_for_upstream_readiness = (
+            preset.code == "manager_daily"
+            and normalized_mode == "build_missing_and_report"
+            and delivery_options.send_business_email
+        )
         if self._allows_source_discovery(preset=preset):
             if self._call_processing_external_service_mode_enabled():
                 try:
@@ -1086,11 +1091,7 @@ class CallsManualReportingOrchestrator:
                         filters=filters,
                         period=source_period,
                         mode=normalized_mode,
-                        wait_for_upstream_readiness=(
-                            preset.code == "manager_daily"
-                            and normalized_mode == "build_missing_and_report"
-                            and delivery_options.send_business_email
-                        ),
+                        wait_for_upstream_readiness=wait_for_upstream_readiness,
                     )
                     source_summary["execution_model"] = execution_model
                     if source_summary.get("call_processing_waiting_upstream"):
@@ -1239,15 +1240,49 @@ class CallsManualReportingOrchestrator:
                 retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
             )
 
-        artifacts, build_summary, build_errors = await self._prepare_artifacts(
-            interactions=interactions,
-            preset=preset,
-            mode=normalized_mode,
-            force_retry_quota_blocked=filters.force_retry_quota_blocked,
-            force_rebuild_analyses=filters.force_rebuild_analyses,
-            include_controlled_samples=filters.include_controlled_samples,
-            analysis_instruction_version=filters.analysis_instruction_version,
-        )
+        try:
+            artifacts, build_summary, build_errors = await self._prepare_artifacts(
+                interactions=interactions,
+                preset=preset,
+                mode=normalized_mode,
+                force_retry_quota_blocked=filters.force_retry_quota_blocked,
+                force_rebuild_analyses=filters.force_rebuild_analyses,
+                include_controlled_samples=filters.include_controlled_samples,
+                analysis_instruction_version=filters.analysis_instruction_version,
+            )
+        except ASAError as exc:
+            if not self._should_wait_for_call_processing_retrieval(
+                wait_for_upstream_readiness=wait_for_upstream_readiness,
+                source_summary=source_summary,
+                error=exc,
+            ):
+                raise
+            reason = "waiting_upstream"
+            waiting_source_summary = self._call_processing_summary_with_retrieval_wait(
+                source_summary=source_summary,
+                reason=reason,
+                error=str(exc),
+            )
+            return self._build_terminal_run_result(
+                preset=preset,
+                mode=normalized_mode,
+                period=period,
+                source_period=source_period,
+                diagnostics_context=diagnostics_context,
+                filters=filters,
+                source_summary=waiting_source_summary,
+                build_summary=self._empty_build_summary(),
+                reports=[],
+                selected_interactions_count=len(interactions),
+                final_selected_interactions_count=0,
+                overall_status=reason,
+                errors=[reason],
+                artifacts=[],
+                delivery_options=delivery_options,
+                pre_run_alerts=start_alerts,
+                send_manager_daily_rop_bundle=send_manager_daily_rop_bundle,
+                retain_runtime_rop_bundle_attachments=retain_runtime_rop_bundle_attachments,
+            )
 
         reports = self._group_and_build_reports(
             preset=preset,
@@ -1774,6 +1809,46 @@ class CallsManualReportingOrchestrator:
         )
         if error:
             summary["call_processing_readiness_error"] = error
+        return summary
+
+    @staticmethod
+    def _is_call_processing_artifact_read_timeout(error: ASAError) -> bool:
+        text = str(error)
+        return (
+            "call_processing_client_read_timeout" in text
+            and "operation=get_processed_artifacts" in text
+        )
+
+    @classmethod
+    def _should_wait_for_call_processing_retrieval(
+        cls,
+        *,
+        wait_for_upstream_readiness: bool,
+        source_summary: dict[str, Any],
+        error: ASAError,
+    ) -> bool:
+        if not wait_for_upstream_readiness or not cls._is_call_processing_artifact_read_timeout(error):
+            return False
+        readiness = str(source_summary.get("call_processing_readiness") or "").strip()
+        artifacts_missing = int(source_summary.get("call_processing_artifacts_missing") or 0)
+        return readiness == "upstream_partial" or (readiness == "ready" and artifacts_missing <= 0)
+
+    @staticmethod
+    def _call_processing_summary_with_retrieval_wait(
+        *,
+        source_summary: dict[str, Any],
+        reason: str,
+        error: str,
+    ) -> dict[str, Any]:
+        summary = dict(source_summary)
+        summary.update(
+            {
+                "call_processing_readiness": reason,
+                "call_processing_waiting_upstream": True,
+                "call_processing_ensure_skipped": True,
+                "call_processing_readiness_error": error,
+            }
+        )
         return summary
 
     async def _ensure_call_processing_source_artifacts(

@@ -284,6 +284,28 @@ class ScheduledReportingPreflightCliTests(unittest.TestCase):
         sla_status.assert_called_once()
         self.assertEqual(sla_status.call_args.args[0].date, "2026-06-15")
 
+    def test_post_run_audit_command_dispatches_without_running_pipeline(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        payload = {
+            "status": "ok",
+            "action": "post_run_audit",
+            "report_date": "2026-06-15",
+            "billable_pipeline_started": False,
+        }
+
+        with patch.object(preflight, "post_run_audit", return_value=payload) as audit:
+            with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+                exit_code = preflight.main(
+                    ["--json", "post-run-audit", "--date", "2026-06-15"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+        audit.assert_called_once()
+        self.assertEqual(audit.call_args.args[0].date, "2026-06-15")
+
     def test_sla_check_command_dispatches_phase_without_running_pipeline(self) -> None:
         stdout = StringIO()
         payload = {
@@ -355,6 +377,306 @@ class ScheduledReportingPreflightCliTests(unittest.TestCase):
         self.assertEqual(state["sla_status"], "not_applicable")
         self.assertEqual(state["reason"], "no_calls_for_report_day")
         self.assertFalse(state["sla_missed"])
+
+    def test_rop_digest_status_sent_exposes_delivery_metadata(self) -> None:
+        digest = preflight._derive_rop_digest_status(
+            report_date=date.fromisoformat("2026-06-15"),
+            managers=[],
+            candidates=[
+                {
+                    "status": "sent",
+                    "target": "edo.rop@example.com",
+                    "attachments_count": 3,
+                    "rows_count": 4,
+                    "delivery_metadata": {"message_id": "smtp-123", "status": "sent"},
+                    "batch_id": "batch-1",
+                    "created_at": "2026-06-15T05:00:00+00:00",
+                }
+            ],
+        )
+
+        self.assertEqual(digest["status"], "sent")
+        self.assertTrue(digest["sent"])
+        self.assertEqual(digest["recipient"], "edo.rop@example.com")
+        self.assertEqual(digest["attachments_count"], 3)
+        self.assertEqual(digest["rows_count"], 4)
+        self.assertEqual(digest["message_id"], "smtp-123")
+        self.assertEqual(digest["operator_action"], "none")
+
+    def test_rop_digest_status_missing_when_manager_reports_delivered(self) -> None:
+        digest = preflight._derive_rop_digest_status(
+            report_date=date.fromisoformat("2026-06-15"),
+            managers=[
+                {
+                    "manager_email": {"status": "delivered"},
+                    "sla": {"sla_status": "on_time"},
+                    "batch": {"status": "delivered"},
+                    "calls": {"total": 1, "with_audio": 1},
+                },
+                {
+                    "manager_email": {"status": "not_started"},
+                    "sla": {
+                        "sla_status": "not_applicable",
+                        "reason": "no_calls_for_report_day",
+                    },
+                    "batch": {"status": "failed"},
+                    "calls": {"total": 0, "with_audio": 0},
+                },
+            ],
+            candidates=[],
+        )
+
+        self.assertEqual(digest["status"], "missing_digest")
+        self.assertFalse(digest["sent"])
+        self.assertEqual(
+            digest["reason"],
+            "manager_reports_delivered_but_scheduled_rop_daily_digest_missing",
+        )
+        self.assertIn("resend the ROP digest", digest["operator_action"])
+
+    def test_rop_digest_status_not_required_for_all_no_calls(self) -> None:
+        digest = preflight._derive_rop_digest_status(
+            report_date=date.fromisoformat("2026-06-15"),
+            managers=[
+                {
+                    "manager_email": {"status": "not_started"},
+                    "sla": {
+                        "sla_status": "not_applicable",
+                        "reason": "no_calls_for_report_day",
+                    },
+                    "batch": {"status": "failed"},
+                    "calls": {"total": 0, "with_audio": 0},
+                }
+            ],
+            candidates=[],
+        )
+
+        self.assertEqual(digest["status"], "not_required")
+        self.assertEqual(digest["reason"], "all_manager_days_not_applicable")
+        self.assertEqual(digest["operator_action"], "none")
+
+    def test_post_run_audit_ok_allows_late_and_no_calls_not_applicable(self) -> None:
+        delivered = _sla_row(
+            MANAGER_IDS[0],
+            manager_name="Alisher",
+            reason="manager_email_delivered",
+            email_status="delivered",
+            extra={
+                "sla": {"sla_status": "late", "reason": "delivered_after_sla_deadline"},
+                "batch": {"id": "batch-1", "status": "delivered", "errors": []},
+            },
+        )
+        no_calls = _sla_row(
+            MANAGER_IDS[1],
+            manager_name="Ilya",
+            reason="no_calls_for_report_day",
+            email_status="not_started",
+            extra={
+                "calls": {"total": 0, "with_audio": 0, "no_audio": 0, "presence": False},
+                "sla": {"sla_status": "not_applicable", "reason": "no_calls_for_report_day"},
+                "batch": {"id": "batch-2", "status": "failed", "errors": ["no_calls"]},
+            },
+        )
+        open_summary = {"count": 0, "blockers_count": 0, "blockers": []}
+        findings = preflight._audit_technical_findings(
+            schedules=[SimpleNamespace(id="schedule-1")],
+            scope=[{"manager_id": MANAGER_IDS[0]}, {"manager_id": MANAGER_IDS[1]}],
+            managers=[delivered, no_calls],
+            rop_digest={"status": "sent", "sent": True},
+            open_batches_summary=open_summary,
+        )
+
+        self.assertEqual(findings, [])
+        self.assertEqual(preflight._audit_status(findings), "ok")
+        actions = preflight._audit_recommended_next_actions(
+            status="ok",
+            findings=findings,
+            rop_digest={"status": "sent"},
+            open_batches_summary=open_summary,
+        )
+        self.assertEqual(actions, ["No action required; keep observing the next scheduled run."])
+
+    def test_post_run_audit_flags_missing_digest_and_open_blocker(self) -> None:
+        manager = _sla_row(
+            MANAGER_IDS[0],
+            manager_name="Timur",
+            reason="manager_email_delivered",
+            email_status="delivered",
+            extra={
+                "sla": {"sla_status": "on_time", "reason": "manager_email_delivered"},
+                "batch": {"id": "batch-1", "status": "delivered", "errors": []},
+            },
+        )
+        open_summary = preflight._audit_open_batches_summary(
+            [
+                {
+                    "batch_id": "open-batch-1",
+                    "schedule_id": "schedule-1",
+                    "status": "review_required",
+                    "period": {"date_from": "2026-06-15", "date_to": "2026-06-15"},
+                    "manager_ids": [MANAGER_IDS[0]],
+                    "potential_manager_daily_blocker": True,
+                    "blocker_reasons": ["open batch on active manager_daily schedule"],
+                    "blocked_by_draft_ids": ["draft-1"],
+                    "recovery_hint": "recover-open-batches --batch-id open-batch-1",
+                }
+            ]
+        )
+        rop_digest = {
+            "status": "missing_digest",
+            "reason": "manager_reports_delivered_but_scheduled_rop_daily_digest_missing",
+            "batch_id": None,
+        }
+
+        findings = preflight._audit_technical_findings(
+            schedules=[SimpleNamespace(id="schedule-1")],
+            scope=[{"manager_id": MANAGER_IDS[0]}],
+            managers=[manager],
+            rop_digest=rop_digest,
+            open_batches_summary=open_summary,
+        )
+
+        self.assertEqual(preflight._audit_status(findings), "blocked")
+        self.assertIn("open_manager_daily_blockers", {item["code"] for item in findings})
+        self.assertIn("missing_digest", {item["code"] for item in findings})
+        actions = preflight._audit_recommended_next_actions(
+            status="blocked",
+            findings=findings,
+            rop_digest=rop_digest,
+            open_batches_summary=open_summary,
+        )
+        self.assertTrue(any("open-batches" in item for item in actions))
+        self.assertTrue(any("scheduled_rop_daily_digest" in item for item in actions))
+
+    def test_post_run_audit_manager_outcome_keeps_readiness_and_analysis(self) -> None:
+        row = _sla_row(
+            MANAGER_IDS[0],
+            manager_name="Timur",
+            reason="analysis_not_ready",
+            extra={
+                "upstream": {"stt_ready": True, "llm1_ready": True},
+                "analysis": {"analysis_ready": False, "present": 1, "ready": 0},
+                "draft_pdf_ready": False,
+                "batch": {"id": "batch-1", "status": "running", "errors": []},
+            },
+        )
+
+        outcome = preflight._audit_manager_outcome(row)
+
+        self.assertEqual(outcome["sla_status"], "missed_pending")
+        self.assertEqual(outcome["manager_email_status"], "planned")
+        self.assertEqual(outcome["batch_status"], "running")
+        self.assertEqual(outcome["calls_total"], 1)
+        self.assertEqual(outcome["calls_with_audio"], 1)
+        self.assertEqual(outcome["readiness"]["stt_ready"], True)
+        self.assertEqual(outcome["readiness"]["analysis_ready"], False)
+        self.assertEqual(outcome["analysis"]["present"], 1)
+
+    def test_post_run_audit_human_output_is_compact_without_raw_json(self) -> None:
+        result = {
+            "status": "attention_required",
+            "action": "post_run_audit",
+            "report_date": "2026-06-15",
+            "billable_pipeline_started": False,
+            "scope": {"active_schedules_count": 1, "active_managers_count": 1},
+            "manager_outcomes": [
+                {
+                    "manager_id": MANAGER_IDS[0],
+                    "manager_name": "Timur",
+                    "sla_status": "missed_pending",
+                    "manager_email_status": "planned",
+                    "batch_status": "running",
+                    "calls_total": 2,
+                    "calls_with_audio": 2,
+                    "reason": "read_timeout",
+                }
+            ],
+            "rop_digest": {"status": "sent", "sent": True, "attachments_count": 1},
+            "open_batches": {"count": 0, "blockers_count": 0, "blockers": []},
+            "technical_findings": [
+                {
+                    "severity": "attention_required",
+                    "message": "Timur: timeout/read_timeout recorded.",
+                }
+            ],
+            "recommended_next_actions": ["Check API/worker timeout logs."],
+        }
+
+        text = preflight._format_post_run_audit(result)
+
+        self.assertIn("Итог дня:", text)
+        self.assertIn("Менеджеры:", text)
+        self.assertIn("ROP digest:", text)
+        self.assertIn("Open batches / blockers:", text)
+        self.assertIn("Что сделать дальше:", text)
+        self.assertIn("billable_pipeline_started=no", text)
+        self.assertNotIn("{", text)
+        self.assertNotIn("}", text)
+
+    def test_post_run_audit_composes_read_only_result(self) -> None:
+        schedule = SimpleNamespace(
+            id="schedule-1",
+            department_id=DEPARTMENT_ID,
+            enabled=True,
+            preset="manager_daily",
+            start_time="04:00",
+            timezone="Asia/Almaty",
+            recurrence_type="daily",
+            report_period_rule="previous_day",
+            mode="build_missing_and_report",
+            business_email_enabled=True,
+            review_required=False,
+            next_run_at=None,
+        )
+        scope = [
+            {
+                "schedule_id": "schedule-1",
+                "department_id": DEPARTMENT_ID,
+                "manager_id": MANAGER_IDS[0],
+                "manager_name": "Timur",
+                "manager_card_email": "timur@example.com",
+                "manager_active": True,
+                "manager_found": True,
+            }
+        ]
+        manager = _sla_row(
+            MANAGER_IDS[0],
+            manager_name="Timur",
+            reason="manager_email_delivered",
+            email_status="delivered",
+            extra={
+                "sla": {"sla_status": "on_time", "reason": "manager_email_delivered"},
+                "batch": {"id": "batch-1", "status": "delivered", "errors": []},
+                "upstream": {"stt_ready": True, "llm1_ready": True},
+                "analysis": {"analysis_ready": True},
+                "draft_pdf_ready": True,
+            },
+        )
+
+        with patch.object(preflight, "get_db", fake_db):
+            with patch.object(preflight, "_active_manager_daily_schedules", return_value=[schedule]):
+                with patch.object(preflight, "_manager_scope_from_schedules", return_value=scope):
+                    with patch.object(preflight, "_build_manager_sla_row", return_value=manager):
+                        with patch.object(
+                            preflight,
+                            "_load_rop_digest_status",
+                            return_value={"status": "sent", "sent": True},
+                        ):
+                            with patch.object(
+                                preflight,
+                                "_load_open_batch_rows",
+                                return_value=([schedule], []),
+                            ):
+                                result = preflight.post_run_audit(
+                                    SimpleNamespace(date="2026-06-15")
+                                )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["action"], "post_run_audit")
+        self.assertFalse(result["billable_pipeline_started"])
+        self.assertEqual(result["scope"]["active_schedules_count"], 1)
+        self.assertEqual(result["manager_outcomes"][0]["manager_name"], "Timur")
+        self.assertEqual(result["technical_findings"], [])
 
     def test_sla_state_marks_missing_delivery_after_deadline_as_missed(self) -> None:
         state = preflight._derive_sla_state(

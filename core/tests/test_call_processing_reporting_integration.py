@@ -571,6 +571,95 @@ def test_manager_daily_external_service_running_upstream_returns_waiting_without
     assert summary["call_processing_run_id"] == "run-running"
 
 
+def test_manager_daily_external_service_retrieval_timeout_waits_after_ready_upstream() -> None:
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    interaction = _interaction()
+    source_summary = {
+        "execution_model": "source_aware_full_manual",
+        "days_scanned": 1,
+        "call_processing_mode": "external_service",
+        "call_processing_run_id": "run-ready",
+        "call_processing_status": "ready",
+        "call_processing_scope_hash": "hash-ready",
+        "call_processing_readiness": "ready",
+        "call_processing_waiting_upstream": False,
+        "call_processing_ensure_skipped": True,
+        "call_processing_artifacts_ready": 9,
+        "call_processing_artifacts_missing": 0,
+        "targeted_source_records_total": 3,
+        "already_persisted_source_records_total": 3,
+        "missing_source_records_total": 0,
+    }
+
+    async def _ensure_source(**_kwargs):
+        return dict(source_summary)
+
+    async def _prepare(**_kwargs):
+        raise ASAError(
+            "call_processing_client_read_timeout: operation=get_processed_artifacts timeout_sec=180"
+        )
+
+    setattr(orchestrator, "_collect_run_diagnostics_context", lambda **_kwargs: {})
+    setattr(orchestrator, "_send_run_start_alerts", lambda **_kwargs: [])
+    setattr(orchestrator, "_send_run_monitor_alerts", lambda **_kwargs: [])
+    setattr(
+        orchestrator,
+        "_send_manager_daily_rop_bundle",
+        lambda **_kwargs: {"enabled": False, "status": "skipped", "attachments_count": 0},
+    )
+    setattr(orchestrator, "_ensure_call_processing_source_artifacts", _ensure_source)
+    setattr(orchestrator, "_select_interactions", lambda **_kwargs: [interaction])
+    setattr(orchestrator, "_prepare_artifacts", _prepare)
+    setattr(
+        orchestrator,
+        "_build_run_observability",
+        lambda **kwargs: {"summary": {"source": kwargs["source_summary"]}},
+    )
+    setattr(orchestrator, "_build_run_diagnostics", lambda **kwargs: {"status": kwargs["overall_status"]})
+
+    previous = os.environ.get("CALL_PROCESSING_MODE")
+    os.environ["CALL_PROCESSING_MODE"] = "external_service"
+    try:
+        result = asyncio.run(
+            CallsManualReportingOrchestrator.run_report(
+                orchestrator,
+                preset_code="manager_daily",
+                mode="build_missing_and_report",
+                filters=ReportRunFilters(date_from="2026-06-03", date_to="2026-06-03"),
+                delivery_mode="business_email_only",
+                send_manager_daily_rop_bundle=False,
+            )
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("CALL_PROCESSING_MODE", None)
+        else:
+            os.environ["CALL_PROCESSING_MODE"] = previous
+
+    returned_source = result["observability"]["summary"]["source"]
+    assert result["status"] == "waiting_upstream"
+    assert result["errors"] == ["waiting_upstream"]
+    assert result["selected_interactions"] == 1
+    assert returned_source["call_processing_waiting_upstream"] is True
+    assert returned_source["call_processing_readiness"] == "waiting_upstream"
+    assert returned_source["call_processing_run_id"] == "run-ready"
+    assert "operation=get_processed_artifacts" in returned_source["call_processing_readiness_error"]
+
+
+def test_call_processing_retrieval_timeout_waits_for_partial_upstream() -> None:
+    assert CallsManualReportingOrchestrator._should_wait_for_call_processing_retrieval(
+        wait_for_upstream_readiness=True,
+        source_summary={
+            "call_processing_readiness": "upstream_partial",
+            "call_processing_artifacts_missing": 5,
+        },
+        error=ASAError(
+            "call_processing_client_read_timeout: operation=get_processed_artifacts timeout_sec=180"
+        ),
+    )
+
+
 def test_build_run_observability_external_service_merges_upstream_and_downstream_costs() -> None:
     orchestrator = object.__new__(CallsManualReportingOrchestrator)
 

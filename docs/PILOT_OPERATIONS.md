@@ -65,9 +65,9 @@ PY
 8. Только после review или явного указания пользователя запускать business
    delivery менеджерам.
 9. После полного дневного прогона заполнить KPI/стоимость.
-10. Выполнить короткий post-run audit: проверить runner status, readiness,
-    coverage, missing/rejected artifacts, delivery, cost, аномалии в PDF и
-    report-facing блоках.
+10. Выполнить короткий post-run audit. Для scheduled `manager_daily` сначала
+    использовать read-only CLI `post-run-audit --date YYYY-MM-DD`, затем при
+    необходимости допроверить PDF/report-facing аномалии вручную.
 11. Если аномалия или ошибка не исправлена в рамках текущего запуска, занести
     ее в `docs/PILOT_BACKLOG.md` как `Operational finding` и связать с
     существующей задачей или создать новую задачу.
@@ -97,6 +97,23 @@ PY
 - `observability.ai_costs` и явные `price_missing` / abnormal cost spikes;
 - report-facing аномалии: пустые важные блоки, ложные статусы, обрезанная суть
   звонка, несходящаяся воронка, странные баллы/denominator, placeholders.
+
+Для scheduled `manager_daily` после завершения дня запускать read-only audit:
+
+```bash
+docker compose exec -T api python /app/report_scripts/scheduled_reporting_preflight.py \
+  post-run-audit --date YYYY-MM-DD
+```
+
+JSON-вариант для Codex/логирования:
+
+```bash
+docker compose exec -T api python /app/report_scripts/scheduled_reporting_preflight.py \
+  --json post-run-audit --date YYYY-MM-DD
+```
+
+Команда не запускает STT/LLM/report/delivery pipeline и не меняет расписание:
+она читает существующие SLA rows, ROP digest diagnostics и open batches.
 
 Дополнительный обязательный чек для `manager_daily` после PILOT-22:
 

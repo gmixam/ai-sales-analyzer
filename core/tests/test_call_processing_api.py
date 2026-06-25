@@ -300,6 +300,49 @@ def test_latest_run_route_returns_exact_scope_readiness(monkeypatch) -> None:
     assert payload["counts"]["artifacts_missing"] == 0
 
 
+def test_latest_run_route_missing_uses_latest_handler_not_uuid_route(monkeypatch) -> None:
+    client = TestClient(app)
+
+    class FakeProcessingRunRepository:
+        latest_calls = 0
+        get_calls = 0
+
+        def __init__(self, _db: object) -> None:
+            pass
+
+        def latest_for_scope(self, *, scope: ProcessingScope, required_artifacts: list[object]):
+            self.__class__.latest_calls += 1
+            assert scope.source == "onlinepbx"
+            assert [str(item.value if hasattr(item, "value") else item) for item in required_artifacts] == [
+                "transcript",
+                "llm1_first_pass",
+            ]
+            return None
+
+        def get(self, run_id: object):
+            self.__class__.get_calls += 1
+            raise AssertionError(f"latest was routed through generic run_id={run_id!r}")
+
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+    monkeypatch.setattr(call_processing_routes, "ProcessingRunRepository", FakeProcessingRunRepository)
+    try:
+        response = client.get(
+            "/call-processing/runs/latest",
+            headers={"X-Call-Processing-Grant": _grant("reader")},
+            params={
+                "scope": json.dumps(_scope()),
+                "required_artifacts": "transcript,llm1_first_pass",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run not found"
+    assert FakeProcessingRunRepository.latest_calls == 1
+    assert FakeProcessingRunRepository.get_calls == 0
+
+
 def test_single_artifact_route_returns_latest_active_for_reader(monkeypatch) -> None:
     client = TestClient(app)
     interaction_id = uuid4()

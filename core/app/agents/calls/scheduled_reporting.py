@@ -1242,6 +1242,12 @@ class ScheduledReviewableReportingService:
                 "status": delivery.get("status") or "sent",
                 "reason": None,
                 "subject": subject,
+                "message_id": delivery.get("message_id"),
+                "delivery_metadata": {
+                    key: delivery.get(key)
+                    for key in ("status", "channel", "target", "message_id", "artifact")
+                    if delivery.get(key) not in (None, "")
+                },
                 "delivery": delivery,
             }
         )
@@ -1334,6 +1340,10 @@ class ScheduledReviewableReportingService:
             if batch_status == "paused" or observability.get("upstream_waiting"):
                 return "will_retry", upstream_reason or "ожидаем готовность транскрибации/LLM1"
             if batch_status == "failed":
+                if missed_reason == "no_calls_for_report_day":
+                    return "no_calls", missed_reason
+                if missed_reason == "no_audio_calls_for_report_day":
+                    return "not_applicable", missed_reason
                 if missed_reason == MANAGER_DAILY_UPSTREAM_DEADLINE_REASON:
                     return "not_ready", "артефакты не готовы до дедлайна"
                 return "blocked", missed_reason or "отчёт не сформирован"
@@ -1343,8 +1353,8 @@ class ScheduledReviewableReportingService:
                 return "delivered", "отчёт доставлен"
 
         selection_reason = str(selection.get("reason") or selection.get("selection_reason") or "").strip()
-        if selection_reason == "no_calls":
-            return "no_calls", "за день нет звонков для отчёта"
+        if selection_reason in {"no_calls", "no_calls_for_report_day", "no_candidate_empty_previous_day"}:
+            return "no_calls", selection_reason if selection_reason != "no_calls" else "за день нет звонков для отчёта"
         if selection_reason in {"analysis_not_ready", "not_ready"}:
             return "not_ready", "анализ ещё не готов"
         if selection_reason in {"already_reported", "blocked_by_open_batch"}:

@@ -15,6 +15,7 @@ SCHEDULED_REPORTING_TASK = "calls.scan_scheduled_reviewable_reporting"
 SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK = "call_processing.ensure_daily_upstream"
 MANAGER_DAILY_SLA_PRECHECK_TASK = "calls.manager_daily_sla_precheck"
 MANAGER_DAILY_SLA_HARDCHECK_TASK = "calls.manager_daily_sla_hardcheck"
+RUNTIME_IDENTITY_TASK = "runtime.identity"
 MANAGER_DAILY_SLA_TIMEZONE = "Asia/Almaty"
 APP_SERVICE_CALL_PROCESSING = "call_processing"
 APP_SERVICE_ANALYSIS = "analysis"
@@ -39,6 +40,16 @@ def scheduled_reporting_queue(app_service: str) -> str:
     return DEFAULT_QUEUE
 
 
+def runtime_identity_queue(app_service: str) -> str:
+    """Route runtime probes to the service-local worker queue."""
+    normalized = str(app_service or APP_SERVICE_MONOLITH_LEGACY).strip().lower()
+    if normalized == APP_SERVICE_CALL_PROCESSING:
+        return CALL_PROCESSING_QUEUE
+    if normalized == APP_SERVICE_ANALYSIS:
+        return ANALYSIS_QUEUE
+    return DEFAULT_QUEUE
+
+
 def build_task_routes(app_service: str) -> dict[str, dict[str, str]]:
     """Build explicit task routes for service-split queue isolation."""
     return {
@@ -46,6 +57,7 @@ def build_task_routes(app_service: str) -> dict[str, dict[str, str]]:
         SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK: {"queue": CALL_PROCESSING_QUEUE},
         MANAGER_DAILY_SLA_PRECHECK_TASK: {"queue": scheduled_reporting_queue(app_service)},
         MANAGER_DAILY_SLA_HARDCHECK_TASK: {"queue": scheduled_reporting_queue(app_service)},
+        RUNTIME_IDENTITY_TASK: {"queue": runtime_identity_queue(app_service)},
     }
 
 

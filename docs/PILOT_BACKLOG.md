@@ -89,6 +89,11 @@ delivery.
 | PILOT-36B | Recovery текущего состояния 2026-06-18 | `implemented_first_pass` | Выполнен safe recovery через `scheduled_reporting_preflight.py recover-open-batches`: 5 старых open blockers за `2026-06-18` переведены `review_required -> paused` с причиной `PILOT-36B_2026-06-18_duplicate_open_blocker_recovery`; rows не удалялись; delivered batches Тимура/Толегена и failed historical duplicates Ильи/Тимура/Толегена не менялись | Проверено: dry-run `matched=5/planned=5/skipped=0`, apply `applied=5`; `open-batches --date 2026-06-18` вернул `open_batches_count=0`, `potential_manager_daily_blockers_count=0`; `sla-status --date 2026-06-18` остается понятным: Алишер `blocked/missing_recipient` на paused diagnostic batch, Илья `not_applicable`, Тимур и Толеген `delivered/on_time` |
 | PILOT-36C | Доставка и production-статусы | `implemented_first_pass` | Реализован first pass: `manager_daily` recipient resolver теперь добирает `Manager.email` из БД по single-manager scope/payload/artifacts, если `ReportArtifact.manager` не присоединен; production schedule (`review_required=false`, `business_email_enabled=true`) больше не оставляет blocked delivery outcomes финальным `review_required`; batch/draft observability нормализует `delivered`, `missing_recipient`, `analysis_not_ready`, `delivery_failed`, `no_calls/not_applicable`, `paused` | Проверено: `py_compile`, `git diff --check`, sync `core/report_scripts` vs `scripts`; docker focused pytest `/app/tests/test_scheduled_reporting.py /app/tests/test_scheduled_reporting_preflight.py` -> `49 passed`; read-only `sla-status --date 2026-06-18` показывает Алишера: `manager_card_email=g.alisher@dogovor24.kz`, historical delivery recipient пустой, PDF ready, reason `missing_recipient`. Новых писем/STT/LLM/report generation не запускалось |
 | PILOT-36D | ROP digest, частичная готовность и короткие итоги | `implemented_first_pass` | Scheduled `manager_daily` больше не шлёт per-manager ROP-copy из каждого одиночного `run_report`; после общего scan собирается один ROP digest по всем менеджерам scope, со статусами `delivered/no_calls/not_ready/missing_recipient/delivery_failed/blocked/will_retry/review_required/already_reported`, готовыми PDF во вложении и observability `scheduled_rop_daily_digest` без binary content | Проверено: `git diff --check`, `py_compile`, docker focused pytest `/app/tests/test_scheduled_reporting.py` -> `29 passed, 5 subtests passed`; manual ROP bundle smoke -> `3 passed`. Реальная отправка/production restart не выполнялись |
+| PILOT-37A | Runtime restart / code-version gate | `implemented_first_pass` | ТЗ: [`docs/PILOT37_RUNTIME_DEPLOYMENT_AND_AUDIT_TZ.md`](PILOT37_RUNTIME_DEPLOYMENT_AND_AUDIT_TZ.md). Добавлен runtime identity/status gate для API/worker: commit/branch best-effort, process start, uptime, service identity, feature markers `scheduled_rop_daily_digest`, `deferred_to_scheduled_rop_digest`, latest upstream handoff; preflight `runtime-status` показывает mismatch до следующего scheduled run | Проверено: `py_compile`; docker focused pytest `tests/test_runtime_identity_gate.py tests/test_scheduled_call_processing_upstream.py` -> `15 passed`; live pre-restart `runtime-status` вернул `blocked` с причинами `status response has no runtime object` и `NotRegistered: runtime.identity`, то есть gate ловит старый runtime |
+| PILOT-37B | Recovery 2026-06-24 | `completed_operational_recovery` | Analysis runtime перезапущен, post-restart `runtime-status=warning` только из-за `git_commit=unknown`, markers true. Алишер восстановлен single-manager/day за `2026-06-24` без повторной STT/LLM1; отправлен email на `g.alisher@dogovor24.kz`; отправлен штатный `scheduled_rop_daily_digest` РОПу с 3 PDF | Проверено: `sla-status --date 2026-06-24` -> `late=1`, `on_time=2`, `not_applicable=1`; Алишер delivered late; `open-batches=0`; digest rows=4, attachments=3 |
+| PILOT-37C | Artifact retrieval hardening | `implemented_first_pass` | Убрана системная причина `/call-processing/runs/latest` -> `{run_id}` UUID failure: generic route стал `/runs/{run_id:uuid}`, repository invalid ids возвращает `None`, runtime gate расширен на call-processing marker `call_processing_latest_route_hardening`. Analysis handoff переводит `get_processed_artifacts` read timeout в `waiting_upstream` retry metadata, если upstream уже ready/partial | Проверено: `py_compile`, `git diff --check`, docker focused pytest `37 passed`; live call-processing `runtime-status` не `blocked`, marker true; `/call-processing/runs/latest` возвращает `404 run not found`, без UUID error |
+| PILOT-37D | ROP digest SLA check | `implemented_first_pass` | `sla-status` теперь явно показывает верхнеуровневый `rop_digest`: `status/sent/recipient/attachments_count/rows_count/message_id/delivery_metadata/reason/operator_action`; delivered manager reports без `scheduled_rop_daily_digest` дают `missing_digest`, all no-calls/not_applicable - `not_required`; no-calls строка digest больше не нормализуется как `blocked` | Проверено: `py_compile`, `git diff --check`, focused pytest `57 passed, 5 subtests passed`; live read-only `sla-status --date 2026-06-24` показывает `ROP digest: status=sent`, `attachments=3`, `rows=4`, Илья `not_applicable/no_calls_for_report_day` |
+| PILOT-37E | Automatic post-run audit | `implemented_first_pass` | Добавлен read-only `post-run-audit --date YYYY-MM-DD`: scope active schedules/managers, manager outcomes, ROP digest из 37D, open batches/blockers, technical findings, recommended next actions, `billable_pipeline_started=false`; human output без сырого JSON | Проверено: `py_compile`, `git diff --check`, focused pytest `100 passed, 5 subtests passed`; live read-only `post-run-audit --date 2026-06-24` показал `attention_required`, 4 менеджера, `ROP digest=sent`, `open blockers=0`, `billable_pipeline_started=no` |
 
 ### P1 - Надежность дневного пилота
 
@@ -209,20 +214,17 @@ delivery.
 
 ## Следующий рекомендуемый шаг
 
-Начать с P0:
+Начать с P0 / PILOT-37:
 
-1. PILOT-36A - подготовить мини-ТЗ "Защита запуска и SLA", утвердить, затем
-   реализовать lock от дублей, SLA-check import fix и batch-priority в
-   `sla-status`.
-2. PILOT-36B - после 36A выполнить recovery текущих дублей за `2026-06-18` и
-   проверить `open-batches`.
-3. PILOT-36C - после recovery починить recipient resolver и production
-   terminal statuses.
-4. PILOT-36E - закрыть handoff `call_processing -> analysis`: upstream
-   readiness lookup, resume LLM2 после ready STT/LLM1 и retry вместо
-   `call_processing_client_read_timeout=180`.
-5. PILOT-36D - выполнено first pass: scheduled ROP daily digest отправляется
-   одним письмом после финального состояния manager_daily scan.
+1. PILOT-37A - runtime restart / code-version gate: понять, какой commit
+   фактически загружен в API/worker/beat и есть ли feature markers текущих
+   правок.
+2. PILOT-37B - после 37A восстановить report date `2026-06-24`: добрать
+   Алишера без повторной STT/LLM1 и отправить корректный ROP digest.
+3. PILOT-37C - закрыть `get_processed_artifacts timeout_sec=180` системно,
+   чтобы готовый upstream не превращался в final failed.
+4. PILOT-37D - добавить ROP digest SLA check.
+5. PILOT-37E - добавить automatic post-run audit.
 6. PILOT-29 - утвердить и реализовать усиление speaker role attribution на
    текущем Whisper STT без смены модели.
 7. PILOT-31 - проверить на контрольном manager_daily отчете, что weighted focus

@@ -290,6 +290,19 @@ class ScheduledReportingSplitComplete04Tests(unittest.TestCase):
         self.assertIn("Толеген: delivered", sent_messages[0]["text"])
         self.assertIn("Тимур: not_ready", sent_messages[0]["text"])
 
+    def test_scheduled_manager_daily_rop_digest_no_calls_is_not_blocked(self) -> None:
+        status, reason = ScheduledReviewableReportingService._scheduled_manager_daily_rop_status(
+            selection={},
+            batch=SimpleNamespace(
+                status="failed",
+                observability={"sla_missed_reason": "no_calls_for_report_day"},
+            ),
+            report_item={},
+        )
+
+        self.assertEqual(status, "no_calls")
+        self.assertEqual(reason, "no_calls_for_report_day")
+
     def test_manager_daily_recipient_resolver_uses_manager_email_from_db(self) -> None:
         department_id = uuid4()
         manager_id = uuid4()

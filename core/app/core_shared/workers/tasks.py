@@ -24,9 +24,11 @@ from app.agents.calls.run_alerts import send_run_alert
 from app.agents.calls.scheduled_reporting import ScheduledReviewableReportingService
 from app.core_shared.config.settings import settings
 from app.core_shared.db.session import get_db
+from app.core_shared.runtime_identity import runtime_identity
 from app.core_shared.workers.celery_app import (
     MANAGER_DAILY_SLA_HARDCHECK_TASK,
     MANAGER_DAILY_SLA_PRECHECK_TASK,
+    RUNTIME_IDENTITY_TASK,
     SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
     SCHEDULED_REPORTING_TASK,
     celery_app,
@@ -43,6 +45,12 @@ _SCHEDULED_REPORTING_PREFLIGHT_MODULE = (
     f"{_REPORT_SCRIPTS_PACKAGE}.scheduled_reporting_preflight"
 )
 _SCHEDULED_REPORTING_PREFLIGHT_FILE = "scheduled_reporting_preflight.py"
+
+
+@celery_app.task(name=RUNTIME_IDENTITY_TASK)
+def get_runtime_identity() -> dict[str, Any]:
+    """Return safe worker runtime identity without starting billable work."""
+    return runtime_identity(process_type="worker")
 
 
 @celery_app.task(name="calls.scan_scheduled_reviewable_reporting")
@@ -438,6 +446,7 @@ def _send_manager_daily_sla_task_alert(
 def get_registered_tasks() -> Sequence[str]:
     """Return registered bounded worker tasks."""
     return (
+        RUNTIME_IDENTITY_TASK,
         SCHEDULED_REPORTING_TASK,
         SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK,
         MANAGER_DAILY_SLA_PRECHECK_TASK,
