@@ -282,6 +282,9 @@ class ProcessingRunReadiness(BaseModel):
     requested_by: str | None = None
     required_artifacts: list[str] = Field(default_factory=list)
     mode: str | None = None
+    scope_match: str | None = None
+    requested_scope_hash: str | None = None
+    covering_scope_hash: str | None = None
     counts: dict[str, Any] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)
     started_at: datetime | None = None

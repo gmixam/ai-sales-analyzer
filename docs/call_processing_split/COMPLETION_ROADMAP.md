@@ -796,6 +796,38 @@ PILOT-36A first pass проверен 2026-06-19: focused docker pytest
 теперь выбирает delivered batch для Тимура и Толегена, а failed/open duplicates
 показывает в diagnostics.
 
+### SPLIT-COMPLETE-09 — Company-wide transcription, selective analysis
+
+Статус: `planned`
+
+ТЗ: [`docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md`](../PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md)
+
+Контекст:
+
+- текущий split-контур уже разделяет upstream `call-processing` и downstream
+  `analysis/reporting`;
+- следующий целевой шаг - расширить upstream на всю компанию, чтобы
+  формировать STT и `llm1_first_pass` карточки звонков для поиска и будущей
+  аналитики;
+- LLM2/LLM3-анализ и менеджерские отчеты не должны автоматически расширяться
+  на всю компанию. Они остаются только для выбранного analysis scope.
+
+Что сделать:
+
+- [ ] `PILOT-39A`: company-wide upstream scope и dry-run/forecast;
+- [ ] `PILOT-39B`: universal LLM1 call card contract;
+- [ ] `PILOT-39C`: явное разделение upstream scope и downstream analysis scope;
+- [ ] `PILOT-39D`: cost/quota/monitoring для company-wide STT+LLM1;
+- [ ] `PILOT-39E`: controlled rollout без unexpected analysis outside scope.
+
+Критерий готовности:
+
+- ночной `call-processing` может подготовить STT+LLM1 по company-wide scope;
+- ЭДО `manager_daily` продолжает анализировать только утвержденных менеджеров;
+- широкий upstream используется как covering source для узких analysis scopes;
+- стоимость, квоты и ошибки видны оператору до того, как они сорвут
+  автоматизацию.
+
 ## Ответ на вопрос про “вчерашний полный день”
 
 Да, 2026-06-14 мы сделали provider-backed прогон за полный отчетный день

@@ -27,6 +27,7 @@ from app.agents.call_processing.schemas import (
     ProcessingRunReadiness,
     ProcessingScope,
     RequiredArtifactKind,
+    stable_scope_hash,
 )
 from app.agents.call_processing.service import CallProcessingService
 from app.core_shared.config.settings import settings
@@ -69,6 +70,13 @@ class CallProcessingClient(Protocol):
         required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
     ) -> ProcessingRunReadiness | None:
         """Return the newest upstream run for the exact normalized scope."""
+
+    def get_covering_run_for_scope(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> ProcessingRunReadiness | None:
+        """Return the newest upstream run that covers the requested normalized scope."""
 
     def get_llm1_first_pass_artifact(
         self,
@@ -135,7 +143,13 @@ def llm1_first_pass_payload_from_artifact(artifact: Any) -> LLM1FirstPassPayload
     return validated
 
 
-def processing_run_readiness_from_row(row: Any) -> ProcessingRunReadiness:
+def processing_run_readiness_from_row(
+    row: Any,
+    *,
+    scope_match: str | None = None,
+    requested_scope_hash: str | None = None,
+    covering_scope_hash: str | None = None,
+) -> ProcessingRunReadiness:
     """Adapt a persisted call-processing run to the read-only client contract."""
     return ProcessingRunReadiness(
         run_id=str(row.id),
@@ -144,6 +158,9 @@ def processing_run_readiness_from_row(row: Any) -> ProcessingRunReadiness:
         requested_by=getattr(row, "requested_by", None),
         required_artifacts=list(getattr(row, "required_artifacts", None) or []),
         mode=getattr(row, "mode", None),
+        scope_match=scope_match,
+        requested_scope_hash=requested_scope_hash,
+        covering_scope_hash=covering_scope_hash,
         counts=dict(getattr(row, "counts_json", None) or {}),
         errors=list(getattr(row, "errors_json", None) or []),
         started_at=getattr(row, "started_at", None),
@@ -217,13 +234,37 @@ class LocalCallProcessingClient:
         scope: ProcessingScope | dict[str, Any],
         required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
     ) -> ProcessingRunReadiness | None:
+        scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
         row = self.runs.latest_for_scope(
-            scope=scope,
+            scope=scope_model,
             required_artifacts=_coerce_required_artifacts(required_artifacts),
         )
         if row is None:
             return None
-        return processing_run_readiness_from_row(row)
+        return processing_run_readiness_from_row(
+            row,
+            scope_match="exact",
+            requested_scope_hash=getattr(row, "scope_hash", None),
+        )
+
+    def get_covering_run_for_scope(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> ProcessingRunReadiness | None:
+        scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
+        row = self.runs.latest_covering_for_scope(
+            scope=scope_model,
+            required_artifacts=_coerce_required_artifacts(required_artifacts),
+        )
+        if row is None:
+            return None
+        return processing_run_readiness_from_row(
+            row,
+            scope_match="covering",
+            requested_scope_hash=stable_scope_hash(scope_model),
+            covering_scope_hash=str(getattr(row, "scope_hash", "") or ""),
+        )
 
     def get_llm1_first_pass_artifact(
         self,
@@ -396,6 +437,34 @@ class HttpCallProcessingClient:
             return None
         if response.status_code >= 400:
             raise ASAError(f"call-processing run read failed: status={response.status_code} body={response.text[:500]}")
+        payload = response.json()
+        payload.setdefault("scope_match", "exact")
+        payload.setdefault("requested_scope_hash", payload.get("scope_hash"))
+        return ProcessingRunReadiness.model_validate(payload)
+
+    def get_covering_run_for_scope(
+        self,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | ArtifactKind | str],
+    ) -> ProcessingRunReadiness | None:
+        scope_model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
+        kinds = _coerce_required_artifacts(required_artifacts)
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                response = client.get(
+                    f"{self.base_url}/call-processing/runs/covering",
+                    params={
+                        "scope": scope_model.model_dump_json(exclude_none=True),
+                        "required_artifacts": ",".join(kind.value for kind in kinds),
+                    },
+                    headers=self._headers(),
+                )
+        except httpx.ReadTimeout as exc:
+            self._raise_read_timeout("get_covering_run_for_scope", exc)
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise ASAError(f"call-processing covering run read failed: status={response.status_code} body={response.text[:500]}")
         return ProcessingRunReadiness.model_validate(response.json())
 
     def get_llm1_first_pass_artifact(

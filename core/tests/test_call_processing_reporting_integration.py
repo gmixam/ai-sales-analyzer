@@ -218,6 +218,48 @@ class _ReadyLatestRunClient:
         raise AssertionError("ready upstream must skip full ensure")
 
 
+class _CoveringReadyLatestRunClient:
+    def __init__(self) -> None:
+        self.latest_calls: list[dict[str, object]] = []
+        self.covering_calls: list[dict[str, object]] = []
+        self.ensure_calls: list[dict[str, object]] = []
+
+    def get_latest_run_for_scope(self, scope, required_artifacts):
+        self.latest_calls.append({"scope": scope, "required_artifacts": list(required_artifacts)})
+        return None
+
+    def get_covering_run_for_scope(self, scope, required_artifacts):
+        self.covering_calls.append({"scope": scope, "required_artifacts": list(required_artifacts)})
+        return SimpleNamespace(
+            run_id="run-covering",
+            status=ProcessingRunStatus.READY,
+            scope_hash="hash-covering",
+            scope_match="covering",
+            requested_scope_hash="hash-requested",
+            covering_scope_hash="hash-covering",
+            requested_by="scheduled_call_processing_upstream",
+            required_artifacts=["transcript", "transcript_segments", "llm1_first_pass"],
+            mode="ensure",
+            counts={
+                "interactions_total": 55,
+                "source_targeted_total": 55,
+                "artifacts_ready": 165,
+                "artifacts_missing": 0,
+                "artifacts_backfilled": 0,
+            },
+            errors=[],
+            started_at=None,
+            finished_at=datetime(2026, 6, 25, 23, 30, tzinfo=UTC),
+            heartbeat_at=None,
+            created_at=None,
+            updated_at=datetime(2026, 6, 25, 23, 30, tzinfo=UTC),
+        )
+
+    async def ensure_processed_calls_async(self, *_args, **_kwargs):
+        self.ensure_calls.append({"called": True})
+        raise AssertionError("ready covering upstream must skip full ensure")
+
+
 class _TimeoutRunningLatestRunClient:
     def __init__(self) -> None:
         self.latest_calls = 0
@@ -541,6 +583,39 @@ def test_manager_daily_external_service_ready_latest_run_skips_ensure_for_resume
     assert summary["call_processing_readiness"] == "ready"
     assert summary["call_processing_ensure_skipped"] is True
     assert summary["call_processing_run_id"] == "run-ready"
+    assert summary["call_processing_artifacts_missing"] == 0
+
+
+def test_manager_daily_external_service_covering_ready_run_skips_upstream_missing() -> None:
+    client = _CoveringReadyLatestRunClient()
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = uuid4()
+    orchestrator.call_processing_client = client
+
+    summary = asyncio.run(
+        CallsManualReportingOrchestrator._ensure_call_processing_source_artifacts(
+            orchestrator,
+            filters=ReportRunFilters(
+                manager_ids={"manager-1"},
+                manager_extensions={"317"},
+                date_from="2026-06-25",
+                date_to="2026-06-25",
+            ),
+            period={"date_from": "2026-06-25", "date_to": "2026-06-25"},
+            mode="build_missing_and_report",
+            wait_for_upstream_readiness=True,
+        )
+    )
+
+    assert len(client.latest_calls) == 1
+    assert len(client.covering_calls) == 1
+    assert client.ensure_calls == []
+    assert summary["call_processing_readiness"] == "ready"
+    assert summary["call_processing_ensure_skipped"] is True
+    assert summary["call_processing_run_id"] == "run-covering"
+    assert summary["call_processing_scope_match"] == "covering"
+    assert summary["call_processing_requested_scope_hash"]
+    assert summary["call_processing_covering_scope_hash"] == "hash-covering"
     assert summary["call_processing_artifacts_missing"] == 0
 
 

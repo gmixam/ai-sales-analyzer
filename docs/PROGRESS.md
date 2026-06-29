@@ -4,9 +4,56 @@
 **Этап:** MVP-1 pilot operations
 **Статус фазы:** этап правок закрыт, начат пилотный операционный цикл
 **Дата начала:** 2026-03-17
-**Последнее обновление:** 2026-06-25
+**Последнее обновление:** 2026-06-29
 
 ## Что сделано
+- [ ] 2026-06-29 — Зафиксирован новый блок `PILOT-39`: расширение
+  `call-processing` на всю компанию при сохранении выборочного LLM2/LLM3
+  анализа только для утвержденного downstream scope. Создано ТЗ
+  `docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md`, добавлены задачи
+  `PILOT-39A` company-wide upstream scope, `PILOT-39B` universal LLM1 call
+  card, `PILOT-39C` selective downstream analysis scope, `PILOT-39D`
+  cost/quota/monitoring и `PILOT-39E` controlled rollout. В roadmap split
+  сервиса добавлен этап `SPLIT-COMPLETE-09`. Код не менялся, production
+  schedule не переключался.
+- [x] 2026-06-29 — `PILOT-29` speaker role attribution переведен в
+  `sample_verified`. Подтверждено, что текущий STT route остается
+  `openai/whisper-1`, для Whisper `speaker_a_is_manager=false`, metadata
+  содержит `diarization_source=whisper_time_segments_without_speaker_labels` и
+  warnings. Read-only sample audit свежего прогона `2026-06-26` нашел 60
+  `llm1_first_pass` artifacts, у всех есть `speaker_role_mapping` с
+  `source=llm1_role_attribution`, `stt_provider=openai`,
+  `stt_model=whisper-1`; ручная выборка 8 звонков не выявила blind assumption
+  `speaker A = manager`. Дополнительно усилен Report/Call Breakdown boundary:
+  composer и prompts больше не выводят `manager/client` из raw STT speaker IDs
+  (`A/B`) или unlabeled text при weak diarization. Проверки:
+  role/STT/LLM1 focused `9 passed`, compact LLM2 + call breakdown `13 passed`,
+  `py_compile` и `git diff --check` OK. Полный related focused pack имеет
+  unrelated test debt: `42 passed, 1 failed` по `cost_status` (`available` vs
+  `price_missing`), не по speaker attribution.
+- [x] 2026-06-29 — Реализован first pass `PILOT-38` covering upstream scope
+  handoff. Exact `call_processing` lookup по `scope_hash` сохранен; добавлен
+  read-only covering lookup в repository/API/client, который проверяет period,
+  source, department/global scope, managers/extensions, duration bounds и
+  `required_artifacts`, предпочитая `ready + artifacts_missing=0` и возвращая
+  diagnostic candidate при отсутствии ready. `manager_daily` analysis теперь
+  после exact miss использует covering run как ready upstream и пишет в summary
+  `call_processing_scope_match`, `call_processing_requested_scope_hash`,
+  `call_processing_covering_scope_hash`; чтение artifacts для LLM2/report
+  остается по requested interactions, не по всему covering scope. Production
+  pipeline, STT/LLM1 rerun, email и Telegram не запускались.
+- [ ] 2026-06-26 — По auto-run за report date `2026-06-25` найден системный
+  handoff defect и заведено ТЗ `PILOT-38`. Ночной `call_processing` отработал
+  успешно: run `ec04e932-e9e1-472b-8210-cf1ffb1b6b23`, status `ready`,
+  `interactions_total=55`, `artifacts_ready=165`, `artifacts_missing=0`,
+  `transcripts_built=55`, `llm1_first_pass_built=55`, cost `0.881954 USDT`.
+  Утренний `manager_daily` analysis не нашел этот ready upstream, потому что
+  upstream был общим scope на 4 менеджеров, а analysis искал exact per-manager
+  scope. Итог: Алишер, Тимур и Толеген получили
+  `upstream_not_ready_before_deadline`, менеджерские отчеты не сформированы,
+  ROP digest отправлен без вложений. Корневое решение: analysis должен искать
+  covering upstream run, если exact run не найден. ТЗ:
+  `docs/PILOT38_COVERING_UPSTREAM_SCOPE_HANDOFF_TZ.md`.
 - [x] 2026-06-25 — Выполнен `PILOT-37E` automatic post-run audit.
   `scheduled_reporting_preflight.py` получил read-only команду
   `post-run-audit --date YYYY-MM-DD`: она собирает active schedule/manager

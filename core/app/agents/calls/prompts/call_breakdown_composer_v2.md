@@ -152,7 +152,8 @@ Return exactly one JSON object compatible with the Report Layer:
   where the missing action would have appeared. The claim must be worded as an
   observation about the available scene, not as an absolute fact about the whole
   call.
-- If speaker attribution is weak, use `unknown`, `side_1`, or `side_2`.
+- If speaker attribution is weak, use `unknown`, `side_1`, or `side_2`; do not
+  infer manager/client labels from raw STT speaker IDs or unlabeled text.
 - A quote may support context without directly proving a manager gap. If the
   proof is sequence/absence, explain that in `proof_explanation`.
 - Do not use a quote that contradicts the claimed gap. If a manager already did

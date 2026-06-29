@@ -47,6 +47,7 @@ audit-fix pass.
 `call-processing` сервис, дополнительно открыть:
 
 - [docs/call_processing_split/COMPLETION_ROADMAP.md](call_processing_split/COMPLETION_ROADMAP.md)
+- [docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md](PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md)
 - [docs/call_processing_split/IMPLEMENTATION_STATUS.md](call_processing_split/IMPLEMENTATION_STATUS.md)
 - [docs/call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md](call_processing_split/CUTOVER_ROLLBACK_RUNBOOK.md)
 - [docs/call_processing_split/VERIFICATION_PACK.md](call_processing_split/VERIFICATION_PACK.md)

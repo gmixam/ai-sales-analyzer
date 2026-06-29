@@ -69,6 +69,7 @@ from app.agents.call_processing import (
     ProcessingScope,
     RequiredArtifactKind,
     build_call_processing_client,
+    stable_scope_hash,
 )
 from app.core_shared.config.settings import settings
 from app.core_shared.db.models import Analysis, Department, Interaction, Manager
@@ -1763,6 +1764,8 @@ class CallsManualReportingOrchestrator:
         waiting: bool = False,
         ensure_skipped: bool = False,
         error: str | None = None,
+        requested_scope_hash: str | None = None,
+        scope_match: str | None = None,
     ) -> dict[str, Any]:
         """Build source summary from a read-only upstream run lookup."""
         summary = self._empty_source_summary(
@@ -1779,12 +1782,22 @@ class CallsManualReportingOrchestrator:
         )
         if source_persisted_total <= 0:
             source_persisted_total = source_targeted_total
+        resolved_scope_match = scope_match or getattr(run, "scope_match", None)
+        if run is not None and not resolved_scope_match:
+            resolved_scope_match = "exact"
+        resolved_requested_scope_hash = requested_scope_hash or getattr(run, "requested_scope_hash", None)
+        covering_scope_hash = getattr(run, "covering_scope_hash", None)
+        if resolved_scope_match == "covering" and not covering_scope_hash:
+            covering_scope_hash = getattr(run, "scope_hash", None)
         summary.update(
             {
                 "call_processing_mode": CallProcessingMode.EXTERNAL_SERVICE.value,
                 "call_processing_run_id": getattr(run, "run_id", None),
                 "call_processing_status": str(getattr(run, "status", None) or "") or None,
                 "call_processing_scope_hash": getattr(run, "scope_hash", None),
+                "call_processing_scope_match": resolved_scope_match,
+                "call_processing_requested_scope_hash": resolved_requested_scope_hash,
+                "call_processing_covering_scope_hash": covering_scope_hash,
                 "call_processing_readiness": readiness or self._call_processing_readiness_from_run(run),
                 "call_processing_waiting_upstream": bool(waiting),
                 "call_processing_ensure_skipped": bool(ensure_skipped),
@@ -1871,6 +1884,7 @@ class CallsManualReportingOrchestrator:
             raise ASAError("CALL_PROCESSING_MODE=external_service requires CallProcessingClient.")
         ensure_mode = EnsureMode.ENSURE if mode == "build_missing_and_report" else EnsureMode.DRY_RUN
         scope = self._build_call_processing_scope(filters=filters, period=period)
+        requested_scope_hash = stable_scope_hash(scope)
         required_artifacts = [
             RequiredArtifactKind.TRANSCRIPT,
             RequiredArtifactKind.TRANSCRIPT_SEGMENTS,
@@ -1878,6 +1892,9 @@ class CallsManualReportingOrchestrator:
         ]
         latest_lookup = getattr(client, "get_latest_run_for_scope", None)
         latest_run = latest_lookup(scope, required_artifacts) if callable(latest_lookup) else None
+        if latest_run is None:
+            covering_lookup = getattr(client, "get_covering_run_for_scope", None)
+            latest_run = covering_lookup(scope, required_artifacts) if callable(covering_lookup) else None
         latest_readiness = self._call_processing_readiness_from_run(latest_run)
         if latest_readiness == "ready":
             return self._call_processing_summary_from_run(
@@ -1885,6 +1902,7 @@ class CallsManualReportingOrchestrator:
                 run=latest_run,
                 readiness=latest_readiness,
                 ensure_skipped=True,
+                requested_scope_hash=requested_scope_hash,
             )
         if wait_for_upstream_readiness and latest_run is not None:
             return self._call_processing_summary_from_run(
@@ -1893,6 +1911,7 @@ class CallsManualReportingOrchestrator:
                 readiness=latest_readiness,
                 waiting=True,
                 ensure_skipped=True,
+                requested_scope_hash=requested_scope_hash,
             )
         if wait_for_upstream_readiness and latest_run is None:
             return self._call_processing_summary_from_run(
@@ -1901,6 +1920,7 @@ class CallsManualReportingOrchestrator:
                 readiness="upstream_missing",
                 waiting=True,
                 ensure_skipped=True,
+                requested_scope_hash=requested_scope_hash,
             )
         ensure_async = getattr(client, "ensure_processed_calls_async", None)
         try:
@@ -1912,6 +1932,9 @@ class CallsManualReportingOrchestrator:
             if not wait_for_upstream_readiness:
                 raise
             refreshed_run = latest_lookup(scope, required_artifacts) if callable(latest_lookup) else latest_run
+            if refreshed_run is None:
+                covering_lookup = getattr(client, "get_covering_run_for_scope", None)
+                refreshed_run = covering_lookup(scope, required_artifacts) if callable(covering_lookup) else None
             refreshed_readiness = self._call_processing_readiness_from_run(refreshed_run)
             if refreshed_readiness == "ready":
                 return self._call_processing_summary_from_run(
@@ -1920,6 +1943,7 @@ class CallsManualReportingOrchestrator:
                     readiness=refreshed_readiness,
                     ensure_skipped=True,
                     error=str(exc),
+                    requested_scope_hash=requested_scope_hash,
                 )
             return self._call_processing_summary_from_run(
                 period=period,
@@ -1928,6 +1952,7 @@ class CallsManualReportingOrchestrator:
                 waiting=True,
                 ensure_skipped=True,
                 error=str(exc),
+                requested_scope_hash=requested_scope_hash,
             )
         planned = dict(response.planned or {})
         response_costs = getattr(response, "costs", None)
@@ -1943,6 +1968,9 @@ class CallsManualReportingOrchestrator:
             "call_processing_run_id": response.run_id,
             "call_processing_status": str(response.status),
             "call_processing_scope_hash": response.scope_hash,
+            "call_processing_scope_match": "exact",
+            "call_processing_requested_scope_hash": requested_scope_hash,
+            "call_processing_covering_scope_hash": None,
             "call_processing_readiness": self._call_processing_readiness_from_run(
                 ProcessingRunReadiness(
                     run_id=response.run_id,

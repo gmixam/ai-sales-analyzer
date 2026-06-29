@@ -35,6 +35,79 @@ def _same_identity(left: Any, right: Any) -> bool:
     return str(left or "") == str(right or "")
 
 
+def _normalize_artifacts(required_artifacts: list[RequiredArtifactKind | str] | None) -> list[str]:
+    return sorted({str(_coerce_value(kind)) for kind in (required_artifacts or [])})
+
+
+def _required_artifacts_match(
+    actual: list[Any] | None,
+    required: list[RequiredArtifactKind | str] | None,
+) -> bool:
+    if not required:
+        return True
+    return sorted({str(item) for item in list(actual or [])}) == _normalize_artifacts(required)
+
+
+def _scalar_scope_covers(candidate_value: str | None, requested_value: str | None) -> bool:
+    candidate = str(candidate_value or "").strip()
+    requested = str(requested_value or "").strip()
+    if requested:
+        return not candidate or candidate == requested
+    return not candidate
+
+
+def _set_scope_covers(candidate_values: list[str], requested_values: list[str]) -> bool:
+    candidate = {str(item).strip() for item in candidate_values if str(item).strip()}
+    requested = {str(item).strip() for item in requested_values if str(item).strip()}
+    return not candidate or requested.issubset(candidate)
+
+
+def _duration_floor_covers(candidate_value: int | None, requested_value: int | None) -> bool:
+    if requested_value is None:
+        return candidate_value is None
+    return candidate_value is None or int(candidate_value) <= int(requested_value)
+
+
+def _duration_ceiling_covers(candidate_value: int | None, requested_value: int | None) -> bool:
+    if requested_value is None:
+        return candidate_value is None
+    return candidate_value is None or int(candidate_value) >= int(requested_value)
+
+
+def _processing_scope_covers(
+    candidate_scope: ProcessingScope | dict[str, Any],
+    requested_scope: ProcessingScope | dict[str, Any],
+) -> bool:
+    """Return True when candidate is equal to or wider than requested scope."""
+    candidate = (
+        candidate_scope
+        if isinstance(candidate_scope, ProcessingScope)
+        else ProcessingScope.model_validate(candidate_scope)
+    )
+    requested = (
+        requested_scope
+        if isinstance(requested_scope, ProcessingScope)
+        else ProcessingScope.model_validate(requested_scope)
+    )
+    return (
+        candidate.source == requested.source
+        and candidate.date_from <= requested.date_from
+        and candidate.date_to >= requested.date_to
+        and _scalar_scope_covers(candidate.department_id, requested.department_id)
+        and _scalar_scope_covers(candidate.department, requested.department)
+        and _set_scope_covers(candidate.manager_ids, requested.manager_ids)
+        and _set_scope_covers(candidate.extensions, requested.extensions)
+        and _duration_floor_covers(candidate.min_duration_sec, requested.min_duration_sec)
+        and _duration_ceiling_covers(candidate.max_duration_sec, requested.max_duration_sec)
+    )
+
+
+def _run_ready_with_all_artifacts(run: CallProcessingRun) -> bool:
+    counts = dict(getattr(run, "counts_json", None) or {})
+    artifacts_missing = int(counts.get("artifacts_missing") or 0)
+    return str(getattr(run, "status", "") or "") == ProcessingRunStatus.READY.value and artifacts_missing <= 0
+
+
 class ArtifactRepository:
     """Read and write active call-processing artifacts."""
 
@@ -249,13 +322,61 @@ class ProcessingRunRepository:
             CallProcessingRun.created_at.desc(),
         )
         if required_artifacts:
-            required = sorted({str(_coerce_value(kind)) for kind in required_artifacts})
             for run in self.session.scalars(stmt).all():
-                actual = sorted({str(item) for item in list(run.required_artifacts or [])})
-                if actual == required:
+                if _required_artifacts_match(run.required_artifacts, required_artifacts):
                     return run
             return None
         return self.session.scalars(stmt).first()
+
+    def latest_covering_for_scope(
+        self,
+        *,
+        scope: ProcessingScope | dict[str, Any],
+        required_artifacts: list[RequiredArtifactKind | str] | None = None,
+        max_candidates: int = 500,
+    ) -> CallProcessingRun | None:
+        """Return the newest wider run that covers the requested scope.
+
+        Ready runs with all required artifacts are preferred. If none exists,
+        return the newest matching non-ready candidate so callers can expose
+        useful readiness diagnostics without starting provider work.
+        """
+        requested = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
+        requested_hash = stable_scope_hash(requested)
+        candidate_statuses = [
+            str(ProcessingRunStatus.READY),
+            str(ProcessingRunStatus.PARTIAL),
+            str(ProcessingRunStatus.RUNNING),
+            str(ProcessingRunStatus.QUEUED),
+            str(ProcessingRunStatus.FAILED),
+            str(ProcessingRunStatus.BLOCKED),
+        ]
+        stmt = (
+            select(CallProcessingRun)
+            .where(CallProcessingRun.status.in_(candidate_statuses))
+            .order_by(
+                CallProcessingRun.updated_at.desc(),
+                CallProcessingRun.created_at.desc(),
+            )
+            .limit(max_candidates)
+        )
+        diagnostic_candidate: CallProcessingRun | None = None
+        for run in self.session.scalars(stmt).all():
+            if str(getattr(run, "scope_hash", "") or "") == requested_hash:
+                continue
+            if not _required_artifacts_match(run.required_artifacts, required_artifacts):
+                continue
+            try:
+                candidate_scope = ProcessingScope.model_validate(run.scope_json or {})
+            except Exception:
+                continue
+            if not _processing_scope_covers(candidate_scope, requested):
+                continue
+            if _run_ready_with_all_artifacts(run):
+                return run
+            if diagnostic_candidate is None:
+                diagnostic_candidate = run
+        return diagnostic_candidate
 
     def status(self, run_id: uuid.UUID | str) -> ProcessingRunStatus | None:
         run = self.get(run_id)

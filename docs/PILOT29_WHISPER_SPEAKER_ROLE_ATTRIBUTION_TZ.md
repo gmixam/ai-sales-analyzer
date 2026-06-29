@@ -1,7 +1,7 @@
 # PILOT-29: Усиление speaker role attribution на текущем Whisper STT
 
 Дата: 2026-06-16
-Статус: implemented_first_pass
+Статус: sample_verified
 Связанные задачи: `PILOT-25`, `PILOT-30`, `call_processing_split`, `LLM1`
 
 ## Статус реализации
@@ -20,8 +20,31 @@ First pass внедрен 2026-06-16:
   раздувать payload.
 - Старые LLM1 artifacts без `speaker_role_mapping` продолжают работать.
 
-До перевода в `done`: controlled sample review на 5-10 реальных звонках после
-следующего прогона и ручная проверка, что очевидные роли не перепутаны.
+Sample verification выполнен 2026-06-29:
+
+- read-only audit свежего прогона `2026-06-26` по `[ЭДО] Отдел Продаж`;
+- найдено 60 свежих `llm1_first_pass` artifacts;
+- у всех 60 есть непустой `speaker_role_mapping`;
+- `source=llm1_role_attribution`;
+- `stt_provider=openai`, `stt_model=whisper-1`;
+- `diarization_source=whisper_time_segments_without_speaker_labels`;
+- STT metadata подтверждает `speaker_a_is_manager=false`;
+- sample review 8 звонков не выявил blind assumption `speaker A = manager`:
+  очевидные роли либо определены с evidence, либо оставлены как
+  `unknown/context` с low confidence и warnings.
+
+Дополнительный hardening 2026-06-29:
+
+- `call_breakdown_composer` больше не выводит `manager/client` из raw STT
+  speaker IDs (`A/B`) или текста при weak diarization;
+- prompts `call_breakdown_composer_v1/v2` явно запрещают infer speaker labels
+  из raw STT IDs или unlabeled text;
+- raw `speaker=A` в artifact segments теперь остается `unknown`, если нет
+  explicit role label.
+
+До перевода в `done`: наблюдать ближайший production auto-run на новых звонках и
+убедиться, что новые artifacts продолжают иметь mapping; отдельный переход на
+другую STT/diarization модель остается только в optional `PILOT-30`.
 
 ## Контекст
 
@@ -333,6 +356,7 @@ git diff --check
 ## Definition of Done
 
 - `PILOT-29` реализован минимум как `implemented_first_pass`;
+- `PILOT-29` sample-verified на реальных artifacts после свежего прогона;
 - текущий STT route остается Whisper;
 - role attribution появляется в LLM1 artifacts;
 - LLM2 получает role mapping;

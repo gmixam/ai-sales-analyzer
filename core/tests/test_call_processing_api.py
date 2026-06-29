@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from app.agents.call_processing import EnsureResponse, ProcessingRunStatus, ProcessingScope
+from app.agents.call_processing import (
+    EnsureResponse,
+    ProcessingRunStatus,
+    ProcessingScope,
+    stable_scope_hash,
+)
+from app.agents.call_processing.repositories import ProcessingRunRepository
 from app.core_shared.api.main import app
 from app.core_shared.api.routes import call_processing as call_processing_routes
 
@@ -341,6 +348,180 @@ def test_latest_run_route_missing_uses_latest_handler_not_uuid_route(monkeypatch
     assert response.json()["detail"] == "run not found"
     assert FakeProcessingRunRepository.latest_calls == 1
     assert FakeProcessingRunRepository.get_calls == 0
+
+
+def _covering_scope(**overrides: object) -> dict[str, object]:
+    scope = {
+        "department_id": "dept-1",
+        "manager_ids": ["manager-1", "manager-2", "manager-3", "manager-4"],
+        "extensions": ["317", "311", "325", "350"],
+        "date_from": "2026-06-25",
+        "date_to": "2026-06-25",
+        "source": "onlinepbx",
+    }
+    scope.update(overrides)
+    return scope
+
+
+def _requested_manager_scope(**overrides: object) -> ProcessingScope:
+    scope = {
+        "department_id": "dept-1",
+        "manager_ids": ["manager-1"],
+        "extensions": ["317"],
+        "date_from": "2026-06-25",
+        "date_to": "2026-06-25",
+        "source": "onlinepbx",
+    }
+    scope.update(overrides)
+    return ProcessingScope.model_validate(scope)
+
+
+def _run_row(
+    *,
+    scope_json: dict[str, object],
+    status: str = "ready",
+    artifacts_missing: int = 0,
+    required_artifacts: list[str] | None = None,
+) -> SimpleNamespace:
+    updated_at = datetime(2026, 6, 26, 0, 0, tzinfo=UTC)
+    return SimpleNamespace(
+        id=uuid4(),
+        requested_by="scheduled_call_processing_upstream",
+        scope_json=scope_json,
+        scope_hash=stable_scope_hash(scope_json),
+        required_artifacts=required_artifacts
+        or ["transcript", "transcript_segments", "llm1_first_pass"],
+        mode="ensure",
+        status=status,
+        started_at=None,
+        finished_at=updated_at,
+        heartbeat_at=None,
+        counts_json={"artifacts_ready": 165, "artifacts_missing": artifacts_missing},
+        errors_json=[],
+        created_at=updated_at,
+        updated_at=updated_at,
+    )
+
+
+class _FakeScalars:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.rows = rows
+
+    def all(self) -> list[SimpleNamespace]:
+        return self.rows
+
+    def first(self) -> SimpleNamespace | None:
+        return self.rows[0] if self.rows else None
+
+
+class _FakeRunSession:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.rows = rows
+
+    def scalars(self, _stmt: object) -> _FakeScalars:
+        return _FakeScalars(self.rows)
+
+
+def test_processing_run_repository_covering_scope_covers_single_manager() -> None:
+    requested = _requested_manager_scope()
+    covering = _run_row(scope_json=_covering_scope())
+
+    run = ProcessingRunRepository(_FakeRunSession([covering])).latest_covering_for_scope(
+        scope=requested,
+        required_artifacts=["transcript", "transcript_segments", "llm1_first_pass"],
+    )
+
+    assert run is covering
+
+
+def test_processing_run_repository_covering_scope_rejects_wrong_dimensions() -> None:
+    requested = _requested_manager_scope()
+    wrong_candidates = [
+        _run_row(scope_json=_covering_scope(date_from="2026-06-24", date_to="2026-06-24")),
+        _run_row(scope_json=_covering_scope(source="other-source")),
+        _run_row(scope_json=_covering_scope(department_id="other-dept")),
+        _run_row(scope_json=_covering_scope(manager_ids=["manager-2"], extensions=[])),
+        _run_row(scope_json=_covering_scope(), required_artifacts=["transcript"]),
+    ]
+
+    for candidate in wrong_candidates:
+        run = ProcessingRunRepository(_FakeRunSession([candidate])).latest_covering_for_scope(
+            scope=requested,
+            required_artifacts=["transcript", "transcript_segments", "llm1_first_pass"],
+        )
+        assert run is None
+
+
+def test_processing_run_repository_covering_scope_missing_artifacts_is_diagnostic_not_ready() -> None:
+    requested = _requested_manager_scope()
+    missing_artifacts = _run_row(scope_json=_covering_scope(), artifacts_missing=1)
+
+    run = ProcessingRunRepository(_FakeRunSession([missing_artifacts])).latest_covering_for_scope(
+        scope=requested,
+        required_artifacts=["transcript", "transcript_segments", "llm1_first_pass"],
+    )
+
+    assert run is missing_artifacts
+    assert run.status == "ready"
+    assert run.counts_json["artifacts_missing"] == 1
+
+
+def test_covering_run_route_returns_match_diagnostics(monkeypatch) -> None:
+    client = TestClient(app)
+    run_id = uuid4()
+    requested = _requested_manager_scope()
+
+    class FakeProcessingRunRepository:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        def latest_covering_for_scope(self, *, scope: ProcessingScope, required_artifacts: list[object]):
+            assert scope.manager_ids == ["manager-1"]
+            assert [str(item.value if hasattr(item, "value") else item) for item in required_artifacts] == [
+                "transcript",
+                "llm1_first_pass",
+            ]
+            return type(
+                "Run",
+                (),
+                {
+                    "id": run_id,
+                    "requested_by": "scheduled_call_processing_upstream",
+                    "scope_json": _covering_scope(),
+                    "scope_hash": "covering-hash",
+                    "required_artifacts": ["transcript", "llm1_first_pass"],
+                    "mode": "ensure",
+                    "status": "ready",
+                    "started_at": None,
+                    "finished_at": None,
+                    "heartbeat_at": None,
+                    "counts_json": {"artifacts_ready": 4, "artifacts_missing": 0},
+                    "errors_json": [],
+                    "created_at": None,
+                    "updated_at": None,
+                },
+            )()
+
+    app.dependency_overrides[call_processing_routes.get_session] = _override_session
+    monkeypatch.setattr(call_processing_routes, "ProcessingRunRepository", FakeProcessingRunRepository)
+    try:
+        response = client.get(
+            "/call-processing/runs/covering",
+            headers={"X-Call-Processing-Grant": _grant("reader")},
+            params={
+                "scope": requested.model_dump_json(exclude_none=True),
+                "required_artifacts": "transcript,llm1_first_pass",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == str(run_id)
+    assert payload["scope_match"] == "covering"
+    assert payload["requested_scope_hash"] == stable_scope_hash(requested)
+    assert payload["covering_scope_hash"] == "covering-hash"
 
 
 def test_single_artifact_route_returns_latest_active_for_reader(monkeypatch) -> None:

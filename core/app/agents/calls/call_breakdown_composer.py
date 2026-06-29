@@ -2080,9 +2080,6 @@ def _turns_from_artifact_segments(artifact: Any | None) -> list[dict[str, Any]]:
     if not segments:
         return []
     raw_turns: list[dict[str, Any]] = []
-    raw_speakers = {_text(segment.get("speaker")).upper() for segment in segments if _text(segment.get("speaker"))}
-    diarization_is_useful = len(raw_speakers) >= 2
-    speaker_map = _speaker_map_from_segments(segments) if diarization_is_useful else {}
     for index, segment in enumerate(segments):
         raw_speaker = _text(segment.get("speaker")).upper()
         text = _compact(segment.get("text"))
@@ -2092,7 +2089,7 @@ def _turns_from_artifact_segments(artifact: Any | None) -> list[dict[str, Any]]:
         if not chunks:
             continue
         for chunk_index, chunk in enumerate(chunks):
-            speaker = speaker_map.get(raw_speaker) or _infer_turn_speaker(chunk)
+            speaker = _trusted_speaker_label(segment.get("role") or segment.get("speaker"))
             raw_turns.append(
                 {
                     "speaker": speaker,
@@ -2121,10 +2118,8 @@ def _turns_from_transcript(transcript: str) -> list[dict[str, Any]]:
         body = text
         match = re.match(r"^([^:]{1,40}):\s*(.+)$", text)
         if match:
-            speaker = _normalize_speaker_label(match.group(1).strip())
+            speaker = _trusted_speaker_label(match.group(1).strip())
             body = match.group(2).strip()
-        elif len(chunks) > 1:
-            speaker = _infer_turn_speaker(body)
         turns.append({"speaker": speaker, "text": body, "turn_index": index})
     return turns
 
@@ -2233,6 +2228,12 @@ def _normalize_speaker_label(value: Any) -> str:
     if speaker in {"context", "unknown", "фрагмент", ""}:
         return "context" if speaker == "context" else "unknown"
     return speaker
+
+
+def _trusted_speaker_label(value: Any) -> str:
+    """Return only explicit role labels; raw STT speaker IDs stay unknown."""
+    speaker = _normalize_speaker_label(value)
+    return speaker if speaker in {"manager", "client", "context", "evidence"} else "unknown"
 
 
 def _enrich_packet_turns_with_segment_roles(

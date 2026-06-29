@@ -667,10 +667,9 @@ class CallBreakdownComposerTests(unittest.TestCase):
         self.assertIn("next_step", purposes)
         self.assertGreaterEqual(len(module._turns_from_scenes(scenes)), 4)
         self.assertTrue(
-            any(
-                turn.get("speaker") in {"client", "manager"}
-                for scene in scenes
-                for turn in scene.get("turns", [])
+            all(
+                turn.get("speaker") == "unknown"
+                for turn in artifact_turns
             )
         )
 

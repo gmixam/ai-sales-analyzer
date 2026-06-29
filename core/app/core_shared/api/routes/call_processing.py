@@ -116,8 +116,8 @@ def _parse_required_artifact_kinds(raw: str | None) -> list[RequiredArtifactKind
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
-def _run_to_dict(run: Any) -> dict[str, Any]:
-    return {
+def _run_to_dict(run: Any, **extra: Any) -> dict[str, Any]:
+    payload = {
         "run_id": str(run.id),
         "requested_by": run.requested_by,
         "scope": run.scope_json or {},
@@ -133,6 +133,8 @@ def _run_to_dict(run: Any) -> dict[str, Any]:
         "created_at": _jsonable(run.created_at),
         "updated_at": _jsonable(run.updated_at),
     }
+    payload.update({key: _jsonable(value) for key, value in extra.items() if value is not None})
+    return payload
 
 
 def _artifact_to_dict(artifact: Any) -> dict[str, Any]:
@@ -227,6 +229,28 @@ async def get_latest_run_for_scope(
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
     return _run_to_dict(run)
+
+
+@router.get("/runs/covering")
+async def get_covering_run_for_scope(
+    scope: str = Query(..., description="ProcessingScope JSON"),
+    required_artifacts: str | None = Query(default=None),
+    _grant: AccessGrant = Depends(require_reader),
+    db: Any = Depends(get_session),
+) -> dict[str, Any]:
+    parsed_scope = _parse_scope(scope)
+    run = ProcessingRunRepository(db).latest_covering_for_scope(
+        scope=parsed_scope,
+        required_artifacts=_parse_required_artifact_kinds(required_artifacts),
+    )
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="covering run not found")
+    return _run_to_dict(
+        run,
+        scope_match="covering",
+        requested_scope_hash=stable_scope_hash(parsed_scope),
+        covering_scope_hash=run.scope_hash,
+    )
 
 
 @router.get("/runs/{run_id:uuid}")

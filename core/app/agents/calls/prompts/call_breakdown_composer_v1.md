@@ -157,9 +157,10 @@ Report Layer `call_breakdown` block:
 - Treat `transcript_scenes` as the main evidence source. Prefer connected turns
   from `discovery`, `qualification`, `requirements`, and `next_step` scenes
   over isolated quotes from `situation_evidence_packet`.
-- Speaker labels may be inferred when diarization is weak. Use them as helpful
-  orientation, but do not build a conclusion only on the label; prove it through
-  the sequence and text.
+- Do not infer manager/client speaker labels when diarization is weak. Use only
+  explicit role labels from provided evidence; otherwise render the speaker as
+  `unknown`, `side_1`, or `side_2` and prove conclusions through sequence and
+  text.
 - Do not invent client names, volumes, entities, user counts, roles, deadlines,
   products, integrations, legal risks, meetings, demo agreements, or next steps.
 - Keep `call_id` equal to `selected_call.call_id` everywhere. Do not switch to
