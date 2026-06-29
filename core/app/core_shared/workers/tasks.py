@@ -258,6 +258,18 @@ def _daily_upstream_scope(target_date: date, db: Any | None = None) -> Processin
         payload["scope_department_count"] = len(department_ids)
         if not settings.call_processing_daily_upstream_department_id.strip():
             diagnostics.append("configured_fallback_department_id_empty")
+    elif scope_mode == "onlinepbx_all":
+        fallback_department_id = settings.call_processing_daily_upstream_department_id.strip()
+        payload["department_id"] = None
+        payload["fallback_department_id"] = fallback_department_id
+        payload["manager_ids"] = []
+        payload["extensions"] = []
+        payload["scope_manager_count"] = 0
+        payload["scope_extension_count"] = 0
+        payload["scope_department_count"] = 1 if fallback_department_id else 0
+        diagnostics.append("onlinepbx_all_no_manager_directory_scope")
+        if not fallback_department_id:
+            diagnostics.append("configured_fallback_department_id_empty")
     else:
         raise ValueError(f"unsupported CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE: {scope_mode}")
     if diagnostics:
@@ -362,6 +374,14 @@ def ensure_daily_call_processing_upstream(
             "task_status": "skipped",
             "reason": "manager_scope_not_configured",
             "scope_mode": scope_mode,
+        }
+    if scope_mode == "onlinepbx_all" and not settings.call_processing_daily_upstream_department_id.strip():
+        return {
+            **base_payload,
+            "task_status": "skipped",
+            "reason": "fallback_department_not_configured",
+            "scope_mode": scope_mode,
+            "billable_pipeline_started": False,
         }
     if not dry_run and settings.call_processing_daily_upstream_provider_call_budget <= 0:
         alert = _send_daily_upstream_alert(

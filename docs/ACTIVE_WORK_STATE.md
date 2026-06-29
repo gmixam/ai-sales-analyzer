@@ -45,15 +45,26 @@ AI_LLM_SIMULATION_ENABLED=false
 AI_LLM2_ANALYSIS_MODE=layered
 AI_LLM2_INPUT_PROFILE=compact
 LLM3_ENABLED=true
-CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=company
+CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=onlinepbx_all
 ```
 
-С 2026-06-29 live upstream `call-processing` переключен на company-wide
-транскрибацию/LLM1 call cards: scheduled runtime scope строится из всех
-активных managers with extension, fallback department остается ЭДО
-`472cda28-ce71-494c-9068-25d3ffbf7399`. Analysis/reporting не расширен:
-активный `manager_daily` schedule остается только по ЭДО manager allowlist
-Алишер, Илья, Тимур, Толеген.
+С 2026-06-29 live upstream `call-processing` переключен на OnlinePBX-all
+транскрибацию/LLM1 call cards: scheduled runtime не строит
+`manager_ids/extensions` из Bitrix/Manager directory, а берет все CDR из
+OnlinePBX и дальше применяет только технические фильтры наличия разговора/
+аудио. Fallback department для хранения неизвестных менеджеров остается ЭДО
+`472cda28-ce71-494c-9068-25d3ffbf7399`; budget для upstream provider calls
+поднят до `700`.
+
+Analysis/reporting не расширен: активный `manager_daily` schedule остается
+только по ЭДО manager allowlist Алишер, Илья, Тимур, Толеген.
+
+Контрольный dry-run `onlinepbx_all` за `2026-06-29` после переключения:
+`362` OnlinePBX CDR fetched/targeted, `150` eligible audio calls, `212`
+no-audio/zero-talk/missed, `294` billable minutes estimate,
+`provider_calls_estimate=451`, `provider_calls_budget=700`, blockers `[]`,
+provider calls made `0`. Статус `warning` только из-за forecast/cost
+partial: до фактического запуска нет токенов LLM1 для точной стоимости.
 
 Source of truth по режимам: `docs/RUNTIME_PROFILES.md`.
 
@@ -61,9 +72,10 @@ Source of truth по режимам: `docs/RUNTIME_PROFILES.md`.
 
 Последний закрытый пакет:
 
-- локальный commit `a374a4a Prepare repo for MVP1 pilot operations`;
-- предыдущая delivery-safe точка: `13995a0 Polish manager daily report delivery`;
-- ветка `feature/llm2-block-ready-v15`;
+- последний локальный пакет: `Add OnlinePBX-all upstream mode`;
+- предыдущие split/upstream точки: `fec8ff4 Switch live upstream to company scope`,
+  `3949098 Implement company-wide transcription rollout safeguards`;
+- ветка `feat/call-processing-analysis-split`;
 - новых веток, runtime-профилей или delivery-режимов для последних исправлений
   не создавалось;
 - использован существующий режим business delivery: `business_email_only`.

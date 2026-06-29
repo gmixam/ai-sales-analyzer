@@ -24,10 +24,18 @@ NO_AUDIO_INTERACTION_STATUS = "NO_AUDIO"
 class OnlinePBXIntake:
     """Fetch call records from OnlinePBX and store eligible interactions."""
 
-    def __init__(self, department_id: str, db: Session, *, company_wide_mapping: bool = False):
+    def __init__(
+        self,
+        department_id: str,
+        db: Session,
+        *,
+        company_wide_mapping: bool = False,
+        skip_bitrix_mapping: bool = False,
+    ):
         self.department_id = UUID(department_id)
         self.db = db
         self.company_wide_mapping = company_wide_mapping
+        self.skip_bitrix_mapping = skip_bitrix_mapping
         self.base_url = settings.onlinepbx_base_url
         self.domain = settings.onlinepbx_domain.strip()
         self.api_key = settings.onlinepbx_api_key
@@ -274,6 +282,22 @@ class OnlinePBXIntake:
                 manager.department_id,
                 {
                     "mapping_source": "local_extension",
+                    "mapping_diagnostics": diagnostics,
+                },
+            )
+
+        if getattr(self, "skip_bitrix_mapping", False):
+            diagnostics.extend(
+                [
+                    "bitrix_mapping_skipped_by_onlinepbx_all",
+                    "onlinepbx_all_fallback",
+                ]
+            )
+            return (
+                None,
+                self.department_id,
+                {
+                    "mapping_source": "onlinepbx_all_fallback",
                     "mapping_diagnostics": diagnostics,
                 },
             )

@@ -167,7 +167,10 @@ def _acceptance(
     ready_run: bool | None = None,
     enforce_no_provider_dry_run: bool = True,
 ) -> dict[str, Any]:
-    scope_mode_is_company = str(scope.scope_mode or "").strip().lower() == "company"
+    scope_mode = str(scope.scope_mode or "").strip().lower()
+    scope_mode_is_company = scope_mode == "company"
+    scope_mode_is_onlinepbx_all = scope_mode == "onlinepbx_all"
+    supported_upstream_scope = scope_mode_is_company or scope_mode_is_onlinepbx_all
     has_extensions = bool(scope.extensions)
     has_fallback_department = bool(scope.fallback_department_id or scope.department_id)
     budget_ok = _budget_not_blocked(forecast, counts)
@@ -175,8 +178,8 @@ def _acceptance(
         _no_provider_calls_in_dry_run(counts) if enforce_no_provider_dry_run else True
     )
     ready_for_trial = (
-        scope_mode_is_company
-        and has_extensions
+        supported_upstream_scope
+        and (has_extensions or scope_mode_is_onlinepbx_all)
         and has_fallback_department
         and budget_ok
         and no_provider_calls
@@ -185,6 +188,8 @@ def _acceptance(
         ready_for_trial = ready_for_trial and ready_run
     return {
         "scope_mode_is_company": scope_mode_is_company,
+        "scope_mode_is_onlinepbx_all": scope_mode_is_onlinepbx_all,
+        "scope_mode_is_supported_upstream": supported_upstream_scope,
         "has_extensions": has_extensions,
         "has_fallback_department": has_fallback_department,
         "budget_not_blocked": budget_ok,
@@ -200,9 +205,14 @@ def _status_from_acceptance(
     forecast: dict[str, Any] | None = None,
     run_status: str | None = None,
 ) -> str:
-    if not acceptance.get("scope_mode_is_company"):
+    if not acceptance.get("scope_mode_is_supported_upstream"):
         return "blocked"
-    if not acceptance.get("has_extensions") or not acceptance.get("has_fallback_department"):
+    if (
+        acceptance.get("scope_mode_is_company")
+        and not acceptance.get("has_extensions")
+    ):
+        return "blocked"
+    if not acceptance.get("has_fallback_department"):
         return "blocked"
     if not acceptance.get("budget_not_blocked"):
         return "blocked"
@@ -228,9 +238,9 @@ def _blockers(
     run: dict[str, Any] | None = None,
 ) -> list[str]:
     blockers: list[str] = []
-    if not acceptance.get("scope_mode_is_company"):
+    if not acceptance.get("scope_mode_is_supported_upstream"):
         blockers.append("scheduled_runtime_scope_is_not_company")
-    if not acceptance.get("has_extensions"):
+    if acceptance.get("scope_mode_is_company") and not acceptance.get("has_extensions"):
         blockers.append("scheduled_runtime_scope_has_no_extensions")
     if not acceptance.get("has_fallback_department"):
         blockers.append("fallback_department_not_configured")
@@ -264,7 +274,7 @@ def _scope_preview_payload(target_date: date, scope: ProcessingScope) -> dict[st
         "forecast": None,
         "acceptance": acceptance,
         "blockers": _blockers(acceptance),
-        "operator_next_step": _next_step(status, action="scope-preview"),
+        "operator_next_step": _next_step(status, action="scope-preview", scope_mode=scope.scope_mode),
     }
 
 
@@ -294,7 +304,7 @@ def _dry_run_payload(target_date: date, scope: ProcessingScope, response: Any) -
         "quota": response_payload.get("quota") or {},
         "acceptance": acceptance,
         "blockers": _blockers(acceptance, forecast=forecast, counts=counts),
-        "operator_next_step": _next_step(status, action="dry-run"),
+        "operator_next_step": _next_step(status, action="dry-run", scope_mode=scope.scope_mode),
     }
 
 
@@ -339,7 +349,7 @@ def _latest_run_payload(target_date: date, scope: ProcessingScope, run: Any | No
             "costs": {},
             "blockers": _blockers(acceptance),
             "acceptance": acceptance,
-            "operator_next_step": _next_step(status, action="latest-run-check"),
+            "operator_next_step": _next_step(status, action="latest-run-check", scope_mode=scope.scope_mode),
         }
 
     run_payload = _run_summary(run, scope_match=scope_match or "exact", requested_scope_hash=requested_hash)
@@ -373,11 +383,26 @@ def _latest_run_payload(target_date: date, scope: ProcessingScope, run: Any | No
         "costs": costs,
         "blockers": _blockers(acceptance, forecast=forecast, counts=counts, run=run_payload),
         "acceptance": acceptance,
-        "operator_next_step": _next_step(status, action="latest-run-check"),
+        "operator_next_step": _next_step(status, action="latest-run-check", scope_mode=scope.scope_mode),
     }
 
 
-def _next_step(status: str, *, action: str) -> str:
+def _next_step(status: str, *, action: str, scope_mode: str | None = None) -> str:
+    scope_mode = str(scope_mode or "").strip().lower()
+    if scope_mode == "onlinepbx_all":
+        if action == "scope-preview":
+            if status == "ok":
+                return "Run dry-run: upstream will target all OnlinePBX CDR after technical filters; downstream analysis remains selected manager_daily scope only."
+            return "Fix onlinepbx_all fallback department/budget settings before any provider-backed run; manager_daily analysis scope must remain selected."
+        if action == "dry-run":
+            if status == "ok":
+                return "After operator approval only, run one provider-backed onlinepbx_all upstream trial; analysis remains selected manager_daily scope only."
+            if status == "warning":
+                return "Review onlinepbx_all forecast warnings before approving provider-backed upstream; downstream analysis remains selected manager_daily scope only."
+            return "Do not run provider-backed onlinepbx_all upstream; resolve blockers and rerun dry-run."
+        if status == "ok":
+            return "Verify upstream all-CDR artifacts and EDO reports through selected manager_daily downstream scope before live runtime switch."
+        return "Do not continue onlinepbx_all rollout; inspect latest run blockers and rerun upstream only after operator approval."
     if action == "scope-preview":
         if status == "ok":
             return "Run dry-run for this date and 2-3 representative working days; compare forecast volume and budget before approving a provider-backed trial."

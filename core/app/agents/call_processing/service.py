@@ -165,7 +165,11 @@ class CallProcessingService:
         )
         budget = ProviderCallBudget(provider_call_budget)
         source_counts = self._discover_and_persist_source_calls(scope_model, required, mode_model, budget)
-        interactions = [] if budget.blocked and self._scope_mode(scope_model) == "company" else self._find_interactions(scope_model)
+        interactions = (
+            []
+            if budget.blocked and self._uses_forecast_gate(scope_model)
+            else self._find_interactions(scope_model)
+        )
         cost_entries: list[dict[str, Any]] = []
         counts = await self._ensure_artifacts(
             interactions,
@@ -218,14 +222,14 @@ class CallProcessingService:
         return sorted(set(normalized), key=lambda item: order[item])
 
     def _find_interactions(self, scope: ProcessingScope) -> list[Interaction]:
-        if self._scope_mode(scope) in {"company", "department"} and not scope.extensions:
+        if self._scope_requires_extensions(scope) and not scope.extensions:
             return []
         stmt = select(Interaction).where(Interaction.type == "call")
         if scope.department_id:
             stmt = stmt.where(Interaction.department_id == scope.department_id)
         if scope.source:
             stmt = stmt.where(Interaction.source == scope.source)
-        if scope.manager_ids:
+        if self._scope_uses_manager_extension_filters(scope) and scope.manager_ids:
             stmt = stmt.where(Interaction.manager_id.in_(scope.manager_ids))
         if scope.min_duration_sec is not None:
             stmt = stmt.where(Interaction.duration_sec >= scope.min_duration_sec)
@@ -253,12 +257,12 @@ class CallProcessingService:
         if call_day is None or call_day < scope.date_from or call_day > scope.date_to:
             return False
 
-        if scope.extensions:
+        if self._scope_uses_manager_extension_filters(scope) and scope.extensions:
             extension = str(metadata.get("extension") or "").strip()
             if extension not in set(scope.extensions):
                 return False
 
-        if scope.manager_ids:
+        if self._scope_uses_manager_extension_filters(scope) and scope.manager_ids:
             manager_id = getattr(interaction, "manager_id", None)
             if str(manager_id or "") not in set(scope.manager_ids):
                 return False
@@ -319,15 +323,14 @@ class CallProcessingService:
         if not fallback_department_id:
             counts["scope_diagnostics"].append("fallback_department_not_configured")
             return counts
-        if self._scope_mode(scope) in {"company", "department"} and not scope.extensions:
+        if self._scope_requires_extensions(scope) and not scope.extensions:
             counts["scope_diagnostics"].append("scope_extensions_empty")
             return counts
         if not hasattr(self.session, "query"):
             counts["scope_diagnostics"].append("manager_directory_or_source_session_unavailable")
             return counts
         intake = self._build_intake(fallback_department_id, scope=scope)
-        scope_mode = self._scope_mode(scope)
-        company_targeted: list[list[Any]] = []
+        forecast_gate_targeted: list[list[Any]] = []
         for day in self._iter_period_days(scope):
             if mode is not EnsureMode.DRY_RUN:
                 if not budget.try_spend():
@@ -351,8 +354,8 @@ class CallProcessingService:
             self._add_source_forecast_counts(counts, targeted, intake)
             if mode is EnsureMode.DRY_RUN:
                 continue
-            if scope_mode == "company":
-                company_targeted.append(targeted)
+            if self._uses_forecast_gate(scope):
+                forecast_gate_targeted.append(targeted)
                 continue
             for record in targeted:
                 if self._record_is_build_eligible(intake, record) and not getattr(record, "record_url", None):
@@ -368,13 +371,13 @@ class CallProcessingService:
             counts["source_ingest_created"] += created
             counts["source_ingest_skipped"] += skipped
         self._add_provider_call_budget_fields(counts, required, budget)
-        if mode is not EnsureMode.DRY_RUN and scope_mode == "company" and not budget.blocked:
+        if mode is not EnsureMode.DRY_RUN and self._uses_forecast_gate(scope) and not budget.blocked:
             if self._provider_call_estimate_exceeds_budget(counts, budget):
                 budget.mark_blocked(counts)
-                self._mark_company_budget_blocker(counts)
+                self._mark_forecast_budget_blocker(counts)
                 self._add_provider_call_budget_fields(counts, required, budget)
                 return counts
-            for targeted in company_targeted:
+            for targeted in forecast_gate_targeted:
                 for record in targeted:
                     if self._record_is_build_eligible(intake, record) and not getattr(record, "record_url", None):
                         if not budget.try_spend():
@@ -393,6 +396,18 @@ class CallProcessingService:
     @staticmethod
     def _scope_mode(scope: ProcessingScope) -> str:
         return str(scope.scope_mode or "managers").strip().lower() or "managers"
+
+    @staticmethod
+    def _uses_forecast_gate(scope: ProcessingScope) -> bool:
+        return CallProcessingService._scope_mode(scope) in {"company", "onlinepbx_all"}
+
+    @staticmethod
+    def _scope_requires_extensions(scope: ProcessingScope) -> bool:
+        return CallProcessingService._scope_mode(scope) in {"company", "department"}
+
+    @staticmethod
+    def _scope_uses_manager_extension_filters(scope: ProcessingScope) -> bool:
+        return CallProcessingService._scope_mode(scope) != "onlinepbx_all"
 
     @staticmethod
     def _scope_department_count(scope: ProcessingScope) -> int:
@@ -442,6 +457,8 @@ class CallProcessingService:
 
     @staticmethod
     def _record_matches_scope(record: Any, scope: ProcessingScope) -> bool:
+        if CallProcessingService._scope_mode(scope) == "onlinepbx_all":
+            return True
         if scope.extensions:
             extension = str(getattr(record, "extension", "") or "").strip()
             if extension not in set(scope.extensions):
@@ -505,7 +522,7 @@ class CallProcessingService:
         return estimate > 0 and budget.limit is not None and estimate > budget.limit
 
     @staticmethod
-    def _mark_company_budget_blocker(counts: dict[str, Any]) -> None:
+    def _mark_forecast_budget_blocker(counts: dict[str, Any]) -> None:
         counts.update(
             {
                 "provider_calls_budget_status": "over_budget",
@@ -545,14 +562,17 @@ class CallProcessingService:
         if self.intake_factory is not None:
             intake = self.intake_factory(department_id, self.session)
             if scope is not None:
-                setattr(intake, "company_wide_mapping", self._scope_mode(scope) == "company")
+                scope_mode = self._scope_mode(scope)
+                setattr(intake, "company_wide_mapping", scope_mode in {"company", "onlinepbx_all"})
+                setattr(intake, "skip_bitrix_mapping", scope_mode == "onlinepbx_all")
             return intake
         from app.agents.calls.intake import OnlinePBXIntake
 
         return OnlinePBXIntake(
             department_id=department_id,
             db=self.session,
-            company_wide_mapping=scope is not None and self._scope_mode(scope) == "company",
+            company_wide_mapping=scope is not None and self._scope_mode(scope) in {"company", "onlinepbx_all"},
+            skip_bitrix_mapping=scope is not None and self._scope_mode(scope) == "onlinepbx_all",
         )
 
     def _build_extractor(self, department_id: str) -> Any:

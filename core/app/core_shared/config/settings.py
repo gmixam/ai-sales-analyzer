@@ -25,6 +25,7 @@ CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE_VALUES = (
     "managers",
     "department",
     "company",
+    "onlinepbx_all",
 )
 ALERT_LEVEL_VALUES = ("info", "warning", "error", "critical")
 

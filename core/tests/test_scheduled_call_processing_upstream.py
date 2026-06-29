@@ -445,6 +445,39 @@ def test_scheduled_upstream_company_dry_run_uses_upstream_only_and_not_reporting
     assert calls[0]["mode"].value == "dry_run"
 
 
+def test_daily_upstream_onlinepbx_all_scope_uses_fallback_without_manager_directory(monkeypatch) -> None:
+    class FailingManagerDb:
+        def query(self, *_args: object):
+            raise AssertionError("onlinepbx_all scope must not read manager directory")
+
+    monkeypatch.setattr(
+        tasks,
+        "settings",
+        _settings(
+            call_processing_daily_upstream_scope_mode="onlinepbx_all",
+            call_processing_daily_upstream_department_id="472cda28-ce71-494c-9068-25d3ffbf7399",
+            call_processing_daily_upstream_manager_ids=["manager-should-not-be-used"],
+            call_processing_daily_upstream_min_duration_sec=15,
+        ),
+    )
+
+    scope = tasks._daily_upstream_scope(
+        tasks._parse_report_date("2026-06-15", "Asia/Almaty"),
+        FailingManagerDb(),
+    )
+
+    assert scope.scope_mode == "onlinepbx_all"
+    assert scope.department_id is None
+    assert scope.fallback_department_id == "472cda28-ce71-494c-9068-25d3ffbf7399"
+    assert scope.manager_ids == []
+    assert scope.extensions == []
+    assert scope.scope_manager_count == 0
+    assert scope.scope_extension_count == 0
+    assert scope.scope_department_count == 1
+    assert scope.min_duration_sec == 15
+    assert "onlinepbx_all_no_manager_directory_scope" in scope.scope_diagnostics
+
+
 def test_scheduled_upstream_company_budget_alert_uses_short_operator_summary(monkeypatch) -> None:
     sent: list[dict[str, object]] = []
 

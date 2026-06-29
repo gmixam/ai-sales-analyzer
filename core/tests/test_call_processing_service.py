@@ -25,7 +25,7 @@ from app.agents.call_processing import (
 from app.agents.call_processing.repositories import ArtifactRepository, ProcessingRunRepository
 from app.agents.calls.intake import OnlinePBXIntake
 from app.agents.calls.schemas import CDRRecord, SpeakerSegment, TranscriptResult
-from app.core_shared.db.models import Interaction
+from app.core_shared.db.models import Interaction, Manager
 
 
 class _ScalarResult:
@@ -357,6 +357,36 @@ class _ManagerLookupSession:
         return _ManagerQuery(self.rows)
 
 
+class _EmptyQuery:
+    def filter(self, *_args: object):
+        return self
+
+    def first(self) -> object | None:
+        return None
+
+
+class _MappingSaveSession:
+    def __init__(self, managers: list[object]) -> None:
+        self.managers = managers
+        self.added: list[object] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def query(self, model: object) -> object:
+        if model is Manager:
+            return _ManagerQuery(self.managers)
+        return _EmptyQuery()
+
+    def add(self, row: object) -> None:
+        self.added.append(row)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
 def _build_test_intake(session: _FakeSession, scope: ProcessingScope) -> OnlinePBXIntake:
     intake = OnlinePBXIntake.__new__(OnlinePBXIntake)
     intake.db = session
@@ -413,6 +443,88 @@ def test_company_mapping_does_not_assign_ambiguous_local_extension() -> None:
     assert department_id == fallback_department_id
     assert metadata["mapping_source"] == "manual_fallback"
     assert "ambiguous_local_extension_match" in metadata["mapping_diagnostics"]
+
+
+def test_onlinepbx_all_mapping_skips_bitrix_for_unknown_extension() -> None:
+    fallback_department_id = uuid.uuid4()
+    intake = OnlinePBXIntake.__new__(OnlinePBXIntake)
+    intake.db = _ManagerLookupSession([])
+    intake.department_id = fallback_department_id
+    intake.company_wide_mapping = True
+    intake.skip_bitrix_mapping = True
+    intake.bitrix_mapper = SimpleNamespace(
+        resolve_for_call=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Bitrix lookup must be skipped for onlinepbx_all")
+        )
+    )
+    record = CDRRecord(
+        call_id="call-unknown",
+        call_date="2026-06-01T10:00:00+00:00",
+        duration=180,
+        talk_duration=150,
+        direction="out",
+        status="answered",
+        extension="999",
+        phone="+77070000000",
+        record_url=None,
+    )
+
+    manager, department_id, metadata = intake.resolve_manager_mapping(record)
+
+    assert manager is None
+    assert department_id == fallback_department_id
+    assert metadata["mapping_source"] == "onlinepbx_all_fallback"
+    assert "bitrix_mapping_skipped_by_onlinepbx_all" in metadata["mapping_diagnostics"]
+    assert "onlinepbx_all_fallback" in metadata["mapping_diagnostics"]
+
+
+def test_onlinepbx_all_known_local_extension_persists_manager_id_without_bitrix() -> None:
+    fallback_department_id = uuid.uuid4()
+    manager_department_id = uuid.uuid4()
+    manager = SimpleNamespace(
+        id=uuid.uuid4(),
+        department_id=manager_department_id,
+        extension="317",
+        active=True,
+        name="Alice EDO",
+    )
+    session = _MappingSaveSession([manager])
+    intake = OnlinePBXIntake.__new__(OnlinePBXIntake)
+    intake.db = session
+    intake.department_id = fallback_department_id
+    intake.company_wide_mapping = True
+    intake.skip_bitrix_mapping = True
+    intake.config = SimpleNamespace(
+        allowed_statuses={"answered"},
+        allowed_directions={"out"},
+    )
+    intake.logger = _NoopLogger()
+    intake.bitrix_mapper = SimpleNamespace(
+        resolve_for_call=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Bitrix lookup must not run after local match")
+        )
+    )
+    record = CDRRecord(
+        call_id="call-known-edo",
+        call_date="2026-06-01T10:00:00+00:00",
+        duration=180,
+        talk_duration=150,
+        direction="out",
+        status="answered",
+        extension="317",
+        phone="+77070000000",
+        record_url="https://recordings.test/call-known-edo.mp3",
+    )
+
+    created, skipped = intake.save_interactions([record])
+
+    assert created == 1
+    assert skipped == 0
+    assert session.commits == 1
+    interaction = session.added[0]
+    assert interaction.manager_id == manager.id
+    assert interaction.department_id == manager_department_id
+    assert interaction.metadata_["mapping_source"] == "local_extension"
 
 
 class _FakeIntake:
@@ -699,6 +811,80 @@ def test_company_dry_run_forecasts_cdr_without_recording_or_artifact_providers()
     assert session.scalars_rows == []
 
 
+def test_onlinepbx_all_dry_run_targets_all_cdr_without_extension_filter() -> None:
+    scope = ProcessingScope(
+        scope_mode="onlinepbx_all",
+        fallback_department_id=str(uuid.uuid4()),
+        manager_ids=[str(uuid.uuid4())],
+        extensions=["322"],
+        scope_manager_count=0,
+        scope_extension_count=0,
+        scope_department_count=1,
+        scope_diagnostics=["onlinepbx_all_no_manager_directory_scope"],
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake = _FakeIntake(session, scope)
+
+    def get_cdr_list(day: str) -> list[CDRRecord]:
+        intake.cdr_requests.append(day)
+        return [
+            CDRRecord(
+                call_id="known-extension",
+                call_date=f"{day}T10:00:00+00:00",
+                duration=180,
+                talk_duration=150,
+                direction="out",
+                status="answered",
+                extension="322",
+                phone="+77070000000",
+                record_url=None,
+            ),
+            CDRRecord(
+                call_id="unknown-extension",
+                call_date=f"{day}T11:00:00+00:00",
+                duration=240,
+                talk_duration=210,
+                direction="out",
+                status="answered",
+                extension="999",
+                phone="+77071111111",
+                record_url=None,
+            ),
+        ]
+
+    intake.get_cdr_list = get_cdr_list
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=lambda _department_id, _db: intake,
+        extractor_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("STT must not run in dry-run")),
+        analyzer_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("LLM1 must not run in dry-run")),
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+        mode=EnsureMode.DRY_RUN,
+        provider_call_budget=0,
+    )
+
+    assert response.status == ProcessingRunStatus.READY
+    assert response.planned["scope_mode"] == "onlinepbx_all"
+    assert response.planned["source_readonly_cdr_calls"] == 1
+    assert response.planned["source_records_total"] == 2
+    assert response.planned["source_targeted_total"] == 2
+    assert response.planned["eligible_audio_calls"] == 2
+    assert response.planned["source_provider_calls_made"] == 0
+    assert response.planned["provider_calls_made"] == 0
+    assert response.planned["source_ingest_created"] == 0
+    assert intake.cdr_requests == ["2026-06-01"]
+    assert intake.recording_requests == []
+    assert session.scalars_rows == []
+
+
 def test_company_ensure_blocks_when_provider_budget_is_below_forecast_before_heavy_work() -> None:
     scope = ProcessingScope(
         scope_mode="company",
@@ -749,6 +935,54 @@ def test_company_ensure_blocks_when_provider_budget_is_below_forecast_before_hea
     assert response.quota["quota_exhausted"] is True
     assert response.quota["reason"] == "provider_calls_budget_insufficient"
     assert response.quota["admin_action_required"] == "increase_provider_call_budget_or_run_smaller_scope"
+    assert intake_holder["intake"].cdr_requests == ["2026-06-01"]
+    assert intake_holder["intake"].recording_requests == []
+    assert session.scalars_rows == []
+
+
+def test_onlinepbx_all_ensure_blocks_when_provider_budget_is_below_forecast_before_heavy_work() -> None:
+    scope = ProcessingScope(
+        scope_mode="onlinepbx_all",
+        fallback_department_id=str(uuid.uuid4()),
+        scope_manager_count=0,
+        scope_extension_count=0,
+        scope_department_count=1,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake_holder: dict[str, _FakeIntake] = {}
+
+    def _intake_factory(_department_id: str, db: _FakeSession) -> _FakeIntake:
+        intake = _FakeIntake(db, scope)
+        intake_holder["intake"] = intake
+        return intake
+
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=_intake_factory,
+        extractor_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("STT must not run when budget is insufficient")),
+        analyzer_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("LLM1 must not run when budget is insufficient")),
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+        mode=EnsureMode.ENSURE,
+        provider_call_budget=3,
+    )
+
+    assert response.status == ProcessingRunStatus.BLOCKED
+    assert response.planned["scope_mode"] == "onlinepbx_all"
+    assert response.planned["source_provider_calls_made"] == 1
+    assert response.planned["provider_calls_made"] == 1
+    assert response.planned["provider_calls_estimate"] == 4
+    assert response.planned["provider_calls_budget_status"] == "over_budget"
+    assert response.planned["forecast_budget_status"] == "over_budget"
+    assert response.planned["reason"] == "provider_calls_budget_insufficient"
+    assert response.planned["error_class"] == ProcessingErrorClass.QUOTA_INSUFFICIENT.value
     assert intake_holder["intake"].cdr_requests == ["2026-06-01"]
     assert intake_holder["intake"].recording_requests == []
     assert session.scalars_rows == []
@@ -1102,6 +1336,41 @@ def test_ensure_filters_interactions_by_scope_date() -> None:
     assert response.planned["interactions_total"] == 1
     assert response.planned["artifacts_backfilled"] == 1
     assert artifacts.rows[0].interaction_id == in_scope.id
+
+
+def test_onlinepbx_all_find_interactions_ignores_manager_and_extension_filters() -> None:
+    scope = ProcessingScope(
+        scope_mode="onlinepbx_all",
+        fallback_department_id=str(uuid.uuid4()),
+        manager_ids=[str(uuid.uuid4())],
+        extensions=["317"],
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    unknown = Interaction(
+        id=uuid.uuid4(),
+        department_id=uuid.uuid4(),
+        manager_id=None,
+        type="call",
+        source="onlinepbx",
+        text="unknown extension text",
+        metadata_={"call_date": "2026-06-01", "extension": "999"},
+        duration_sec=120,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    artifacts = _MemoryArtifactRepository()
+    service = CallProcessingService(
+        _FakeSession([unknown]),
+        artifacts=artifacts,
+        requested_by="tester",
+    )
+
+    response = service.ensure(scope, [RequiredArtifactKind.TRANSCRIPT])
+
+    assert response.planned["interactions_total"] == 1
+    assert response.planned["artifacts_backfilled"] == 1
+    assert artifacts.rows[0].interaction_id == unknown.id
 
 
 def test_retry_policy_and_stale_run_helpers_follow_split_contract() -> None:

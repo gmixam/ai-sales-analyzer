@@ -7,14 +7,28 @@
 **Последнее обновление:** 2026-06-29
 
 ## Что сделано
+- [x] 2026-06-29 — Реализован first pass `PILOT-40` по OnlinePBX-all
+  upstream без Bitrix scope dependency. Добавлен валидный
+  `CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=onlinepbx_all`: scheduled scope
+  не читает Manager directory для manager_ids/extensions, использует
+  `CALL_PROCESSING_DAILY_UPSTREAM_DEPARTMENT_ID` только как fallback
+  department для хранения Interaction; discovery targets all OnlinePBX CDR
+  после technical duration filters; forecast/budget gate блокирует
+  provider-backed run до `get_recording_url`/STT/LLM1; intake в этом режиме
+  делает только local unique extension attribution и не ходит в Bitrix при
+  unknown/ambiguous extension. Проверки: `py_compile` OK, `git diff --check`
+  OK, docker focused pytest `23 passed, 27 deselected`. Live runtime после
+  проверки переключен на `onlinepbx_all`.
 - [x] 2026-06-29 — Runtime переключен к завтрашнему live-прогону:
-  `CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=company` добавлен в
-  `.env.call-processing`, `call_processing_api/worker/beat` пересозданы.
-  Проверка `scope-preview` в `call_processing_worker` подтвердила company
-  scope: `9` active managers/extensions, `4` departments, blockers `[]`.
-  Dry-run forecast за `2026-06-29`: `336` CDR fetched, `144` targeted,
-  `73` eligible audio calls, `170` billable minutes estimate,
-  `provider_calls_estimate=220` при budget `300`, provider calls made `0`.
+  `CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=onlinepbx_all` добавлен в
+  `.env.call-processing`, `CALL_PROCESSING_DAILY_UPSTREAM_PROVIDER_CALL_BUDGET`
+  поднят до `700`, `call_processing_api/worker/beat` пересозданы. Проверка
+  env в `call_processing_beat` подтвердила: `onlinepbx_all`, `00:00`
+  `Asia/Almaty`, provider budget `700`. Dry-run forecast за `2026-06-29`:
+  `362` CDR fetched/targeted, `150` eligible audio calls, `212`
+  no-audio/zero-talk/missed, `294` billable minutes estimate,
+  `provider_calls_estimate=451` при budget `700`, provider calls made `0`,
+  blockers `[]`, status `warning` только из-за partial LLM1 cost forecast.
   Analysis scope не расширялся: active `manager_daily` schedule остается
   по `[ЭДО] Отдел Продаж` и 4 менеджерам (Алишер, Илья, Тимур, Толеген),
   business email enabled.

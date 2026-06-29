@@ -30,6 +30,25 @@ def _company_scope() -> ProcessingScope:
     )
 
 
+def _onlinepbx_all_scope() -> ProcessingScope:
+    return ProcessingScope.model_validate(
+        {
+            "scope_mode": "onlinepbx_all",
+            "fallback_department_id": "department-1",
+            "manager_ids": [],
+            "extensions": [],
+            "scope_manager_count": 0,
+            "scope_extension_count": 0,
+            "scope_department_count": 1,
+            "scope_diagnostics": ["onlinepbx_all_no_manager_directory_scope"],
+            "date_from": date(2026, 6, 15),
+            "date_to": date(2026, 6, 15),
+            "source": "onlinepbx",
+            "min_duration_sec": 15,
+        }
+    )
+
+
 class _FakeDb:
     pass
 
@@ -185,6 +204,30 @@ def test_scope_preview_uses_runtime_scope_resolver(monkeypatch, capsys) -> None:
     assert payload["scope"]["min_duration_sec"] == 15
     assert payload["acceptance"]["ready_for_provider_backed_trial"] is True
     assert calls[0]["target_date"] == date(2026, 6, 15)
+
+
+def test_scope_preview_accepts_onlinepbx_all_without_extensions(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(preflight, "get_db", _fake_db)
+    monkeypatch.setattr(preflight, "_daily_upstream_scope", lambda *_args: _onlinepbx_all_scope())
+    monkeypatch.setattr(
+        preflight,
+        "CallProcessingService",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("service not allowed")),
+    )
+
+    exit_code = preflight.main(["scope-preview", "--date", "2026-06-15", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["scope"]["scope_mode"] == "onlinepbx_all"
+    assert payload["scope"]["scope_extension_count"] == 0
+    assert payload["acceptance"]["scope_mode_is_onlinepbx_all"] is True
+    assert payload["acceptance"]["has_extensions"] is False
+    assert payload["acceptance"]["ready_for_provider_backed_trial"] is True
+    assert "scheduled_runtime_scope_has_no_extensions" not in payload["blockers"]
+    assert "all OnlinePBX CDR" in payload["operator_next_step"]
+    assert "selected manager_daily scope" in payload["operator_next_step"]
 
 
 def test_dry_run_invokes_only_call_processing_dry_run_contract(monkeypatch, capsys) -> None:
