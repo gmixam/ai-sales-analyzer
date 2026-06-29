@@ -13,6 +13,7 @@ from app.agents.call_processing import (
     CallProcessingService,
     EnsureMode,
     EnsureResponse,
+    LLM1FirstPassPayload,
     ProcessingErrorClass,
     ProcessingRunStatus,
     ProcessingScope,
@@ -157,6 +158,18 @@ def test_ensure_response_costs_default_is_backward_compatible() -> None:
     )
 
     assert response.costs == {}
+
+
+def test_llm1_first_pass_payload_accepts_legacy_payload_without_call_card() -> None:
+    payload = LLM1FirstPassPayload(
+        prompt_version="llm1_v1",
+        provider="openai",
+        model="gpt-test",
+        classification={"call_type": "sales_primary"},
+    )
+
+    assert payload.schema_version == "llm1_first_pass_v1"
+    assert payload.call_card == {}
 
 
 def test_artifact_repository_write_active_deactivates_previous_artifact() -> None:
@@ -325,6 +338,25 @@ class _NoopLogger:
         return None
 
 
+class _ManagerQuery:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+
+    def filter(self, *_args: object):
+        return self
+
+    def all(self) -> list[object]:
+        return self.rows
+
+
+class _ManagerLookupSession:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+
+    def query(self, *_args: object) -> _ManagerQuery:
+        return _ManagerQuery(self.rows)
+
+
 def _build_test_intake(session: _FakeSession, scope: ProcessingScope) -> OnlinePBXIntake:
     intake = OnlinePBXIntake.__new__(OnlinePBXIntake)
     intake.db = session
@@ -340,6 +372,47 @@ def _build_test_intake(session: _FakeSession, scope: ProcessingScope) -> OnlineP
         {"mapping_source": "test"},
     )
     return intake
+
+
+def test_company_mapping_does_not_assign_ambiguous_local_extension() -> None:
+    fallback_department_id = uuid.uuid4()
+    manager_a = SimpleNamespace(
+        id=uuid.uuid4(),
+        department_id=uuid.uuid4(),
+        extension="322",
+        active=True,
+        name="Alice",
+    )
+    manager_b = SimpleNamespace(
+        id=uuid.uuid4(),
+        department_id=uuid.uuid4(),
+        extension="322",
+        active=True,
+        name="Bob",
+    )
+    intake = OnlinePBXIntake.__new__(OnlinePBXIntake)
+    intake.db = _ManagerLookupSession([manager_a, manager_b])
+    intake.department_id = fallback_department_id
+    intake.company_wide_mapping = True
+    intake.bitrix_mapper = SimpleNamespace(resolve_for_call=lambda **_kwargs: None)
+    record = CDRRecord(
+        call_id="call-ambiguous",
+        call_date="2026-06-01T10:00:00+00:00",
+        duration=180,
+        talk_duration=150,
+        direction="out",
+        status="answered",
+        extension="322",
+        phone="+77070000000",
+        record_url=None,
+    )
+
+    manager, department_id, metadata = intake.resolve_manager_mapping(record)
+
+    assert manager is None
+    assert department_id == fallback_department_id
+    assert metadata["mapping_source"] == "manual_fallback"
+    assert "ambiguous_local_extension_match" in metadata["mapping_diagnostics"]
 
 
 class _FakeIntake:
@@ -568,6 +641,119 @@ def test_ensure_blocks_source_discovery_when_provider_budget_is_exhausted() -> N
     assert session.scalars_rows == []
 
 
+def test_company_dry_run_forecasts_cdr_without_recording_or_artifact_providers() -> None:
+    scope = ProcessingScope(
+        scope_mode="company",
+        fallback_department_id=str(uuid.uuid4()),
+        extensions=["322"],
+        scope_manager_count=1,
+        scope_extension_count=1,
+        scope_department_count=1,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake_holder: dict[str, _FakeIntake] = {}
+
+    def _intake_factory(_department_id: str, db: _FakeSession) -> _FakeIntake:
+        intake = _FakeIntake(db, scope)
+        intake_holder["intake"] = intake
+        return intake
+
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=_intake_factory,
+        extractor_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("STT must not run in dry-run")),
+        analyzer_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("LLM1 must not run in dry-run")),
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+        mode=EnsureMode.DRY_RUN,
+        provider_call_budget=0,
+    )
+
+    assert response.status == ProcessingRunStatus.READY
+    assert response.planned["scope_mode"] == "company"
+    assert response.planned["source_readonly_cdr_calls"] == 1
+    assert response.planned["source_records_total"] == 1
+    assert response.planned["source_targeted_total"] == 1
+    assert response.planned["eligible_audio_calls"] == 1
+    assert response.planned["billable_minutes_estimate"] == 3
+    assert response.planned["source_provider_calls_made"] == 0
+    assert response.planned["provider_calls_made"] == 0
+    assert response.planned["provider_calls_estimate"] == 4
+    assert response.planned["provider_calls_budget"] == 0
+    assert response.planned["provider_calls_budget_status"] == "no_budget_configured"
+    assert response.planned["forecast_budget_status"] == "no_budget_configured"
+    assert response.planned["source_ingest_created"] == 0
+    assert response.costs["forecast"] is True
+    assert response.costs["forecast_billable_minutes"] == 3
+    assert response.costs["forecast_cost_usdt"] == response.costs["total_current_run_cost_usdt"]
+    assert response.costs["forecast_billable_minutes"] == response.planned["forecast_billable_minutes"]
+    assert intake_holder["intake"].cdr_requests == ["2026-06-01"]
+    assert intake_holder["intake"].recording_requests == []
+    assert session.scalars_rows == []
+
+
+def test_company_ensure_blocks_when_provider_budget_is_below_forecast_before_heavy_work() -> None:
+    scope = ProcessingScope(
+        scope_mode="company",
+        fallback_department_id=str(uuid.uuid4()),
+        extensions=["322"],
+        scope_manager_count=1,
+        scope_extension_count=1,
+        scope_department_count=1,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 1),
+        source="onlinepbx",
+    )
+    session = _DiscoverySession([])
+    intake_holder: dict[str, _FakeIntake] = {}
+
+    def _intake_factory(_department_id: str, db: _FakeSession) -> _FakeIntake:
+        intake = _FakeIntake(db, scope)
+        intake_holder["intake"] = intake
+        return intake
+
+    service = CallProcessingService(
+        session,
+        artifacts=_MemoryArtifactRepository(),
+        intake_factory=_intake_factory,
+        extractor_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("STT must not run when budget is insufficient")),
+        analyzer_factory=lambda *_args: (_ for _ in ()).throw(AssertionError("LLM1 must not run when budget is insufficient")),
+    )
+
+    response = service.ensure(
+        scope,
+        [RequiredArtifactKind.TRANSCRIPT, RequiredArtifactKind.LLM1_FIRST_PASS],
+        mode=EnsureMode.ENSURE,
+        provider_call_budget=3,
+    )
+
+    assert response.status == ProcessingRunStatus.BLOCKED
+    assert response.planned["scope_mode"] == "company"
+    assert response.planned["source_readonly_cdr_calls"] == 0
+    assert response.planned["source_provider_calls_made"] == 1
+    assert response.planned["provider_calls_made"] == 1
+    assert response.planned["provider_calls_estimate"] == 4
+    assert response.planned["provider_calls_budget"] == 3
+    assert response.planned["provider_calls_budget_status"] == "over_budget"
+    assert response.planned["forecast_budget_status"] == "over_budget"
+    assert response.planned["reason"] == "provider_calls_budget_insufficient"
+    assert response.planned["error_class"] == ProcessingErrorClass.QUOTA_INSUFFICIENT.value
+    assert response.planned["admin_action_required"] == "increase_provider_call_budget_or_run_smaller_scope"
+    assert response.quota["quota_exhausted"] is True
+    assert response.quota["reason"] == "provider_calls_budget_insufficient"
+    assert response.quota["admin_action_required"] == "increase_provider_call_budget_or_run_smaller_scope"
+    assert intake_holder["intake"].cdr_requests == ["2026-06-01"]
+    assert intake_holder["intake"].recording_requests == []
+    assert session.scalars_rows == []
+
+
 class _FakeExtractor:
     async def process(self, interaction: Interaction) -> TranscriptResult:
         interaction.text = "Клиент попросил материалы."
@@ -774,6 +960,23 @@ class _FakeAnalyzer:
             "follow_up": {"next_step": "Отправить материалы."},
             "data_quality": {"transcript_quality": "sufficient"},
             "analysis_focus": ["Проверить договоренность."],
+            "call_card": {
+                "schema_version": "universal_call_card_v1",
+                "topic": "Запрос материалов",
+                "product_area": "EDO",
+                "request_type": "sales",
+                "client_intent": "Получить материалы",
+                "manager_intent": "Отправить материалы",
+                "urgency": "warm",
+                "business_outcome": "open",
+                "analysis_eligibility": "eligible",
+                "eligibility_reason": "Есть коммерческий запрос",
+                "call_essence": "Клиент попросил материалы, менеджер обещал отправить.",
+                "contact_name": None,
+                "tags": ["материалы", "follow-up"],
+                "evidence": ["Клиент попросил материалы"],
+                "confidence": "medium",
+            },
             "speaker_role_mapping": {
                 "source": "llm1_role_attribution",
                 "diarization_source": "whisper_time_segments_without_speaker_labels",
@@ -825,6 +1028,9 @@ def test_ensure_builds_llm1_first_pass_artifact_without_llm2() -> None:
     assert artifact.provider == "openai"
     assert artifact.payload_json["schema_version"] == "llm1_first_pass_v1"
     assert artifact.payload_json["summary"]["brief"] == "Клиент попросил материалы."
+    assert artifact.payload_json["call_card"]["schema_version"] == "universal_call_card_v1"
+    assert artifact.payload_json["call_card"]["topic"] == "Запрос материалов"
+    assert artifact.payload_json["call_card"]["contact_name"] is None
     assert artifact.payload_json["speaker_role_mapping"]["roles"][0]["role"] == "unknown"
     assert (
         "technical_speaker_labels_unavailable"

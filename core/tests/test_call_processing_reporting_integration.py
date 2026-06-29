@@ -14,24 +14,32 @@ from app.agents.calls.reporting import (
     resolve_report_delivery_options,
     resolve_report_preset,
 )
+from app.core_shared.db.models import Interaction
 from app.core_shared.exceptions import ASAError
 
 
-def _interaction(*, text: str = "Готовый транскрипт") -> SimpleNamespace:
+def _interaction(
+    *,
+    text: str = "Готовый транскрипт",
+    department_id=None,
+    manager_id=None,
+    extension: str = "322",
+    call_started_at: str = "2026-06-03 10:00:00",
+) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
-        department_id=uuid4(),
-        manager_id=uuid4(),
+        department_id=department_id or uuid4(),
+        manager_id=manager_id or uuid4(),
         type="call",
         text=text,
         raw_ref="https://example.test/audio.mp3",
         source="onlinepbx",
         duration_sec=180,
         metadata_={
-            "call_date": "2026-06-03 10:00:00",
+            "call_date": call_started_at,
             "source_status": "answered",
             "direction": "out",
-            "extension": "322",
+            "extension": extension,
         },
     )
 
@@ -296,6 +304,27 @@ class _NoEnsureClient:
 
     async def ensure_processed_calls_async(self, *_args, **_kwargs):
         raise AssertionError("rop_weekly must not call call-processing ensure")
+
+
+class _FakeQuery:
+    def __init__(self, rows: list[SimpleNamespace]):
+        self._rows = rows
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _FakeInteractionDb:
+    def __init__(self, interactions: list[SimpleNamespace]):
+        self._interactions = interactions
+
+    def query(self, model):
+        if model is Interaction:
+            return _FakeQuery(self._interactions)
+        return _FakeQuery([])
 
 
 def _make_orchestrator(client: _FakeCallProcessingClient) -> CallsManualReportingOrchestrator:
@@ -617,6 +646,74 @@ def test_manager_daily_external_service_covering_ready_run_skips_upstream_missin
     assert summary["call_processing_requested_scope_hash"]
     assert summary["call_processing_covering_scope_hash"] == "hash-covering"
     assert summary["call_processing_artifacts_missing"] == 0
+
+
+def test_manager_daily_covering_upstream_keeps_report_scope_on_explicit_pilot_manager() -> None:
+    department_id = uuid4()
+    pilot_manager_id = uuid4()
+    non_pilot_manager_id = uuid4()
+    orchestrator = object.__new__(CallsManualReportingOrchestrator)
+    orchestrator.department_id = department_id
+    orchestrator.db = _FakeInteractionDb(
+        [
+            _interaction(
+                department_id=department_id,
+                manager_id=pilot_manager_id,
+                extension="317",
+                call_started_at="2026-06-25 10:00:00",
+            ),
+            _interaction(
+                department_id=department_id,
+                manager_id=non_pilot_manager_id,
+                extension="350",
+                call_started_at="2026-06-25 11:00:00",
+            ),
+        ]
+    )
+    filters = ReportRunFilters(
+        manager_ids={str(pilot_manager_id)},
+        date_from="2026-06-25",
+        date_to="2026-06-25",
+    )
+
+    selected = CallsManualReportingOrchestrator._select_interactions(
+        orchestrator,
+        filters=filters,
+        period={"date_from": "2026-06-25", "date_to": "2026-06-25"},
+    )
+    diagnostics = CallsManualReportingOrchestrator._build_run_diagnostics(
+        orchestrator,
+        preset=resolve_report_preset("manager_daily"),
+        mode="build_missing_and_report",
+        period={"date_from": "2026-06-25", "date_to": "2026-06-25"},
+        source_period={"date_from": "2026-06-25", "date_to": "2026-06-25"},
+        filters=filters,
+        diagnostics_context={
+            "department_id": str(department_id),
+            "department_name": "Pilot Department",
+            "execution_model": "source_aware_full_manual",
+            "manager_filter_logic": "manager_ids_only",
+            "missing_local_manager_ids": [],
+        },
+        build_summary={},
+        reports=[],
+        selected_interactions_count=len(selected),
+        final_selected_interactions_count=0,
+        overall_status="no_data",
+        source_summary={
+            "call_processing_scope_match": "covering",
+            "call_processing_requested_scope_hash": "hash-requested",
+            "call_processing_covering_scope_hash": "hash-covering-company",
+        },
+        errors=[],
+    )
+
+    assert [item.manager_id for item in selected] == [pilot_manager_id]
+    assert non_pilot_manager_id not in {item.manager_id for item in selected}
+    assert diagnostics["analysis_manager_ids"] == [str(pilot_manager_id)]
+    assert diagnostics["analysis_manager_count"] == 1
+    assert diagnostics["call_processing_scope_match"] == "covering"
+    assert diagnostics["upstream_scope_wider_than_analysis"] is True
 
 
 def test_manager_daily_external_service_running_upstream_returns_waiting_without_failed_timeout() -> None:

@@ -24,9 +24,10 @@ NO_AUDIO_INTERACTION_STATUS = "NO_AUDIO"
 class OnlinePBXIntake:
     """Fetch call records from OnlinePBX and store eligible interactions."""
 
-    def __init__(self, department_id: str, db: Session):
+    def __init__(self, department_id: str, db: Session, *, company_wide_mapping: bool = False):
         self.department_id = UUID(department_id)
         self.db = db
+        self.company_wide_mapping = company_wide_mapping
         self.base_url = settings.onlinepbx_base_url
         self.domain = settings.onlinepbx_domain.strip()
         self.api_key = settings.onlinepbx_api_key
@@ -243,10 +244,30 @@ class OnlinePBXIntake:
             .first()
         )
 
+    def get_company_manager_by_extension(self, extension: str) -> tuple[Manager | None, list[str]]:
+        """Find a unique active manager by extension across all departments."""
+        matches = (
+            self.db.query(Manager)
+            .filter(
+                Manager.extension == extension,
+                Manager.active.is_(True),
+            )
+            .all()
+        )
+        if len(matches) == 1:
+            return matches[0], []
+        if len(matches) > 1:
+            return None, ["ambiguous_local_extension_match"]
+        return None, []
+
     def resolve_manager_mapping(self, record: CDRRecord) -> tuple[Manager | None, UUID, dict[str, object]]:
         """Resolve the manager/department for a call via local data, Bitrix, or fallback."""
         diagnostics: list[str] = []
-        manager = self.get_manager_by_extension(record.extension)
+        if self.company_wide_mapping:
+            manager, company_diagnostics = self.get_company_manager_by_extension(record.extension)
+            diagnostics.extend(company_diagnostics)
+        else:
+            manager = self.get_manager_by_extension(record.extension)
         if manager is not None:
             return (
                 manager,

@@ -76,6 +76,21 @@ NOT_COACHABLE_ANALYSIS_REASON = "not_coachable_or_reportable"
 ANALYSIS_FORENSICS_ATTR = "_analysis_forensics"
 SALES_RELEVANT_CALL_TYPES = {"sales_primary", "sales_repeat", "mixed"}
 NON_COACHABLE_CALL_TYPES = {"support", "internal", "other"}
+UNIVERSAL_CALL_CARD_SCHEMA_VERSION = "universal_call_card_v1"
+LLM1_CALL_CARD_TEXT_FIELDS = (
+    "topic",
+    "product_area",
+    "department_hint",
+    "request_type",
+    "client_intent",
+    "manager_intent",
+    "urgency",
+    "business_outcome",
+    "analysis_eligibility",
+    "eligibility_reason",
+    "call_essence",
+    "confidence",
+)
 CONTACT_NAME_METADATA_KEYS = {
     "contact_label",
     "contact_display_name",
@@ -896,6 +911,24 @@ class CallsAnalyzer:
                 "analysis_focus": [
                     "short focus bullet about what matters most in the call",
                 ],
+                "call_card": {
+                    "schema_version": UNIVERSAL_CALL_CARD_SCHEMA_VERSION,
+                    "topic": "short universal call topic",
+                    "product_area": "EDO | tech_support | legal_product | billing | document_flow | other | unknown",
+                    "department_hint": "likely department or business direction",
+                    "request_type": "sales | support | service | legal_product | billing | document_flow | internal | other | unknown",
+                    "client_intent": "what the client wanted",
+                    "manager_intent": "what the manager tried to do",
+                    "urgency": "hot | warm | cold | service | unknown",
+                    "business_outcome": "agreement | reschedule | refusal | open | service_resolved | transferred | no_answer | unknown",
+                    "analysis_eligibility": "eligible | not_eligible | review_required",
+                    "eligibility_reason": "short reason",
+                    "call_essence": "1-2 sentences about what happened and how it ended",
+                    "contact_name": None,
+                    "tags": ["short searchable tags"],
+                    "evidence": ["short transcript signals only"],
+                    "confidence": "low | medium | high",
+                },
                 "speaker_role_mapping": {
                     "source": "llm1_role_attribution",
                     "stt_provider": "string-or-null",
@@ -957,12 +990,16 @@ class CallsAnalyzer:
                 ],
                 "optional_top_level_keys": [
                     "analysis_focus",
+                    "call_card",
                     "speaker_role_mapping",
                 ],
                 "rules": [
                     "Return one JSON object only.",
                     "Do not invent transcript facts.",
                     "Keep business-facing summary/follow-up text in Russian.",
+                    "Return `call_card` as a universal company-wide call card, not EDO-only.",
+                    "Do not infer `call_card.contact_name` from CRM, metadata, phonebook, or call labels; use a value only when the STT transcript explicitly contains the client's name, otherwise return null.",
+                    "Keep `call_card.tags` and `call_card.evidence` short; do not copy the full transcript or segments.",
                     "Do not return the full final scoring contract here.",
                     "If STT metadata says Whisper has no speaker labels, do not treat speaker A as manager.",
                     "Infer manager/client roles only from transcript evidence; otherwise use role=unknown and confidence=low.",
@@ -1926,11 +1963,52 @@ class CallsAnalyzer:
             },
             "analysis_focus": list(llm1_first_pass.get("analysis_focus") or []),
         }
+        call_card = CallsAnalyzer._compact_llm1_call_card(llm1_first_pass.get("call_card"))
+        if call_card:
+            compact["call_card"] = call_card
         speaker_role_mapping = CallsAnalyzer._compact_speaker_role_mapping(
             llm1_first_pass.get("speaker_role_mapping")
         )
         if speaker_role_mapping:
             compact["speaker_role_mapping"] = speaker_role_mapping
+        return compact
+
+    @staticmethod
+    def _compact_llm1_call_card(value: Any) -> dict[str, Any]:
+        raw = CallsAnalyzer._normalize_llm1_call_card(value)
+        if not raw:
+            return {}
+        compact = {
+            key: raw.get(key)
+            for key in (
+                "schema_version",
+                "topic",
+                "product_area",
+                "department_hint",
+                "request_type",
+                "client_intent",
+                "urgency",
+                "business_outcome",
+                "analysis_eligibility",
+                "eligibility_reason",
+                "call_essence",
+                "contact_name",
+                "confidence",
+            )
+            if key in raw
+        }
+        tags = CallsAnalyzer._as_limited_text_list(raw.get("tags"), limit=5)
+        evidence = CallsAnalyzer._as_limited_text_list(raw.get("evidence"), limit=3)
+        if tags:
+            compact["tags"] = [
+                CallsAnalyzer._clip_compact_text(item, 80) or item
+                for item in tags
+            ]
+        if evidence:
+            compact["evidence"] = [
+                CallsAnalyzer._clip_compact_text(item, 160) or item
+                for item in evidence
+            ]
         return compact
 
     @staticmethod
@@ -3068,7 +3146,7 @@ class CallsAnalyzer:
                         f"{exc}\n\n"
                         "Return one corrected JSON object only with keys "
                         "`classification`, `summary`, `follow_up`, `data_quality`, and optional "
-                        "`analysis_focus` and `speaker_role_mapping`."
+                        "`analysis_focus`, `call_card`, and `speaker_role_mapping`."
                     ),
                 },
             ]
@@ -3454,11 +3532,49 @@ class CallsAnalyzer:
                 raw_first_pass.get("data_quality") or {},
             ),
             "analysis_focus": analysis_focus[:5],
+            "call_card": self._normalize_llm1_call_card(raw_first_pass.get("call_card")),
             "speaker_role_mapping": self._normalize_llm1_speaker_role_mapping(
                 raw_first_pass.get("speaker_role_mapping"),
                 interaction=interaction,
             ),
         }
+
+    @staticmethod
+    def _normalize_llm1_call_card(value: Any) -> dict[str, Any]:
+        """Normalize the optional universal LLM1 card without deriving call meaning."""
+        if not isinstance(value, dict) or not value:
+            return {}
+        raw = dict(value)
+        card: dict[str, Any] = {
+            "schema_version": str(
+                raw.get("schema_version") or UNIVERSAL_CALL_CARD_SCHEMA_VERSION
+            ).strip()
+            or UNIVERSAL_CALL_CARD_SCHEMA_VERSION
+        }
+        for field_name in LLM1_CALL_CARD_TEXT_FIELDS:
+            text = str(raw.get(field_name) or "").strip()
+            if text:
+                card[field_name] = CallsAnalyzer._clip_compact_text(text, 500) or text
+        if "contact_name" in raw:
+            contact_name = str(raw.get("contact_name") or "").strip()
+            card["contact_name"] = (
+                CallsAnalyzer._clip_compact_text(contact_name, 160)
+                if contact_name
+                else None
+            )
+        else:
+            card["contact_name"] = None
+        tags = CallsAnalyzer._as_limited_text_list(raw.get("tags"), limit=8)
+        evidence = CallsAnalyzer._as_limited_text_list(raw.get("evidence"), limit=5)
+        card["tags"] = [
+            CallsAnalyzer._clip_compact_text(item, 80) or item
+            for item in tags
+        ]
+        card["evidence"] = [
+            CallsAnalyzer._clip_compact_text(item, 180) or item
+            for item in evidence
+        ]
+        return card
 
     @staticmethod
     def _normalize_llm1_speaker_role_mapping(

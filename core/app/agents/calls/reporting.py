@@ -3705,11 +3705,18 @@ class CallsManualReportingOrchestrator:
                 f"instruction_version={filters.analysis_instruction_version}; "
                 "older analyses cannot satisfy readiness."
             )
+        analysis_scope = self._analysis_scope_diagnostics(
+            filters=filters,
+            period=period,
+            source_summary=source_summary,
+        )
 
         return {
             "effective_preset": preset.code,
             "effective_mode": mode,
             "execution_model": diagnostics_context["execution_model"],
+            **analysis_scope,
+            "analysis_scope": dict(analysis_scope),
             "effective_department": {
                 "id": diagnostics_context["department_id"],
                 "name": diagnostics_context["department_name"],
@@ -3809,6 +3816,43 @@ class CallsManualReportingOrchestrator:
                 "missing_manager_ids": diagnostics_context["missing_local_manager_ids"],
             },
         }
+
+    def _analysis_scope_diagnostics(
+        self,
+        *,
+        filters: ReportRunFilters,
+        period: dict[str, str],
+        source_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Describe downstream analysis scope separately from upstream call-processing scope."""
+        manager_ids = sorted(filters.manager_ids)
+        scope_match = str(source_summary.get("call_processing_scope_match") or "").strip() or None
+        diagnostics: dict[str, Any] = {
+            "analysis_scope_source": (
+                "reporting_schedule.manager_ids"
+                if manager_ids
+                else "department_scope_or_explicit_empty_filters"
+            ),
+            "analysis_department_id": str(self.department_id),
+            "analysis_manager_ids": manager_ids,
+            "analysis_manager_count": len(manager_ids),
+            "analysis_date_from": str(period.get("date_from") or ""),
+            "analysis_date_to": str(period.get("date_to") or ""),
+            "analysis_dates": {
+                "date_from": str(period.get("date_from") or ""),
+                "date_to": str(period.get("date_to") or ""),
+            },
+        }
+        for key in (
+            "call_processing_scope_match",
+            "call_processing_requested_scope_hash",
+            "call_processing_covering_scope_hash",
+        ):
+            if source_summary.get(key) is not None:
+                diagnostics[key] = source_summary.get(key)
+        if scope_match == "covering" and manager_ids:
+            diagnostics["upstream_scope_wider_than_analysis"] = True
+        return diagnostics
 
     @staticmethod
     def _build_readiness_summary(*, reports: list[dict[str, Any]]) -> dict[str, Any]:

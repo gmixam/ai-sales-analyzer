@@ -7,15 +7,93 @@
 **Последнее обновление:** 2026-06-29
 
 ## Что сделано
-- [ ] 2026-06-29 — Зафиксирован новый блок `PILOT-39`: расширение
+- [x] 2026-06-29 — Реализован first pass `PILOT-39E` controlled company-wide
+  transcription rollout. Добавлен CLI
+  `core/report_scripts/company_transcription_rollout_preflight.py` с командами
+  `scope-preview`, `dry-run`, `latest-run-check`: preview строит scheduled
+  runtime scope через `_daily_upstream_scope`, dry-run запускает только
+  `CallProcessingService.ensure(..., mode=DRY_RUN)` с required artifacts
+  `transcript/transcript_segments/llm1_first_pass`, latest-run-check читает
+  exact/covering run и возвращает status/scope/forecast/counts/costs/blockers/
+  acceptance/operator_next_step. First pass не запускает provider-backed
+  company-wide upstream, production schedule switch, email, Telegram и не
+  расширяет LLM2/LLM3/reporting scope. Rollout-порядок: scope-preview за
+  выбранный день, dry-run за 2-3 рабочих дня, затем только после ручного
+  approval один provider-backed company trial, ЭДО reports через covering
+  lookup, проверка отсутствия downstream generation outside selected scope,
+  отдельно permanent company schedule. ТЗ:
+  `docs/PILOT39E_CONTROLLED_COMPANY_TRANSCRIPTION_ROLLOUT_TZ.md`.
+- [x] 2026-06-29 — Реализован first pass `PILOT-39B` universal LLM1 call
+  card. В `llm1_first_pass_v1` добавлен backward-compatible optional
+  `call_card` без смены schema version; LLM1 prompt/context просит
+  универсальную карточку звонка, не ЭДО-only; normalizer возвращает `{}` для
+  старых artifacts, нормализует только форму, лимитирует `tags/evidence` и не
+  достраивает смысл из transcript. `call_card` сохраняется в artifact
+  persistence и попадает в compact LLM2 context без transcript/segments
+  duplication. `contact_name` остается `null`, если LLM явно не вернул имя.
+  Проверки: host `py_compile` OK; `git diff --check` OK; docker focused pytest
+  `/app/tests/test_call_processing_service.py
+  /app/tests/test_call_processing_llm1_external_mode.py
+  /app/tests/test_llm2_layered_runtime.py -k "llm1 or first_pass or compact or
+  call_card"` -> `10 passed, 32 deselected`. Реальные STT, LLM provider calls,
+  production pipeline, email и Telegram не запускались. ТЗ:
+  `docs/PILOT39B_UNIVERSAL_LLM1_CALL_CARD_TZ.md`.
+- [x] 2026-06-29 — Реализован first pass `PILOT-39D` company-wide
+  cost/quota/monitoring. Company dry-run/forecast теперь возвращает
+  `provider_calls_estimate`, `provider_calls_budget`,
+  `provider_calls_budget_status`, `forecast_budget_status`,
+  `forecast_cost_usdt` и `forecast_billable_minutes`; для `scope_mode=company`
+  provider-backed ensure добавлен safety gate после read-only CDR discovery и
+  до `get_recording_url`/STT/LLM1, если estimate превышает budget. Blocker
+  пишет `reason`, `error_class`, `admin_action_required`; scheduled
+  company-wide upstream alert формирует короткий operator summary без raw JSON.
+  Managers mode сохранен, downstream analysis scope не расширялся. Проверки:
+  host `py_compile` OK; `git diff --check` OK; docker focused pytest
+  `/app/tests/test_call_processing_service.py
+  /app/tests/test_scheduled_call_processing_upstream.py
+  /app/tests/test_run_alerts.py -k "company or forecast or budget or quota or
+  upstream"` -> `17 passed, 30 deselected`. Реальные provider calls, STT,
+  LLM1, LLM2, LLM3, email, Telegram и production pipeline не запускались.
+- [x] 2026-06-29 — Реализован first pass `PILOT-39C` selective downstream
+  analysis scope. `manager_daily` create/runtime guard теперь требует explicit
+  non-empty `manager_ids`; пустой scope блокируется diagnostic batch с reason
+  `manager_daily_manager_scope_not_configured` и не создает report runner,
+  LLM2/LLM3/reporting. Scheduled/reporting diagnostics явно разделяют
+  `analysis_scope_source`, `analysis_department_id`, `analysis_manager_ids`,
+  `analysis_manager_count`, даты analysis и covering upstream hashes; при
+  covering upstream выставляется `upstream_scope_wider_than_analysis`.
+  Проверки: host `py_compile` OK; `git diff --check` OK; docker focused pytest
+  `/app/tests/test_scheduled_reporting.py
+  /app/tests/test_call_processing_reporting_integration.py -k "manager_daily
+  or scope or covering or upstream"` -> `23 passed`. Реальные STT, LLM1,
+  LLM2, LLM3, email, Telegram и production pipeline не запускались.
+- [x] 2026-06-29 — Реализован first pass `PILOT-39A` company-wide upstream
+  scope. Scheduled `call_processing.ensure_daily_upstream` получил
+  `CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=managers|department|company`
+  (`managers` сохраняет текущую семантику); `department/company` строятся из
+  local active managers with extension, исключая inactive/no-extension/
+  technical users. Company dry-run делает read-only CDR forecast без
+  `get_recording_url`, STT, LLM1, email, Telegram или reporting; provider-backed
+  ensure остается заблокирован без `provider_call_budget > 0`. Company mapping
+  не назначает случайного manager при ambiguous local extension. Summary/planned
+  получили `scope_mode`, manager/extension/department counts, diagnostics,
+  eligible/no-audio/missed/zero-talk/billable minutes и forecast costs.
+  Downstream schedules/ReportingSchedule не менялись и scope analysis не
+  расширялся. Проверки: host `py_compile` OK; `git diff --check` OK; docker
+  focused pytest `/app/tests/test_scheduled_call_processing_upstream.py
+  /app/tests/test_call_processing_service.py /app/tests/test_call_processing_api.py
+  -k "daily_upstream or scheduled_upstream or company or department or dry_run
+  or ambiguous or scope"` -> `14 passed`. Расширенный unrelated `ensure` pack
+  сохраняет известный debt `cost_status available vs price_missing`.
+- [x] 2026-06-29 — Зафиксирован новый блок `PILOT-39`: расширение
   `call-processing` на всю компанию при сохранении выборочного LLM2/LLM3
-  анализа только для утвержденного downstream scope. Создано ТЗ
+  анализа только для утвержденного downstream scope. Изначально создано ТЗ
   `docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md`, добавлены задачи
   `PILOT-39A` company-wide upstream scope, `PILOT-39B` universal LLM1 call
   card, `PILOT-39C` selective downstream analysis scope, `PILOT-39D`
-  cost/quota/monitoring и `PILOT-39E` controlled rollout. В roadmap split
-  сервиса добавлен этап `SPLIT-COMPLETE-09`. Код не менялся, production
-  schedule не переключался.
+  cost/quota/monitoring и `PILOT-39E` controlled rollout; затем first pass
+  по всем пяти задачам закрыт отдельными записями выше. Production schedule
+  на company-wide режим не переключался.
 - [x] 2026-06-29 — `PILOT-29` speaker role attribution переведен в
   `sample_verified`. Подтверждено, что текущий STT route остается
   `openai/whisper-1`, для Whisper `speaker_a_is_manager=false`, metadata

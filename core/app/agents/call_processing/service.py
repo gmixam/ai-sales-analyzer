@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 
@@ -163,8 +164,8 @@ class CallProcessingService:
             status=ProcessingRunStatus.RUNNING,
         )
         budget = ProviderCallBudget(provider_call_budget)
-        source_counts = self._discover_and_persist_source_calls(scope_model, mode_model, budget)
-        interactions = self._find_interactions(scope_model)
+        source_counts = self._discover_and_persist_source_calls(scope_model, required, mode_model, budget)
+        interactions = [] if budget.blocked and self._scope_mode(scope_model) == "company" else self._find_interactions(scope_model)
         cost_entries: list[dict[str, Any]] = []
         counts = await self._ensure_artifacts(
             interactions,
@@ -181,6 +182,7 @@ class CallProcessingService:
         )
         counts.update(source_counts)
         costs = self._estimate_upstream_costs(cost_entries, counts, mode_model)
+        self._add_budget_summary_fields(counts, costs, budget)
         status = self._status_from_counts(counts)
 
         self.runs.update_status(
@@ -216,6 +218,8 @@ class CallProcessingService:
         return sorted(set(normalized), key=lambda item: order[item])
 
     def _find_interactions(self, scope: ProcessingScope) -> list[Interaction]:
+        if self._scope_mode(scope) in {"company", "department"} and not scope.extensions:
+            return []
         stmt = select(Interaction).where(Interaction.type == "call")
         if scope.department_id:
             stmt = stmt.where(Interaction.department_id == scope.department_id)
@@ -279,31 +283,63 @@ class CallProcessingService:
     def _discover_and_persist_source_calls(
         self,
         scope: ProcessingScope,
+        required: list[RequiredArtifactKind],
         mode: EnsureMode,
         budget: ProviderCallBudget,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Discover OnlinePBX source calls for the scope when the session supports it."""
         counts = {
+            "scope_mode": self._scope_mode(scope),
+            "scope_manager_count": scope.scope_manager_count
+            if scope.scope_manager_count is not None
+            else len(set(scope.manager_ids)),
+            "scope_extension_count": scope.scope_extension_count
+            if scope.scope_extension_count is not None
+            else len(set(scope.extensions)),
+            "scope_department_count": self._scope_department_count(scope),
+            "scope_diagnostics": list(scope.scope_diagnostics),
             "source_days_scanned": 0,
             "source_records_total": 0,
             "source_targeted_total": 0,
+            "source_readonly_cdr_calls": 0,
             "source_ingest_created": 0,
             "source_ingest_skipped": 0,
             "source_provider_calls_made": 0,
             "provider_calls_made": 0,
             "quota_blocked": 0,
+            "eligible_audio_calls": 0,
+            "eligible_audio_calls_with_record_url": 0,
+            "eligible_audio_calls_missing_record_url": 0,
+            "no_audio_calls": 0,
+            "missed_calls": 0,
+            "zero_talk_calls": 0,
+            "billable_minutes_estimate": 0,
         }
-        if mode is EnsureMode.DRY_RUN or not scope.department_id or not hasattr(self.session, "query"):
+        fallback_department_id = scope.department_id or scope.fallback_department_id
+        if not fallback_department_id:
+            counts["scope_diagnostics"].append("fallback_department_not_configured")
             return counts
-        intake = self._build_intake(scope.department_id)
+        if self._scope_mode(scope) in {"company", "department"} and not scope.extensions:
+            counts["scope_diagnostics"].append("scope_extensions_empty")
+            return counts
+        if not hasattr(self.session, "query"):
+            counts["scope_diagnostics"].append("manager_directory_or_source_session_unavailable")
+            return counts
+        intake = self._build_intake(fallback_department_id, scope=scope)
+        scope_mode = self._scope_mode(scope)
+        company_targeted: list[list[Any]] = []
         for day in self._iter_period_days(scope):
-            if not budget.try_spend():
-                budget.mark_blocked(counts)
-                break
+            if mode is not EnsureMode.DRY_RUN:
+                if not budget.try_spend():
+                    budget.mark_blocked(counts)
+                    break
             counts["source_days_scanned"] += 1
             records = intake.get_cdr_list(day.isoformat())
-            counts["source_provider_calls_made"] += 1
-            counts["provider_calls_made"] += 1
+            if mode is EnsureMode.DRY_RUN:
+                counts["source_readonly_cdr_calls"] += 1
+            else:
+                counts["source_provider_calls_made"] += 1
+                counts["provider_calls_made"] += 1
             counts["source_records_total"] += len(records)
             targeted = [
                 record
@@ -312,6 +348,12 @@ class CallProcessingService:
                 and self._record_matches_filters(record, scope)
             ]
             counts["source_targeted_total"] += len(targeted)
+            self._add_source_forecast_counts(counts, targeted, intake)
+            if mode is EnsureMode.DRY_RUN:
+                continue
+            if scope_mode == "company":
+                company_targeted.append(targeted)
+                continue
             for record in targeted:
                 if self._record_is_build_eligible(intake, record) and not getattr(record, "record_url", None):
                     if not budget.try_spend():
@@ -325,7 +367,69 @@ class CallProcessingService:
             created, skipped = intake.save_interactions(targeted)
             counts["source_ingest_created"] += created
             counts["source_ingest_skipped"] += skipped
+        self._add_provider_call_budget_fields(counts, required, budget)
+        if mode is not EnsureMode.DRY_RUN and scope_mode == "company" and not budget.blocked:
+            if self._provider_call_estimate_exceeds_budget(counts, budget):
+                budget.mark_blocked(counts)
+                self._mark_company_budget_blocker(counts)
+                self._add_provider_call_budget_fields(counts, required, budget)
+                return counts
+            for targeted in company_targeted:
+                for record in targeted:
+                    if self._record_is_build_eligible(intake, record) and not getattr(record, "record_url", None):
+                        if not budget.try_spend():
+                            budget.mark_blocked(counts)
+                            break
+                        record.record_url = intake.get_recording_url(record.call_id)
+                        counts["source_provider_calls_made"] += 1
+                        counts["provider_calls_made"] += 1
+                if budget.blocked:
+                    break
+                created, skipped = intake.save_interactions(targeted)
+                counts["source_ingest_created"] += created
+                counts["source_ingest_skipped"] += skipped
         return counts
+
+    @staticmethod
+    def _scope_mode(scope: ProcessingScope) -> str:
+        return str(scope.scope_mode or "managers").strip().lower() or "managers"
+
+    @staticmethod
+    def _scope_department_count(scope: ProcessingScope) -> int:
+        if scope.scope_department_count is not None:
+            return scope.scope_department_count
+        departments = {
+            value
+            for value in (scope.department_id, scope.fallback_department_id)
+            if str(value or "").strip()
+        }
+        return len(departments)
+
+    def _add_source_forecast_counts(
+        self,
+        counts: dict[str, Any],
+        records: list[Any],
+        intake: Any,
+    ) -> None:
+        for record in records:
+            talk_duration = int(getattr(record, "talk_duration", 0) or 0)
+            status = str(getattr(record, "status", "") or "").strip().lower()
+            if status == "missed":
+                counts["missed_calls"] += 1
+            if talk_duration <= 0:
+                counts["zero_talk_calls"] += 1
+            if self._record_is_build_eligible(intake, record):
+                counts["eligible_audio_calls"] += 1
+                if getattr(record, "record_url", None):
+                    counts["eligible_audio_calls_with_record_url"] += 1
+                else:
+                    counts["eligible_audio_calls_missing_record_url"] += 1
+                counts["eligible_audio_duration_sec"] = int(
+                    counts.get("eligible_audio_duration_sec", 0)
+                ) + talk_duration
+                counts["billable_minutes_estimate"] += math.ceil(talk_duration / 60)
+            else:
+                counts["no_audio_calls"] += 1
 
     @staticmethod
     def _iter_period_days(scope: ProcessingScope) -> list[date]:
@@ -343,6 +447,74 @@ class CallProcessingService:
             if extension not in set(scope.extensions):
                 return False
         return True
+
+    @staticmethod
+    def _add_provider_call_budget_fields(
+        counts: dict[str, Any],
+        required: list[RequiredArtifactKind],
+        budget: ProviderCallBudget,
+    ) -> None:
+        estimate = CallProcessingService._provider_calls_estimate(counts, required)
+        counts["provider_calls_estimate"] = estimate
+        counts["provider_calls_budget"] = budget.limit
+        counts["provider_calls_budget_status"] = CallProcessingService._provider_calls_budget_status(
+            estimate,
+            budget.limit,
+        )
+
+    @staticmethod
+    def _provider_calls_estimate(
+        counts: dict[str, Any],
+        required: list[RequiredArtifactKind],
+    ) -> int:
+        required_set = set(required)
+        eligible = int(counts.get("eligible_audio_calls") or 0)
+        cdr_requests = int(counts.get("source_days_scanned") or 0)
+        recording_url_requests = int(counts.get("eligible_audio_calls_missing_record_url") or 0)
+        transcript_requests = eligible if (
+            RequiredArtifactKind.TRANSCRIPT in required_set
+            or RequiredArtifactKind.TRANSCRIPT_SEGMENTS in required_set
+        ) else 0
+        llm1_requests = eligible if RequiredArtifactKind.LLM1_FIRST_PASS in required_set else 0
+        counts["provider_calls_estimate_cdr"] = cdr_requests
+        counts["provider_calls_estimate_recording_url"] = recording_url_requests
+        counts["provider_calls_estimate_stt"] = transcript_requests
+        counts["provider_calls_estimate_llm1"] = llm1_requests
+        return cdr_requests + recording_url_requests + transcript_requests + llm1_requests
+
+    @staticmethod
+    def _provider_calls_budget_status(estimate: int, limit: int | None) -> str:
+        if limit is not None and limit <= 0:
+            return "no_budget_configured"
+        if estimate <= 0:
+            return "within_budget"
+        if limit is None:
+            return "no_budget_configured"
+        if estimate > limit:
+            return "over_budget"
+        if estimate >= max(math.ceil(limit * 0.8), 1):
+            return "warning"
+        return "within_budget"
+
+    @staticmethod
+    def _provider_call_estimate_exceeds_budget(
+        counts: dict[str, Any],
+        budget: ProviderCallBudget,
+    ) -> bool:
+        estimate = int(counts.get("provider_calls_estimate") or 0)
+        return estimate > 0 and budget.limit is not None and estimate > budget.limit
+
+    @staticmethod
+    def _mark_company_budget_blocker(counts: dict[str, Any]) -> None:
+        counts.update(
+            {
+                "provider_calls_budget_status": "over_budget",
+                "forecast_budget_status": "over_budget",
+                "reason": "provider_calls_budget_insufficient",
+                "error_class": ProcessingErrorClass.QUOTA_INSUFFICIENT.value,
+                "admin_action_required": "increase_provider_call_budget_or_run_smaller_scope",
+            }
+        )
 
     @staticmethod
     def _record_matches_filters(record: Any, scope: ProcessingScope) -> bool:
@@ -369,12 +541,19 @@ class CallProcessingService:
             return False
         return True
 
-    def _build_intake(self, department_id: str) -> Any:
+    def _build_intake(self, department_id: str, *, scope: ProcessingScope | None = None) -> Any:
         if self.intake_factory is not None:
-            return self.intake_factory(department_id, self.session)
+            intake = self.intake_factory(department_id, self.session)
+            if scope is not None:
+                setattr(intake, "company_wide_mapping", self._scope_mode(scope) == "company")
+            return intake
         from app.agents.calls.intake import OnlinePBXIntake
 
-        return OnlinePBXIntake(department_id=department_id, db=self.session)
+        return OnlinePBXIntake(
+            department_id=department_id,
+            db=self.session,
+            company_wide_mapping=scope is not None and self._scope_mode(scope) == "company",
+        )
 
     def _build_extractor(self, department_id: str) -> Any:
         if self.extractor_factory is not None:
@@ -616,6 +795,7 @@ class CallProcessingService:
             data_quality=dict(normalized.get("data_quality") or {}),
             analysis_focus=normalized.get("analysis_focus") or {},
             speaker_role_mapping=dict(normalized.get("speaker_role_mapping") or {}),
+            call_card=dict(normalized.get("call_card") or {}),
         )
         self.artifacts.write_active(
             department_id=interaction.department_id,
@@ -716,6 +896,8 @@ class CallProcessingService:
         counts: dict[str, Any],
         mode: EnsureMode,
     ) -> dict[str, Any]:
+        if mode is EnsureMode.DRY_RUN and int(counts.get("source_readonly_cdr_calls") or 0) > 0:
+            return self._forecast_upstream_costs(counts)
         helper = self._call_processing_cost_helper()
         if helper is not None:
             return self._call_processing_costs_from_helper(
@@ -725,6 +907,127 @@ class CallProcessingService:
                 mode=mode,
             )
         return self._fallback_upstream_costs(cost_entries, counts)
+
+    def _forecast_upstream_costs(self, counts: dict[str, Any]) -> dict[str, Any]:
+        eligible = int(counts.get("eligible_audio_calls") or 0)
+        total_duration_sec = int(counts.get("eligible_audio_duration_sec") or 0)
+        if eligible <= 0:
+            costs = self._fallback_upstream_costs([], counts)
+            costs["forecast"] = True
+            costs["forecast_billable_minutes"] = counts.get("billable_minutes_estimate", 0)
+            return costs
+
+        stt_provider, stt_model, llm1_provider, llm1_model = self._forecast_provider_models()
+        execution_entries = [
+            {
+                "layer": "stt",
+                "request_kind": "speech_to_text",
+                "subject_key": "forecast:stt",
+                "provider": stt_provider,
+                "model": stt_model,
+                "duration_sec": total_duration_sec,
+                "usage": {
+                    "duration_sec": total_duration_sec,
+                    "billable_minutes": counts.get("billable_minutes_estimate", 0),
+                },
+            },
+            {
+                "layer": "llm1",
+                "request_kind": "llm1_first_pass",
+                "subject_key": "forecast:llm1",
+                "provider": llm1_provider,
+                "model": llm1_model,
+            },
+        ]
+        planned = {
+            **counts,
+            "transcripts_built": eligible,
+            "llm1_first_pass_built": eligible,
+        }
+        helper = self._call_processing_cost_helper()
+        if helper is not None:
+            costs = helper(
+                execution_entries=execution_entries,
+                planned=planned,
+                mode="forecast",
+            )
+        else:
+            costs = self._fallback_upstream_costs(execution_entries, planned)
+        costs["forecast"] = True
+        costs["forecast_billable_minutes"] = counts.get("billable_minutes_estimate", 0)
+        costs.setdefault("notes", [])
+        costs["notes"] = [
+            *list(costs.get("notes") or []),
+            "Dry-run forecast uses read-only CDR duration and does not fetch recording URLs or run STT/LLM1.",
+            "LLM1 forecast has no token usage before execution; cost may be usage_missing.",
+        ]
+        return costs
+
+    @staticmethod
+    def _add_budget_summary_fields(
+        counts: dict[str, Any],
+        costs: dict[str, Any],
+        budget: ProviderCallBudget,
+    ) -> None:
+        estimate = int(counts.get("provider_calls_estimate") or 0)
+        provider_budget_status = str(
+            counts.get("provider_calls_budget_status")
+            or CallProcessingService._provider_calls_budget_status(estimate, budget.limit)
+        )
+        forecast_budget_status = CallProcessingService._forecast_budget_status(
+            provider_budget_status=provider_budget_status,
+            cost_status=str(costs.get("cost_status") or ""),
+        )
+        forecast_cost = costs.get("total_current_run_cost_usdt")
+        forecast_minutes = costs.get("forecast_billable_minutes", counts.get("billable_minutes_estimate", 0))
+
+        summary_fields = {
+            "provider_calls_estimate": estimate,
+            "provider_calls_budget": budget.limit,
+            "provider_calls_budget_status": provider_budget_status,
+            "forecast_budget_status": forecast_budget_status,
+            "forecast_cost_usdt": forecast_cost,
+            "forecast_billable_minutes": forecast_minutes,
+            "budget_status": forecast_budget_status,
+        }
+        counts.update(summary_fields)
+        costs.update(summary_fields)
+        costs["provider_calls_made"] = counts.get("provider_calls_made", 0)
+        if int(counts.get("quota_blocked", 0) or 0) > 0:
+            counts.setdefault(
+                "admin_action_required",
+                "increase_provider_call_budget_or_retry_after_provider_quota_reset",
+            )
+            counts.setdefault("error_class", ProcessingErrorClass.QUOTA_INSUFFICIENT.value)
+
+    @staticmethod
+    def _forecast_budget_status(*, provider_budget_status: str, cost_status: str) -> str:
+        if provider_budget_status in {"over_budget", "warning", "no_budget_configured"}:
+            return provider_budget_status
+        if cost_status == "price_missing":
+            return "price_missing"
+        if cost_status == "usage_missing":
+            return "usage_missing"
+        if cost_status == "partial":
+            return "warning"
+        return "within_budget"
+
+    @staticmethod
+    def _forecast_provider_models() -> tuple[str, str, str, str]:
+        try:
+            from app.core_shared.config.settings import settings
+        except Exception:
+            return "unknown", "unknown", "unknown", "unknown"
+        stt_provider = str(getattr(settings, "stt_provider", "") or "unknown").strip().lower()
+        if stt_provider == "openai":
+            stt_model = str(getattr(settings, "openai_model_stt", "") or "whisper-1")
+        elif stt_provider == "assemblyai":
+            stt_model = "assemblyai_default"
+        else:
+            stt_model = stt_provider or "unknown"
+        llm1_provider = "openai"
+        llm1_model = str(getattr(settings, "openai_model_classify", "") or "unknown")
+        return stt_provider or "unknown", stt_model, llm1_provider, llm1_model
 
     @staticmethod
     def _call_processing_cost_helper() -> Callable[..., dict[str, Any]] | None:
@@ -947,6 +1250,10 @@ class CallProcessingService:
         summary: dict[str, Any] = {
             "provider_calls_made": counts.get("provider_calls_made", 0),
             "provider_calls_planned": counts.get("provider_calls_planned", 0),
+            "provider_calls_estimate": counts.get("provider_calls_estimate", 0),
+            "provider_calls_budget": counts.get("provider_calls_budget", budget.limit),
+            "provider_calls_budget_status": counts.get("provider_calls_budget_status"),
+            "forecast_budget_status": counts.get("forecast_budget_status"),
             "provider_calls_allowed": mode is not EnsureMode.DRY_RUN and not exhausted,
             "provider_call_budget": budget.limit,
             "provider_calls_remaining": budget.remaining,
@@ -956,7 +1263,11 @@ class CallProcessingService:
             summary.update(
                 {
                     "error_class": ProcessingErrorClass.QUOTA_INSUFFICIENT.value,
-                    "admin_action_required": "increase_provider_call_budget_or_retry_after_provider_quota_reset",
+                    "reason": counts.get("reason") or "provider_quota_exhausted",
+                    "admin_action_required": counts.get(
+                        "admin_action_required",
+                        "increase_provider_call_budget_or_retry_after_provider_quota_reset",
+                    ),
                 }
             )
         return summary

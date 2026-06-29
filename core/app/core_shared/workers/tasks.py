@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.core_shared.db.models import Manager
 from app.agents.call_processing import (
     CallProcessingService,
     EnsureMode,
@@ -209,17 +210,112 @@ def _parse_report_date(value: str | None, timezone_name: str) -> date:
     return datetime.now(tzinfo).date() - timedelta(days=1)
 
 
-def _daily_upstream_scope(target_date: date) -> ProcessingScope:
+def _daily_upstream_scope(target_date: date, db: Any | None = None) -> ProcessingScope:
+    scope_mode = getattr(settings, "call_processing_daily_upstream_scope_mode", "managers")
+    scope_mode = str(scope_mode or "managers").strip().lower()
     payload: dict[str, Any] = {
-        "department_id": settings.call_processing_daily_upstream_department_id,
-        "manager_ids": settings.call_processing_daily_upstream_manager_ids,
+        "scope_mode": scope_mode,
         "date_from": target_date,
         "date_to": target_date,
         "source": "onlinepbx",
     }
+    diagnostics: list[str] = []
+    if scope_mode == "managers":
+        payload["department_id"] = settings.call_processing_daily_upstream_department_id
+        payload["manager_ids"] = settings.call_processing_daily_upstream_manager_ids
+        payload["scope_manager_count"] = len(settings.call_processing_daily_upstream_manager_ids)
+        payload["scope_extension_count"] = 0
+        payload["scope_department_count"] = (
+            1 if settings.call_processing_daily_upstream_department_id.strip() else 0
+        )
+    elif scope_mode == "department":
+        department_id = settings.call_processing_daily_upstream_department_id
+        managers, manager_diagnostics = _daily_upstream_scope_managers(
+            db,
+            department_id=department_id,
+        )
+        diagnostics.extend(manager_diagnostics)
+        payload["department_id"] = department_id
+        payload["manager_ids"] = [str(manager.id) for manager in managers]
+        payload["extensions"] = [str(manager.extension).strip() for manager in managers]
+        payload["scope_manager_count"] = len(payload["manager_ids"])
+        payload["scope_extension_count"] = len(payload["extensions"])
+        payload["scope_department_count"] = 1 if department_id.strip() else 0
+    elif scope_mode == "company":
+        managers, manager_diagnostics = _daily_upstream_scope_managers(db)
+        diagnostics.extend(manager_diagnostics)
+        department_ids = sorted({str(manager.department_id) for manager in managers})
+        fallback_department_id = settings.call_processing_daily_upstream_department_id.strip()
+        if not fallback_department_id and department_ids:
+            fallback_department_id = department_ids[0]
+            diagnostics.append("fallback_department_inferred_from_manager_directory")
+        payload["department_id"] = None
+        payload["fallback_department_id"] = fallback_department_id
+        payload["manager_ids"] = [str(manager.id) for manager in managers]
+        payload["extensions"] = [str(manager.extension).strip() for manager in managers]
+        payload["scope_manager_count"] = len(payload["manager_ids"])
+        payload["scope_extension_count"] = len(payload["extensions"])
+        payload["scope_department_count"] = len(department_ids)
+        if not settings.call_processing_daily_upstream_department_id.strip():
+            diagnostics.append("configured_fallback_department_id_empty")
+    else:
+        raise ValueError(f"unsupported CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE: {scope_mode}")
+    if diagnostics:
+        payload["scope_diagnostics"] = diagnostics
     if settings.call_processing_daily_upstream_min_duration_sec is not None:
         payload["min_duration_sec"] = settings.call_processing_daily_upstream_min_duration_sec
     return ProcessingScope.model_validate(payload)
+
+
+def _daily_upstream_scope_managers(
+    db: Any | None,
+    *,
+    department_id: str | None = None,
+) -> tuple[list[Manager], list[str]]:
+    diagnostics: list[str] = []
+    if db is None or not hasattr(db, "query"):
+        return [], ["manager_directory_unavailable"]
+
+    query = db.query(Manager)
+    if department_id:
+        query = query.filter(Manager.department_id == department_id)
+    managers = list(query.all())
+    included: list[Manager] = []
+    excluded_inactive = 0
+    excluded_no_extension = 0
+    excluded_technical = 0
+    for manager in managers:
+        if not bool(getattr(manager, "active", False)):
+            excluded_inactive += 1
+            continue
+        if not str(getattr(manager, "extension", "") or "").strip():
+            excluded_no_extension += 1
+            continue
+        if department_id and str(getattr(manager, "department_id", "")) != department_id:
+            continue
+        if _is_daily_upstream_technical_manager(manager):
+            excluded_technical += 1
+            continue
+        included.append(manager)
+    if not included:
+        diagnostics.append("manager_directory_scope_empty")
+    if excluded_inactive:
+        diagnostics.append(f"inactive_managers_excluded:{excluded_inactive}")
+    if excluded_no_extension:
+        diagnostics.append(f"managers_without_extension_excluded:{excluded_no_extension}")
+    if excluded_technical:
+        diagnostics.append(f"technical_managers_excluded:{excluded_technical}")
+    return included, diagnostics
+
+
+def _is_daily_upstream_technical_manager(manager: Manager) -> bool:
+    name = str(getattr(manager, "name", "") or "").casefold()
+    if "робот" in name:
+        return True
+    email = str(getattr(manager, "email", "") or "").strip().casefold()
+    if not email:
+        return False
+    return any(marker in email for marker in ("no-reply", "noreply", "robot", "technical"))
 
 
 @celery_app.task(name=SCHEDULED_CALL_PROCESSING_UPSTREAM_TASK)
@@ -251,17 +347,21 @@ def ensure_daily_call_processing_upstream(
             "task_status": "skipped",
             "reason": "disabled",
         }
-    if not settings.call_processing_daily_upstream_department_id.strip():
+    scope_mode = getattr(settings, "call_processing_daily_upstream_scope_mode", "managers")
+    scope_mode = str(scope_mode or "managers").strip().lower()
+    if scope_mode in {"managers", "department"} and not settings.call_processing_daily_upstream_department_id.strip():
         return {
             **base_payload,
             "task_status": "skipped",
             "reason": "department_scope_not_configured",
+            "scope_mode": scope_mode,
         }
-    if not settings.call_processing_daily_upstream_manager_ids:
+    if scope_mode == "managers" and not settings.call_processing_daily_upstream_manager_ids:
         return {
             **base_payload,
             "task_status": "skipped",
             "reason": "manager_scope_not_configured",
+            "scope_mode": scope_mode,
         }
     if not dry_run and settings.call_processing_daily_upstream_provider_call_budget <= 0:
         alert = _send_daily_upstream_alert(
@@ -279,14 +379,15 @@ def ensure_daily_call_processing_upstream(
             **base_payload,
             "task_status": "skipped",
             "reason": "provider_call_budget_not_configured",
+            "admin_action_required": "configure_call_processing_daily_upstream_provider_call_budget",
             "alerts": [alert],
         }
 
     try:
         target_date = _parse_report_date(report_date, settings.call_processing_daily_upstream_timezone)
-        scope = _daily_upstream_scope(target_date)
         mode = EnsureMode.DRY_RUN if dry_run else EnsureMode.ENSURE
         with get_db() as db:
+            scope = _daily_upstream_scope(target_date, db)
             service = CallProcessingService(db, requested_by="scheduled_call_processing_upstream")
             response = service.ensure(
                 scope,
@@ -342,6 +443,7 @@ def ensure_daily_call_processing_upstream(
         "finished_at": datetime.now(UTC).isoformat(),
         "report_date": target_date.isoformat(),
         "mode": mode.value,
+        "scope_mode": scope.scope_mode,
         "scope": scope.model_dump(mode="json", exclude_none=True),
         "required_artifacts": [item.value for item in DAILY_UPSTREAM_REQUIRED_ARTIFACTS],
         "billable_pipeline_started": not dry_run,
@@ -350,6 +452,24 @@ def ensure_daily_call_processing_upstream(
         "planned": response_payload.get("planned", {}),
         "quota": response_payload.get("quota", {}),
         "costs": response_payload.get("costs", {}),
+        "provider_calls_estimate": response_payload.get("planned", {}).get("provider_calls_estimate"),
+        "provider_calls_budget": response_payload.get("planned", {}).get("provider_calls_budget"),
+        "provider_calls_budget_status": response_payload.get("planned", {}).get("provider_calls_budget_status"),
+        "forecast_budget_status": response_payload.get("planned", {}).get(
+            "forecast_budget_status",
+            response_payload.get("costs", {}).get("forecast_budget_status"),
+        ),
+        "forecast_cost_usdt": response_payload.get("costs", {}).get("forecast_cost_usdt"),
+        "forecast_billable_minutes": response_payload.get("costs", {}).get("forecast_billable_minutes"),
+        "budget_status": response_payload.get("costs", {}).get("budget_status"),
+        "admin_action_required": response_payload.get("quota", {}).get(
+            "admin_action_required",
+            response_payload.get("planned", {}).get("admin_action_required"),
+        ),
+        "scope_manager_count": response_payload.get("planned", {}).get("scope_manager_count"),
+        "scope_extension_count": response_payload.get("planned", {}).get("scope_extension_count"),
+        "scope_department_count": response_payload.get("planned", {}).get("scope_department_count"),
+        "scope_diagnostics": response_payload.get("planned", {}).get("scope_diagnostics", []),
         "alerts": [alert] if alert is not None else [],
     }
 
@@ -378,11 +498,107 @@ def _send_daily_upstream_alert(
         counts=counts,
         errors=errors,
         details=details,
+        operator_summary=_daily_upstream_operator_summary(
+            run_id=run_id,
+            status=status,
+            scope=scope,
+            counts=counts,
+            errors=errors,
+            details=details,
+        ),
     )
     attempt["kind"] = "scheduled_call_processing_upstream"
     attempt["trigger"] = status
     attempt["severity"] = level
     return attempt
+
+
+def _daily_upstream_operator_summary(
+    *,
+    run_id: str,
+    status: str,
+    scope: dict[str, Any],
+    counts: dict[str, Any],
+    errors: list[Any],
+    details: dict[str, Any],
+) -> str | None:
+    """Return a concise company-wide upstream alert when budget/quota blocks work."""
+    scope_mode = str(scope.get("scope_mode") or counts.get("scope_mode") or "").strip().lower()
+    if scope_mode != "company":
+        return None
+
+    quota = details.get("quota") if isinstance(details.get("quota"), dict) else {}
+    costs = details.get("costs") if isinstance(details.get("costs"), dict) else {}
+    provider_status = str(
+        counts.get("provider_calls_budget_status")
+        or quota.get("provider_calls_budget_status")
+        or costs.get("provider_calls_budget_status")
+        or ""
+    )
+    forecast_status = str(
+        counts.get("forecast_budget_status")
+        or quota.get("forecast_budget_status")
+        or costs.get("forecast_budget_status")
+        or ""
+    )
+    cost_status = str(costs.get("cost_status") or "")
+    quota_exhausted = bool(quota.get("quota_exhausted")) or int(counts.get("quota_blocked") or 0) > 0
+    if provider_status not in {"over_budget", "no_budget_configured"} and forecast_status not in {
+        "over_budget",
+        "no_budget_configured",
+        "price_missing",
+    } and cost_status != "price_missing" and not quota_exhausted:
+        return None
+
+    target_date = str(scope.get("date_from") or scope.get("date") or "unknown")
+    estimate = counts.get("provider_calls_estimate") or quota.get("provider_calls_estimate")
+    budget = counts.get("provider_calls_budget") or quota.get("provider_calls_budget")
+    reason = _daily_upstream_company_reason(
+        provider_status=provider_status,
+        forecast_status=forecast_status,
+        cost_status=cost_status,
+        quota_exhausted=quota_exhausted,
+        estimate=estimate,
+        budget=budget,
+        errors=errors,
+    )
+    return "\n".join(
+        [
+            f"Корпоративная транскрибация за {target_date} не запущена/остановлена.",
+            f"Причина: {reason}",
+            "Влияние: STT/LLM1 карточки по всей компании не будут готовы; ЭДО analysis может использовать только уже готовые artifacts.",
+            "Действие: увеличить budget или запустить меньший scope.",
+            f"Run: {run_id}",
+        ]
+    )
+
+
+def _daily_upstream_company_reason(
+    *,
+    provider_status: str,
+    forecast_status: str,
+    cost_status: str,
+    quota_exhausted: bool,
+    estimate: Any,
+    budget: Any,
+    errors: list[Any],
+) -> str:
+    if provider_status == "over_budget" or forecast_status == "over_budget":
+        return f"прогноз {estimate} provider calls превышает budget {budget}."
+    if provider_status == "no_budget_configured" or forecast_status == "no_budget_configured":
+        return "provider-call budget не настроен."
+    if forecast_status == "price_missing" or cost_status == "price_missing":
+        return "нет цены для forecast STT/LLM1."
+    if quota_exhausted:
+        return "provider quota/budget исчерпан до завершения upstream."
+    for item in errors:
+        if isinstance(item, str) and item:
+            return item
+        if isinstance(item, dict):
+            for key in ("reason", "error_class", "message", "error"):
+                if item.get(key):
+                    return str(item[key])
+    return "company-wide upstream требует проверки budget/quota."
 
 
 def _send_scheduled_reporting_alert(exc: Exception) -> dict[str, Any]:

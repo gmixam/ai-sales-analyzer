@@ -92,6 +92,7 @@ MANAGER_DAILY_UPSTREAM_PENDING_REASONS = {
     "upstream_not_ready",
 }
 MANAGER_DAILY_UPSTREAM_DEADLINE_REASON = "upstream_not_ready_before_deadline"
+MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED = "manager_daily_manager_scope_not_configured"
 MANAGER_DAILY_EDITABLE_BLOCKS = (
     "top_summary",
     "focus_wording",
@@ -210,10 +211,16 @@ def _schedule_requires_review(schedule: ReportingSchedule) -> bool:
     return bool(getattr(schedule, "review_required", True))
 
 
+def _is_manager_daily_preset(value: Any) -> bool:
+    """Return True when a schedule/preset value targets manager_daily reports."""
+    preset = getattr(value, "preset", value)
+    return str(preset or "").strip() == "manager_daily"
+
+
 def _manager_daily_auto_delivery_enabled(schedule: ReportingSchedule) -> bool:
     """Return True for production manager_daily delivery schedules."""
     return (
-        str(getattr(schedule, "preset", "") or "").strip() == "manager_daily"
+        _is_manager_daily_preset(schedule)
         and not _schedule_requires_review(schedule)
         and bool(getattr(schedule, "business_email_enabled", False))
     )
@@ -432,6 +439,11 @@ class ScheduledReviewableReportingService:
         """Create one bounded schedule."""
         resolve_report_preset(preset)
         normalized_manager_ids = _coerce_uuid_list(manager_ids)
+        if _is_manager_daily_preset(preset) and not normalized_manager_ids:
+            raise ASAError(
+                "manager_daily requires explicit non-empty manager_ids "
+                f"({MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED})."
+            )
         normalized_timezone = _validate_timezone(timezone_name)
         normalized_mode = str(mode).strip().lower()
         if normalized_mode not in REPORTING_ALLOWED_MODES:
@@ -709,6 +721,9 @@ class ScheduledReviewableReportingService:
         if schedule.next_run_at > now_utc:
             return
 
+        if _is_manager_daily_preset(schedule) and not list(getattr(schedule, "manager_ids", None) or []):
+            self._block_manager_daily_without_analysis_scope(schedule=schedule, now_utc=now_utc)
+            return
         if self._uses_manager_daily_candidate_selection(schedule=schedule):
             self._run_due_manager_daily_schedule(schedule=schedule, now_utc=now_utc)
             return
@@ -782,8 +797,21 @@ class ScheduledReviewableReportingService:
             self.db.flush()
             return
 
-        batch.observability = dict(result.get("observability") or {})
-        batch.diagnostics = dict(result.get("diagnostics") or {})
+        source_summary = dict(
+            ((result.get("observability") or {}).get("summary") or {}).get("source") or {}
+        )
+        analysis_scope = self._scheduled_analysis_scope_diagnostics(
+            schedule=schedule,
+            period=period,
+            manager_ids=list(schedule.manager_ids or []),
+            source_summary=source_summary,
+        )
+        batch.observability = {**dict(result.get("observability") or {}), **analysis_scope}
+        batch.diagnostics = {
+            **dict(result.get("diagnostics") or {}),
+            **analysis_scope,
+            "analysis_scope": analysis_scope,
+        }
         batch.errors = list(result.get("errors") or [])
 
         drafts_created = 0
@@ -822,10 +850,76 @@ class ScheduledReviewableReportingService:
     def _uses_manager_daily_candidate_selection(self, *, schedule: ReportingSchedule) -> bool:
         """Return True for split scheduled manager-day scans with explicit managers."""
         return (
-            str(getattr(schedule, "preset", "") or "").strip() == "manager_daily"
+            _is_manager_daily_preset(schedule)
             and str(getattr(schedule, "recurrence_type", "") or "").strip().lower() == "daily"
             and bool(list(getattr(schedule, "manager_ids", None) or []))
         )
+
+    def _block_manager_daily_without_analysis_scope(
+        self,
+        *,
+        schedule: ReportingSchedule,
+        now_utc: datetime,
+    ) -> None:
+        """Record a diagnostic blocker instead of falling back to department scope."""
+        planned_for = schedule.next_run_at or now_utc
+        existing = self._get_batch_for_occurrence(schedule_id=schedule.id, planned_for=planned_for)
+        if existing is not None:
+            schedule.last_planned_at = planned_for
+            schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+            self.db.flush()
+            return
+
+        local_planned = planned_for.astimezone(ZoneInfo(schedule.timezone))
+        period = _compute_report_period(rule=schedule.report_period_rule, local_run_at=local_planned)
+        analysis_scope = self._scheduled_analysis_scope_diagnostics(
+            schedule=schedule,
+            period=period,
+            manager_ids=[],
+            scope_source="reporting_schedule.manager_ids_empty",
+        )
+        batch = ScheduledReportBatch(
+            schedule_id=schedule.id,
+            department_id=schedule.department_id,
+            preset=schedule.preset,
+            mode=schedule.mode,
+            report_period_rule=schedule.report_period_rule,
+            status="failed",
+            planned_for=planned_for,
+            period={"date_from": period.date_from, "date_to": period.date_to},
+            filters={"manager_ids": [], "manager_extensions": []},
+            business_email_enabled=bool(schedule.business_email_enabled),
+            review_required=_schedule_requires_review(schedule),
+            observability={
+                **analysis_scope,
+                "status": "blocked",
+                "run_state": "blocked_without_report_runner",
+                "failure_reason": MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED,
+                "blockers": [MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED],
+            },
+            diagnostics={
+                **analysis_scope,
+                "analysis_scope": dict(analysis_scope),
+                "reason": MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED,
+                "report_runner_started": False,
+                "scheduled_manager_daily_run": {
+                    "schema_version": "scheduled_manager_daily_run_v1",
+                    "schedule_id": str(schedule.id),
+                    "planned_for": _isoformat_utc(planned_for),
+                    "status": "blocked",
+                    "failure_reason": MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED,
+                    "report_batches_created": 0,
+                    "batches_created": 0,
+                    "diagnostic_batches_created": 1,
+                },
+            },
+            errors=[MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED],
+            failed_at=datetime.now(UTC),
+        )
+        self.db.add(batch)
+        schedule.last_planned_at = planned_for
+        schedule.next_run_at = self._advance_schedule(schedule=schedule, after_utc=now_utc)
+        self.db.flush()
 
     def _run_due_manager_daily_schedule(self, *, schedule: ReportingSchedule, now_utc: datetime) -> None:
         """Execute one due manager_daily schedule through data-driven candidate selection."""
@@ -2508,12 +2602,23 @@ class ScheduledReviewableReportingService:
             self.db.flush()
             return batch
 
+        source_summary = dict(
+            ((result.get("observability") or {}).get("summary") or {}).get("source") or {}
+        )
+        analysis_scope = self._scheduled_analysis_scope_diagnostics(
+            schedule=schedule,
+            period=period,
+            manager_ids=[selection.manager_id],
+            source_summary=source_summary,
+        )
         base_observability = self._with_candidate_selection_observability(
-            observability=dict(result.get("observability") or {}),
+            observability={**dict(result.get("observability") or {}), **analysis_scope},
             selection=selection,
         )
         batch.diagnostics = {
             **dict(result.get("diagnostics") or {}),
+            **analysis_scope,
+            "analysis_scope": analysis_scope,
             "scheduled_candidate_selection": selection.to_observability(),
         }
         batch.errors = list(result.get("errors") or [])
@@ -3065,9 +3170,15 @@ class ScheduledReviewableReportingService:
             if selection.selection_reason == "no_candidate_empty_previous_day"
             else selection.selection_reason
         )
+        analysis_scope = self._scheduled_analysis_scope_diagnostics(
+            schedule=schedule,
+            period=fallback_period,
+            manager_ids=[selection.manager_id],
+        )
         batch.observability = self._with_manager_daily_sla_observability(
             observability=self._with_candidate_selection_observability(
                 observability={
+                    **analysis_scope,
                     "status": "skipped",
                     "run_state": "skipped_without_manager_report",
                     "blockers": [],
@@ -3084,7 +3195,11 @@ class ScheduledReviewableReportingService:
             status="not_applicable",
             missed_reason=skip_reason,
         )
-        batch.diagnostics = {"scheduled_candidate_selection": selection.to_observability()}
+        batch.diagnostics = {
+            **analysis_scope,
+            "analysis_scope": dict(analysis_scope),
+            "scheduled_candidate_selection": selection.to_observability(),
+        }
         batch.errors = [selection.selection_reason]
         self._transition_batch_status(batch, "failed")
         batch.failed_at = datetime.now(UTC)
@@ -3111,8 +3226,14 @@ class ScheduledReviewableReportingService:
             manager_ids=[str(item) for item in list(schedule.manager_ids or [])],
             selection=None,
         )
+        analysis_scope = self._scheduled_analysis_scope_diagnostics(
+            schedule=schedule,
+            period=fallback_period,
+            manager_ids=[str(item) for item in list(schedule.manager_ids or [])],
+        )
         batch.observability = self._with_manager_daily_sla_observability(
             observability={
+                **analysis_scope,
                 "status": "failed",
                 "run_state": "failed_without_scheduled_batch",
                 "failure_reason": failure_reason,
@@ -3136,6 +3257,8 @@ class ScheduledReviewableReportingService:
             missed_reason=failure_reason,
         )
         batch.diagnostics = {
+            **analysis_scope,
+            "analysis_scope": dict(analysis_scope),
             "scheduled_manager_daily_run": {
                 "failure_reason": failure_reason,
                 "created_batches_before_guard_count": 0,
@@ -3157,10 +3280,18 @@ class ScheduledReviewableReportingService:
         selection: ScheduledManagerDaySelection | None = None,
     ) -> ScheduledReportBatch:
         """Create the common scheduled batch row without running delivery."""
+        analysis_scope = self._scheduled_analysis_scope_diagnostics(
+            schedule=schedule,
+            period=period,
+            manager_ids=manager_ids,
+        )
         observability = (
-            self._with_candidate_selection_observability(observability={}, selection=selection)
+            self._with_candidate_selection_observability(
+                observability=dict(analysis_scope),
+                selection=selection,
+            )
             if selection is not None
-            else None
+            else dict(analysis_scope)
         )
         batch = ScheduledReportBatch(
             schedule_id=schedule.id,
@@ -3179,15 +3310,62 @@ class ScheduledReviewableReportingService:
             review_required=_schedule_requires_review(schedule),
             observability=observability,
             diagnostics=(
-                {"scheduled_candidate_selection": selection.to_observability()}
+                {
+                    **analysis_scope,
+                    "analysis_scope": dict(analysis_scope),
+                    "scheduled_candidate_selection": selection.to_observability(),
+                }
                 if selection is not None
-                else None
+                else {**analysis_scope, "analysis_scope": dict(analysis_scope)}
             ),
             errors=[],
         )
         self.db.add(batch)
         self.db.flush()
         return batch
+
+    @staticmethod
+    def _scheduled_analysis_scope_diagnostics(
+        *,
+        schedule: ReportingSchedule,
+        period: SchedulePeriod,
+        manager_ids: list[str],
+        source_summary: dict[str, Any] | None = None,
+        scope_source: str = "reporting_schedule.manager_ids",
+    ) -> dict[str, Any]:
+        """Return downstream analysis scope separately from upstream source scope."""
+        normalized_manager_ids = [
+            str(item)
+            for item in list(manager_ids or [])
+            if str(item or "").strip()
+        ]
+        source = dict(source_summary or {})
+        upstream_scope_match = str(source.get("call_processing_scope_match") or "").strip() or None
+        upstream_scope_wider_than_analysis = (
+            True if upstream_scope_match == "covering" and bool(normalized_manager_ids) else None
+        )
+        diagnostics: dict[str, Any] = {
+            "analysis_scope_source": scope_source,
+            "analysis_department_id": str(schedule.department_id),
+            "analysis_manager_ids": normalized_manager_ids,
+            "analysis_manager_count": len(normalized_manager_ids),
+            "analysis_date_from": period.date_from,
+            "analysis_date_to": period.date_to,
+            "analysis_dates": {
+                "date_from": period.date_from,
+                "date_to": period.date_to,
+            },
+        }
+        for key in (
+            "call_processing_scope_match",
+            "call_processing_requested_scope_hash",
+            "call_processing_covering_scope_hash",
+        ):
+            if source.get(key) is not None:
+                diagnostics[key] = source.get(key)
+        if upstream_scope_wider_than_analysis is not None:
+            diagnostics["upstream_scope_wider_than_analysis"] = upstream_scope_wider_than_analysis
+        return diagnostics
 
     @staticmethod
     def _with_candidate_selection_observability(

@@ -798,7 +798,7 @@ PILOT-36A first pass проверен 2026-06-19: focused docker pytest
 
 ### SPLIT-COMPLETE-09 — Company-wide transcription, selective analysis
 
-Статус: `planned`
+Статус: `implemented_first_pass`
 
 ТЗ: [`docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md`](../PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md)
 
@@ -814,11 +814,28 @@ PILOT-36A first pass проверен 2026-06-19: focused docker pytest
 
 Что сделать:
 
-- [ ] `PILOT-39A`: company-wide upstream scope и dry-run/forecast;
-- [ ] `PILOT-39B`: universal LLM1 call card contract;
-- [ ] `PILOT-39C`: явное разделение upstream scope и downstream analysis scope;
-- [ ] `PILOT-39D`: cost/quota/monitoring для company-wide STT+LLM1;
-- [ ] `PILOT-39E`: controlled rollout без unexpected analysis outside scope.
+- [x] `PILOT-39A`: company-wide upstream scope и dry-run/forecast
+  ([ТЗ](../PILOT39A_COMPANY_WIDE_UPSTREAM_SCOPE_TZ.md));
+- [x] `PILOT-39B`: universal LLM1 call card contract
+  ([ТЗ](../PILOT39B_UNIVERSAL_LLM1_CALL_CARD_TZ.md));
+- [x] `PILOT-39C`: явное разделение upstream scope и downstream analysis scope
+  ([ТЗ](../PILOT39C_SELECTIVE_DOWNSTREAM_ANALYSIS_SCOPE_TZ.md));
+- [x] `PILOT-39D`: cost/quota/monitoring для company-wide STT+LLM1
+  ([ТЗ](../PILOT39D_COMPANY_WIDE_COST_QUOTA_MONITORING_TZ.md));
+- [x] `PILOT-39E`: controlled rollout без unexpected analysis outside scope
+  ([ТЗ](../PILOT39E_CONTROLLED_COMPANY_TRANSCRIPTION_ROLLOUT_TZ.md)).
+
+Controlled rollout порядок после first pass:
+
+1. `scope-preview --date YYYY-MM-DD --json` за выбранный рабочий день.
+2. `dry-run --date YYYY-MM-DD --json` за 2-3 рабочих дня; сравнить volume,
+   provider-call estimate, budget и forecast cost.
+3. Только после ручного approval оператора: один provider-backed upstream run
+   по company scope.
+4. Проверить ЭДО reports через covering lookup.
+5. Убедиться, что LLM2/LLM3/report generation не запускались вне selected
+   downstream scope.
+6. Только после этого включать permanent company schedule отдельным решением.
 
 Критерий готовности:
 

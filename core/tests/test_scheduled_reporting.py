@@ -26,6 +26,7 @@ if str(CORE_ROOT) not in sys.path:
 
 from app.agents.calls.reporting import CallsManualReportingOrchestrator, resolve_report_preset  # noqa: E402
 from app.agents.calls.scheduled_reporting import ScheduledReviewableReportingService  # noqa: E402
+from app.agents.calls.scheduled_reporting import MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED  # noqa: E402
 from app.core_shared.config.settings import settings  # noqa: E402
 from app.core_shared.db.models import Manager  # noqa: E402
 from app.core_shared.exceptions import ASAError  # noqa: E402
@@ -209,6 +210,67 @@ def _manager_day_batch(
 
 
 class ScheduledReportingSplitComplete04Tests(unittest.TestCase):
+    def test_create_manager_daily_schedule_requires_explicit_manager_ids(self) -> None:
+        service = _make_service()
+
+        with self.assertRaises(ASAError) as raised:
+            service.create_schedule(
+                department_id=str(uuid4()),
+                manager_ids=[],
+                preset="manager_daily",
+                enabled=True,
+                start_date="2026-06-16",
+                start_time="08:00",
+                timezone_name="Asia/Almaty",
+                recurrence_type="daily",
+                report_period_rule="previous_day",
+                mode="report_from_ready_data_only",
+                business_email_enabled=False,
+            )
+
+        self.assertIn(MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED, str(raised.exception))
+
+    def test_manager_daily_empty_manager_ids_blocks_without_report_runner(self) -> None:
+        service = _make_service()
+        schedule = _manager_daily_schedule(planned_for=datetime(2026, 6, 16, 3, 0, tzinfo=UTC))
+        schedule.manager_ids = []
+        db = _FakeGuardDb()
+        service.db = db
+        service._advance_schedule = lambda **_kwargs: datetime(2026, 6, 17, 3, 0, tzinfo=UTC)
+
+        class FakeOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                raise AssertionError("empty manager_daily scope must not create report runner")
+
+        with patch("app.agents.calls.scheduled_reporting.CallsManualReportingOrchestrator", FakeOrchestrator):
+            service._run_due_schedule(
+                schedule=schedule,
+                now_utc=datetime(2026, 6, 16, 3, 30, tzinfo=UTC),
+            )
+
+        self.assertEqual(len(db.added), 1)
+        batch = db.added[0]
+        self.assertEqual(batch.status, "failed")
+        self.assertEqual(batch.errors, [MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED])
+        self.assertEqual(batch.observability["status"], "blocked")
+        self.assertEqual(
+            batch.observability["failure_reason"],
+            MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED,
+        )
+        self.assertEqual(
+            batch.diagnostics["reason"],
+            MANAGER_DAILY_MANAGER_SCOPE_NOT_CONFIGURED,
+        )
+        self.assertFalse(batch.diagnostics["report_runner_started"])
+        self.assertEqual(batch.diagnostics["analysis_manager_ids"], [])
+        self.assertEqual(batch.diagnostics["analysis_manager_count"], 0)
+        self.assertEqual(
+            batch.diagnostics["analysis_scope_source"],
+            "reporting_schedule.manager_ids_empty",
+        )
+        self.assertEqual(schedule.last_planned_at, datetime(2026, 6, 16, 3, 0, tzinfo=UTC))
+        self.assertEqual(schedule.next_run_at, datetime(2026, 6, 17, 3, 0, tzinfo=UTC))
+
     def test_scheduled_manager_daily_rop_digest_sends_partial_status_summary(self) -> None:
         service = _make_service()
         department_id = uuid4()
@@ -376,8 +438,16 @@ class ScheduledReportingSplitComplete04Tests(unittest.TestCase):
 
         filters = run_calls[0]["filters"]
         self.assertEqual((filters.date_from, filters.date_to), ("2026-06-15", "2026-06-15"))
+        self.assertEqual(filters.manager_ids, {schedule.manager_ids[0]})
         batch = added[0]
         self.assertEqual(batch.period, {"date_from": "2026-06-15", "date_to": "2026-06-15"})
+        self.assertEqual(batch.filters["manager_ids"], [schedule.manager_ids[0]])
+        self.assertEqual(batch.diagnostics["analysis_manager_ids"], [schedule.manager_ids[0]])
+        self.assertEqual(batch.diagnostics["analysis_manager_count"], 1)
+        self.assertEqual(
+            batch.diagnostics["analysis_scope_source"],
+            "reporting_schedule.manager_ids",
+        )
         self.assertEqual(batch.observability["candidate_dates"], ["2026-06-15"])
         self.assertEqual(batch.observability["selected_report_date"], "2026-06-15")
         self.assertEqual(batch.observability["lookback_days"], 1)

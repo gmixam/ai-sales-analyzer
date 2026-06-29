@@ -21,6 +21,11 @@ APP_SERVICE_VALUES = (
     APP_SERVICE_MONOLITH_LEGACY,
 )
 CALL_PROCESSING_MODE_VALUES = ("legacy", "external_service")
+CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE_VALUES = (
+    "managers",
+    "department",
+    "company",
+)
 ALERT_LEVEL_VALUES = ("info", "warning", "error", "critical")
 
 
@@ -116,6 +121,7 @@ class Settings(BaseSettings):
     call_processing_daily_upstream_timezone: str = Field(default="Asia/Almaty")
     call_processing_daily_upstream_hour: int = Field(default=0, ge=0, le=23)
     call_processing_daily_upstream_minute: int = Field(default=0, ge=0, le=59)
+    call_processing_daily_upstream_scope_mode: str = Field(default="managers")
     call_processing_daily_upstream_department_id: str = Field(default="")
     call_processing_daily_upstream_manager_ids: list[str] = Field(default_factory=list)
     call_processing_daily_upstream_min_duration_sec: int | None = Field(default=None, ge=1)
@@ -254,6 +260,19 @@ class Settings(BaseSettings):
             allowed_values = ", ".join(sorted(CALL_PROCESSING_MODE_VALUES))
             raise ConfigurationError(
                 f"Invalid CALL_PROCESSING_MODE value '{value}'. Expected one of: {allowed_values}."
+            )
+        return normalized
+
+    @field_validator("call_processing_daily_upstream_scope_mode")
+    @classmethod
+    def validate_call_processing_daily_upstream_scope_mode(cls, value: str) -> str:
+        """Normalize and validate scheduled upstream scope selection mode."""
+        normalized = value.strip().lower()
+        if normalized not in CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE_VALUES:
+            allowed_values = ", ".join(CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE_VALUES)
+            raise ConfigurationError(
+                "Invalid CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE value "
+                f"'{value}'. Expected one of: {allowed_values}."
             )
         return normalized
 

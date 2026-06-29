@@ -299,6 +299,35 @@ class LLM2LayeredRuntimeTests(unittest.TestCase):
             "_request_llm1_first_pass",
             return_value={
                 "analysis_focus": [],
+                "call_card": {
+                    "schema_version": "universal_call_card_v1",
+                    "topic": "Materials request",
+                    "product_area": "EDO",
+                    "request_type": "sales",
+                    "client_intent": "Receive materials",
+                    "manager_intent": "Send information",
+                    "urgency": "warm",
+                    "business_outcome": "open",
+                    "analysis_eligibility": "eligible",
+                    "eligibility_reason": "Sales-relevant exchange",
+                    "call_essence": "Client asked for WhatsApp materials and the manager agreed to send information.",
+                    "contact_name": "",
+                    "tags": [
+                        "materials",
+                        "whatsapp",
+                        "follow-up",
+                        "EDO",
+                        "open",
+                        "extra-tag",
+                    ],
+                    "evidence": [
+                        "Client asked for materials.",
+                        "Manager agreed to send information.",
+                        "The call remained open.",
+                        "Extra evidence should be omitted from compact payload.",
+                    ],
+                    "confidence": "medium",
+                },
                 "speaker_role_mapping": {
                     "source": "llm1_role_attribution",
                     "diarization_source": "whisper_time_segments_without_speaker_labels",
@@ -338,6 +367,12 @@ class LLM2LayeredRuntimeTests(unittest.TestCase):
             )
 
         llm2a_first_pass = captured_payloads["llm2a_facts_scenes"]["llm1_first_pass"]
+        self.assertEqual(llm2a_first_pass["call_card"]["topic"], "Materials request")
+        self.assertEqual(llm2a_first_pass["call_card"]["contact_name"], None)
+        self.assertEqual(len(llm2a_first_pass["call_card"]["tags"]), 5)
+        self.assertEqual(len(llm2a_first_pass["call_card"]["evidence"]), 3)
+        self.assertNotIn("transcript", llm2a_first_pass["call_card"])
+        self.assertNotIn("segments", llm2a_first_pass["call_card"])
         self.assertEqual(
             llm2a_first_pass["speaker_role_mapping"]["diarization_source"],
             "whisper_time_segments_without_speaker_labels",

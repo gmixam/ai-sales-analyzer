@@ -59,6 +59,21 @@ delivery.
 - `docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md` - draft-ТЗ по
   расширению `call-processing` на всю компанию: STT+LLM1 карточка для всех,
   LLM2/LLM3 analysis только для выбранного downstream scope.
+- `docs/PILOT39A_COMPANY_WIDE_UPSTREAM_SCOPE_TZ.md` - утвержденное мини-ТЗ по
+  первому шагу `PILOT-39A`: scope modes, company-wide dry-run/forecast и
+  сохранение узкого downstream analysis.
+- `docs/PILOT39B_UNIVERSAL_LLM1_CALL_CARD_TZ.md` - реализованное мини-ТЗ по
+  universal LLM1 call card: additive `call_card` в `llm1_first_pass_v1` для
+  поиска/отбора звонков без сужения смысла под ЭДО.
+- `docs/PILOT39C_SELECTIVE_DOWNSTREAM_ANALYSIS_SCOPE_TZ.md` - утвержденное
+  мини-ТЗ по предохранителю downstream analysis: `manager_daily` только по
+  explicit manager allowlist, даже если upstream company-wide.
+- `docs/PILOT39D_COMPANY_WIDE_COST_QUOTA_MONITORING_TZ.md` - утвержденное
+  мини-ТЗ по budget/quota/cost monitoring для company-wide STT+LLM1.
+- `docs/PILOT39E_CONTROLLED_COMPANY_TRANSCRIPTION_ROLLOUT_TZ.md` -
+  реализованный first pass rollout-preflight для company-wide transcription:
+  scheduled runtime scope preview, dry-run forecast, latest/covering run check
+  и acceptance gates перед ручным provider-backed trial.
 
 ## Правило работы
 
@@ -107,11 +122,11 @@ delivery.
 
 | ID | Задача | Статус | Что сделать | Проверка результата |
 | --- | --- | --- | --- | --- |
-| PILOT-39A | Company-wide upstream scope | `planned` | ТЗ: [`docs/PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md`](PILOT39_COMPANY_WIDE_TRANSCRIPTION_SERVICE_TZ.md). Подготовить company-wide scope для ночного `call-processing`: все активные сотрудники с extension, без уволенных/технических пользователей; сохранить pilot/department fallback; добавить dry-run с прогнозом CDR, eligible audio, STT/LLM1 и стоимости | Dry-run показывает весь company scope, текущий ЭДО analysis не расширяется, covering upstream подходит для узкого downstream scope |
-| PILOT-39B | Universal LLM1 call card | `planned` | Зафиксировать schema `llm1_first_pass` как универсальную карточку звонка: тема, продукт/направление, тип обращения, горячесть, намерение, outcome, применимость к анализу, краткая суть, качество STT и speaker role mapping; не добавлять ЭДО-специфику в общий LLM1 prompt | Новые карточки пригодны для поиска/отбора звонков по темам и отделам; старые artifacts не ломаются |
-| PILOT-39C | Selective downstream analysis scope | `planned` | Явно разделить `upstream_scope` и `analysis_scope` в настройках, schedule payload, diagnostics и summary; запретить автоматический LLM2/LLM3/reporting по всему company-wide upstream | Company-wide STT/LLM1 не создает отчеты по не-пилотным менеджерам; ROP digest содержит только выбранный analysis scope |
-| PILOT-39D | Cost, quota and monitoring for company-wide STT/LLM1 | `planned` | Добавить лимиты/алерты и cost summary для корпоративного upstream: total calls, eligible calls, billable minutes, STT cost, LLM1 cost, cost per call card; показывать budget/quota warnings | Оператор видит стоимость и риски до/после прогона; provider quota/budget проблемы дают короткий alert |
-| PILOT-39E | Controlled rollout company-wide transcription | `planned` | Провести read-only CDR forecast, dry-run без provider calls, один company-wide provider-backed upstream без расширения analysis, затем проверить ЭДО reports через covering lookup | Нет unexpected LLM2/LLM3/report generation вне выбранного scope; ЭДО reports не деградировали; cost summary понятен |
+| PILOT-39A | Company-wide upstream scope | `implemented_first_pass` | ТЗ: [`docs/PILOT39A_COMPANY_WIDE_UPSTREAM_SCOPE_TZ.md`](PILOT39A_COMPANY_WIDE_UPSTREAM_SCOPE_TZ.md). Реализован first pass: `CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=managers|department|company`, company/department directory из active managers with extension, technical/inactive/no-extension exclusions, read-only CDR dry-run forecast без `get_recording_url`/STT/LLM1/reporting, company-wide unique extension mapping guard | Проверено: `py_compile`, `git diff --check`, docker focused pytest `14 passed`; current ЭДО downstream analysis/reporting не расширялся, production schedule switch не выполнялся |
+| PILOT-39B | Universal LLM1 call card | `implemented_first_pass` | ТЗ: [`docs/PILOT39B_UNIVERSAL_LLM1_CALL_CARD_TZ.md`](PILOT39B_UNIVERSAL_LLM1_CALL_CARD_TZ.md). Реализован additive `call_card` в `llm1_first_pass_v1` без смены версии: LLM1 prompt/context просит универсальную карточку, normalizer ограничивает форму/tags/evidence без deterministic смысловых эвристик, `contact_name` остается только LLM/STT-derived, persistence и compact LLM2 context обновлены | Проверено: `py_compile`, `git diff --check`, docker focused pytest `10 passed, 32 deselected`; старые artifacts без `call_card` валидируются как `{}`, provider/STT/LLM/email/Telegram не запускались |
+| PILOT-39C | Selective downstream analysis scope | `implemented_first_pass` | ТЗ: [`docs/PILOT39C_SELECTIVE_DOWNSTREAM_ANALYSIS_SCOPE_TZ.md`](PILOT39C_SELECTIVE_DOWNSTREAM_ANALYSIS_SCOPE_TZ.md). Реализован first pass: `manager_daily` create/runtime guard требует explicit non-empty `manager_ids`; пустой scope пишет diagnostic blocker `manager_daily_manager_scope_not_configured` без report runner/LLM2/LLM3; scheduled/reporting diagnostics разделяют `analysis_scope` и covering upstream | Проверено: `py_compile`, `git diff --check`, docker focused pytest `23 passed`; covering upstream не добавляет non-pilot managers в downstream report scope |
+| PILOT-39D | Cost, quota and monitoring for company-wide STT/LLM1 | `implemented_first_pass` | ТЗ: [`docs/PILOT39D_COMPANY_WIDE_COST_QUOTA_MONITORING_TZ.md`](PILOT39D_COMPANY_WIDE_COST_QUOTA_MONITORING_TZ.md). Реализован first pass: company dry-run/forecast пишет provider-call estimate/budget/status, forecast budget/cost/minutes; company provider-backed ensure блокируется после read-only CDR discovery и до `get_recording_url`/STT/LLM1, если estimate превышает budget; blocker содержит `reason/error_class/admin_action_required`; scheduled company-wide alert короткий и без raw JSON | Проверено: `py_compile`, `git diff --check`, docker focused pytest `17 passed, 30 deselected`; managers mode и downstream analysis scope не расширялись |
+| PILOT-39E | Controlled rollout company-wide transcription | `implemented_first_pass` | ТЗ: [`docs/PILOT39E_CONTROLLED_COMPANY_TRANSCRIPTION_ROLLOUT_TZ.md`](PILOT39E_CONTROLLED_COMPANY_TRANSCRIPTION_ROLLOUT_TZ.md). Добавлен CLI `core/report_scripts/company_transcription_rollout_preflight.py`: `scope-preview` строит scope тем же `_daily_upstream_scope`, `dry-run` запускает только `CallProcessingService.ensure(..., DRY_RUN)` с `transcript/transcript_segments/llm1_first_pass`, `latest-run-check` читает latest exact/covering run и возвращает acceptance/blockers/operator next step | Проверено: `py_compile`, `git diff --check`, focused unit tests для preflight CLI; rollout-порядок: preview выбранного дня -> dry-run 2-3 рабочих дней -> только после ручного approval один provider-backed company upstream trial -> ЭДО reports через covering lookup -> проверить отсутствие LLM2/LLM3/reporting outside downstream scope -> отдельно включать permanent company schedule |
 
 ### P1 - Надежность дневного пилота
 

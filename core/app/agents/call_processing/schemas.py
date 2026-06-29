@@ -159,6 +159,7 @@ class LLM1FirstPassPayload(BaseModel):
     data_quality: dict[str, Any] = Field(default_factory=dict)
     analysis_focus: dict[str, Any] | list[Any] = Field(default_factory=dict)
     speaker_role_mapping: dict[str, Any] = Field(default_factory=dict)
+    call_card: dict[str, Any] = Field(default_factory=dict)
     error: ArtifactError = Field(default_factory=ArtifactError)
 
     @field_validator("schema_version")
@@ -200,19 +201,25 @@ class ProcessingScope(BaseModel):
     department_id: str | None = None
     manager_ids: list[str] = Field(default_factory=list)
     extensions: list[str] = Field(default_factory=list)
+    scope_mode: str | None = None
+    fallback_department_id: str | None = None
+    scope_manager_count: int | None = None
+    scope_extension_count: int | None = None
+    scope_department_count: int | None = None
+    scope_diagnostics: list[str] = Field(default_factory=list)
     date_from: date
     date_to: date
     source: str = "onlinepbx"
     min_duration_sec: int | None = None
     max_duration_sec: int | None = None
 
-    @field_validator("department", "department_id", "source", mode="before")
+    @field_validator("department", "department_id", "fallback_department_id", "source", mode="before")
     @classmethod
     def normalize_optional_text(cls, value: Any) -> str | None:
         text = str(value).strip() if value is not None else ""
         return text or None
 
-    @field_validator("manager_ids", "extensions", mode="before")
+    @field_validator("manager_ids", "extensions", "scope_diagnostics", mode="before")
     @classmethod
     def normalize_string_list(cls, value: Any) -> list[str]:
         if value in (None, "", []):
@@ -220,6 +227,12 @@ class ProcessingScope(BaseModel):
         if isinstance(value, list):
             return sorted({str(item).strip() for item in value if str(item).strip()})
         return sorted({item.strip() for item in str(value).split(",") if item.strip()})
+
+    @field_validator("scope_mode", mode="before")
+    @classmethod
+    def normalize_scope_mode(cls, value: Any) -> str | None:
+        text = str(value).strip().lower() if value is not None else ""
+        return text or None
 
     @model_validator(mode="after")
     def validate_date_range(self) -> ProcessingScope:
@@ -266,7 +279,7 @@ class EnsureResponse(BaseModel):
     status: ProcessingRunStatus
     scope_hash: str
     requested_by: str
-    planned: dict[str, int] = Field(default_factory=dict)
+    planned: dict[str, Any] = Field(default_factory=dict)
     quota: dict[str, Any] = Field(default_factory=dict)
     costs: dict[str, Any] = Field(default_factory=dict)
 
@@ -337,5 +350,17 @@ def stable_scope_hash(scope: ProcessingScope | dict[str, Any]) -> str:
     """Return a deterministic scope hash for idempotent run planning."""
     model = scope if isinstance(scope, ProcessingScope) else ProcessingScope.model_validate(scope)
     payload = model.model_dump(mode="json", exclude_none=True)
+    if payload.get("scope_mode") == "managers":
+        payload.pop("scope_mode")
+    for key in (
+        "fallback_department_id",
+        "scope_manager_count",
+        "scope_extension_count",
+        "scope_department_count",
+        "scope_diagnostics",
+    ):
+        payload.pop(key, None)
+    if payload.get("scope_mode") in (None, "", [], {}):
+        payload.pop("scope_mode", None)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
