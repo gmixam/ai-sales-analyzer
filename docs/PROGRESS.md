@@ -7,6 +7,17 @@
 **Последнее обновление:** 2026-06-29
 
 ## Что сделано
+- [x] 2026-06-29 — Runtime переключен к завтрашнему live-прогону:
+  `CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=company` добавлен в
+  `.env.call-processing`, `call_processing_api/worker/beat` пересозданы.
+  Проверка `scope-preview` в `call_processing_worker` подтвердила company
+  scope: `9` active managers/extensions, `4` departments, blockers `[]`.
+  Dry-run forecast за `2026-06-29`: `336` CDR fetched, `144` targeted,
+  `73` eligible audio calls, `170` billable minutes estimate,
+  `provider_calls_estimate=220` при budget `300`, provider calls made `0`.
+  Analysis scope не расширялся: active `manager_daily` schedule остается
+  по `[ЭДО] Отдел Продаж` и 4 менеджерам (Алишер, Илья, Тимур, Толеген),
+  business email enabled.
 - [x] 2026-06-29 — Реализован first pass `PILOT-39E` controlled company-wide
   transcription rollout. Добавлен CLI
   `core/report_scripts/company_transcription_rollout_preflight.py` с командами

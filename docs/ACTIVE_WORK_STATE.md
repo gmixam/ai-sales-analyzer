@@ -1,6 +1,6 @@
 # Активное состояние работ
 
-Дата обновления: 2026-06-15
+Дата обновления: 2026-06-29
 
 Статус: `active`
 
@@ -45,7 +45,15 @@ AI_LLM_SIMULATION_ENABLED=false
 AI_LLM2_ANALYSIS_MODE=layered
 AI_LLM2_INPUT_PROFILE=compact
 LLM3_ENABLED=true
+CALL_PROCESSING_DAILY_UPSTREAM_SCOPE_MODE=company
 ```
+
+С 2026-06-29 live upstream `call-processing` переключен на company-wide
+транскрибацию/LLM1 call cards: scheduled runtime scope строится из всех
+активных managers with extension, fallback department остается ЭДО
+`472cda28-ce71-494c-9068-25d3ffbf7399`. Analysis/reporting не расширен:
+активный `manager_daily` schedule остается только по ЭДО manager allowlist
+Алишер, Илья, Тимур, Толеген.
 
 Source of truth по режимам: `docs/RUNTIME_PROFILES.md`.
 
